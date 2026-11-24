@@ -9,10 +9,10 @@ import verify_retention as retention
 class RetentionEvidenceTests(unittest.TestCase):
     def setUp(self):
         prefix = "rehearsals/retention/"
-        self.expected = retention.Expected("a" * 32, "synthetic-retention", prefix, prefix + "test-object",
-                                           "b" * 64, 3_600, 7_200)
-        self.now = dt.datetime(2026, 11, 23, 15, 5, tzinfo=dt.timezone.utc)
         self.writer, self.probe = "c" * 64, "d" * 64
+        self.expected = retention.Expected("a" * 32, "synthetic-retention", prefix, prefix + "test-object",
+                                           "b" * 64, 3_600, 7_200, self.writer, self.probe)
+        self.now = dt.datetime(2026, 11, 23, 15, 5, tzinfo=dt.timezone.utc)
         self.lock_rule = {"id": "rehearsal-lock", "enabled": True, "prefix": prefix,
                           "condition": {"type": "Age", "maxAgeSeconds": 3_600}}
         self.expiry_rule = {"id": "rehearsal-expiry", "enabled": True, "conditions": {"prefix": prefix},
@@ -115,6 +115,26 @@ class RetentionEvidenceTests(unittest.TestCase):
         self.evidence["sentinel"]["created_utc"] = "2026-11-23T14:04:30Z"
         with self.assertRaisesRegex(backup.Refusal, "outside the approved lock window"):
             self.verify()
+
+    def test_repinned_capture_cannot_substitute_a_different_publisher_or_probe(self):
+        sentinel = self.evidence["sentinel"]
+        replacement = "f" * 64
+        for field, chosen in (("publisher_fingerprint", self.writer), ("lock_probe_fingerprint", self.probe)):
+            with self.subTest(field=field):
+                operations = {
+                    operation: observation | {"credential_fingerprint": replacement}
+                    if observation["credential_fingerprint"] == chosen else observation
+                    for operation, observation in self.operations.items()
+                }
+                self.evidence["sentinel"] = sentinel | {field: replacement, "operations": operations}
+                with self.assertRaisesRegex(backup.Refusal, "credential fingerprints differ"):
+                    self.verify()
+
+    def test_expected_fingerprints_must_be_distinct_lowercase_sha256_digests(self):
+        for overrides in ({"publisher_fingerprint": self.probe}, {"publisher_fingerprint": None},
+                          {"lock_probe_fingerprint": "d" * 63}, {"lock_probe_fingerprint": "D" * 64}):
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(backup.Refusal, "reviewed credential fingerprints"):
+                self.verify(expected=replace(self.expected, **overrides))
 
 
 if __name__ == "__main__":

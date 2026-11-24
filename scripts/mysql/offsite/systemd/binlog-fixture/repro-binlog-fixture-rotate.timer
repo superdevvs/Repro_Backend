@@ -1,0 +1,8 @@
+[Unit]
+Description=RePro fixture schedule a MySQL binary log rotation every two minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/2:00 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-binlog-fixture-rotate.service

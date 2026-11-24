@@ -439,6 +439,12 @@ thresholds. Size the local binlog retention window to survive a destination
 outage and backlog. Use a single scheduler owner and arrange catch-up runs for
 backlog, with an independent timely-rotation policy and external monitoring.
 
+Use the [review-only rotation companion](rotate_closed_binlogs.md) to close
+the active file through a separate socket-only account. It requires a reviewed
+procedure and a source configured to prevent automatic purge during rotation.
+The [two-minute systemd fixture](systemd/binlog-fixture/README.md) adds timer
+dispatch, interruption handling and an independent archive catch-up path.
+
 ### Check rotated MySQL logs before replay
 
 Put the retrieved base producer receipt, the required closed log files, and
@@ -480,6 +486,21 @@ on encrypted object names: confirm the actual encrypted prefix mapping, rather
 than applying rules only to the plaintext names above. Keep management keys and
 recoverable crypt secrets outside the production host. This gate neither sets nor
 tests those policies and cannot prevent a second authorized writer racing it.
+
+Review the exact provider capture and the individually scoped S3 operations
+with the independently approved publisher and lock-test fingerprints. Use the
+same SHA-256 fingerprint convention for both the capture and the reviewed
+credential inventory. Supply digests of the access key IDs only.
+
+```sh
+python -I -B scripts/mysql/offsite/verify_retention.py \
+  --evidence "$reviewed_capture" --evidence-sha256 "$reviewed_capture_sha256" \
+  --expected-account "$account" --expected-bucket "$bucket" --expected-prefix "$visible_r2_prefix" \
+  --expected-sentinel "$synthetic_key" --sentinel-sha256 "$synthetic_content_sha256" \
+  --lock-seconds "$lock_seconds" --expiry-seconds "$expiry_seconds" \
+  --expected-publisher-fingerprint "$server_publisher_fingerprint" \
+  --expected-lock-probe-fingerprint "$lock_probe_fingerprint"
+```
 
 ## Acceptance still required
 

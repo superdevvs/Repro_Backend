@@ -5,8 +5,9 @@ An operator captures successful bucket-lock and object-lifecycle GET response
 bodies for the approved account and bucket, plus single-object S3 observations
 from a separately authorized synthetic sentinel. Match the exact visible R2
 prefix before rclone name encryption. Keep the capture and its independently
-recorded SHA-256. Supply the reviewed account, bucket, key, content hash and
-durations independently of the capture. This tool has no transport or secrets.
+recorded SHA-256. Supply the reviewed account, bucket, key, content hash,
+credential fingerprints and durations independently of the capture. This tool
+has no transport or secrets.
 """
 from __future__ import annotations
 
@@ -38,6 +39,8 @@ class Expected:
     content_sha256: str
     lock_seconds: int
     expiry_seconds: int
+    publisher_fingerprint: str
+    lock_probe_fingerprint: str
 
 
 def records(pairs):
@@ -101,10 +104,9 @@ def verify_probe(sentinel: dict, expected: Expected, observed: dt.datetime) -> N
     created = utc(sentinel["created_utc"])
     backup.need(0 <= (observed - created).total_seconds() < expected.lock_seconds,
                 "synthetic probe occurred outside the approved lock window")
-    writer = sentinel["publisher_fingerprint"]
-    probe = sentinel["lock_probe_fingerprint"]
-    backup.need(all(isinstance(value, str) and backup.HEX.fullmatch(value) is not None for value in (writer, probe))
-                and writer != probe, "expected distinct reviewed test credential fingerprints")
+    writer, probe = expected.publisher_fingerprint, expected.lock_probe_fingerprint
+    backup.need((sentinel["publisher_fingerprint"], sentinel["lock_probe_fingerprint"]) == (writer, probe),
+                "synthetic S3 credential fingerprints differ from the reviewed bindings")
     required = {
         "create": (writer, "PutObject", 200, None, None),
         "read_before": (writer, "GetObject", 200, None, expected.content_sha256),
@@ -131,6 +133,9 @@ def verify(raw: bytes, *, evidence_sha256: str, expected: Expected, now: dt.date
                 and len(expected.sentinel) > len(expected.prefix) and backup.HEX.fullmatch(expected.content_sha256)
                 and type(expected.lock_seconds) is int and type(expected.expiry_seconds) is int
                 and 0 < expected.lock_seconds <= expected.expiry_seconds, "invalid reviewed retention policy")
+    fingerprints = (expected.publisher_fingerprint, expected.lock_probe_fingerprint)
+    backup.need(all(isinstance(value, str) and backup.HEX.fullmatch(value) is not None for value in fingerprints)
+                and fingerprints[0] != fingerprints[1], "expected distinct reviewed credential fingerprints")
     backup.need(now.utcoffset() == dt.timedelta(0), "retention evidence review clock must be UTC")
     backup.need(0 < len(raw) <= LIMIT and backup.sha256(raw) == evidence_sha256, "retention evidence pin mismatch")
     observed = json.loads(raw, object_pairs_hook=records)
@@ -155,14 +160,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", type=Path, required=True)
     for argument in ("evidence-sha256", "expected-account", "expected-bucket", "expected-prefix",
-                     "expected-sentinel", "sentinel-sha256"):
+                     "expected-sentinel", "sentinel-sha256", "expected-publisher-fingerprint",
+                     "expected-lock-probe-fingerprint"):
         parser.add_argument("--" + argument, required=True)
     for argument in ("lock-seconds", "expiry-seconds"):
         parser.add_argument("--" + argument, type=int, required=True)
     args = parser.parse_args()
     try:
         expected = Expected(args.expected_account, args.expected_bucket, args.expected_prefix,
-                            args.expected_sentinel, args.sentinel_sha256, args.lock_seconds, args.expiry_seconds)
+                            args.expected_sentinel, args.sentinel_sha256, args.lock_seconds, args.expiry_seconds,
+                            args.expected_publisher_fingerprint, args.expected_lock_probe_fingerprint)
         backup.private_path(args.evidence)
         with args.evidence.open("rb") as source:
             raw = source.read(LIMIT + 1)

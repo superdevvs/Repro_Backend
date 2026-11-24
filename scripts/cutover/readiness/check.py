@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import Path
+import time
 from typing import Callable
 
 from scripts.cutover.runner import Identity, digest, is_sha256
@@ -34,6 +35,18 @@ RECOVERY_PROOFS = (
     "chosen_transaction_verified",
     "stored_value_decrypted",
 )
+BACKUP_WINDOW_SECONDS = 7 * 24 * 60 * 60
+BACKUP_MAX_AGE_SECONDS = 26 * 60 * 60
+BACKUP_LAG_SECONDS = 5 * 60
+BACKUP_LAG_PERCENT = 99
+ALERT_LIMITS_MS = dict.fromkeys((
+    "database_down", "wrong_database_engine", "site_unreachable", "disk_nearly_full",
+    "backup_lag", "server_error_rate", "historical_money_totals_changed", "rehearsal_failed",
+    "restore_overdue", "backup_stale", "database_contention", "mysql_restarted",
+    "queue_stale", "cache_write_failed",
+), 5 * MINUTE) | {"server_silent": 10 * MINUTE}
+ALERT_MILESTONES = ("before_installer", "before_drill")
+OPERATIONS_REPORTS = ("backup_health", "offsite_retention", "external_alerts", "point_in_time_drills")
 
 
 class Missing(ValueError):
@@ -227,7 +240,103 @@ def review_recovery(policy: dict, receipt: dict) -> None:
         raise Failed("Measured off-site database data loss exceeds five minutes")
 
 
-def evaluate(policy: dict, receipt: dict) -> dict:
+def review_operations_policy(policy: dict, *, now_unix_s: int) -> None:
+    operations = object_field(policy, "operations")
+    for name in ("destination_sha256", "monitor_profile_sha256", "phone_recipient_sha256"):
+        sha_field(operations, name)
+    end = number(operations, "window_end_unix_s", minimum=BACKUP_WINDOW_SECONDS)
+    expires = number(operations, "evidence_valid_until_unix_s", minimum=end)
+    if not end <= now_unix_s <= expires:
+        raise Failed("The reviewed observation window is in the future or has expired")
+    cap(operations, "interval_s", BACKUP_LAG_SECONDS)
+    for kind in OPERATIONS_REPORTS:
+        sha_field(operations, f"{kind}_report_sha256")
+        sha_field(operations, f"{kind}_summary_sha256")
+
+
+def operations_report(policy: dict, receipt: dict, kind: str, *, scope: str) -> dict:
+    report = object_field(receipt, kind)
+    expected = policy["operations"]
+    if (sha_field(report, "identity_sha256") != digest(load_identity(policy))
+            or sha_field(report, "report_sha256") != expected[f"{kind}_report_sha256"]
+            or digest(report) != expected[f"{kind}_summary_sha256"]
+            or sha_field(report, scope) != expected[scope]):
+        raise Failed("Operational summary does not match the reviewed evidence, identity or scope")
+    return report
+
+
+def review_backup_health(policy: dict, receipt: dict) -> None:
+    report = operations_report(policy, receipt, "backup_health", scope="destination_sha256")
+    expected = policy["operations"]
+    if sha_field(report, "monitor_profile_sha256") != expected["monitor_profile_sha256"]:
+        raise Failed("Backup health observations use a different monitor profile")
+    stop = number(report, "window_end_unix_s")
+    if stop != expected["window_end_unix_s"] or number(report, "window_start_unix_s") != stop - BACKUP_WINDOW_SECONDS:
+        raise Failed("Backup health must cover the reviewed seven-day window")
+    confirmed(report, "external_observer_verified")
+    if number(report, "covered_duration_s") != BACKUP_WINDOW_SECONDS:
+        raise Failed("Backup health is missing part of the reviewed window")
+    interval = expected["interval_s"]
+    expected_observations = (BACKUP_WINDOW_SECONDS + interval - 1) // interval
+    if number(report, "distinct_scheduled_observations") != expected_observations:
+        raise Failed("Scheduled backup health observations were missing or duplicated")
+    if number(report, "max_snapshot_age_s") >= BACKUP_MAX_AGE_SECONDS:
+        raise Failed("A verified backup reached 26 hours of age")
+    timely = number(report, "duration_with_lag_at_most_five_minutes_s")
+    if timely > BACKUP_WINDOW_SECONDS or timely * 100 < BACKUP_WINDOW_SECONDS * BACKUP_LAG_PERCENT:
+        raise Failed("Recovery point lag was within five minutes for less than 99% of the window")
+
+
+def review_retention(policy: dict, receipt: dict) -> None:
+    report = operations_report(policy, receipt, "offsite_retention", scope="destination_sha256")
+    for name in ("exact_provider_policy_verified", "configured_writer_credential_verified",
+                 "writer_overwrite_blocked", "writer_delete_blocked", "independent_lock_delete_blocked",
+                 "probe_bytes_unchanged"):
+        confirmed(report, name)
+
+
+def review_alerts(policy: dict, receipt: dict) -> None:
+    report = operations_report(policy, receipt, "external_alerts", scope="monitor_profile_sha256")
+    if sha_field(report, "phone_recipient_sha256") != policy["operations"]["phone_recipient_sha256"]:
+        raise Failed("Alert delivery is for a different phone recipient")
+    rounds = {milestone: object_field(report, milestone) for milestone in ALERT_MILESTONES}
+    if len({sha_field(round_report, "report_sha256") for round_report in rounds.values()}) != len(rounds):
+        raise Failed("Alert milestones require distinct report digests")
+    deliveries = set()
+    for milestone, round_report in rounds.items():
+        cases = object_field(round_report, "cases")
+        for name, limit in ALERT_LIMITS_MS.items():
+            event = object_field(cases, name)
+            confirmed(event, "condition_tested")
+            confirmed(event, "phone_delivery_verified")
+            delivery = sha_field(event, "delivery_receipt_sha256")
+            if delivery in deliveries:
+                raise Failed("A phone delivery receipt was reused across alert checks")
+            deliveries.add(delivery)
+            if number(event, "delivery_ms") > limit:
+                raise Failed(f"{milestone} {name} phone delivery exceeds {limit} ms")
+
+
+def review_point_in_time_drills(policy: dict, receipt: dict) -> None:
+    report = operations_report(policy, receipt, "point_in_time_drills", scope="destination_sha256")
+    drills = field(report, "drills")
+    if not isinstance(drills, list) or any(not isinstance(drill, dict) for drill in drills):
+        raise Failed("Point-in-time drills must be a list of reports")
+    if len(drills) < 2:
+        raise Missing("Two point-in-time drills are required")
+    if len(drills) != 2 or len({sha_field(drill, "report_sha256") for drill in drills}) != 2:
+        raise Failed("Expected exactly two distinct point-in-time drill reports")
+    for drill in drills:
+        for proof in ("offsite_only", "independent_restore", "contiguous_binlog_chain", "chosen_transaction_verified"):
+            confirmed(drill, proof)
+        cap(drill, "database_recovery_ms", 30 * MINUTE)
+        if number(drill, "absolute_heartbeat_target_delta_ms") > MINUTE:
+            raise Failed("Recovered heartbeat differs from the chosen target by over one minute")
+    if not any(drill.get("planted_bad_write_excluded") is True for drill in drills):
+        raise Failed("A point-in-time drill must verify exclusion of a planted bad write")
+
+
+def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> dict:
     gates = Gates()
     if not gates.check("approved_policy", lambda: review_policy(policy)):
         return gates.report()
@@ -258,6 +367,12 @@ def evaluate(policy: dict, receipt: dict) -> dict:
             gates.check("repeatable_write_improvement", lambda: review_repeatability(comparable))
 
     gates.check("offsite_database_recovery", lambda: review_recovery(policy, receipt))
+    now_unix_s = int(time.time()) if now_unix_s is None else now_unix_s
+    if gates.check("operations_policy", lambda: review_operations_policy(policy, now_unix_s=now_unix_s)):
+        gates.check("seven_day_backup_health", lambda: review_backup_health(policy, receipt))
+        gates.check("offsite_retention", lambda: review_retention(policy, receipt))
+        gates.check("external_alert_delivery", lambda: review_alerts(policy, receipt))
+        gates.check("point_in_time_drills", lambda: review_point_in_time_drills(policy, receipt))
     return gates.report(**binding)
 
 

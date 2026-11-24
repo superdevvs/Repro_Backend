@@ -289,6 +289,28 @@ The archive phase took 17.385 seconds for this small fixture. Its synthetic
 containers, volume and network were removed. The report SHA-256 is
 `9358b239c2e9898fbef28fcb163c371747ecb794b4435da7eedc4c493a1b1c2b`.
 
+The automated archive also passed a point-in-time restore from private TLS
+S3. The stock base and two archive publications were the reader's only data
+inputs. The source container and volume were removed before a fresh MySQL
+instance began recovery. The reader verified artifact hashes, binlog CRCs and
+the chosen commit boundary. Replay retained rows 1–3 and excluded the later
+row 4. The chosen write took 21.313 seconds from its command to verified
+archive read-back, including an injected provider refusal. Recovery took
+6.594 seconds from fresh target startup through verification. These timings
+cover a small synthetic fixture. The report SHA-256 is
+`03dc243b96b8cf3d579c890e907b99cf8f8b360eb0080d4f8d40cef39b46594f`.
+
+The dedicated rotation account passed a separate native MySQL 8.4.13 test.
+Its locked-definer procedure advanced the active file exactly once. Direct
+flush and reset were refused for the caller. Enabling automatic purge in the
+disposable instance blocked rotation before the call and left the inventory
+intact. The server exited normally and its private runtime was removed. The
+report SHA-256 is
+`7a96ef45b3e5a142000b6261c49ec9f5b30654bdd4b4d3d5485bc4b99f53bf85`.
+The disabled-by-default two-minute timer, dispatch units and unknown-outcome
+guard passed offline contract checks. Running the composed timer and follower
+together on the isolated target remains a separate operational test.
+
 The local cutover adapter froze a disposable SQLite Laravel state, copied
 four fixture tables into MySQL, verified read-only application access and
 refused promotion while the off-site backup gate was unsatisfied. Aborting
@@ -715,6 +737,10 @@ alert delivery independently. Time two end-to-end rehearsals with comparable
 load, the whole writer inventory, provider intake and both rollback paths.
 The agreed maximum production write outage is 60 minutes. Schedule a separate
 cutover decision after these gates have evidence.
+
+The [offline readiness checker](../scripts/cutover/readiness/README.md) now
+requires independently reviewed report digests for that backup window, exact
+provider retention, both external alert rounds and two point-in-time drills.
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.

@@ -16,9 +16,22 @@ def readiness_fixture():
     policy = {
         "version": 1, "identity": identity, "critical_endpoints": ["book", "invoice"],
         "host_profile_sha256": "e" * 64, "workload_sha256": "f" * 64,
+        "operations": {
+            "destination_sha256": "5" * 64, "monitor_profile_sha256": "6" * 64,
+            "phone_recipient_sha256": "7" * 64, "window_end_unix_s": 1_800_000_000, "interval_s": 120,
+            "evidence_valid_until_unix_s": 1_800_003_600,
+            "backup_health_report_sha256": "8" * 64, "offsite_retention_report_sha256": "9" * 64,
+            "external_alerts_report_sha256": "a" * 64, "point_in_time_drills_report_sha256": "b" * 64,
+        },
     }
+    operations = policy["operations"]
+
+    def report(kind, scope):
+        return {"identity_sha256": digest(identity), "report_sha256": operations[f"{kind}_report_sha256"],
+                scope: operations[scope]}
+
     receipt = {
-        "version": 1, "identity": identity.copy(), "policy_sha256": digest(policy),
+        "version": 1, "identity": identity.copy(),
         "prerequisites": {
             "identity_sha256": digest(identity), "report_sha256": "1" * 64,
             **dict.fromkeys(check.PREREQUISITES, True),
@@ -28,6 +41,34 @@ def readiness_fixture():
             **dict.fromkeys(check.RECOVERY_PROOFS, True),
             "database_recovery_ms": 60 * check.MINUTE,
             "offsite_database_data_loss_ms": 5 * check.MINUTE,
+        },
+        "backup_health": report("backup_health", "destination_sha256") | {
+            "monitor_profile_sha256": operations["monitor_profile_sha256"], "external_observer_verified": True,
+            "window_start_unix_s": operations["window_end_unix_s"] - check.BACKUP_WINDOW_SECONDS,
+            "window_end_unix_s": operations["window_end_unix_s"], "covered_duration_s": check.BACKUP_WINDOW_SECONDS,
+            "distinct_scheduled_observations": check.BACKUP_WINDOW_SECONDS // operations["interval_s"],
+            "max_snapshot_age_s": check.BACKUP_MAX_AGE_SECONDS - 1,
+            "duration_with_lag_at_most_five_minutes_s": check.BACKUP_WINDOW_SECONDS * 99 // 100,
+        },
+        "offsite_retention": report("offsite_retention", "destination_sha256") | dict.fromkeys((
+            "exact_provider_policy_verified", "configured_writer_credential_verified", "writer_overwrite_blocked",
+            "writer_delete_blocked", "independent_lock_delete_blocked", "probe_bytes_unchanged",
+        ), True),
+        "external_alerts": report("external_alerts", "monitor_profile_sha256") | {
+            "phone_recipient_sha256": operations["phone_recipient_sha256"],
+            **{
+                milestone: {"report_sha256": str(index) * 64, "cases": {
+                    name: {"condition_tested": True, "phone_delivery_verified": True, "delivery_ms": limit,
+                           "delivery_receipt_sha256": f"{index*100 + sequence:064x}"}
+                    for sequence, (name, limit) in enumerate(check.ALERT_LIMITS_MS.items())
+                }} for index, milestone in enumerate(check.ALERT_MILESTONES, 1)
+            },
+        },
+        "point_in_time_drills": report("point_in_time_drills", "destination_sha256") | {
+            "drills": [{"report_sha256": str(index) * 64, "offsite_only": True, "independent_restore": True,
+                        "contiguous_binlog_chain": True, "chosen_transaction_verified": True,
+                        "database_recovery_ms": 30 * check.MINUTE, "absolute_heartbeat_target_delta_ms": check.MINUTE,
+                        "planted_bad_write_excluded": index == 3} for index in (3, 4)],
         },
         "dress_rehearsals": [
             {
@@ -49,6 +90,9 @@ def readiness_fixture():
             for index in (3, 4)
         ],
     }
+    for kind in check.OPERATIONS_REPORTS:
+        operations[f"{kind}_summary_sha256"] = digest(receipt[kind])
+    receipt["policy_sha256"] = digest(policy)
     return policy, receipt
 
 
@@ -56,15 +100,20 @@ class ReadinessTests(unittest.TestCase):
     def setUp(self):
         self.policy, self.receipt = readiness_fixture()
         self.first, self.second = self.receipt["dress_rehearsals"]
+        self.now = self.policy["operations"]["window_end_unix_s"] + 30
+
+    def repin_summary(self, kind):
+        self.policy["operations"][f"{kind}_summary_sha256"] = digest(self.receipt[kind])
+        self.receipt["policy_sha256"] = digest(self.policy)
 
     def assert_gate(self, name, status):
-        result = check.evaluate(self.policy, self.receipt)
+        result = check.evaluate(self.policy, self.receipt, now_unix_s=self.now)
         self.assertEqual(status, result["gates"][name]["status"])
         if status != "passed":
             self.assertEqual("no_go", result["decision"])
 
     def test_inclusive_timing_and_p95_boundaries(self):
-        result = check.evaluate(self.policy, self.receipt)
+        result = check.evaluate(self.policy, self.receipt, now_unix_s=self.now)
         self.assertEqual("meets_review_gates", result["decision"])
         self.assertEqual(digest(self.receipt), result["receipt_sha256"])
         self.assertTrue(all(gate["status"] == "passed" for gate in result["gates"].values()))
@@ -133,6 +182,89 @@ class ReadinessTests(unittest.TestCase):
     def test_prerequisite_evidence_must_match_the_pinned_candidate(self):
         self.receipt["prerequisites"]["identity_sha256"] = "1" * 64
         self.assert_gate("prerequisite_report", "failed")
+
+    def test_older_receipt_with_no_operational_policy_cannot_clear_all_gates(self):
+        self.policy.pop("operations")
+        self.receipt["policy_sha256"] = digest(self.policy)
+        self.assert_gate("offsite_database_recovery", "passed")
+        self.assert_gate("operations_policy", "missing")
+
+    def test_week_of_observation_checks_coverage_freshness_and_elapsed_lag(self):
+        report = self.receipt["backup_health"]
+        self.assert_gate("seven_day_backup_health", "passed")
+        for name, delta in (("window_start_unix_s", 1), ("covered_duration_s", -1),
+                            ("distinct_scheduled_observations", -1), ("max_snapshot_age_s", 1),
+                            ("duration_with_lag_at_most_five_minutes_s", -1)):
+            with self.subTest(name=name):
+                report[name] += delta
+                self.repin_summary("backup_health")
+                self.assert_gate("seven_day_backup_health", "failed")
+                report[name] -= delta
+
+    def test_stale_or_future_operations_window_blocks_approval(self):
+        operations = self.policy["operations"]
+        for now in (operations["window_end_unix_s"] - 1, operations["evidence_valid_until_unix_s"] + 1):
+            result = check.evaluate(self.policy, self.receipt, now_unix_s=now)
+            self.assertEqual("failed", result["gates"]["operations_policy"]["status"])
+            self.assertEqual("no_go", result["decision"])
+
+    def test_correcting_measurement_without_reviewed_summary_pin_cannot_clear_gate(self):
+        report = self.receipt["backup_health"]
+        report["max_snapshot_age_s"] = check.BACKUP_MAX_AGE_SECONDS
+        self.repin_summary("backup_health")
+        self.assert_gate("seven_day_backup_health", "failed")
+        report["max_snapshot_age_s"] = 1
+        self.assert_gate("seven_day_backup_health", "failed")
+        self.repin_summary("backup_health")
+        self.assert_gate("seven_day_backup_health", "passed")
+
+    def test_retention_requires_exact_report_and_approved_writer_refusals(self):
+        report = self.receipt["offsite_retention"]
+        self.assert_gate("offsite_retention", "passed")
+        for name, value in (("report_sha256", "a" * 64), ("destination_sha256", "f" * 64),
+                            ("configured_writer_credential_verified", False), ("writer_overwrite_blocked", False),
+                            ("writer_delete_blocked", False), ("independent_lock_delete_blocked", False)):
+            with self.subTest(name=name):
+                original, report[name] = report[name], value
+                self.repin_summary("offsite_retention")
+                self.assert_gate("offsite_retention", "failed")
+                report[name] = original
+
+    def test_alerts_require_phone_delivery_for_each_case_and_both_rounds(self):
+        report = self.receipt["external_alerts"]
+        self.assert_gate("external_alert_delivery", "passed")
+        second = report.pop("before_drill")
+        self.repin_summary("external_alerts")
+        self.assert_gate("external_alert_delivery", "missing")
+        report["before_drill"] = second
+        alert = second["cases"]["backup_lag"]
+        alert["phone_delivery_verified"] = False
+        self.repin_summary("external_alerts")
+        self.assert_gate("external_alert_delivery", "failed")
+        alert["phone_delivery_verified"] = True
+        second["cases"]["server_silent"]["delivery_ms"] += 1
+        self.repin_summary("external_alerts")
+        self.assert_gate("external_alert_delivery", "failed")
+        second["cases"]["server_silent"]["delivery_ms"] -= 1
+        alert["delivery_receipt_sha256"] = report["before_installer"]["cases"]["backup_lag"]["delivery_receipt_sha256"]
+        self.repin_summary("external_alerts")
+        self.assert_gate("external_alert_delivery", "failed")
+
+    def test_point_in_time_drills_require_distinct_restores_and_bad_write_exclusion(self):
+        drills = self.receipt["point_in_time_drills"]["drills"]
+        first = drills[0]
+        self.assert_gate("point_in_time_drills", "passed")
+        for name, value in (("database_recovery_ms", 30 * check.MINUTE + 1),
+                            ("absolute_heartbeat_target_delta_ms", check.MINUTE + 1),
+                            ("planted_bad_write_excluded", False), ("report_sha256", drills[1]["report_sha256"])):
+            with self.subTest(name=name):
+                original, first[name] = first[name], value
+                self.repin_summary("point_in_time_drills")
+                self.assert_gate("point_in_time_drills", "failed")
+                first[name] = original
+        drills.pop()
+        self.repin_summary("point_in_time_drills")
+        self.assert_gate("point_in_time_drills", "missing")
 
     def test_cli_reports_missing_and_invalid_receipts(self):
         with tempfile.TemporaryDirectory() as directory:
