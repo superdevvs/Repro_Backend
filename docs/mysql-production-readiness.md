@@ -704,7 +704,23 @@ The cause of the slower service and representative host performance remain
 open. The verified timing report SHA-256 is
 `5aba1afe821239b2e895408b9f5b4a2eb0a2e4f4df3e19c124def6da229eeab2`.
 
-A separate synthetic CLI comparison at the same commit ran 8,000 measured
+A repeat at `15300b26` started a fresh FPM container and database instance
+for each arm. All 800 requests and 20 access checks passed. Surge dispatch
+p95 stayed below 43 ms across all four arms. MySQL surge p95 for voice and
+upload summaries stayed within 5% of SQLite. Logged database time remained
+higher on MySQL, and OPcache was disabled in all arms. Separate fixture
+clocks produced timestamp-sensitive payload differences, so exact cross-arm
+voice and upload response parity remains open for this run. The verified
+report SHA-256 is
+`7dd3eb7a94426726988cb192e3a5cdc196ce8b083fab5efd2cbb866827ad1912`.
+
+A separate upload-summary regression reproduced three service-item queries
+for a photographer's request with two service items. The route now loads the
+service items once and reuses the existing authorization check. The focused
+suite passed nine tests and 57 assertions on each engine, including assigned
+and unassigned photographers, unit scope and upload acknowledgement replay.
+
+A separate synthetic CLI comparison at `0dfa65dd` ran 8,000 measured
 operations and 960 jobs with 20 clients and two Laravel workers in each arm.
 Every expected job effect was present once, with zero failures or backlog.
 SQLite to MySQL write p95 fell from 55.1 to 29.2 ms and from 130.8 to 58.9 ms
