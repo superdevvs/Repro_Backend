@@ -333,6 +333,7 @@ class GoogleCalendarController extends Controller
     {
         return match ($source) {
             'availability' => '/availability',
+            'crm' => '/crm/follow-ups',
             default => '/photographer-account?tab=notifications',
         };
     }
