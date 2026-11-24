@@ -954,6 +954,14 @@ bytes, the approved synthetic historical orphan, and trigger behavior.
 The receipt SHA-256 is
 `2a2405a0a6df3a2a1323ef469aca8127023519aaae255c5e089fbeca12f59feb`.
 
+The [eight-week boundary census](../scripts/mysql/report_week_boundaries.py)
+uses a pinned, read-only SQLite snapshot to count differences between the
+existing invoice and sales-rep payout date predicates and calendar-day
+membership. Six synthetic tests passed, including date-only Sunday values
+and fractional timestamps at the end of Saturday. The report includes
+aggregate counts only. It still needs a run on a fresh reviewed copy, and
+invoice and payout result parity needs independent verification.
+
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,
 off-host backup destination/retention and an independent restore. Inventory all
