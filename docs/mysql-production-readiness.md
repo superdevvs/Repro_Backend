@@ -8,18 +8,24 @@ SQLite. Sales CRM, Resend sending, inbound reply tracking and Google Calendar
 sync were enabled. CRM SMS was disabled. The dedicated Resend receiving
 credential was configured.
 
-The integrated candidate `ba425206` passed all six hosted CI jobs.
-[Exact integrated release CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45475073518)
-The separate [CRM rehearsal draft](https://github.com/superdevvs/Repro_Backend/pull/46)
-includes new verification tools and replay tests.
+The integrated candidate `ba425206` and the bounded converter candidate
+`25cf2959` passed all six hosted CI jobs. The application candidate
+`21338da0` adds search parity across the remaining CRM paths and the
+configurable reply-forwarding hold.
+[Integrated release CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45475073518)
+· [Converter CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45478884830)
+· [Application candidate CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45482758209)
+· [CRM rehearsal draft](https://github.com/superdevvs/Repro_Backend/pull/46)
 
 The fresh private online SQLite copy is 4,460,900,352 bytes and passed the
 backup integrity check. It contains nine CRM migrations, 37 CRM-related
 tables, 4,717 CRM rows and 1,206 linked client contacts. The SHA-256 is
 `83542969cf0017be8b4aac5174101a16c11014c532161bb28e0cfc2b76725034`.
 The compared release catalog had 321 tables. All 62 observed schema
-differences were outside CRM. The eight existing foreign-key exception
-sets matched their reviewed row identities. The verified preservation
+differences were outside CRM. The drift report SHA-256 is
+`9f574ea91acf03880954252a8c36cea0e647c6cb1537830dcdc582c5ec89a5f3`.
+The eight existing foreign-key exception sets matched their reviewed row
+identities. The verified preservation
 manifest for all 328 tables has SHA-256
 `a3807732af33e799198c3e681b2610ff470605e023d2029fc5b8ec81bf5c99d2`.
 
@@ -34,8 +40,25 @@ The second trial grouped small insert batches in bounded transactions while
 retaining the full-row binlogs and durable commit settings. Both forward
 checks again matched all 1,893,048 rows and 30,506,349 fields. Their combined
 elapsed time was 681.935 seconds. The reverse helper then refused a stale
-pin for the updated converter. The next trial verified the reverse input
-package before starting the target.
+pin for the updated converter. The third trial verified the reverse
+package before starting the target. Forward parity took 593.230 seconds.
+The reverse helper detected a deprecation warning from reading the binary
+log format variable. It now reads this setting through `SHOW GLOBAL
+VARIABLES`. The metadata probe and all 11 reviewed trigger statements
+passed without warnings on a disposable native MySQL 8.4.13 instance.
+
+The fourth trial verified the full copy in 597.791 seconds with durable
+full-row binlogs and zero import warnings. It checked all 36 trigger
+definitions on the isolated target and exported a new SQLite file in
+the sealed reverse check. The reverse run, including the independent
+PHP field comparison and CRM relationship audit, took 180.892 seconds.
+All 328 tables, 1,893,048 rows and 30,506,349 fields matched. The source
+snapshot remained available and the temporary MySQL instance was removed.
+The redacted combined receipt SHA-256 is
+`45dc3f7e0103d87f2670559acc1d24f3cffda1b5a01908875230c428c6aeffc2`.
+This verifies both data directions on the populated copy. The reverse
+copy contained the original business rows. Use the timed dress rehearsal
+to prove an acknowledged write and its external effects during failback.
 
 The isolated CRM and recent-migration compatibility run passed 109
 tests on MySQL. Representative tests covered receiving credentials,
@@ -59,6 +82,15 @@ observed four web-user queue workers and eight deployment-user workers,
 including Studio and the three voice queues. The deployment workers'
 working directories were unreadable to the census account. The actual
 restart-safe writer fence and live provider delivery remained open.
+
+The website's live producer retry remains unverified. The backend
+accepted a repeated inquiry reference once and recovered a partial
+recruiting attachment replay against provider substitutes. A complete
+rehearsal must show that the website producers retain each original
+reference, payload and attachment through a fenced HTTP response and a
+restart. Reconcile provider events and holds before enabling outbound
+CRM jobs. Do not use the same populated snapshot on successive trials
+as evidence for different scheduled nights.
 
 ## Cutover decision on November 24
 

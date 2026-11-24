@@ -85,6 +85,15 @@ only counts and digests in shared evidence. Test restart while sealed and
 exercise both rollback paths. The authority journal must cross its durable
 first-write boundary before permitting any MySQL replay that can write.
 
+For website email, record the response body disposition as well as the
+HTTP status. The API may return HTTP 200 with a failed or uncertain
+delivery. Keep bookings without an original external reference in manual
+reconciliation, since that route otherwise bypasses deduplication. For
+recruiting, verify each replay attachment against its original SHA-256
+before submission. The consumer can accept changed bytes as a different
+file. Verify producer restart and retry of a fenced HTTP 503 before
+using the website's outbox as an acceptance gate.
+
 During the approved reconciliation window, verify
 `CRM_DEFER_REPLY_FORWARDING=true` in the effective configuration of the
 FPM instances permitted to replay. A verified reply can be fetched and
@@ -361,8 +370,15 @@ the candidate's SQLite-compatible migrations. Record its checksum. Before the
 outage, use `export-sqlite.py --check-inputs-only` with the four template and
 exception-file flags below to validate the local recovery packet. This checks
 the pinned template, exceptions and bundled cascade-trigger manifest without
-connecting to MySQL. After stopping writers and reconciling external effects,
-the reviewed reverse tool is:
+connecting to MySQL. Also check the trigger installer against the exact
+tool digests, snapshot and reviewed trigger names before starting the
+timed import. Verify the durable profile on a disposable instance. Use
+`SHOW GLOBAL VARIABLES` for the binary log format check because reading
+`@@binlog_format` directly emits a deprecation warning on MySQL 8.4.13.
+Keep the warning check enabled for every trigger statement.
+
+After stopping writers and reconciling external effects, run the reviewed
+reverse tool.
 
 ```bash
 python scripts/mysql/export-sqlite.py \
