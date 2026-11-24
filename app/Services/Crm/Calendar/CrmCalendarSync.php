@@ -11,6 +11,7 @@ use App\Services\Crm\CrmActivityLogger;
 use App\Services\Crm\CrmBusinessTime;
 use App\Services\GoogleCalendar\GoogleCalendarService;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -31,6 +32,23 @@ class CrmCalendarSync
     /** Called after a follow-up is saved. Failures are kept on the link and retried by the poll. */
     public function queue(CrmEvent $event): void
     {
+        if ($this->connection((int) $event->assigned_user_id) && in_array($event->status, ['planned', 'cancelled'], true)) {
+            $this->link($event, true)->forceFill(['push_pending' => true])->save();
+        }
+        Cache::lock('crm-calendar:'.$event->id, 180)->get(function () use ($event) {
+            $event->refresh();
+            $this->removeOldLinks($event);
+            try {
+                $this->push($event);
+            } catch (\Throwable $e) {
+                report($e);
+                $this->link($event)?->forceFill(['last_error' => mb_substr($e->getMessage(), 0, 255), 'push_pending' => true])->save();
+            }
+        });
+    }
+
+    private function removeOldLinks(CrmEvent $event): void
+    {
         foreach (CrmEventCalendarLink::query()->where('event_id', $event->id)
             ->where('user_id', '!=', $event->assigned_user_id)->get() as $oldLink) {
             try {
@@ -47,12 +65,6 @@ class CrmCalendarSync
                 report($e);
                 $oldLink->forceFill(['push_pending' => true, 'last_error' => mb_substr($e->getMessage(), 0, 255)])->save();
             }
-        }
-        try {
-            $this->push($event);
-        } catch (\Throwable $e) {
-            report($e);
-            $this->link($event)?->forceFill(['last_error' => mb_substr($e->getMessage(), 0, 255), 'push_pending' => true])->save();
         }
     }
 
@@ -92,10 +104,15 @@ class CrmCalendarSync
             ? $this->google->updateLinkedEvent($connection, $calendarId, $link->google_event_id, $payload)
             : $this->google->createEvent($connection, $payload + ['id' => $id]);
 
-        $link->forceFill([
-            'google_event_id' => $result['id'] ?? null, 'calendar_id' => $calendarId,
-            'fingerprint' => $fingerprint, 'last_synced_at' => now(), 'last_error' => null, 'push_pending' => false,
-        ])->save();
+        DB::transaction(function () use ($event, $link, $result, $calendarId, $fingerprint) {
+            $latest = CrmEvent::query()->lockForUpdate()->findOrFail($event->id);
+            $changed = $latest->status !== $event->status || $latest->assigned_user_id !== $event->assigned_user_id
+                || hash('sha256', json_encode($this->payload($latest))) !== $fingerprint;
+            $link->forceFill([
+                'google_event_id' => $result['id'] ?? null, 'calendar_id' => $calendarId,
+                'fingerprint' => $fingerprint, 'last_synced_at' => now(), 'last_error' => null, 'push_pending' => $changed,
+            ])->save();
+        });
     }
 
     /** @return array{checked: int, moved: int, unlinked: int, retried: int} */
@@ -113,53 +130,68 @@ class CrmCalendarSync
         $links = DB::table('crm_event_calendar_links as l')->join('crm_events as e', 'e.id', '=', 'l.event_id')
             ->whereNotNull('l.google_event_id')->where('l.push_pending', false)->whereColumn('l.user_id', 'e.assigned_user_id')->where('e.status', 'planned')
             ->whereBetween('e.starts_at', [now()->subDay(), now()->addDays(60)])
-            ->orderBy('l.last_synced_at')->limit($limit)->get(['l.id as link_id', 'l.user_id', 'l.calendar_id', 'l.google_event_id', 'e.id as event_id', 'e.starts_at as expected_start', 'e.duration_min as expected_duration']);
+            ->orderBy('l.last_synced_at')->limit($limit)->get(['l.id as link_id', 'l.user_id', 'l.calendar_id', 'l.google_event_id', 'e.id as event_id']);
 
         foreach ($links as $row) {
-            $connection = $this->connection((int) $row->user_id);
-            if (! $connection) {
-                continue;
-            }
-            $out['checked']++;
-            try {
-                $remote = $this->google->getEvent($connection, $row->google_event_id, $row->calendar_id);
-                $event = CrmEvent::query()->find($row->event_id);
-                if (! $event || $event->status !== 'planned' || (int) $event->assigned_user_id !== (int) $row->user_id
-                    || (string) $event->getRawOriginal('starts_at') !== (string) $row->expected_start
-                    || (int) $event->duration_min !== (int) $row->expected_duration) {
-                    continue;
+            $outcome = Cache::lock('crm-calendar:'.$row->event_id, 180)->get(fn () => $this->pull($row));
+            if (is_string($outcome)) {
+                $out['checked']++;
+                if ($outcome === 'moved' || $outcome === 'unlinked') {
+                    $out[$outcome]++;
                 }
-                if ($remote === null) {
-                    DB::table('crm_event_calendar_links')->where('id', $row->link_id)->update(['google_event_id' => null, 'last_error' => null, 'fingerprint' => null, 'last_synced_at' => now(), 'updated_at' => now()]);
-                    $out['unlinked']++;
-
-                    continue;
-                }
-                $start = data_get($remote, 'start.dateTime');
-                $end = data_get($remote, 'end.dateTime');
-                if (! $start) {
-                    continue;
-                }
-                $startAt = Carbon::parse($start)->utc();
-                $minutes = $end ? max(5, (int) round(Carbon::parse($start)->diffInMinutes(Carbon::parse($end)))) : $event->duration_min;
-                if (! $startAt->equalTo($event->starts_at->copy()->utc()) || $minutes !== (int) $event->duration_min) {
-                    $event->forceFill(['starts_at' => $startAt, 'duration_min' => $minutes])->save();
-                    $contact = $event->contact_id ? CrmContact::unscopedForSystem()->find($event->contact_id) : null;
-                    if ($contact) {
-                        $this->activity->log($contact, 'event_moved', null, 'Follow-up moved in Google Calendar to '.$startAt->copy()->timezone(CrmBusinessTime::TIMEZONE)->format('D j M, g:i a T'), ['event_id' => $event->id]);
-                    }
-                    $out['moved']++;
-                }
-                DB::table('crm_event_calendar_links')->where('id', $row->link_id)->update([
-                    'fingerprint' => hash('sha256', json_encode($this->payload($event->fresh()))), 'last_synced_at' => now(), 'last_error' => null, 'updated_at' => now(),
-                ]);
-            } catch (\Throwable $e) {
-                report($e);
-                DB::table('crm_event_calendar_links')->where('id', $row->link_id)->update(['last_error' => mb_substr($e->getMessage(), 0, 255), 'updated_at' => now()]);
             }
         }
 
         return $out;
+    }
+
+    private function pull(object $row): ?string
+    {
+        $connection = $this->connection((int) $row->user_id);
+        if (! $connection) {
+            return null;
+        }
+        try {
+            $remote = $this->google->getEvent($connection, $row->google_event_id, $row->calendar_id);
+            return DB::transaction(function () use ($row, $remote) {
+                $event = CrmEvent::query()->lockForUpdate()->find($row->event_id);
+                $link = CrmEventCalendarLink::query()->lockForUpdate()->find($row->link_id);
+                if (! $link || $link->push_pending || $link->google_event_id !== $row->google_event_id
+                    || ! $event || $event->status !== 'planned' || (int) $event->assigned_user_id !== (int) $row->user_id) {
+                    return null;
+                }
+                // An edit can commit while Google's HTTP response is in flight.
+                if ($link->fingerprint !== hash('sha256', json_encode($this->payload($event)))) {
+                    $link->forceFill(['push_pending' => true])->save();
+                    return null;
+                }
+                if ($remote === null) {
+                    $link->forceFill(['google_event_id' => null, 'fingerprint' => null, 'last_error' => null, 'last_synced_at' => now()])->save();
+                    return 'unlinked';
+                }
+                $outcome = 'checked';
+                $start = data_get($remote, 'start.dateTime');
+                $end = data_get($remote, 'end.dateTime');
+                if ($start) {
+                    $startAt = Carbon::parse($start)->utc();
+                    $minutes = $end ? max(5, (int) round($startAt->diffInMinutes(Carbon::parse($end)))) : $event->duration_min;
+                    if (! $startAt->equalTo($event->starts_at) || $minutes !== (int) $event->duration_min) {
+                        $event->forceFill(['starts_at' => $startAt, 'duration_min' => $minutes])->save();
+                        $contact = $event->contact_id ? CrmContact::unscopedForSystem()->find($event->contact_id) : null;
+                        if ($contact) {
+                            $this->activity->log($contact, 'event_moved', null, 'Follow-up moved in Google Calendar to '.$startAt->copy()->timezone(CrmBusinessTime::TIMEZONE)->format('D j M, g:i a T'), ['event_id' => $event->id]);
+                        }
+                        $outcome = 'moved';
+                    }
+                }
+                $link->forceFill(['fingerprint' => hash('sha256', json_encode($this->payload($event))), 'last_synced_at' => now(), 'last_error' => null])->save();
+                return $outcome;
+            });
+        } catch (\Throwable $e) {
+            report($e);
+            CrmEventCalendarLink::query()->whereKey($row->link_id)->update(['last_error' => mb_substr($e->getMessage(), 0, 255), 'last_synced_at' => now()]);
+            return 'checked';
+        }
     }
 
     private function payload(CrmEvent $event): array

@@ -219,6 +219,27 @@ class CrmIntegrationsTest extends CrmTestCase
         $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'google_event_id' => null, 'push_pending' => false]);
     }
 
+    public function test_google_poll_preserves_a_local_edit_committed_during_its_request(): void
+    {
+        config(['crm.google_sync.enabled' => true]);
+        $rep = $this->rep();
+        GoogleCalendarConnection::create(['user_id' => $rep->id, 'calendar_id' => 'primary', 'access_token' => 'test-access',
+            'refresh_token' => 'test-refresh', 'token_expires_at' => now()->addHour(), 'sync_enabled' => true]);
+        $original = now()->addDays(2)->setTime(15, 0)->utc();
+        $event = null;
+        Http::fake(function ($request) use (&$event, $original) {
+            if ($request->method() === 'GET') {
+                CrmEvent::query()->whereKey($event->id)->update(['note' => 'Edited while Google was responding']);
+            }
+            return Http::response(['id' => 'g_race', 'start' => ['dateTime' => $original->copy()->addHour()->toRfc3339String()]]);
+        });
+        $event = app(CrmEventService::class)->schedule($this->contactFor($rep),
+            ['type' => 'call', 'starts_at' => $original->toRfc3339String()], $rep);
+        $this->assertSame(0, app(CrmCalendarSync::class)->pollAll()['moved']);
+        $this->assertTrue($event->fresh()->starts_at->equalTo($original));
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => true]);
+    }
+
     public function test_reps_reach_google_calendar_only_through_the_crm(): void
     {
         $this->actAs($this->rep());
