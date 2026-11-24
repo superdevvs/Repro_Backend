@@ -72,6 +72,41 @@ class CrmRobbieTest extends CrmTestCase
         $this->assertSame('crm_robbie', $fake->calls[0]['options']['usage_feature']);
     }
 
+    public function test_robbie_contact_search_preserves_sqlite_like_matching(): void
+    {
+        $rep = $this->rep();
+        $lower = $this->contactFor($rep, ['name' => 'élodie 東京']);
+        $this->contactFor($rep, ['name' => 'Élodie']);
+        $wildcard = $this->contactFor($rep, ['name' => 'Quota draft notes']);
+        $this->contactFor($this->rep(), ['name' => 'Quota private notes']);
+        $backslash = $this->contactFor($rep, ['name' => 'Folder\\Marker']);
+        $this->contactFor($rep, ['name' => 'FolderMarker']);
+        $searches = [
+            'élodie' => $lower,
+            '東京' => $lower,
+            'QUOTA%NOTES' => $wildcard,
+            'folder\\marker' => $backslash,
+        ];
+        $script = [];
+        foreach (array_keys($searches) as $query) {
+            $script[] = self::toolCall('crm_search_contacts', ['query' => $query]);
+            $script[] = self::text('Search complete.');
+        }
+        $fake = $this->fakeLlm($script);
+        $this->actAs($rep);
+
+        $call = 1;
+        foreach ($searches as $query => $expected) {
+            $this->postJson('/api/crm/robbie/chat', ['message' => 'Search for '.$query])
+                ->assertOk()->assertJsonPath('reply', 'Search complete.');
+            $tool = collect($fake->calls[$call]['messages'])->firstWhere('role', 'tool');
+            $result = json_decode($tool['content'], true, 512, JSON_THROW_ON_ERROR);
+            $this->assertTrue($result['success']);
+            $this->assertSame([$expected->id], array_column($result['contacts'], 'id'), $query);
+            $call += 2;
+        }
+    }
+
     public function test_robbie_only_proposes_and_the_owner_confirms_once(): void
     {
         $rep = $this->rep();

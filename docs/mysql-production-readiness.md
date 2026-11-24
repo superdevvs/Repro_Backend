@@ -30,7 +30,14 @@ combined forward run took 754.160 seconds against a 720-second nightly
 limit. It did not qualify. The reverse trigger helper refused the logged
 fixture and the temporary target was removed.
 
-The isolated CRM and recent-migration compatibility run passed 104
+The second trial grouped small insert batches in bounded transactions while
+retaining the full-row binlogs and durable commit settings. Both forward
+checks again matched all 1,893,048 rows and 30,506,349 fields. Their combined
+elapsed time was 681.935 seconds. The reverse helper then refused a stale
+pin for the updated converter. The next trial verified the reverse input
+package before starting the target.
+
+The isolated CRM and recent-migration compatibility run passed 109
 tests on MySQL. Representative tests covered receiving credentials,
 fresh and duplicate authenticated Resend replay, partial recruiting
 attachment recovery and an ambiguous SMS send. The separate concurrent
@@ -40,10 +47,18 @@ no applicant attachment rows. The private file verifier checked
 synthetic file and recovery cases in Linux and the CRM tests checked
 authorized and forbidden document retrieval.
 
-The CRM contact search preserves SQLite's literal matching in MySQL,
-including treatment of percent, underscore and regex characters,
-accented case and embedded NULs. The focused fixtures passed on both
-engines. Native load and query latency remain part of the dress rehearsals.
+CRM contact, Robbie and recruiting search preserve each path's SQLite
+matching behavior on MySQL. The tests cover literal characters and
+wildcard patterns, accented case, embedded NULs and role visibility.
+Native load and query latency remain part of the dress rehearsals.
+
+The signed Resend replay test recorded a reply while the outbound forward
+was held, then verified one forward with the original idempotency key
+after release. The rehearsal used provider fakes. A read-only census
+observed four web-user queue workers and eight deployment-user workers,
+including Studio and the three voice queues. The deployment workers'
+working directories were unreadable to the census account. The actual
+restart-safe writer fence and live provider delivery remained open.
 
 ## Cutover decision on November 24
 

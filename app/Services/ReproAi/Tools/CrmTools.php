@@ -11,6 +11,7 @@ use App\Services\Crm\CrmEventPresenter;
 use App\Services\Crm\Robbie\CrmContactBrief;
 use App\Services\Crm\Robbie\CrmPlanDay;
 use App\Services\Crm\Robbie\CrmProposalService;
+use App\Support\DatabaseSql;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -60,9 +61,14 @@ class CrmTools
             ->when($q !== '', function ($query) use ($q) {
                 $like = '%'.mb_strtolower($q).'%';
                 $digits = preg_replace('/\D+/', '', $q);
-                $query->where(fn ($w) => $w->whereRaw('LOWER(name) LIKE ?', [$like])->orWhereRaw('LOWER(company) LIKE ?', [$like])
-                    ->orWhere('email_normalized', 'like', $like)
-                    ->when(strlen((string) $digits) >= 4, fn ($w) => $w->orWhere('phone_digits', 'like', '%'.$digits.'%')));
+                $query->where(function ($inner) use ($like, $digits) {
+                    foreach (['name', 'company', 'email_normalized'] as $column) {
+                        $inner->orWhereRaw(...DatabaseSql::sqliteLowerLike($column, $like, $inner->getConnection()));
+                    }
+                    if (strlen((string) $digits) >= 4) {
+                        $inner->orWhere('phone_digits', 'like', '%'.$digits.'%');
+                    }
+                });
             })
             ->when(in_array($params['stage'] ?? null, CrmContact::STAGES, true), fn ($query) => $query->where('stage', $params['stage']))
             ->orderByDesc('updated_at')->limit(max(1, min(25, (int) ($params['limit'] ?? 10))))->get();

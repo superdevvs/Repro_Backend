@@ -85,6 +85,17 @@ only counts and digests in shared evidence. Test restart while sealed and
 exercise both rollback paths. The authority journal must cross its durable
 first-write boundary before permitting any MySQL replay that can write.
 
+During the approved reconciliation window, verify
+`CRM_DEFER_REPLY_FORWARDING=true` in the effective configuration of the
+FPM instances permitted to replay. A verified reply can be fetched and
+recorded, stop its drip and create a notice while forwarding stays held.
+Record the original event identity in the private ledger. After outbound
+release is approved, restore the reviewed false setting and request fresh
+signed replay for those recorded events. Check one forward per original
+send and received email ID. An uncertain forward requires a provider
+disposition before any further attempt. This setting controls reply
+forwarding. The separate worker and ingress fence controls other sends.
+
 [CRM relationship audit](../scripts/mysql/crm-snapshot-audit.py) compares the
 immutable source and the independently verified SQLite reverse export using
 the same private HMAC key. [Applicant file verifier](../scripts/mysql/verify-crm-applicant-files.py)

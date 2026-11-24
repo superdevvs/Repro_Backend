@@ -191,7 +191,16 @@ class CrmIntegrationsTest extends CrmTestCase
             $this->assertNull($send->fresh()->replied_at);
             Http::assertNothingSent();
 
-            // Redelivery uses the original body and event identity with a fresh signature.
+            // Reconcile the reply using its original identity while outgoing mail is held.
+            config(['crm.email.defer_reply_forwarding' => true]);
+            $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
+            $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
+            $this->assertNotNull($send->fresh()->replied_at);
+            $this->assertDatabaseMissing('crm_email_sends', ['source_type' => 'reply_fwd']);
+            Http::assertSentCount(1);
+
+            // A fresh signed replay releases one forward after reconciliation.
+            config(['crm.email.defer_reply_forwarding' => false]);
             $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
             $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
         } finally {

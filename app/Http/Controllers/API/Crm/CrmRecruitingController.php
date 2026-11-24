@@ -15,6 +15,7 @@ use App\Services\Recruiting\RecruitApplicantService;
 use App\Services\Recruiting\RecruitFileService;
 use App\Services\Recruiting\RecruitHireService;
 use App\Services\Recruiting\RecruitPresenter;
+use App\Support\DatabaseSql;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -307,7 +308,11 @@ class CrmRecruitingController extends CrmController
     {
         if ($q = trim((string) ($data['q'] ?? ''))) {
             $like = '%'.str_replace(['%', '_'], ['\%', '\_'], mb_strtolower($q)).'%';
-            $query->where(fn ($w) => $w->whereRaw('LOWER(name) LIKE ?', [$like])->orWhereRaw('LOWER(email) LIKE ?', [$like])->orWhereRaw('LOWER(city) LIKE ?', [$like]));
+            $query->where(function ($inner) use ($like) {
+                foreach (['name', 'email', 'city'] as $column) {
+                    $inner->orWhereRaw(...DatabaseSql::sqliteLowerLike($column, $like, $inner->getConnection()));
+                }
+            });
         }
         if ($state = \App\Services\Recruiting\RecruitCoverage::stateCode($data['state'] ?? null)) {
             $query->where(fn ($w) => $w->where('state', $state)->orWhere('states', 'like', '%"'.$state.'"%'));

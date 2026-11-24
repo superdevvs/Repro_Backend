@@ -11,7 +11,6 @@ use App\Models\Recruiting\RecruitJobPosting;
 use App\Models\Recruiting\RecruitRoster;
 use App\Models\User;
 use App\Services\Crm\Email\CrmSignatureService;
-use App\Services\RolePermissionService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -49,6 +48,28 @@ class CrmRecruitingTest extends CrmTestCase
         $this->getJson('/api/crm/recruiting/board')->assertOk();
         $this->getJson('/api/crm/recruiting/meta')->assertJsonPath('can.manage', false)->assertJsonPath('can.documents', false);
         $this->postJson('/api/crm/recruiting/applicants', ['role' => 'photographer', 'name' => 'X'])->assertForbidden();
+    }
+
+    public function test_recruiting_search_preserves_sqlite_backslash_pattern(): void
+    {
+        $backslash = $this->applicant(['name' => 'Quota\\ notes', 'email' => 'backslash@example.test']);
+        $this->applicant(['name' => 'Quota% notes', 'email' => 'percent@example.test']);
+        $ordinary = $this->applicant(['name' => 'Casey Photographer', 'email' => 'casey@example.test']);
+        $url = '/api/crm/recruiting/applicants?q=';
+        $specialQuery = rawurlencode('quota%');
+
+        $this->actAs($this->rep());
+        $this->getJson($url.$specialQuery)->assertForbidden();
+
+        $this->actAs($this->superAdmin());
+        $this->getJson($url.rawurlencode('  cAsEy  '))->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $ordinary->id);
+
+        // SQLite treats the added backslash as text and the percent as a wildcard.
+        $this->getJson($url.$specialQuery)->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $backslash->id);
+        $board = $this->getJson('/api/crm/recruiting/board?q='.$specialQuery)->assertOk();
+        $this->assertSame([$backslash->id], collect($board->json('columns'))->flatMap(fn ($column) => $column['cards'])->pluck('id')->all());
     }
 
     public function test_stages_leave_and_reopen_and_nothing_is_deleted(): void

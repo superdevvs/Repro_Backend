@@ -50,6 +50,44 @@ final class DatabaseSql
         return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value);
     }
 
+    /** Build a bound match with SQLite's built-in ASCII LOWER and LIKE behavior. */
+    public static function sqliteLowerLike(string $expression, string $pattern, ConnectionInterface $connection, bool $escapeBang = false): array
+    {
+        if ($connection->getDriverName() !== 'mysql') {
+            return ["LOWER({$expression}) LIKE ?".($escapeBang ? " ESCAPE '!'" : ''), [$pattern]];
+        }
+
+        // SQLite compares through the first NUL in either operand. MySQL's
+        // native case folding and default backslash escapes differ from SQLite.
+        $regex = '';
+        $escaped = false;
+        foreach (mb_str_split(explode("\0", $pattern, 2)[0]) as $character) {
+            if (! $escaped && $escapeBang && $character === '!') {
+                $escaped = true;
+
+                continue;
+            }
+            $piece = match (true) {
+                ! $escaped && $character === '%' => '.*',
+                ! $escaped && $character === '_' => '.',
+                preg_match('/\A[a-z]\z/', $character) === 1 => '['.$character.strtoupper($character).']',
+                default => preg_quote($character),
+            };
+            $escaped = false;
+            if ($piece !== '.*' || ! str_ends_with($regex, '.*')) {
+                $regex .= $piece;
+            }
+        }
+        if ($escaped) {
+            $regex = '(?!)';
+        } elseif ($regex !== '.*') {
+            $regex = str_starts_with($regex, '.*') ? substr($regex, 2) : '\\A'.$regex;
+            $regex = str_ends_with($regex, '.*') ? substr($regex, 0, -2) : $regex.'\\z';
+        }
+
+        return ["REGEXP_LIKE(SUBSTRING_INDEX({$expression}, CHAR(0 USING utf8mb4), 1), ?, 'cn')", [$regex]];
+    }
+
     public static function timestampString(mixed $value, ?ConnectionInterface $connection = null): ?string
     {
         if ($value instanceof \DateTimeInterface) {
