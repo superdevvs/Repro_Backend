@@ -1,12 +1,11 @@
 # Fixture-only Laravel transaction integration
 
-This is a development-only integration slice. The production
-`App\Database\MySqlConnection`, AppServiceProvider, configuration and deployment
-selection remain unchanged. No ordinary deployment switch selects
-`FixtureWriterTokenConnection`; it lives under `tests/`, has a private constructor,
+This transaction integration runs in a development fixture.
+`FixtureWriterTokenConnection` lives under `tests/`, has a private constructor,
 and its factory requires the exact isolated test account, schema, socket,
-environment and pinned server identity. The contract is invoked explicitly rather
-than added to normal `*Test.php` discovery or hidden behind skips.
+environment and pinned server identity. Run the contract explicitly by path.
+The application [route budget pilot](README-writer-token.md#google-routes-reservation-pilot)
+covers one standalone statement through the normal application connection.
 
 Use the exact runtime and disposable provisioning in
 [the primitive contract instructions](README-writer-token.md), then run:

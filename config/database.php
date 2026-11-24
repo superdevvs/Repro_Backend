@@ -65,6 +65,7 @@ return [
             'driver' => 'mysql',
             'repro_require_server_identity' => env('APP_ENV', 'production') === 'production',
             'repro_expected_server_uuid' => env('REPRO_MYSQL_EXPECTED_SERVER_UUID'),
+            'repro_route_budget_writer_token' => env('REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN', false) === true,
             'url' => env('DB_URL'),
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', '3306'),

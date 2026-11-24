@@ -8,7 +8,7 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Unregistered first-release primitive, not an application-wide write policy.
+ * Cross-schema writer-token primitive. The route budget pilot is its only runtime caller.
  * Owns BEGIN on the business PDO; the caller still owns COMMIT or ROLLBACK.
  * Provision the fixed control table separately; runtime never creates or seeds it.
  * Discard the PDO after any failure other than a rolled-back WriterTokenTimeout.

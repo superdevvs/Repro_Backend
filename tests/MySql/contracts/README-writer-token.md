@@ -1,9 +1,9 @@
 # Isolated cross-schema writer-token contract
 
-This is an **unregistered primitive**, not the application's completed concurrency
-policy. Nothing in AppServiceProvider or MySqlConnection invokes it. The explicit
-contract filename is outside the normal `*Test.php` discovery; it must be run by
-path after provisioning the fixture. It does not silently skip missing setup.
+The primitive owns the cross-schema lock and transaction admission. Its only
+application caller is the disabled-by-default route budget pilot. The explicit
+contract filename is outside normal `*Test.php` discovery and requires the
+fixture to be provisioned before running it by path.
 
 ## Runtime and invocation
 
@@ -83,8 +83,32 @@ plan's earliest application migration. Its definition, binding and minimal grant
 must be independently provisioned and verified before fresh or imported schemas
 admit traffic, and again after restoration. Runtime never creates missing state.
 
-Still required: Laravel begin/commit/savepoint bookkeeping and exception cleanup;
-all autocommit write paths and raw-PDO/alternate-connection coverage; narrow queue
-bookkeeping exemptions; cache/telemetry lock ordering; one retry owner; post-token
-failure poisoning; fresh/import/restore admission; ordinary CI integration;
-business concurrency tests, long-holder instrumentation and representative load.
+## Google Routes reservation pilot
+
+`REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN=true` selects the guarded path for the
+single bound rolling-limit statement issued by `GoogleRoutesBudget::reserve()`.
+The default is false. An opt-in connection requires the approved 8.4 server
+UUID, local socket, standalone nonpersistent PDO and provisioned InnoDB control
+and budget tables. The connection acquires the token and executes the existing
+Laravel statement on the same PDO, using scoped READ COMMITTED and five-second
+lock waits. It restores the previous session settings after commit, then
+Laravel dispatches the normal query event. A guarded operation failure after
+session admission discards the writer PDO.
+An unacknowledged commit surfaces as an unknown outcome and is never replayed.
+Every app process serving reservations for one pilot database must use the same
+flag setting so their reservations use the same writer token.
+
+Run the application contract explicitly in a fresh fixture with the same
+provisioning. It creates only the budget table from the locked schema,
+reprovisions the token row and boots the normal application resolver. The
+contract makes no route-provider call.
+
+```sh
+php vendor/bin/phpunit --no-progress --fail-on-warning --fail-on-risky \
+  -c phpunit.mysql.xml tests/MySql/contracts/GoogleRoutesBudgetWriterTokenContract.php
+```
+
+Wider application coverage still requires explicit Laravel transaction and
+savepoint behavior, raw PDO and alternate connections, queue/cache/telemetry
+lock ordering, poison and retry rules, fresh/import/restore admission, business
+concurrency, long-holder instrumentation and representative load.
