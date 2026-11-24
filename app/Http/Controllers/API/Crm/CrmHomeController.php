@@ -39,6 +39,7 @@ class CrmHomeController extends CrmController
                 ->orderBy('last_shoot_on')->limit(5)->get()
                 ->map(fn ($c) => ['id' => $c->id, 'name' => $c->name, 'company' => $c->company, 'usual_gap_days' => $c->usual_gap_days, 'last_shoot_on' => $c->last_shoot_on?->toDateString()])->all(),
             'new_leads' => CrmContact::query()->whereIn('stage', [CrmContact::STAGE_OUTREACH, CrmContact::STAGE_INQUIRY])->whereNull('last_contacted_at')
+                ->whereNotNull('first_contact_due_at')
                 ->when($mineOnly, fn ($q) => $q->where('assigned_rep_id', $user->id))
                 ->orderBy('first_contact_due_at')->limit(5)->get()
                 ->map(fn ($c) => ['id' => $c->id, 'name' => $c->name, 'company' => $c->company, 'lead_source' => $c->lead_source, 'first_contact_due_at' => $c->first_contact_due_at?->toIso8601String(), 'late' => $c->first_contact_due_at?->isPast() ?? false])->all(),

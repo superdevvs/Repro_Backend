@@ -7,13 +7,13 @@ use Illuminate\Support\Carbon;
 
 /**
  * Nightly, rule-based: how long since a client's last shoot compared with
- * their usual gap. Healthy up to 1.5x the usual gap, cooling up to 3x, then
+ * their usual gap. Healthy up to 1.5x the usual gap, slowing up to 3x, then
  * at risk. Needs three completed shoots to know a usual gap.
  */
 class CrmClientHealth
 {
     public const HEALTHY = 'healthy';
-    public const COOLING = 'cooling';
+    public const SLOWING = 'slowing';
     public const AT_RISK = 'at_risk';
     public const NEW = 'new';
 
@@ -61,7 +61,7 @@ class CrmClientHealth
             $since = $last->diffInDays(now()->startOfDay());
             $healthy = (float) config('crm.health_slowing_factor', 1.5);
             $risk = (float) config('crm.health_at_risk_factor', 3.0);
-            $health = $since <= $gap * $healthy ? self::HEALTHY : ($since <= $gap * $risk ? self::COOLING : self::AT_RISK);
+            $health = $since <= $gap * $healthy ? self::HEALTHY : ($since <= $gap * $risk ? self::SLOWING : self::AT_RISK);
         } elseif (! $last) {
             $health = null;
         }

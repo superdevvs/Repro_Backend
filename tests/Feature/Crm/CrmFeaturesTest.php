@@ -64,7 +64,7 @@ class CrmFeaturesTest extends CrmTestCase
         $this->artisan('crm:nightly')->assertSuccessful();
         $contact->refresh();
         $this->assertSame(30, $contact->usual_gap_days);
-        $this->assertSame(CrmClientHealth::COOLING, $contact->health); // 70 days: past 45, within 90
+        $this->assertSame(CrmClientHealth::SLOWING, $contact->health); // 70 days: past 45, within 90
 
         Carbon::setTestNow(now()->addDays(25));
         $this->artisan('crm:nightly')->assertSuccessful();
