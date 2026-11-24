@@ -265,8 +265,9 @@ removed the object, both rules and the disposable bucket credential. The
 seven-day multipart-abort rule and older rehearsal prefix remained in place.
 The receipt's SHA-256 is
 `8b5f14d8106630077ba689807974022a9f13d6d9e63899ad389957e7a2b6d3f4`.
-Rule settings were observed in the Cloudflare dashboard. The timed lifecycle
-expiry and production backup destination still require acceptance.
+Rule settings were observed in the Cloudflare dashboard. The trial removed
+the rule before expiry was due. The approved production backup destination
+still needs its own retention and recovery evidence.
 
 An administrator-supervised Maverick rehearsal used the stock scheduled
 runner from `0dfa65dd`, a private dynamic account and loopback-only TLS S3.
@@ -769,6 +770,15 @@ service items once and reuses the existing authorization check. The focused
 suite passed nine tests and 57 assertions on each engine, including assigned
 and unassigned photographers, unit scope and upload acknowledgement replay.
 
+The fresh-container parity repeat at `9c54c7a9` pinned the same application
+source, dependencies, request profile and logical UTC clock for both engines.
+SQLite and MySQL returned identical canonical JSON in 200 matched request
+pairs across voice offers, upload summaries and notifications. All ten access
+checks passed and all fixture containers and volumes were removed. The
+verified report SHA-256 is
+`217a0b6f86eed0b9bd7a6932af49c04cee43059e87476f531cd0cdca84443c02`.
+The representative host workload remains a separate gate.
+
 A separate synthetic CLI comparison at `0dfa65dd` ran 8,000 measured
 operations and 960 jobs with 20 clients and two Laravel workers in each arm.
 Every expected job effect was present once, with zero failures or backlog.
@@ -780,12 +790,12 @@ above exercised HTTP separately. The verification report SHA-256 is
 
 ## Operational work still requiring approval
 
-The existing production host has MySQL **8.0.46**, 32 CPUs, 32 GB RAM, 20 FPM
-children and twelve observed application workers. Docker is not installed there.
-The proposed separate 8.4 service is prepared in
-[`scripts/mysql/server`](../scripts/mysql/server/README.md), with a socket-only
-network boundary, resource limits, boot unit and authenticated health check.
-Installing it or Docker changes that host and is outside “don't touch production.”
+The read-only inventory observed MySQL **8.0.46**, 32 CPUs, 32 GB RAM, 20 FPM
+children and twelve application workers on Maverick. The separate socket-only
+[native MySQL 8.4.13 service](../scripts/mysql/native/README.md) subsequently
+passed empty-instance acceptance. The last attended check left its service
+and timer stopped and disabled. Reconfirm the installed bundle and saved
+identity before another attended trial.
 
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,
@@ -794,6 +804,12 @@ cron/timer writers and provider event handling, designate any required live
 provider/device checks, and approve a maintenance window. Revalidate current
 release/data drift at that point. The read-only inventory and test copy are
 time-specific; do not import this older snapshot into a live application.
+
+Use the [native storage placement check](../scripts/mysql/native/README.md#read-only-storage-separation-acceptance)
+to compare the reviewed originals drive with MySQL's actual private data
+directory. The Laravel media health command checks the application's local
+`database/` directory in MySQL mode. The native check passed its isolated
+Linux tests. Actual placement on the reviewed host still needs a receipt.
 
 The plan calls for seven clean days of verified backups, a snapshot age under
 26 hours and off-site binlog lag within five minutes 99% of the time. Test
@@ -807,7 +823,10 @@ The [offline readiness checker](../scripts/cutover/readiness/README.md) now
 requires independently reviewed report digests for that backup window, exact
 provider retention, both external alert rounds, two point-in-time drills and
 five consecutive nightly parity runs. The last two nightly runs must use the
-exact frozen release.
+exact frozen release. The checker also requires proof that the application
+enforces the first-release MySQL writer serialization policy. The offline
+backup-health adapter derives the seven-day elapsed metrics from independently
+reviewed observations, including unverified recovery points.
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.

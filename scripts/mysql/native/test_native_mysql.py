@@ -10,7 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 SOURCE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("native_mysql", SOURCE / "native_mysql.py")
@@ -361,6 +361,147 @@ class NativePreparationTests(unittest.TestCase):
         self.assertIn("native_mysql.py flush-logs", rotation)
         self.assertNotIn("copytruncate", rotation)
         self.assertIn("rotate 7", rotation)
+
+
+@unittest.skipUnless(sys.platform == "linux", "Linux mount metadata and no-follow directory descriptors")
+class NativeStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.originals = "/mnt/originals"
+        self.uuid = "01234567-89ab-cdef-0123-456789abcdef"
+        self.identity = {"server_uuid": "00000000-0000-4000-8000-000000000001",
+                         "version": native.VERSION, "datadir": str(native.DATA) + "/"}
+        self.data_dev, self.originals_dev = os.makedev(8, 32), os.makedev(8, 16)
+        self.mounts = [{"id": 1, "device": "8:1", "root": "/", "target": "/"},
+                       {"id": 12, "device": "8:16", "root": "/", "target": self.originals},
+                       {"id": 13, "device": "8:32", "root": "/", "target": str(native.DATA)}]
+        self.block = types.SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_rdev=self.originals_dev)
+
+    def metadata(self, path):
+        is_data = path == native.DATA
+        info = os.stat_result((stat.S_IFDIR | 0o700, 10 if is_data else 20,
+                               self.data_dev if is_data else self.originals_dev,
+                               2, native.UID if is_data else 0, native.GID if is_data else 0,
+                               4096, 0, 0, 0))
+        return info, 13 if is_data else 12
+
+    @contextmanager
+    def fixture(self):
+        with patch.object(native, "root_only"), \
+             patch.object(native, "verify_start", return_value=self.identity) as identity, \
+             patch.object(native, "storage_mounts", side_effect=lambda: ("stable", self.mounts)) as mounts, \
+             patch.object(native, "directory_metadata", side_effect=self.metadata) as metadata, \
+             patch.object(Path, "resolve", return_value=Path("/dev/fixture-originals")), \
+             patch.object(Path, "stat", return_value=self.block), \
+             patch.object(native, "command") as command, patch.object(native.os, "chmod") as chmod:
+            yield identity, mounts, metadata, command, chmod
+
+    def test_actual_data_mount_governs_not_parent_and_no_permissions_or_sql_change(self):
+        with self.fixture() as (identity, _, metadata, command, chmod):
+            report = native.storage_check(self.originals, self.uuid)
+            self.assertTrue(report["different_filesystems"] and report["read_only"])
+            self.assertEqual(report["datadir_device"], "8:32")
+            self.assertEqual(report["originals_device"], "8:16")
+            self.assertEqual(identity.call_count, 2)
+            self.assertEqual([call.args[0] for call in metadata.call_args_list],
+                             [native.DATA, Path(self.originals), native.DATA, Path(self.originals)])
+            command.assert_not_called()
+            chmod.assert_not_called()
+
+    def test_same_filesystem_bind_alias_is_refused_despite_different_paths_and_mount_ids(self):
+        self.data_dev = self.originals_dev
+        self.mounts[2]["device"] = "8:16"
+        with self.fixture(), self.assertRaisesRegex(native.Refusal, "different filesystems"):
+            native.storage_check(self.originals, self.uuid)
+
+    def test_unavailable_wrong_uuid_nonblock_subtree_and_ambiguous_mounts_refuse(self):
+        cases = ("unmounted", "wrong-uuid", "not-block", "originals-bind", "data-bind", "alias", "unknown-fd")
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                if case == "unmounted":
+                    self.mounts[1]["target"] = "/mnt/different"
+                elif case == "wrong-uuid":
+                    self.block.st_rdev = os.makedev(8, 48)
+                elif case == "not-block":
+                    self.block.st_mode = stat.S_IFREG | 0o600
+                elif case == "originals-bind":
+                    self.mounts[1]["root"] = "/some-subdirectory"
+                elif case == "data-bind":
+                    self.mounts[2]["root"] = "/some-subdirectory"
+                elif case == "alias":
+                    self.mounts.append({**self.mounts[1], "id": 14, "target": "/mnt/alias"})
+                else:
+                    self.mounts[2]["id"] = 19
+                with self.fixture(), self.assertRaises(native.Refusal):
+                    native.storage_check(self.originals, self.uuid)
+
+    def test_fd_mount_identity_wins_over_hidden_longest_prefix(self):
+        self.mounts.append({"id": 99, "device": "8:32", "root": "/hidden-subtree", "target": str(native.DATA)})
+        with self.fixture():
+            self.assertEqual(native.storage_check(self.originals, self.uuid)["datadir_device"], "8:32")
+
+    def test_changed_mount_metadata_or_instance_during_check_refuses(self):
+        for changed in ("mount-table", "instance", "directory"):
+            with self.subTest(changed=changed), self.fixture() as (identity, mounts, metadata, _, _):
+                if changed == "mount-table":
+                    mounts.side_effect = [("before", self.mounts), ("after", self.mounts)]
+                elif changed == "instance":
+                    identity.side_effect = [self.identity, {**self.identity, "server_uuid": "changed"}]
+                else:
+                    data, originals = self.metadata(native.DATA), self.metadata(Path(self.originals))
+                    metadata.side_effect = [data, originals, (data[0], 44)]
+                with self.assertRaisesRegex(native.Refusal, "changed during"):
+                    native.storage_check(self.originals, self.uuid)
+
+    def test_changed_uuid_symlink_mapping_refuses_even_when_old_device_still_exists(self):
+        with self.fixture(), patch.object(Path, "resolve", side_effect=[
+                Path("/dev/fixture-originals"), Path("/dev/replacement")]), \
+             self.assertRaisesRegex(native.Refusal, "changed during"):
+            native.storage_check(self.originals, self.uuid)
+
+    def test_root_or_pinned_identity_failure_occurs_before_storage_reads(self):
+        with patch.object(native, "root_only", side_effect=native.Refusal("administrator required")), \
+             patch.object(native, "verify_start") as identity, patch.object(native, "storage_mounts") as mounts:
+            with self.assertRaises(native.Refusal):
+                native.storage_check(self.originals, self.uuid)
+            identity.assert_not_called()
+            mounts.assert_not_called()
+        with self.fixture() as (identity, mounts, *_):
+            identity.side_effect = native.Refusal("pinned identity failed")
+            with self.assertRaises(native.Refusal):
+                native.storage_check(self.originals, self.uuid)
+            mounts.assert_not_called()
+
+    def test_noncanonical_or_unreviewed_argument_refused(self):
+        for path in ("/", "relative", "/mnt/../originals", "/mnt/./originals", "/mnt/originals/"):
+            with self.subTest(path=path), self.fixture(), self.assertRaises(native.Refusal):
+                native.storage_check(path, self.uuid)
+        with self.fixture(), self.assertRaises(native.Refusal):
+            native.storage_check(self.originals, "../../device")
+
+    def test_real_directory_fd_reports_mount_and_preserves_private_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            before = path.stat()
+            info, mount_id = native.directory_metadata(path)
+            self.assertEqual((info.st_dev, info.st_ino), (before.st_dev, before.st_ino))
+            self.assertGreater(mount_id, 0)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), stat.S_IMODE(before.st_mode))
+            alias = path / "alias"
+            alias.symlink_to(path, target_is_directory=True)
+            with self.assertRaises(native.Refusal):
+                native.directory_metadata(alias)
+            with self.assertRaises(OSError):
+                native.directory_metadata(path / "missing")
+
+    def test_mount_parser_decodes_paths_and_refuses_missing_or_malformed_input(self):
+        text = "12 1 8:16 / /mnt/originals\\040drive rw,relatime - ext4 /dev/sdb1 rw\n"
+        with patch.object(Path, "open", mock_open(read_data=text)):
+            _, mounts = native.storage_mounts()
+        self.assertEqual(mounts, [{"id": 12, "device": "8:16", "root": "/", "target": "/mnt/originals drive"}])
+        for text in ("", "invalid", "x" * (1024 * 1024 + 1)):
+            with patch.object(Path, "open", mock_open(read_data=text)), self.assertRaises(native.Refusal):
+                native.storage_mounts()
 
 
 if __name__ == "__main__":

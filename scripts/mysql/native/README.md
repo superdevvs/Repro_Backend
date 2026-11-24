@@ -211,6 +211,45 @@ do not override resource or security controls behind that receipt. A reviewed
 configuration/version change needs a matching updated package and acceptance,
 not a manual receipt edit to silence the guard.
 
+## Read-only storage separation acceptance
+
+The administrator can compare the actual pinned MySQL data directory with an
+independently reviewed originals mount, without starting MySQL or giving PHP
+access to its private directories. Run only the reviewed installed tool:
+
+```sh
+/usr/bin/python3 -I -B /opt/repro-mysql84-native/ops/native_mysql.py storage-check \
+  --originals-mount /EXACT/REVIEWED/ORIGINALS/MOUNT \
+  --originals-uuid INDEPENDENTLY-REVIEWED-FILESYSTEM-UUID
+```
+
+The exact canonical mount path and UUID must come from the reviewed originals
+storage configuration. The operation reuses the installed bundle/configuration
+and database UUID checks. It opens directory metadata through no-follow file
+descriptors and identifies each descriptor's actual `/proc/self/mountinfo` entry.
+It compares `st_dev` for **`/var/lib/repro-mysql84-native/data` itself**, not its
+parent: `data` can be on its own mounted filesystem. The originals mount must
+exist at the reviewed path and its device must match the block device resolved
+by the reviewed `/dev/disk/by-uuid` entry. This checks the current udev UUID
+mapping; it does not read or independently identify the disk's superblock.
+
+Missing or changed mount metadata, symlinked directories, a wrong device mapping,
+subtree binds, ambiguous additional mounts of the originals filesystem, or a
+shared data/originals `st_dev` refuse acceptance. Comparing devices catches
+same-filesystem bind aliases even when their paths and mount IDs differ.
+Mountinfo alone cannot distinguish every whole-filesystem bind from a direct
+mount. Separate filesystem IDs do not prove separate physical disks or backing
+storage. The operation repeats the identity, directory and mount observations
+before reporting a point-in-time pass.
+
+There is no SQL, filesystem write probe, chmod, ACL change, service operation or
+PHP invocation. Data directories remain `0700`; this command must not be granted
+to the web account. Its receipt does not establish capacity, writable storage,
+boot persistence, latency or alert delivery, and is not a replacement for those
+acceptance checks. A previously installed tool requires a reviewed package
+update before this new command is available; copying changed code alone would
+correctly fail the installed-receipt check.
+
 ## Resource, log and recovery boundaries
 
 Initial settings: 4 GiB buffer pool, 6 GiB memory high threshold, 8 GiB hard cap,
@@ -253,6 +292,9 @@ They test manifest tampering, traversal, missing clients, collision refusal,
 wrong-platform refusal, nonempty initialization, error redaction, unsafe live
 identity/settings, missing/unsafe ACL tools, runtime ACL drift, offline rotation
 refusal, and static isolation/durability/startup ordering rules.
+Linux-only storage cases additionally cover actual directory descriptor/mount
+metadata, separate data mounts, wrong or missing originals mounts, subtree and
+same-filesystem bind aliases, mount replacement, and unchanged private modes.
 They do not establish Linux ABI compatibility or systemd/MySQL runtime behavior.
 
 Before any real-host install, run the whole handoff on an isolated Ubuntu 24.04

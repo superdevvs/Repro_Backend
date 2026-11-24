@@ -27,6 +27,7 @@ PREREQUISITES = (
     "provider_egress_isolation_passed",
     "native_host_capacity_and_isolation_passed",
     "host_writer_fence_restart_passed",
+    "mysql_writer_serialization_passed",
     "database_crash_recovery_passed",
 )
 RECOVERY_PROOFS = (
@@ -51,7 +52,8 @@ OPERATIONS_REPORTS = ("backup_health", "offsite_retention", "external_alerts", "
 NIGHTLY_RUN_COUNT = 5
 FROZEN_NIGHT_COUNT = 2
 NIGHTLY_PROOFS = (
-    "fresh_snapshot_verified", "source_scope_verified", "source_integrity_scan_passed", "field_verifiers_agree", "row_counts_match",
+    "fresh_snapshot_verified", "source_scope_verified", "source_integrity_scan_passed",
+    "field_verifiers_agree", "row_counts_match",
     "historical_exceptions_match", "target_settings_verified", "target_engine_verified",
     "sqlite_reverse_parity_verified", "invoice_and_payout_parity_verified",
 )

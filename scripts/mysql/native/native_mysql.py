@@ -499,6 +499,96 @@ def check(flush: bool = False) -> dict:
             "logs_reopened": flush}
 
 
+def directory_metadata(path: Path) -> tuple[os.stat_result, int]:
+    """Read directory metadata and its actual mount through no-follow descriptors."""
+    need(path.is_absolute() and path.resolve(strict=True) == path,
+         "storage directory must be an exact canonical path")
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
+    try:
+        for part in path.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        info = os.fstat(descriptor)
+        with Path(f"/proc/self/fdinfo/{descriptor}").open("r", encoding="ascii") as stream:
+            metadata = stream.read(8193)
+        identifiers = re.findall(r"^mnt_id:\s*([0-9]+)$", metadata, re.MULTILINE)
+        need(len(metadata) <= 8192 and len(identifiers) == 1 and int(identifiers[0]) > 0,
+             "directory mount identity unavailable")
+        return info, int(identifiers[0])
+    finally:
+        os.close(descriptor)
+
+
+def storage_mounts() -> tuple[str, list[dict]]:
+    """Read this namespace's mount table; no mount or filesystem command runs."""
+    with Path("/proc/self/mountinfo").open("r", encoding="utf-8") as stream:
+        raw = stream.read(1024 * 1024 + 1)
+    need(len(raw) <= 1024 * 1024, "mount table exceeds acceptance bound")
+    mounts = []
+    for line in raw.splitlines():
+        fields = line.split(" ")
+        need(len(fields) >= 10 and "-" in fields[6:] and fields[0].isdigit() and
+             re.fullmatch(r"[0-9]+:[0-9]+", fields[2]) is not None,
+             "malformed mount metadata")
+        root, target = (re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), field)
+                        for field in (fields[3], fields[4]))
+        need(root.startswith("/") and target.startswith("/"), "nonabsolute mount metadata")
+        mounts.append({"id": int(fields[0]), "device": fields[2], "root": root, "target": target})
+    need(bool(mounts), "mount metadata unavailable")
+    return raw, mounts
+
+
+def storage_check(originals_mount: str, originals_uuid: str) -> dict:
+    """Metadata-only acceptance; never grant PHP traversal into private data."""
+    root_only()
+    need(sys.platform == "linux", "storage acceptance requires Linux mount metadata")
+    mount = Path(originals_mount)
+    need(mount.is_absolute() and mount != Path("/") and str(mount) == originals_mount
+         and ".." not in mount.parts,
+         "originals mount must be an exact canonical non-root path")
+    need(re.fullmatch(r"[A-Za-z0-9-]{1,128}", originals_uuid) is not None,
+         "supply the independently reviewed originals filesystem UUID")
+    identity = verify_start()
+    before, mounts = storage_mounts()
+    data_info, data_mount_id = directory_metadata(DATA)
+    originals_info, originals_mount_id = directory_metadata(mount)
+    uuid_path = Path("/dev/disk/by-uuid") / originals_uuid
+    device = uuid_path.resolve(strict=True)
+    device_info = device.stat()
+    need(stat.S_ISBLK(device_info.st_mode), "originals UUID must resolve to a block device")
+    originals_device = f"{os.major(originals_info.st_dev)}:{os.minor(originals_info.st_dev)}"
+    need(device_info.st_rdev == originals_info.st_dev, "originals filesystem UUID does not match mounted storage")
+    exact = [item for item in mounts if item["id"] == originals_mount_id]
+    need(len(exact) == 1 and exact[0]["target"] == originals_mount
+         and exact[0]["device"] == originals_device and exact[0]["root"] == "/",
+         "originals mount is unavailable, redirected or a subtree bind")
+    # Device comparison also catches bind aliases: their st_dev is unchanged.
+    need(data_info.st_dev != originals_info.st_dev,
+         "MySQL data and originals must be on different filesystems, including bind aliases")
+    # Refuse ambiguous aliases for this independently reviewed originals volume.
+    need(sum(item["device"] == originals_device for item in mounts) == 1,
+         "originals filesystem has ambiguous additional mounts or bind aliases")
+    data_mounts = [item for item in mounts if item["id"] == data_mount_id]
+    need(len(data_mounts) == 1, "MySQL data mount metadata unavailable or ambiguous")
+    effective = data_mounts[0]
+    need(effective["device"] == f"{os.major(data_info.st_dev)}:{os.minor(data_info.st_dev)}"
+         and effective["root"] == "/", "MySQL data mount differs or is a subtree bind")
+    after, _ = storage_mounts()
+    need(before == after and directory_metadata(DATA) == (data_info, data_mount_id)
+         and directory_metadata(mount) == (originals_info, originals_mount_id)
+         and uuid_path.resolve(strict=True) == device and device.stat() == device_info
+         and verify_start() == identity,
+         "storage or instance identity changed during acceptance")
+    return {"result": "storage-separation-check-pass", "server_uuid": identity["server_uuid"],
+            "datadir": str(DATA), "datadir_device": effective["device"],
+            "originals_mount": originals_mount, "reviewed_originals_uuid_mapping": originals_uuid,
+            "originals_device": originals_device, "different_filesystems": True,
+            "read_only": True, "mysql_running_required": False,
+            "limits": "point-in-time filesystem separation only; no capacity, write, boot or alert proof"}
+
+
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(description=__doc__)
     sub = cli.add_subparsers(dest="action", required=True)
@@ -512,6 +602,9 @@ def parser() -> argparse.ArgumentParser:
         cmd.add_argument("--machine-id-sha256", required=True)
     for action in ("initialize", "verify-start", "wait-ready", "check", "flush-logs"):
         sub.add_parser(action)
+    storage = sub.add_parser("storage-check")
+    storage.add_argument("--originals-mount", required=True)
+    storage.add_argument("--originals-uuid", required=True)
     return cli
 
 
@@ -524,6 +617,8 @@ def main() -> int:
             result = preflight(args)
         elif args.action == "install":
             result = install(args)
+        elif args.action == "storage-check":
+            result = storage_check(args.originals_mount, args.originals_uuid)
         else:
             result = {"initialize": initialize, "verify-start": verify_start,
                       "wait-ready": wait_ready, "check": check,

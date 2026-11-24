@@ -200,6 +200,11 @@ class ReadinessTests(unittest.TestCase):
         self.receipt["prerequisites"]["identity_sha256"] = "1" * 64
         self.assert_gate("prerequisite_report", "failed")
 
+    def test_writer_fence_alone_cannot_satisfy_mysql_writer_serialization(self):
+        del self.receipt["prerequisites"]["mysql_writer_serialization_passed"]
+        self.assert_gate("host_writer_fence_restart_passed", "passed")
+        self.assert_gate("mysql_writer_serialization_passed", "missing")
+
     def test_older_receipt_with_no_operational_policy_cannot_clear_all_gates(self):
         self.policy.pop("operations")
         self.receipt["policy_sha256"] = digest(self.policy)

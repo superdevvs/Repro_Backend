@@ -27,7 +27,7 @@ shape and supplies synthetic values only.
 | --- | --- |
 | Policy | `critical_endpoints` as reviewed unique labels, `host_profile_sha256`, and `workload_sha256`. Pin the environment and comparable SQLite/MySQL peak and surge workloads before testing. |
 | Receipt header | `policy_sha256` and the same cutover identity. Any change to the policy or target invalidates a prior receipt. |
-| `prerequisites` | The reviewed report digest and identity digest, both engine CI results, exact data and schema parity, critical business workflows, provider isolation, native host capacity and isolation, actual writer-fence restart, and crash recovery. Each result uses the corresponding field in `PREREQUISITES`. |
+| `prerequisites` | The reviewed report digest and identity digest, both engine CI results, exact data and schema parity, critical business workflows, provider isolation, native host capacity and isolation, actual writer-fence restart, the first-release MySQL writer serialization policy, and crash recovery. Each result uses the corresponding field in `PREREQUISITES`. |
 | `dress_rehearsals` | Exactly two distinct trial IDs and report digests. Each records its source snapshot, pinned identity, host and workload digests, peak and surge completion, results for the timed operations and workload metrics below. |
 | `offsite_recovery` | Independent restore report and identity digests, proof that the restore used off-site artifacts alone, contiguous binlogs, replay to a chosen transaction, successful decryption of a stored value, database recovery time and measured loss. |
 | `operations` in policy | `destination_sha256`, `monitor_profile_sha256`, `phone_recipient_sha256`, `nightly_scope_sha256`, the reviewed `last_nightly_day_utc`, `window_end_unix_s`, `interval_s`, and `evidence_valid_until_unix_s`. Pin both the source report and canonical receipt summary digest for each operational report. Hash approved destination configuration, monitoring profile, delivery identity, and data scope without embedding credentials. |
@@ -44,6 +44,55 @@ SQLite and MySQL p95 measurements in integer microseconds for every pinned
 critical endpoint. Write metrics include attempt and contention counts and p95
 latency for each engine. Use the same load profile on both engines. Capture
 peak queue depth at the beginning and end of the normal peak test.
+
+The writer serialization result requires the application policy to be active
+on the exact candidate. Exercise explicit transactions, autocommit writes,
+the bounded queue-bookkeeping exemption, and recovery from a failed or lost
+commit. The cutover fence and isolated writer-token component have their
+own evidence.
+
+## Derive the seven-day backup health summary
+
+Review the external monitor's original reports and retain them with the evidence.
+Normalize the reviewed observations to UTF-8 JSON Lines. The first row has
+`schema: "repro.backup-health.observations.v1"`, `identity_sha256`,
+`destination_sha256`, `monitor_profile_sha256`, `window_start_unix_s`,
+`window_end_unix_s`, `interval_s`, and `external_observer_verified: true`.
+These fields must match the approved release, monitor, destination, and actual
+seven-day schedule. Use integer UTC epoch seconds throughout.
+
+After the header, supply exactly one observation per scheduled slot, in time
+order, from the window start up to the window end. Each row has these fields.
+
+- `slot_start_unix_s` is the exact scheduled slot boundary. Timestamped evidence
+  may establish what was independently usable at the boundary even when the
+  collector executed later. Receipts for availability achieved later apply only
+  to subsequent slots. Missing coverage prevents the summary.
+- `sample_sha256` identifies the reviewed original evidence for this slot. Retain
+  those original bytes and confirm the provenance and scope during review.
+- `newest_verified_base_unix_s` is the creation time of the newest verified base
+  snapshot usable at the slot boundary. Unknown base age prevents the summary.
+- `recoverable_through_unix_s` is the newest point independently recoverable from
+  that base and its verified contiguous binlogs at the slot boundary. Use `null`
+  for a covered slot with an unverified recovery point. It contributes zero
+  timely seconds.
+
+After independent review, pin the exact normalized file bytes as the policy's
+`backup_health_report_sha256`, then generate the summary locally.
+
+```sh
+python -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
+```
+
+The command uses each sample only for its own slot, keeps the recovery point
+fixed within that slot, and measures worst verified base age through the slot
+end. Review the resulting `backup_health` object and pin the emitted canonical
+`summary_sha256` as `backup_health_summary_sha256` in the final policy. Insert the
+object into the receipt and update `policy_sha256` after final review. A complete
+report that misses a threshold still emits its summary with `thresholds_met`
+false and exits one. Invalid input exits one without a summary. The adapter
+checks the supplied evidence and its digest. Independent review establishes the
+raw monitor provenance. The adapter's tests use synthetic observations.
 
 ## Pass marks
 
