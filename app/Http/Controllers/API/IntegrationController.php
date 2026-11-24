@@ -439,6 +439,13 @@ class IntegrationController extends Controller
 
             if (!$iguideData) {
                 $reason = $this->iguideService->getLastFailureReason();
+                if ($reason === \App\Services\IguideService::FAILURE_AMBIGUOUS_ADDRESS) {
+                    return response()->json([
+                        'success' => false,
+                        'mode' => 'ambiguous-address',
+                        'message' => 'Multiple iGuides match this address. Save the correct unit’s iGuide URL, then sync again.',
+                    ], 409);
+                }
                 if ($reason === \App\Services\IguideService::FAILURE_WEBHOOK_ONLY) {
                     return response()->json([
                         'success' => false,

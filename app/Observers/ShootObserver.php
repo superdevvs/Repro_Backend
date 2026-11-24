@@ -302,20 +302,21 @@ class ShootObserver
             return;
         }
 
-        if (!$shoot->wasChanged('scheduled_at')
-            && !$shoot->wasChanged('workflow_status')
-            && !$shoot->wasChanged('status')
-        ) {
+        $linkSaved = $shoot->wasChanged('tour_links')
+            && app(\App\Services\IguideService::class)->hasNewTourLink(
+                $shoot->getOriginal('tour_links') ?? [], $shoot->tour_links ?? []
+            );
+        if (!$linkSaved && !$shoot->wasChanged(['scheduled_at', 'workflow_status', 'status'])) {
             return;
         }
 
-        if ($shoot->scheduled_at === null) {
+        if (!$linkSaved && $shoot->scheduled_at === null) {
             return;
         }
 
         // Already resolved: the tour URL is the done-marker the reconciliation
         // command uses, so honour it here too.
-        if (!empty($shoot->iguide_tour_url)) {
+        if (!empty($shoot->iguide_tour_url) && (!$linkSaved || $shoot->iguide_property_id)) {
             return;
         }
 

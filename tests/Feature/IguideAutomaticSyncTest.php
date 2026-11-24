@@ -140,6 +140,40 @@ class IguideAutomaticSyncTest extends TestCase
         Http::assertSent(fn (Request $request) => $request->url() === $this->propertyUrl().'/asset-urls');
     }
 
+    public function test_apartment_matching_normalizes_unit_prefixes_and_requires_a_choice_for_multiple_tours(): void
+    {
+        $building = '5012 2nd St NW, Washington, DC 20011';
+        $aptFive = '5012 2nd St NW Unit Apt 5, Washington, DC 20011';
+        $aptSix = '5012 2nd St NW Apt 6, Washington, DC 20011';
+        $service = app(IguideService::class);
+        $this->assertSame('5', $service->parseAddressComponents($aptFive)['unit']);
+        $this->assertTrue($service->addressesMatch($aptFive, $building));
+        $this->assertTrue($service->addressesMatch($aptFive, '5012 2nd St NW #5, Washington, DC 20011'));
+        $this->assertFalse($service->addressesMatch($aptFive, $aptSix));
+
+        $five = ['id' => self::PROPERTY_ID, 'property' => ['fullAddress' => $aptFive]];
+        $six = ['id' => 'igOTHERUNIT', 'property' => ['fullAddress' => $aptSix]];
+        Http::fake([
+            self::PORTAL.'/iguides?*' => Http::response(['iguides' => [$six, $five]]),
+            $this->propertyUrl().'/asset-urls' => Http::response($this->assets()),
+        ]);
+        $this->assertNull($service->searchByAddress($building));
+        $this->assertSame(IguideService::FAILURE_AMBIGUOUS_ADDRESS, $service->getLastFailureReason());
+        $this->assertSame(self::PROPERTY_ID, $service->searchByAddress($aptFive)['property_id']);
+    }
+
+    public function test_saving_a_tour_url_queues_immediate_discovery(): void
+    {
+        $shoot = $this->shootWithFloorplan();
+        $shoot->update(['tour_links' => ['iguide_branded' => 'https://youriguide.com/'.self::ALIAS.'/']]);
+        Queue::assertPushed(SyncShootIguideJob::class, fn ($job) => $job->shootId === $shoot->id);
+        $shoot->update(['tour_links' => [
+            'iguide_branded' => 'https://youriguide.com/'.self::ALIAS.'/',
+            'iguide_mls' => 'https://unbranded.youriguide.com/'.self::ALIAS.'/',
+        ]]);
+        Queue::assertPushed(SyncShootIguideJob::class, 1);
+    }
+
     public function test_asset_language_fallback_imports_jpg_and_pdf_when_english_is_absent(): void
     {
         $assets = ['languages' => ['fr' => $this->assets()['languages']['en']]];

@@ -191,6 +191,7 @@ class ShootServiceItemSupport
                 'delivery_status' => $item->delivery_status ?? ShootService::DELIVERY_NOT_STARTED,
                 'deliveryStatus' => $item->delivery_status ?? ShootService::DELIVERY_NOT_STARTED,
                 'delivery_components' => $deliveryComponents[$item->id] ?? [],
+                'can_add_iguide_floorplan' => app(ShootUploadTargetPolicy::class)->canAddIguideFloorplan($item),
                 'ready_at' => $item->ready_at?->toIso8601String(),
                 'readyAt' => $item->ready_at?->toIso8601String(),
                 'delivered_at' => $item->delivered_at?->toIso8601String(),
