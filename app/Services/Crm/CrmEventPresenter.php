@@ -24,9 +24,8 @@ class CrmEventPresenter
     public function event(CrmEvent $event, bool $withContact = true): array
     {
         $type = $this->types()[$event->type_id] ?? null;
-        $now = now();
         // Overdue means due on an earlier day; earlier today still shows under Today.
-        $overdue = $event->status === 'planned' && $event->starts_at->lt($now->copy()->startOfDay());
+        $overdue = $event->status === 'planned' && $event->starts_at->lt(CrmBusinessTime::startOfDay());
         $contact = $withContact && $event->contact_id ? CrmContact::query()->find($event->contact_id) : null;
 
         return [
@@ -56,7 +55,7 @@ class CrmEventPresenter
 
     public static function lateLabel(Carbon $startsAt): string
     {
-        $days = (int) floor($startsAt->copy()->startOfDay()->diffInDays(now()->startOfDay()));
+        $days = (int) floor($startsAt->copy()->setTimezone(CrmBusinessTime::TIMEZONE)->startOfDay()->diffInDays(now(CrmBusinessTime::TIMEZONE)->startOfDay()));
 
         return $days >= 1 ? $days.' day'.($days === 1 ? '' : 's') : 'today';
     }
@@ -76,14 +75,15 @@ class CrmEventPresenter
         foreach ($events as $contactId => $list) {
             $event = $list->first();
             $type = $this->types()[$event->type_id] ?? null;
-            $overdue = $event->starts_at->lt(now()->startOfDay());
+            $startsAt = $event->starts_at->copy()->setTimezone(CrmBusinessTime::TIMEZONE);
+            $overdue = $startsAt->lt(CrmBusinessTime::startOfDay());
             $out[$contactId] = [
                 'label' => $type?->label ?? 'Event',
                 'type_key' => $type?->key,
                 'icon' => $type?->icon ?? 'calendar',
                 'overdue' => $overdue,
                 'late' => $overdue ? self::lateLabel($event->starts_at) : null,
-                'when' => $event->starts_at->isToday() ? 'today '.$event->starts_at->format('g:i a') : $event->starts_at->format('D j M'.($event->starts_at->format('H:i') !== '00:00' ? ', g:i a' : '')),
+                'when' => $startsAt->isSameDay(now(CrmBusinessTime::TIMEZONE)) ? 'today '.$startsAt->format('g:i a') : $startsAt->format('D j M'.($startsAt->format('H:i') !== '00:00' ? ', g:i a' : '')),
             ];
         }
 
@@ -94,11 +94,11 @@ class CrmEventPresenter
     {
         return CrmEvent::query()->visible(app(CrmAccess::class)->user())
             ->when($user, fn ($q) => $q->where('assigned_user_id', $user->id))
-            ->where('status', 'planned')->where('starts_at', '<', now()->startOfDay())->count();
+            ->where('status', 'planned')->where('starts_at', '<', CrmBusinessTime::startOfDay())->count();
     }
 
     public function dueCountFor(User $user): int
     {
-        return CrmEvent::query()->where('assigned_user_id', $user->id)->where('status', 'planned')->where('starts_at', '<', now()->endOfDay())->count();
+        return CrmEvent::query()->where('assigned_user_id', $user->id)->where('status', 'planned')->where('starts_at', '<', CrmBusinessTime::endOfDay())->count();
     }
 }

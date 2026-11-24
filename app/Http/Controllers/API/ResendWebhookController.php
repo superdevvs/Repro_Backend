@@ -41,7 +41,7 @@ class ResendWebhookController extends CakemailWebhookController
             $message = Message::where('provider', 'RESEND')->where('provider_message_id', $emailId)->first();
             if (! $message) {
                 // Sales CRM sends are recorded in crm_email_sends, not messages.
-                $crmSend = \App\Models\Crm\CrmEmailSend::query()->where('provider_message_id', $emailId)->first();
+                $crmSend = \App\Models\Crm\CrmEmailSend::query()->where('provider_message_id', $emailId)->lockForUpdate()->first();
                 if ($crmSend) {
                     app(\App\Services\Crm\Email\CrmEmailEventRecorder::class)->record($crmSend, $event, $payload, (string) $request->header('svix-id'));
 

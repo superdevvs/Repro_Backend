@@ -23,6 +23,7 @@ Route::get('quotes/catalog', [CrmQuoteController::class, 'catalog'])->name('quot
 Route::get('quotes', [CrmQuoteController::class, 'index'])->name('quotes.index');
 Route::get('quotes/{quote}', [CrmQuoteController::class, 'show'])->whereNumber('quote')->name('quotes.show');
 Route::patch('quotes/{quote}', [CrmQuoteController::class, 'update'])->whereNumber('quote')->name('quotes.update');
+Route::post('quotes/{quote}/complete-booking', [CrmQuoteController::class, 'completeBooking'])->whereNumber('quote')->name('quotes.booking');
 Route::post('quotes/{quote}/{action}', [CrmQuoteController::class, 'action'])->whereNumber('quote')->whereIn('action', ['submit', 'approve', 'send', 'accept', 'decline'])->name('quotes.action');
 Route::get('contacts/{contact}/quotes', [CrmQuoteController::class, 'forContact'])->whereNumber('contact')->name('quotes.for-contact');
 Route::post('contacts/{contact}/quotes', [CrmQuoteController::class, 'store'])->whereNumber('contact')->name('quotes.store');
@@ -30,6 +31,9 @@ Route::post('contacts/{contact}/quotes', [CrmQuoteController::class, 'store'])->
 // Conversations
 Route::get('contacts/{contact}/conversation', [CrmConversationController::class, 'show'])->whereNumber('contact')->name('conversation.show');
 Route::post('contacts/{contact}/sms-consent', [CrmConversationController::class, 'consent'])->whereNumber('contact')->name('conversation.consent');
+
+Route::post('contacts/{contact}/marketing-consent', [CrmConversationController::class, 'marketingConsent'])->whereNumber('contact')->name('conversation.marketing-consent');
+Route::post('contacts/{contact}/conversation/sms', [CrmConversationController::class, 'sendSms'])->whereNumber('contact')->middleware('throttle:30,1,crm-text:')->name('conversation.sms');
 
 // Robbie
 Route::prefix('robbie')->name('robbie.')->group(function () {

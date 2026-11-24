@@ -82,22 +82,22 @@ class CrmIntegrationsTest extends CrmTestCase
 
     public function test_crm_email_goes_through_resend_with_unsubscribe_headers(): void
     {
-        config(['crm.email.transport' => 'resend']);
+        $this->fakeAcceptedCrmMail();
         \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         Http::fake(['api.resend.com/emails' => Http::response(['id' => 're_123'], 200)]);
         // Tests normally get a recording fake; use the real provider so the HTTP request itself is checked.
         $this->app->instance(\App\Services\Messaging\Providers\ResendProvider::class, new \App\Services\Messaging\Providers\ResendProvider);
         $rep = $this->signedRep();
-        $contact = $this->contactFor($rep, ['email' => 'dana@whitfield.com']);
+        $contact = $this->contactWithMarketingOptIn($rep, ['email' => 'dana@whitfield.com']);
 
         $send = app(CrmEmailSender::class)->send(['contact' => $contact, 'sender' => $rep, 'source_type' => 'one_off', 'content' => ['subject' => 'Hi', 'body_html' => '<p>Hi {{first_name}}</p>'], 'marketing' => true, 'idempotency_key' => 'k-1']);
 
         $this->assertSame(['sent', 're_123'], [$send->status, $send->provider_message_id]);
-        Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) use ($send) {
             $body = $request->data();
 
             return $request->url() === 'https://api.resend.com/emails'
-                && $request->hasHeader('Idempotency-Key', 'k-1')
+                && $request->hasHeader('Idempotency-Key', $send->idempotency_key)
                 && str_contains($body['headers']['List-Unsubscribe'] ?? '', '/one-click')
                 && ($body['headers']['List-Unsubscribe-Post'] ?? '') === 'List-Unsubscribe=One-Click'
                 && str_starts_with((string) $body['reply_to'], 'r+')
@@ -125,7 +125,8 @@ class CrmIntegrationsTest extends CrmTestCase
     {
         $rep = $this->signedRep();
         $admin = User::query()->where('role', 'admin')->first() ?? $this->admin();
-        $contact = $this->contactFor($rep, ['email' => 'dana@whitfield.com', 'name' => 'Dana Whitfield']);
+        $this->fakeAcceptedCrmMail();
+        $contact = $this->contactWithMarketingOptIn($rep, ['email' => 'dana@whitfield.com', 'name' => 'Dana Whitfield']);
         $t = app(CrmTemplateService::class)->create('Welcome', 'drip', ['subject' => 'Welcome', 'body_html' => '<p>Hi</p>'], $admin);
         app(CrmTemplateService::class)->approve(app(CrmTemplateService::class)->submit($t, $admin), $admin);
         $drip = CrmDripCampaign::query()->where('length_key', '12_weeks')->firstOrFail();
@@ -134,11 +135,21 @@ class CrmIntegrationsTest extends CrmTestCase
         app(CrmDripService::class)->enrol($contact, $drip->fresh(), $rep);
         $this->artisan('crm:send-due');
         $send = CrmEmailSend::query()->where('source_type', 'drip')->firstOrFail();
-        Http::fake(['api.resend.com/emails/receiving/*' => Http::response(['text' => "Yes, let's talk Thursday.\n\nOn Mon, Maya wrote:\n> Hi"], 200)]);
+        Http::fake(['api.resend.com/emails/receiving/*' => Http::sequence()->push([], 503)
+            ->push(['text' => "Yes, let's talk Thursday.\n\nOn Mon, Maya wrote:\n> Hi"], 200)]);
+        $this->webhook(['type' => 'email.received', 'data' => ['email_id' => 'in_1', 'from' => 'dana@whitfield.com',
+            'to' => ['r+'.$send->reply_token.'@reply.reprophotos.com'], 'subject' => 'Re: Welcome']], 'msg_in_1')->assertStatus(503);
+        $this->assertDatabaseMissing('crm_email_events', ['provider_event_id' => 'msg_in_1']);
 
         $this->webhook(['type' => 'email.received', 'data' => ['email_id' => 'in_1', 'from' => 'dana@whitfield.com', 'to' => ['r+'.$send->reply_token.'@reply.reprophotos.com'], 'subject' => 'Re: Welcome']], 'msg_in_1')
             ->assertOk()->assertJsonPath('status', 'ok');
 
+        $this->webhook(['type' => 'email.received', 'data' => ['email_id' => 'in_1', 'from' => 'dana@whitfield.com',
+            'to' => ['r+'.$send->reply_token.'@reply.reprophotos.com'], 'subject' => 'Re: Welcome']], 'msg_in_1')->assertOk();
+        $this->actAs($rep);
+        $thread = collect($this->getJson("/api/crm/contacts/{$contact->id}/conversation")->assertOk()->json('items'));
+        $this->assertCount(1, $thread->where('direction', 'in'));
+        $this->assertStringContainsString('Thursday', $thread->firstWhere('direction', 'in')['body']);
         $this->assertNotNull($send->fresh()->replied_at);
         $this->assertSame('reply', CrmDripEnrollment::query()->value('stop_reason'));
         $this->assertSame(1, CrmNotice::query()->where('user_id', $rep->id)->where('type', 'email_reply')->count());
@@ -171,6 +182,41 @@ class CrmIntegrationsTest extends CrmTestCase
 
         $this->artisan('crm:calendar-sync')->assertSuccessful();
         $this->assertSame('planned', CrmEvent::query()->find($event->id)->status);
+    }
+
+    public function test_google_retries_local_time_changes_and_cancellations_before_pulling_remote_time(): void
+    {
+        config(['crm.google_sync.enabled' => true]);
+        $rep = $this->rep();
+        GoogleCalendarConnection::create(['user_id' => $rep->id, 'calendar_id' => 'primary', 'provider_email' => 'rep@example.com',
+            'access_token' => 'test-access', 'refresh_token' => 'test-refresh', 'token_expires_at' => now()->addHour(), 'sync_enabled' => true]);
+        $moved = now()->addDays(2)->setTime(17, 0)->utc();
+        $old = $moved->copy()->subDay();
+        $patches = $deletes = 0;
+        Http::fake(function ($req) use (&$patches, &$deletes, $moved, $old) {
+            if ($req->method() === 'PATCH') {
+                return ++$patches < 3 ? Http::response([], 503) : Http::response(['id' => 'g_retry']);
+            }
+            if ($req->method() === 'DELETE') {
+                return Http::response([], ++$deletes === 1 ? 503 : 204);
+            }
+            $remoteTime = $patches >= 3 ? $moved : $old;
+
+            return Http::response(['id' => 'g_retry', 'start' => ['dateTime' => $remoteTime->toRfc3339String()],
+                'end' => ['dateTime' => $remoteTime->copy()->addMinutes(15)->toRfc3339String()]]);
+        });
+        $contact = $this->contactFor($rep);
+        $events = app(CrmEventService::class);
+        $event = $events->schedule($contact, ['type' => 'call', 'starts_at' => $old->toRfc3339String()], $rep);
+        $events->update($event, ['starts_at' => $moved->toRfc3339String()], $rep);
+        $sync = app(CrmCalendarSync::class);
+        $this->assertSame(0, $sync->pollAll()['checked']);
+        $this->assertTrue($event->fresh()->starts_at->equalTo($moved));
+        $this->assertSame(1, $sync->pollAll()['retried']);
+        $events->cancelPlanned($contact, $rep, 'No longer needed');
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => true]);
+        $this->assertSame(1, $sync->pollAll()['retried']);
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'google_event_id' => null, 'push_pending' => false]);
     }
 
     public function test_reps_reach_google_calendar_only_through_the_crm(): void

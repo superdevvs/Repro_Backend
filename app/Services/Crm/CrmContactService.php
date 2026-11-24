@@ -69,7 +69,7 @@ class CrmContactService
                 'stage_changed_at' => now(),
                 'lead_source' => $data['lead_source'] ?? 'other',
                 'first_contact_due_at' => in_array($stage, [CrmContact::STAGE_OUTREACH, CrmContact::STAGE_INQUIRY], true) && ($data['lead_source'] ?? null) === 'website'
-                    ? now()->addHours((int) config('crm.first_contact_hours', 24))
+                    ? CrmBusinessTime::firstResponseDue()
                     : null,
             ]);
             $contact->save();

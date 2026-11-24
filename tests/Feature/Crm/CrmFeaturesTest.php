@@ -105,8 +105,9 @@ class CrmFeaturesTest extends CrmTestCase
     public function test_quote_discount_approval_send_and_client_acceptance(): void
     {
         $rep = $this->signed($this->rep());
+        $this->fakeAcceptedCrmMail();
         $admin = $this->admin();
-        $service = Service::factory()->create(['name' => 'HDR photos', 'price' => 200]);
+        $service = Service::factory()->create(['name' => 'HDR photos', 'price' => 200, 'allow_multiple' => true]);
         $contact = $this->contactFor($rep, ['email' => 'dana@x.com', 'stage' => CrmContact::STAGE_INQUIRY]);
         $this->actAs($rep);
 
@@ -137,7 +138,8 @@ class CrmFeaturesTest extends CrmTestCase
         $this->app['auth']->forgetGuards();
         $this->getJson("/api/public/crm/quotes/{$quote->public_token}")->assertOk()->assertJsonPath('quote.total', 425)->assertJsonPath('quote.can_respond', true);
         $this->postJson("/api/public/crm/quotes/{$quote->public_token}/accept")->assertOk()->assertJsonPath('quote.status', 'accepted');
-        $this->assertSame(CrmContact::STAGE_BOOKED, $contact->fresh()->stage);
+        $this->assertSame(CrmContact::STAGE_ESTIMATE, $contact->fresh()->stage);
+        $this->assertSame('needs_review', $quote->fresh()->booking_status);
         $this->assertSame('cancelled', CrmEvent::query()->find($quote->follow_up_event_id)->status);
         $this->assertSame(1, CrmNotice::query()->where('user_id', $rep->id)->where('type', 'quote_accepted')->count());
     }

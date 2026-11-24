@@ -34,7 +34,7 @@ class CrmEventService
                 'contact_id' => $contact?->id,
                 'applicant_id' => $applicantId,
                 'type_id' => $type->id,
-                'starts_at' => Carbon::parse($data['starts_at']),
+                'starts_at' => Carbon::parse($data['starts_at'])->utc(),
                 'duration_min' => (int) ($data['duration_min'] ?? 15),
                 'assigned_user_id' => $assignee,
                 'note' => $data['note'] ?? null,
@@ -43,7 +43,7 @@ class CrmEventService
                 'via_robbie' => $viaRobbie,
             ]);
             if ($contact) {
-                $this->activity->log($contact, 'event_scheduled', $actor, $type->label.' scheduled for '.$event->starts_at->format('D j M, g:i a'), [
+                $this->activity->log($contact, 'event_scheduled', $actor, $type->label.' scheduled for '.$event->starts_at->copy()->timezone(CrmBusinessTime::TIMEZONE)->format('D j M, g:i a T'), [
                     'event_id' => $event->id, 'type' => $type->key, 'note' => $event->note,
                 ], $viaRobbie, 'event', $event->id);
             }
@@ -66,7 +66,7 @@ class CrmEventService
             $changes['type_id'] = $this->resolveType($data)->id;
         }
         if (isset($data['starts_at'])) {
-            $changes['starts_at'] = Carbon::parse($data['starts_at']);
+            $changes['starts_at'] = Carbon::parse($data['starts_at'])->utc();
         }
         if (isset($data['duration_min'])) {
             $changes['duration_min'] = (int) $data['duration_min'];
@@ -80,7 +80,7 @@ class CrmEventService
         $event->forceFill($changes)->save();
 
         if ($event->contact && isset($changes['starts_at'])) {
-            $this->activity->log($event->contact, 'event_rescheduled', $actor, ($event->type?->label ?? 'Event').' moved to '.$event->starts_at->format('D j M, g:i a'), ['event_id' => $event->id], false, 'event', $event->id);
+            $this->activity->log($event->contact, 'event_rescheduled', $actor, ($event->type?->label ?? 'Event').' moved to '.$event->starts_at->copy()->timezone(CrmBusinessTime::TIMEZONE)->format('D j M, g:i a T'), ['event_id' => $event->id], false, 'event', $event->id);
         }
         $this->syncCalendar($event);
 

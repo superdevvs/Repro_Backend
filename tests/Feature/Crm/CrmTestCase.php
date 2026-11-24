@@ -43,6 +43,21 @@ abstract class CrmTestCase extends TestCase
         return $user;
     }
 
+    protected function contactWithMarketingOptIn(User $rep, array $attributes): CrmContact
+    {
+        $contact = $this->contactFor($rep, $attributes);
+        app(\App\Services\Crm\Email\CrmMarketingConsent::class)->record($contact, true, 'written', $rep);
+
+        return $contact;
+    }
+
+    protected function fakeAcceptedCrmMail(): void
+    {
+        config(['crm.email.transport' => 'resend', 'crm.email.company_address' => '1 Test Street, Washington, DC 20011']);
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        // In this environment MessagingSafetyServiceProvider already binds Resend to its in-memory double.
+    }
+
     /** Create a contact directly, owned by $rep, bypassing the HTTP layer. */
     protected function contactFor(?User $rep, array $attributes = []): CrmContact
     {

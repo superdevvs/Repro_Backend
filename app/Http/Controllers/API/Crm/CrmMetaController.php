@@ -62,7 +62,7 @@ class CrmMetaController extends CrmController
             'lead_sources' => collect(CrmContact::LEAD_SOURCE_LABELS)->map(fn ($l, $k) => ['key' => $k, 'label' => $l])->values()->all(),
             'markets' => CrmContact::query()->whereNotNull('market_state')->distinct()->orderBy('market_state')->pluck('market_state')->values()->all(),
             'settings' => [
-                'first_contact_hours' => (int) config('crm.first_contact_hours'),
+                'first_contact_business_days' => 1,
                 'quote_discount_approval_percent' => (float) config('crm.quote_discount_approval_percent'),
             ],
         ]);

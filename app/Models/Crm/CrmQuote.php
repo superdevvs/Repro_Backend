@@ -16,12 +16,12 @@ class CrmQuote extends Model
 
     protected $guarded = ['id'];
 
-    public const STATUSES = ['draft', 'pending_approval', 'approved', 'sent', 'accepted', 'declined', 'expired'];
+    public const STATUSES = ['draft', 'pending_approval', 'approved', 'sending', 'sent', 'accepted', 'declined', 'expired'];
 
     protected function casts(): array
     {
         return [
-            'subtotal' => 'float', 'discount_percent' => 'float', 'discount_amount' => 'float', 'total' => 'float',
+            'sqft' => 'integer', 'booking_shoot_id' => 'integer', 'subtotal' => 'float', 'discount_percent' => 'float', 'discount_amount' => 'float', 'total' => 'float',
             'valid_until' => 'date', 'approved_at' => 'datetime', 'sent_at' => 'datetime', 'viewed_at' => 'datetime',
             'accepted_at' => 'datetime', 'declined_at' => 'datetime', 'via_robbie' => 'boolean',
         ];

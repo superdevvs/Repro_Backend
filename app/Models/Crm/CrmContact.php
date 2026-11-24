@@ -57,7 +57,6 @@ class CrmContact extends Model
     protected $fillable = [
         'name', 'company', 'title', 'email', 'phone', 'address', 'website',
         'market_state', 'market_city', 'segment', 'client_type', 'lead_source',
-        'sms_consent',
     ];
 
     protected function casts(): array
@@ -76,6 +75,7 @@ class CrmContact extends Model
             'client_user_id' => 'integer',
             'company_id' => 'integer',
             'sms_consent_at' => 'datetime',
+            'marketing_consent_at' => 'datetime',
             'health_changed_at' => 'datetime',
             'last_shoot_on' => 'date',
         ];
@@ -85,6 +85,12 @@ class CrmContact extends Model
     protected static function booted(): void
     {
         static::saving(function (CrmContact $contact) {
+            if ($contact->exists && $contact->isDirty('email_normalized')) {
+                $contact->forceFill(['marketing_consent_at' => null, 'marketing_consent_email' => null, 'marketing_consent_source' => null]);
+            }
+            if ($contact->exists && $contact->isDirty('phone_digits')) {
+                $contact->forceFill(['sms_consent' => false, 'sms_consent_phone' => null, 'sms_consent_at' => null, 'sms_consent_source' => null]);
+            }
             // Read the column directly: "company" is also the name of the relation.
             $name = $contact->getAttributes()['company'] ?? null;
             if ($contact->isDirty('company') || ($name && ! $contact->company_id)) {

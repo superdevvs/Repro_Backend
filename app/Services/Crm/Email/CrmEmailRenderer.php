@@ -36,7 +36,7 @@ class CrmEmailRenderer
         $address = trim((string) config('crm.email.company_address'));
         $footerLines = ['R/E Pro Photos'.($address !== '' ? ' · '.e($address) : '')];
         if ($isMarketing && $unsubscribeUrl) {
-            $footerLines[] = 'You are receiving this because you work with or asked about R/E Pro Photos. <a href="'.e($unsubscribeUrl).'" style="color:#55657a">Unsubscribe</a>';
+            $footerLines[] = 'You opted in to email from R/E Pro Photos. <a href="'.e($unsubscribeUrl).'" style="color:#55657a">Unsubscribe</a>';
         }
         $logo = e((string) config('crm.email.logo_url', 'https://reprodashboard.com/images/repro-email-logo-light.png'));
 

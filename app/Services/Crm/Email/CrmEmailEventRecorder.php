@@ -52,7 +52,7 @@ class CrmEmailEventRecorder
             case 'bounced':
                 $send->forceFill(['bounced_at' => $at, 'status' => 'bounced'])->save();
                 // Soft bounces (mailbox full, greylisting) do not suppress the address.
-                if (strtolower((string) data_get($payload, 'data.bounce.type', 'permanent')) !== 'transient') {
+                if (strtolower((string) data_get($payload, 'data.bounce.type')) === 'permanent') {
                     $this->suppression->suppress($send->to_email, 'bounce', 'resend', $contact?->id);
                 }
                 break;

@@ -6,6 +6,7 @@ use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmQuote;
 use App\Models\Service;
 use App\Services\Crm\CrmQuoteService;
+use App\Services\Crm\CrmQuoteBooking;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -20,7 +21,7 @@ class CrmQuoteController extends CrmController
     {
         $sqft = $request->integer('sqft') ?: null;
         $items = Service::query()->bookable()->orderBy('name')->get()->map(fn (Service $s) => [
-            'id' => $s->id, 'name' => $s->name, 'price' => round((float) $s->getPriceForSqft($sqft), 2), 'pricing_type' => $s->pricing_type,
+            'id' => $s->id, 'name' => $s->name, 'price' => round((float) $s->getPriceForSqft($sqft), 2), 'pricing_type' => $s->pricing_type, 'allow_multiple' => (bool) $s->allow_multiple,
             'category' => $s->category_id ? optional($s->category)->name : null,
         ]);
 
@@ -47,15 +48,36 @@ class CrmQuoteController extends CrmController
     {
         return [
             'items' => [$creating ? 'required' : 'sometimes', 'array', 'min:1', 'max:40'],
-            'items.*.service_id' => ['nullable', 'integer'],
+            'items.*.service_id' => ['nullable', 'integer', 'distinct'],
             'items.*.name' => ['nullable', 'string', 'max:190'],
             'items.*.quantity' => ['nullable', 'integer', 'min:1', 'max:999'],
             'items.*.unit_price' => ['nullable', 'numeric', 'min:0', 'max:100000'],
             'discount_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
-            'property_address' => ['nullable', 'string', 'max:255'],
+            ...self::addressRules(),
             'sqft' => ['nullable', 'integer', 'min:0', 'max:100000'],
             'notes' => ['nullable', 'string', 'max:5000'],
         ];
+    }
+
+    private static function addressRules(): array
+    {
+        return [
+            'property_address' => ['nullable', 'string', 'max:255'],
+            'property_city' => ['nullable', 'string', 'max:255'],
+            'property_state' => ['nullable', 'string', 'regex:/^[a-z]{2}$/i'],
+            'property_zip' => ['nullable', 'string', 'regex:/^\d{5}(-\d{4})?$/'],
+        ];
+    }
+
+    public function completeBooking(Request $request, CrmQuote $quote, CrmQuoteBooking $booking): JsonResponse
+    {
+        if ($denied = $this->requirePermission($request, 'crm-contacts', 'update')) {
+            return $denied;
+        }
+        $data = $request->validate([...self::addressRules(), 'shoot_id' => ['sometimes', 'integer', 'min:1']]);
+        $booking->review($quote, $data, $this->actor($request));
+
+        return $this->show($request, $quote->fresh());
     }
 
     public function store(Request $request, CrmContact $contact): JsonResponse
@@ -106,6 +128,9 @@ class CrmQuoteController extends CrmController
         $out = [
             'id' => $q->id, 'number' => $q->number, 'status' => $q->status, 'total' => $q->total, 'subtotal' => $q->subtotal,
             'discount_percent' => $q->discount_percent, 'discount_amount' => $q->discount_amount,
+            'property_city' => $q->property_city, 'property_state' => $q->property_state, 'property_zip' => $q->property_zip,
+            'sqft' => $q->sqft, 'booking_status' => $q->booking_status, 'booking_shoot_id' => $q->booking_shoot_id,
+            'booking_review_reason' => $q->booking_review_reason,
             'needs_approval' => $this->quotes->needsApproval($q),
             'contact' => $contact ? ['id' => $contact->id, 'name' => $contact->name, 'company' => $contact->company] : null,
             'property_address' => $q->property_address, 'valid_until' => $q->valid_until?->toDateString(),

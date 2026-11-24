@@ -94,6 +94,9 @@ class ClientNotificationDeliveryWindow
     {
         $addresses = array_filter(array_merge([$message->to_address], $message->cc_addresses_json ?? [], $message->bcc_addresses_json ?? []));
         $zones = [];
+        if ($message->send_source === 'CRM' && $message->channel === 'SMS') {
+            $zones[] = $this->timezone(data_get($message->metadata, 'crm.timezone'));
+        }
         foreach ($addresses as $address) {
             $email = str_contains($address, '@');
             $normalized = $email ? strtolower(trim($address)) : $this->phone($address);

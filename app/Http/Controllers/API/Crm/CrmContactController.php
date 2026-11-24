@@ -60,12 +60,12 @@ class CrmContactController extends CrmController
 
         return $query
             ->when($search !== '', function ($q) use ($search) {
-                $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], mb_strtolower($search)).'%';
+                $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($search)).'%';
                 $digits = preg_replace('/\D+/', '', $search);
                 $q->where(function ($inner) use ($like, $digits) {
-                    $inner->whereRaw('LOWER(name) LIKE ?', [$like])
-                        ->orWhereRaw('LOWER(COALESCE(company, \'\')) LIKE ?', [$like])
-                        ->orWhereRaw('LOWER(COALESCE(email, \'\')) LIKE ?', [$like]);
+                    $inner->whereRaw('LOWER(name) LIKE ? ESCAPE \'!\'', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(company, \'\')) LIKE ? ESCAPE \'!\'', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(email, \'\')) LIKE ? ESCAPE \'!\'', [$like]);
                     if (strlen((string) $digits) >= 4) {
                         $inner->orWhere('phone_digits', 'like', '%'.$digits.'%');
                     }
@@ -100,7 +100,6 @@ class CrmContactController extends CrmController
             'segment' => [$required, Rule::in(CrmContact::SEGMENTS)],
             'client_type' => ['nullable', Rule::in(CrmContact::CLIENT_TYPES)],
             'lead_source' => ['nullable', Rule::in(CrmContact::LEAD_SOURCES)],
-            'sms_consent' => ['nullable', 'boolean'],
         ];
     }
 
@@ -152,6 +151,27 @@ class CrmContactController extends CrmController
     public function show(Request $request, CrmContact $contact): JsonResponse
     {
         return response()->json(['contact' => $this->presenter()->contact($contact, $request->user(), $this->extras($contact))]);
+    }
+
+    public function review(Request $request, CrmContact $contact): JsonResponse
+    {
+        if ($denied = $this->requirePermission($request, 'crm-contacts', 'assign')) {
+            return $denied;
+        }
+
+        $data = $request->validate(['note' => ['required', 'string', 'max:2000']]);
+        \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($request, $contact, $data) {
+            $current = CrmContact::query()->lockForUpdate()->findOrFail($contact->id);
+            if ($current->needs_review) {
+                app(\App\Services\Crm\CrmActivityLogger::class)->log(
+                    $current, 'import_reviewed', $this->actor($request), 'Client review completed',
+                    ['note' => $data['note'], 'review_reasons' => $current->review_reasons],
+                );
+                $current->forceFill(['needs_review' => false, 'review_reasons' => null])->save();
+            }
+        }), 'crm.contact.review');
+
+        return $this->show($request, $contact->refresh());
     }
 
     /** Hook for later phases (next event, drip, health) without changing the base shape. */

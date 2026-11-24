@@ -27,7 +27,7 @@ class PublicCrmQuoteController extends Controller
             'property_address' => $quote->property_address, 'valid_until' => $quote->valid_until?->toDateString(),
             'items' => $quote->items()->get()->map(fn ($i) => ['name' => $i->name, 'quantity' => $i->quantity, 'unit_price' => $i->unit_price, 'total' => $i->total])->all(),
             'subtotal' => $quote->subtotal, 'discount_percent' => $quote->discount_percent, 'discount_amount' => $quote->discount_amount, 'total' => $quote->total,
-            'notes' => $quote->notes,
+            'notes' => $quote->notes, 'booking_status' => $quote->booking_status,
             'can_respond' => $quote->status === 'sent' && (! $quote->valid_until || ! $quote->valid_until->lt(now()->startOfDay())),
         ]]);
     }
@@ -51,6 +51,6 @@ class PublicCrmQuoteController extends Controller
     {
         abort_unless(strlen($token) === 48, 404);
 
-        return CrmQuote::query()->withoutGlobalScopes()->where('public_token', $token)->whereNotIn('status', ['draft', 'pending_approval', 'approved'])->firstOrFail();
+        return CrmQuote::query()->withoutGlobalScopes()->where('public_token', $token)->whereIn('status', ['sent', 'accepted', 'declined', 'expired'])->firstOrFail();
     }
 }

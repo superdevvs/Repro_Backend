@@ -114,6 +114,7 @@ class CrmRobbieTest extends CrmTestCase
 
     public function test_robbie_email_drafts_still_pass_the_content_check(): void
     {
+        $this->fakeAcceptedCrmMail();
         $rep = $this->rep();
         $super = $this->superAdmin();
         $sig = app(CrmSignatureService::class)->submit($rep, ['name' => $rep->name, 'title' => 'Sales', 'sender_email' => 'rep@reprophotos.com']);
@@ -121,7 +122,7 @@ class CrmRobbieTest extends CrmTestCase
         $admin = $this->admin();
         $template = app(CrmTemplateService::class)->create('Check-in', 'one_off', ['subject' => 'Checking in', 'body_html' => '<p>Hi {{first_name}}, how are listings going?</p>'], $admin);
         app(CrmTemplateService::class)->approve(app(CrmTemplateService::class)->submit($template, $admin), $admin);
-        $contact = $this->contactFor($rep, ['name' => 'Dana Whitfield', 'email' => 'dana@x.com']);
+        $contact = $this->contactWithMarketingOptIn($rep, ['name' => 'Dana Whitfield', 'email' => 'dana@x.com']);
 
         $this->fakeLlm([self::text(json_encode(['subject' => 'Spring listings', 'body_html' => '<p>Hi {{first_name}}, we are the fastest photographers in Bethesda, guaranteed.</p>']))]);
         $this->actAs($rep);

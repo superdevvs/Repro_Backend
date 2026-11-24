@@ -2,7 +2,10 @@
 
 namespace App\Services\Search;
 
+use App\Http\Controllers\API\Crm\CrmContactController;
+use App\Models\Crm\CrmContact;
 use App\Models\User;
+use App\Services\Crm\CrmAccess;
 use App\Services\RolePermissionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -44,6 +47,7 @@ class ContextualSearchService
         $permissions = app(RolePermissionService::class);
         $scopes = [];
         if ($permissions->userCan($user, 'accounts', 'view')) $scopes[] = ['id' => 'accounts', 'label' => 'Accounts'];
+        if ($this->canSearchCrm($user)) $scopes[] = ['id' => 'crm-contacts', 'label' => 'CRM contacts'];
         foreach (self::SOURCES as $id => [$label, , $resource]) {
             if (in_array($id, ['invoices', 'payouts'], true) && !$permissions->userCan($user, 'invoices', 'view')) continue;
             if ($id === 'people' && !$permissions->userCan($user, 'voice-calls', 'operate')) continue;
@@ -60,15 +64,19 @@ class ContextualSearchService
     public function search(Request $request, string $scope, string $term, array $filters, int $page = 1, int $limit = 8): array
     {
         $available = array_column($this->scopes($request->user()), 'label', 'id');
-        abort_unless($scope === 'everywhere' || (isset($available[$scope]) && ($scope === 'accounts' || isset(self::SOURCES[$scope]))), 403);
+        abort_unless($scope === 'everywhere' || (isset($available[$scope]) && ($scope === 'accounts' || $scope === 'crm-contacts' || isset(self::SOURCES[$scope]))), 403);
         if ($term === '') return ['groups' => []];
         $groups = [];
-        $serverScopes = array_filter(array_keys($available), fn ($id) => $id === 'accounts' || isset(self::SOURCES[$id]));
+        $serverScopes = array_filter(array_keys($available), fn ($id) => $id === 'accounts' || $id === 'crm-contacts' || isset(self::SOURCES[$id]));
         foreach ($scope === 'everywhere' ? $serverScopes : [$scope] as $id) {
             $started = microtime(true);
             try {
-                $group = $id === 'accounts' ? $this->searchAccounts($request, $term, $scope === 'everywhere' ? [] : $filters, $page, $limit)
-                    : $this->searchSource($request, $id, $term, $scope === 'everywhere' ? [] : $filters, $page, $limit);
+                $scopeFilters = $scope === 'everywhere' ? [] : $filters;
+                $group = match ($id) {
+                    'accounts' => $this->searchAccounts($request, $term, $scopeFilters, $page, $limit),
+                    'crm-contacts' => $this->searchCrm($term, $page, $limit),
+                    default => $this->searchSource($request, $id, $term, $scopeFilters, $page, $limit),
+                };
                 $groups[] = $group;
                 $this->record($id, $started, count($group['results']), 'ok');
             } catch (\Throwable $exception) {
@@ -103,11 +111,47 @@ class ContextualSearchService
             }
             return $result;
         }
+        if ($scope === 'crm-contacts') {
+            abort_unless($this->canSearchCrm($request->user()), 404);
+
+            return $this->crmResult(CrmContact::query()->findOrFail($id));
+        }
+
         abort_unless(isset(self::SOURCES[$scope]), 404);
         $groups = $this->search($request, $scope, $term, $filters, 1, 100)['groups'];
         $result = collect($groups[0]['results'] ?? [])->first(fn ($row) => (string) $row['id'] === $id);
         abort_unless($result, 404);
         return $result;
+    }
+
+    private function canSearchCrm(User $user): bool
+    {
+        return (bool) config('crm.enabled') && app(CrmAccess::class)->can($user, 'crm-contacts', 'view');
+    }
+
+    private function searchCrm(string $term, int $page, int $limit): array
+    {
+        $query = CrmContactController::filtered(CrmContact::query(), ['search' => $term, 'include_lost' => true]);
+        $total = (clone $query)->count();
+        $contacts = $query->orderBy('name')->orderBy('id')->offset(($page - 1) * $limit)->limit($limit)->get();
+
+        return [
+            'scope' => 'crm-contacts', 'label' => 'CRM contacts',
+            'results' => $contacts->map(fn (CrmContact $contact) => $this->crmResult($contact))->all(),
+            'total' => $total, 'hasMore' => $page * $limit < $total,
+        ];
+    }
+
+    private function crmResult(CrmContact $contact): array
+    {
+        return [
+            'type' => 'crm-contacts', 'id' => (string) $contact->id,
+            'title' => $contact->name,
+            'subtitle' => implode(' · ', array_filter([$contact->company, $contact->email])),
+            'badges' => [$contact->stageLabel()],
+            'metadata' => ['Company' => $contact->company, 'Email' => $contact->email, 'Phone' => $contact->phone],
+            'destination' => '/crm/contacts/'.$contact->id,
+        ];
     }
 
     private function searchAccounts(Request $request, string $term, array $filters, int $page, int $limit): array

@@ -56,7 +56,7 @@ class CrmCampaignService
     public function update(CrmCampaign $campaign, array $data, User $actor): CrmCampaign
     {
         $this->assertOwnerOrApprover($campaign, $actor);
-        if (in_array($campaign->status, ['sending', 'sent'], true)) {
+        if (in_array($campaign->status, ['sending', 'sent', 'needs_review', 'skipped'], true)) {
             throw ValidationException::withMessages(['status' => 'A sent campaign cannot be changed.']);
         }
         $changes = [];
@@ -164,24 +164,31 @@ class CrmCampaignService
     /** @return array{total: int, reachable: int, opted_out: int, bounced: int} */
     public function audienceSummary(CrmCampaign $campaign): array
     {
-        $all = $this->audienceQuery($campaign)->get(['id', 'email_normalized', 'email_opt_out_at', 'email_status']);
+        $all = $this->audienceQuery($campaign)->get(['id', 'email_normalized', 'email_opt_out_at', 'email_status', 'marketing_consent_email', 'marketing_consent_at']);
         $suppressed = \App\Models\Crm\EmailSuppression::query()->whereIn('email_normalized', $all->pluck('email_normalized'))->pluck('email_normalized')->flip();
         $optedOut = $all->filter(fn ($c) => $c->email_opt_out_at || isset($suppressed[$c->email_normalized]))->count();
         $bounced = $all->filter(fn ($c) => in_array($c->email_status, ['bounced', 'complained'], true))->count();
 
-        return ['total' => $all->count(), 'reachable' => max(0, $all->count() - $optedOut - $bounced), 'opted_out' => $optedOut, 'bounced' => $bounced];
+        $consent = app(CrmMarketingConsent::class);
+        $reachable = $all->filter(fn ($c) => $consent->allows($c) && ! $c->email_opt_out_at
+            && ! isset($suppressed[$c->email_normalized]) && ! in_array($c->email_status, ['bounced', 'complained'], true))->count();
+
+        return ['total' => $all->count(), 'reachable' => $reachable, 'opted_out' => $optedOut, 'bounced' => $bounced,
+            'no_consent' => $all->reject(fn ($c) => $consent->allows($c))->count()];
     }
 
     /** Sends campaigns whose time has come. */
     public function runDue(): array
     {
         $counts = ['campaigns' => 0, 'sent' => 0, 'skipped' => 0];
-        if (! config('crm.enabled')) {
+        if (! config('crm.enabled') || $this->sender->transport()->name() === 'log') {
             return $counts;
         }
-        $due = CrmCampaign::query()->where('status', 'scheduled')->where('scheduled_at', '<=', now())->pluck('id');
+        $available = fn ($q) => $q->where(fn ($q) => $q->where('status', 'scheduled')->where('scheduled_at', '<=', now()))
+            ->orWhere(fn ($q) => $q->where('status', 'sending')->where('updated_at', '<', now()->subMinutes(30)));
+        $due = CrmCampaign::query()->where($available)->pluck('id');
         foreach ($due as $id) {
-            $claimed = LockedWrite::run(fn () => CrmCampaign::query()->whereKey($id)->where('status', 'scheduled')->update(['status' => 'sending']), 'crm.campaign.claim');
+            $claimed = LockedWrite::run(fn () => CrmCampaign::query()->whereKey($id)->where($available)->update(['status' => 'sending', 'updated_at' => now()]), 'crm.campaign.claim');
             if (! $claimed) {
                 continue;
             }
@@ -200,12 +207,10 @@ class CrmCampaignService
         $owner = User::query()->find($campaign->owner_id);
         $template = CrmEmailTemplate::query()->find($campaign->template_id);
         $version = $template?->versions()->whereKey($campaign->template_version_id)->first();
-        $sent = 0;
-        $skipped = 0;
 
         foreach ($this->audienceQuery($campaign)->orderBy('id')->cursor() as $contact) {
             $recipient = CrmCampaignRecipient::query()->firstOrCreate(['campaign_id' => $campaign->id, 'contact_id' => $contact->id], ['status' => 'pending']);
-            if ($recipient->status === 'sent') {
+            if ($recipient->status !== 'pending') {
                 continue;
             }
             try {
@@ -223,18 +228,40 @@ class CrmCampaignService
                     'marketing' => true,
                     'counts_as_contact' => false,
                 ]);
-                $recipient->forceFill(['status' => 'sent', 'send_id' => $send->id])->save();
-                $sent++;
+                $recipient->forceFill(['status' => $send->acceptedByProvider() ? 'sent' : $send->status,
+                    'reason' => $send->error ? mb_substr($send->error, 0, 120) : null, 'send_id' => $send->id])->save();
             } catch (CrmSendBlocked $e) {
-                $recipient->forceFill(['status' => 'skipped', 'reason' => mb_substr($e->getMessage(), 0, 120)])->save();
-                $skipped++;
+                $ineligible = in_array($e->reason, ['no_email', 'bounced', 'opted_out', 'no_consent'], true);
+                $recipient->forceFill(['status' => $ineligible ? 'skipped' : 'blocked', 'reason' => mb_substr($e->getMessage(), 0, 120)])->save();
             }
         }
 
-        $campaign->forceFill(['status' => 'sent', 'sent_at' => now(), 'recipient_count' => $sent])->save();
-        $this->notices->notify($campaign->owner_id, 'campaign_sent', '“'.$campaign->name.'” was sent to '.$sent.' contact'.($sent === 1 ? '' : 's'), $skipped ? $skipped.' skipped (unsubscribed or bounced).' : null);
+        ['sent' => $sent, 'skipped' => $skipped, 'unconfirmed' => $unconfirmed] = $this->deliverySummary($campaign);
+        $status = $unconfirmed ? 'needs_review' : ($sent ? 'sent' : 'skipped');
+        $campaign->forceFill(['status' => $status, 'sent_at' => $sent ? now() : null, 'recipient_count' => $sent])->save();
+        $this->notices->notify($campaign->owner_id, 'campaign_sent', '“'.$campaign->name.'” was sent to '.$sent.' contact'.($sent === 1 ? '' : 's'), $skipped.' skipped. '.$unconfirmed.' need delivery review.');
 
         return ['sent' => $sent, 'skipped' => $skipped];
+    }
+
+    public function deliverySummary(CrmCampaign $campaign): array
+    {
+        $counts = CrmCampaignRecipient::query()->where('campaign_id', $campaign->id)
+            ->selectRaw('status, count(*) as total')->groupBy('status')->pluck('total', 'status');
+        $sent = (int) $counts->get('sent', 0);
+        $skipped = (int) $counts->get('skipped', 0);
+
+        return ['sent' => $sent, 'skipped' => $skipped, 'unconfirmed' => (int) $counts->sum() - $sent - $skipped];
+    }
+
+    public function deliveryIssues(CrmCampaign $campaign): array
+    {
+        return CrmCampaignRecipient::query()->join('crm_contacts as c', 'c.id', '=', 'crm_campaign_recipients.contact_id')
+            ->where('campaign_id', $campaign->id)->whereIn('c.id', CrmContact::query()->select('id'))
+            ->whereNotIn('crm_campaign_recipients.status', ['sent', 'skipped', 'pending'])
+            ->orderBy('crm_campaign_recipients.id')->limit(100)
+            ->get(['c.id as contact_id', 'c.name', 'crm_campaign_recipients.status', 'crm_campaign_recipients.reason'])
+            ->toArray();
     }
 
     public function runCheck(CrmCampaign $campaign): array

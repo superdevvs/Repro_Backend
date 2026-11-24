@@ -31,27 +31,20 @@ class CrmInboundReply
         if (! $send) {
             return false;
         }
-        if ($eventId !== '' && CrmEmailEvent::query()->where('provider_event_id', $eventId)->exists()) {
-            return true;
-        }
-
         $emailId = (string) data_get($payload, 'data.email_id', '');
-        $content = $emailId !== '' ? $this->fetch($emailId) : [];
-        $text = trim((string) ($content['text'] ?? ''));
-        $excerpt = mb_substr($this->stripQuoted($text), 0, 1000);
-
-        CrmEmailEvent::create([
-            'send_id' => $send->id, 'provider_event_id' => $eventId !== '' ? $eventId : null, 'type' => 'replied',
-            'payload' => ['from' => data_get($payload, 'data.from'), 'subject' => data_get($payload, 'data.subject'), 'email_id' => $emailId], 'occurred_at' => now(),
-        ]);
-        $send->forceFill(['replied_at' => $send->replied_at ?? now()])->save();
-
-        $contact = $send->contact_id ? CrmContact::unscopedForSystem()->find($send->contact_id) : null;
-        if ($contact) {
-            $this->activity->log($contact, 'email_reply', null, 'Replied: '.mb_substr((string) data_get($payload, 'data.subject', $send->subject), 0, 180), ['send_id' => $send->id, 'excerpt' => mb_substr($excerpt, 0, 240), 'message' => $excerpt]);
-            event(new CrmContactReplied($contact, $send->id));
+        abort_if($eventId === '' || $emailId === '', 422, 'Missing email event identity.');
+        $receipt = CrmEmailEvent::query()->where('provider_event_id', $eventId)->first();
+        if (! $receipt) {
+            $content = $this->fetch($emailId);
+            $text = trim((string) ($content['text'] ?? ''));
+            if ($text === '') {
+                $text = trim(CrmHtmlSanitizer::toText((string) ($content['html'] ?? '')));
+            }
+            $receipt = $this->record($send, $eventId, $emailId, $payload, $this->stripQuoted($text));
         }
-        $this->forward($send, $contact, $payload, $text);
+        if (empty($receipt->payload['forward_status'])) {
+            $this->forward($send, $receipt);
+        }
 
         return true;
     }
@@ -61,7 +54,7 @@ class CrmInboundReply
         $domain = preg_quote((string) config('crm.email.reply_domain', 'reply.reprophotos.com'), '/');
         foreach ($to as $address) {
             $address = is_array($address) ? ($address['email'] ?? '') : (string) $address;
-            if (preg_match('/r\+([a-z0-9]{12,40})@'.$domain.'/i', $address, $m)) {
+            if (preg_match('/(?:^|<)r\+([a-z0-9]{12,40})@'.$domain.'(?:$|>)/i', $address, $m)) {
                 return CrmEmailSend::query()->where('reply_token', strtolower($m[1]))->first();
             }
         }
@@ -72,19 +65,40 @@ class CrmInboundReply
     private function fetch(string $emailId): array
     {
         $key = trim((string) config('services.resend.key'));
-        if ($key === '') {
-            return [];
-        }
-        try {
-            $response = Http::withToken($key)->acceptJson()->connectTimeout(5)->timeout(15)
-                ->get('https://api.resend.com/emails/receiving/'.rawurlencode($emailId));
+        abort_if($key === '', 503, 'Inbound mail access is unavailable.');
+        $response = Http::withToken($key)->acceptJson()->connectTimeout(5)->timeout(15)
+            ->get('https://api.resend.com/emails/receiving/'.rawurlencode($emailId));
+        abort_unless($response->successful() && is_array($response->json()), 503, 'Reply content is not available yet.');
 
-            return $response->successful() ? (array) $response->json() : [];
-        } catch (\Throwable $e) {
-            report($e);
+        return $response->json();
+    }
 
-            return [];
-        }
+    private function record(CrmEmailSend $send, string $eventId, string $emailId, array $payload, string $text): CrmEmailEvent
+    {
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($send, $eventId, $emailId, $payload, $text) {
+            $receipt = CrmEmailEvent::query()->firstOrCreate(['provider_event_id' => $eventId], [
+                'send_id' => $send->id, 'type' => 'replied', 'occurred_at' => now(),
+                'payload' => ['from' => data_get($payload, 'data.from'), 'subject' => data_get($payload, 'data.subject'),
+                    'email_id' => $emailId, 'text' => mb_substr($text, 0, 8000)],
+            ]);
+            if (! $receipt->wasRecentlyCreated) {
+                return $receipt;
+            }
+            $send->forceFill(['replied_at' => $send->replied_at ?? now()])->save();
+            $contact = $send->contact_id ? CrmContact::unscopedForSystem()->find($send->contact_id) : null;
+            if ($contact) {
+                $this->activity->log($contact, 'email_reply', null, 'Replied: '.mb_substr((string) ($receipt->payload['subject'] ?: $send->subject), 0, 180),
+                    ['send_id' => $send->id, 'excerpt' => mb_substr($text, 0, 240), 'message' => mb_substr($text, 0, 1000)]);
+                event(new CrmContactReplied($contact, $send->id));
+            }
+            $repId = $contact?->assigned_rep_id ?? $send->sender_user_id;
+            if ($repId) {
+                $this->notices->notify($repId, 'email_reply', ($contact?->name ?? $receipt->payload['from']).' replied to your email',
+                    mb_substr($text, 0, 300), $contact?->id, ['send_id' => $send->id]);
+            }
+
+            return $receipt;
+        });
     }
 
     /** Keep the new part of the reply, not the quoted original. */
@@ -103,31 +117,40 @@ class CrmInboundReply
     }
 
     /** The rep gets the reply in their own inbox, from the CRM's system address, plus a notice. */
-    private function forward(CrmEmailSend $send, ?CrmContact $contact, array $payload, string $text): void
+    private function forward(CrmEmailSend $send, CrmEmailEvent $receipt): void
     {
+        $contact = $send->contact_id ? CrmContact::unscopedForSystem()->find($send->contact_id) : null;
         $repId = $contact?->assigned_rep_id ?? $send->sender_user_id;
         $rep = $repId ? User::query()->find($repId) : null;
         if (! $rep) {
             return;
         }
-        $who = $contact?->name ?? (string) data_get($payload, 'data.from', 'Someone');
-        $this->notices->notify($rep->id, 'email_reply', $who.' replied to your email', mb_substr($this->stripQuoted($text), 0, 300) ?: null, $contact?->id, ['send_id' => $send->id]);
-
-        $to = $send->from_email && str_ends_with(strtolower($send->from_email), '@'.config('crm.email.sender_domain', 'reprophotos.com')) ? $send->from_email : $rep->email;
+        $reply = $receipt->payload;
+        $who = $contact?->name ?? (string) $reply['from'];
+        $to = (int) $rep->id === (int) $send->sender_user_id && $send->from_email
+            && str_ends_with(strtolower($send->from_email), '@'.config('crm.email.sender_domain')) ? $send->from_email : $rep->email;
         $base = rtrim((string) config('crm.email.public_base_url'), '/');
         try {
-            app(CrmEmailSender::class)->send([
+            $result = app(CrmEmailSender::class)->send([
                 'to_email' => $to, 'sender' => null, 'source_type' => 'reply_fwd', 'source_id' => $send->id, 'marketing' => false,
-                'idempotency_key' => 'crm-reply-fwd-'.$send->id.'-'.md5((string) data_get($payload, 'data.email_id', '')),
+                'idempotency_key' => 'crm-reply-fwd-'.$send->id.'-'.md5($reply['email_id']),
                 'content' => [
-                    'subject' => 'Reply from '.$who.': '.mb_substr((string) data_get($payload, 'data.subject', $send->subject), 0, 150),
-                    'body_html' => '<p><strong>'.e($who).'</strong> ('.e((string) data_get($payload, 'data.from', '')).') replied:</p><p>'.nl2br(e(mb_substr($text, 0, 8000))).'</p>'
-                        .($contact ? '<p><a href="'.e($base.'/crm/contacts/'.$contact->id).'">Open '.e($contact->name).' in the CRM</a></p>' : ''),
-                    'preheader' => null, 'image_url' => null, 'cta_label' => null, 'cta_url' => null,
+                    'subject' => mb_substr('Reply from '.$who.': '.($reply['subject'] ?: $send->subject), 0, 190),
+                    'body_html' => '<p><strong>'.e($who).'</strong> ('.e($reply['from']).') replied:</p><p>'.nl2br(e($reply['text'])).'</p>'
+                        .($contact ? '<p><a href="'.e($base.'/crm/contacts/'.$contact->id).'">Open the CRM contact</a></p>' : ''),
                 ],
             ]);
-        } catch (\Throwable $e) {
-            report($e);
+            $status = $result->status;
+            if ($status === 'queued') {
+                abort(503, 'Reply forwarding is still processing.');
+            }
+        } catch (CrmSendBlocked $e) {
+            $status = 'blocked';
+        }
+        $receipt->forceFill(['payload' => [...$reply, 'forward_status' => $status]])->save();
+        if (in_array($status, ['uncertain', 'failed', 'blocked'], true)) {
+            $this->notices->notify($rep->id, 'reply_forward_failed', 'Read this reply in Conversations',
+                'Forwarding to your inbox was not confirmed.', $contact?->id, ['send_id' => $send->id]);
         }
     }
 }

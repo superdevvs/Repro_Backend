@@ -72,7 +72,7 @@ class CrmEmailTest extends CrmTestCase
         $rep = $this->rep(['email' => 'maya@reprophotos.com', 'name' => 'Maya Torres']);
         $this->approvedSignature($rep);
         $template = $this->approvedTemplate();
-        $contact = $this->contactFor($rep, ['name' => 'Dana Whitfield', 'email' => 'dana@whitfieldrowe.com', 'company' => 'Whitfield & Rowe', 'market_city' => 'Bethesda']);
+        $contact = $this->contactWithMarketingOptIn($rep, ['name' => 'Dana Whitfield', 'email' => 'dana@whitfieldrowe.com', 'company' => 'Whitfield & Rowe', 'market_city' => 'Bethesda']);
         $this->actAs($rep);
 
         $this->getJson("/api/crm/contacts/{$contact->id}/emails/compose")->assertOk()->assertJsonPath('blocker', null)->assertJsonPath('transport', 'log');
@@ -88,8 +88,8 @@ class CrmEmailTest extends CrmTestCase
         $this->assertStringContainsString('Bethesda', $send->html);
         $this->assertStringContainsString('/unsubscribe/', $send->html);
         $this->assertStringContainsString('Sales Representative', $send->html);
-        $this->assertNotNull($contact->fresh()->last_contacted_at);
-        $this->assertDatabaseHas('crm_activities', ['contact_id' => $contact->id, 'type' => 'email_sent', 'subject_id' => $send->id]);
+        $this->assertNull($contact->fresh()->last_contacted_at);
+        $this->assertDatabaseMissing('crm_activities', ['contact_id' => $contact->id, 'type' => 'email_sent', 'subject_id' => $send->id]);
 
         $this->getJson("/api/crm/contacts/{$contact->id}/emails/{$send->id}")->assertOk()->assertJsonPath('send.recorded_only', true);
     }
@@ -116,7 +116,7 @@ class CrmEmailTest extends CrmTestCase
         $rep = $this->rep(['email' => 'maya@reprophotos.com']);
         $this->approvedSignature($rep);
         $template = $this->approvedTemplate();
-        $contact = $this->contactFor($rep, ['email' => 'dana@x.com']);
+        $contact = $this->contactWithMarketingOptIn($rep, ['email' => 'dana@x.com']);
         $this->actAs($rep);
 
         $bad = $this->postJson("/api/crm/contacts/{$contact->id}/emails", ['template_id' => $template->id, 'body_html' => '<p>Our photos are guaranteed to sell your home 2x faster.</p>'])->assertUnprocessable();
@@ -135,6 +135,23 @@ class CrmEmailTest extends CrmTestCase
 
         $this->getJson("/api/crm/contacts/{$theirs->id}/emails")->assertNotFound();
         $this->getJson("/api/crm/contacts/{$theirs->id}/emails/{$send->id}")->assertNotFound();
+    }
+
+    public function test_marketing_requires_matching_explicit_consent_and_live_postal_address(): void
+    {
+        $rep = $this->rep(['email' => 'maya@reprophotos.com']);
+        $this->approvedSignature($rep);
+        $template = $this->approvedTemplate();
+        $contact = $this->contactFor($rep, ['email' => 'case@example.com', 'lead_source' => 'website']);
+        $this->actAs($rep);
+        $url = "/api/crm/contacts/{$contact->id}";
+        $this->postJson($url.'/emails', ['template_id' => $template->id])->assertUnprocessable()->assertJsonPath('reason', 'no_consent');
+        $this->postJson($url.'/marketing-consent', ['consent' => true, 'source' => 'written'])->assertOk()->assertJsonPath('marketing_email.consent', true);
+        $this->fakeAcceptedCrmMail();
+        config(['crm.email.company_address' => '']);
+        $this->postJson($url.'/emails', ['template_id' => $template->id])->assertUnprocessable()->assertJsonPath('reason', 'missing_address');
+        $this->patchJson($url, ['email' => 'different@example.com'])->assertOk();
+        $this->getJson($url.'/conversation')->assertJsonPath('marketing_email.consent', false);
     }
 
     public function test_public_unsubscribe_and_resubscribe(): void

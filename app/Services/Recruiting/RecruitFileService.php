@@ -5,6 +5,7 @@ namespace App\Services\Recruiting;
 use App\Models\Recruiting\RecruitApplicant;
 use App\Models\Recruiting\RecruitApplicantFile;
 use App\Models\User;
+use App\Support\LockedWrite;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -27,8 +28,42 @@ class RecruitFileService
         $kind = in_array($kind, RecruitApplicantFile::KINDS, true) ? $kind : 'other';
         $extension = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
         $path = $file->storeAs('recruiting/'.$applicant->id, Str::uuid()->toString().'.'.$extension, self::DISK);
+        if ($path === false) {
+            throw new \RuntimeException('Unable to store the applicant document.');
+        }
 
-        return RecruitApplicantFile::create([
+        return RecruitApplicantFile::create($this->attributes($applicant, $file, $kind, $path, $extension, $actor));
+    }
+
+    public function storeIntakeFile(RecruitApplicant $applicant, UploadedFile $file, string $kind): RecruitApplicantFile
+    {
+        $checksum = hash_file('sha256', $file->getPathname());
+        if ($checksum === false) {
+            throw new \RuntimeException('Unable to read the applicant document.');
+        }
+
+        $identity = ['applicant_id' => $applicant->id, 'kind' => $kind, 'intake_checksum' => $checksum];
+        $existing = RecruitApplicantFile::query()->where($identity)->first();
+        $directory = 'recruiting/'.$applicant->id.'/intake';
+        $filename = $kind.'-'.$checksum;
+        $path = $directory.'/'.$filename;
+        if (! Storage::disk(self::DISK)->exists($path)
+            && $file->storeAs($directory, $filename, self::DISK) === false) {
+            throw new \RuntimeException('Unable to store the applicant document.');
+        }
+        if ($existing) {
+            return $existing;
+        }
+
+        return LockedWrite::run(fn () => RecruitApplicantFile::query()->firstOrCreate(
+            $identity,
+            $this->attributes($applicant, $file, $kind, $path, 'bin', null),
+        ), 'recruit.application.file');
+    }
+
+    private function attributes(RecruitApplicant $applicant, UploadedFile $file, string $kind, string $path, string $extension, ?User $actor): array
+    {
+        return [
             'applicant_id' => $applicant->id,
             'kind' => $kind,
             'path' => $path,
@@ -36,7 +71,7 @@ class RecruitFileService
             'mime' => $file->getMimeType(),
             'size' => (int) $file->getSize(),
             'uploaded_by' => $actor?->id,
-        ]);
+        ];
     }
 
     public function download(RecruitApplicantFile $file, bool $inline = false): StreamedResponse

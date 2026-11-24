@@ -15,7 +15,6 @@ return [
      * Placeholder business rules from the design. Owners can change these
      * without a code change.
      */
-    'first_contact_hours' => (int) env('CRM_FIRST_CONTACT_HOURS', 24),
     'quote_discount_approval_percent' => (float) env('CRM_QUOTE_DISCOUNT_APPROVAL_PERCENT', 10),
     'quote_follow_up_days' => (int) env('CRM_QUOTE_FOLLOW_UP_DAYS', 5),
     'health_slowing_factor' => (float) env('CRM_HEALTH_SLOWING_FACTOR', 1.5),
@@ -38,7 +37,7 @@ return [
         'sender_domain' => env('CRM_SENDER_DOMAIN', 'reprophotos.com'),
         'reply_domain' => env('CRM_REPLY_DOMAIN', 'reply.reprophotos.com'),
         'reply_tracking' => (bool) env('CRM_REPLY_TRACKING', false),
-        'company_address' => env('CRM_COMPANY_ADDRESS', ''),
+        'company_address' => env('CRM_COMPANY_ADDRESS', env('MAIL_COMPANY_ADDRESS', '')),
         'daily_send_cap_per_rep' => (int) env('CRM_DAILY_SEND_CAP_PER_REP', 300),
         'system_from' => env('CRM_SYSTEM_FROM', 'crm@reprophotos.com'),
         'logo_url' => env('CRM_EMAIL_LOGO_URL', 'https://reprodashboard.com/images/repro-email-logo-light.png'),
@@ -59,6 +58,8 @@ return [
         'usage_feature' => 'crm_robbie',
         'review_usage_feature' => 'crm_content_check',
     ],
+
+    'sms' => ['enabled' => (bool) env('CRM_SMS_ENABLED', false)],
 
     'google_sync' => [
         'enabled' => (bool) env('CRM_GOOGLE_SYNC', false),

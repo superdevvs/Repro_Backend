@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\Crm;
 use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmEvent;
 use App\Models\Crm\CrmEventType;
+use App\Services\Crm\CrmBusinessTime;
 use App\Services\Crm\CrmEventPresenter;
 use App\Services\Crm\CrmEventService;
 use Illuminate\Http\JsonResponse;
@@ -28,14 +29,15 @@ class CrmEventController extends CrmController
             return response()->json(['message' => 'You can only see your own follow-ups.'], 403);
         }
 
-        $today = now()->startOfDay();
-        $until = $today->copy()->addDays(1 + (int) ($data['days'] ?? 7));
+        $today = CrmBusinessTime::startOfDay();
+        $endOfToday = CrmBusinessTime::endOfDay();
+        $until = now(CrmBusinessTime::TIMEZONE)->startOfDay()->addDays(1 + (int) ($data['days'] ?? 7))->setTimezone(config('app.timezone'));
         $events = CrmEvent::query()->visible($viewer)->where('assigned_user_id', $userId)->where('status', 'planned')
             ->where('starts_at', '<', $until)->orderBy('starts_at')->get();
 
         $groups = ['overdue' => [], 'today' => [], 'upcoming' => []];
         foreach ($events as $event) {
-            $key = $event->starts_at->lt($today) ? 'overdue' : ($event->starts_at->isToday() ? 'today' : 'upcoming');
+            $key = $event->starts_at->lt($today) ? 'overdue' : ($event->starts_at->lte($endOfToday) ? 'today' : 'upcoming');
             $groups[$key][] = $this->present->event($event);
         }
         $done = CrmEvent::query()->visible($viewer)->where('assigned_user_id', $userId)->whereIn('status', ['done', 'missed'])

@@ -35,7 +35,7 @@ class CrmSuppression
 
         $contacts = CrmContact::unscopedForSystem()->where('email_normalized', $normalized)->get();
         foreach ($contacts as $contact) {
-            $changes = $reason === 'unsubscribe' ? ['email_opt_out_at' => $contact->email_opt_out_at ?? now()] : ['email_status' => $reason === 'complaint' ? 'complained' : 'bounced'];
+            $changes = $reason === 'unsubscribe' ? ['email_opt_out_at' => $contact->email_opt_out_at ?? now(), 'marketing_consent_at' => null, 'marketing_consent_email' => null, 'marketing_consent_source' => null] : ['email_status' => $reason === 'complaint' ? 'complained' : 'bounced'];
             $contact->forceFill($changes)->save();
             $this->activity->log($contact, 'email_suppressed', null, match ($reason) {
                 'unsubscribe' => 'Unsubscribed from email',
@@ -58,6 +58,7 @@ class CrmSuppression
         $row->delete();
         foreach (CrmContact::unscopedForSystem()->where('email_normalized', $normalized)->get() as $contact) {
             $contact->forceFill(['email_opt_out_at' => null])->save();
+            app(CrmMarketingConsent::class)->record($contact, true, 'resubscribe');
             $this->activity->log($contact, 'email_resubscribed', null, 'Resubscribed to email');
         }
 

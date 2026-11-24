@@ -23,7 +23,7 @@ class CrmFollowUpDigest
     /** @return array{sent: int, skipped: int} */
     public function run(): array
     {
-        $endOfToday = now()->endOfDay();
+        $endOfToday = CrmBusinessTime::endOfDay();
         $byUser = CrmEvent::query()->where('status', 'planned')->where('starts_at', '<=', $endOfToday)
             ->whereNotNull('assigned_user_id')->orderBy('starts_at')->get()->groupBy('assigned_user_id');
         $sent = 0;
@@ -46,9 +46,9 @@ class CrmFollowUpDigest
                     'sender' => null,
                     'source_type' => 'digest',
                     'content' => $this->content($user, $events),
-                    'idempotency_key' => 'crm-digest-'.$user->id.'-'.now()->toDateString(),
+                    'idempotency_key' => 'crm-digest-'.$user->id.'-'.now(CrmBusinessTime::TIMEZONE)->toDateString(),
                     'marketing' => false,
-                ]);
+                ])->requireProviderAcceptance();
                 $sent++;
             } catch (CrmSendBlocked) {
                 $skipped++;
@@ -75,7 +75,7 @@ class CrmFollowUpDigest
         $types = \App\Models\Crm\CrmEventType::query()->pluck('label', 'id');
         $contacts = CrmContact::unscopedForSystem()->whereIn('id', $events->pluck('contact_id')->filter()->unique())->get(['id', 'name', 'company'])->keyBy('id');
         $base = rtrim((string) config('app.frontend_url', config('app.url')), '/');
-        $overdue = $events->filter(fn ($e) => $e->starts_at->lt(now()->startOfDay()));
+        $overdue = $events->filter(fn ($e) => $e->starts_at->lt(CrmBusinessTime::startOfDay()));
         $today = $events->diff($overdue);
 
         $row = function ($e) use ($types, $contacts, $base) {
@@ -83,7 +83,7 @@ class CrmFollowUpDigest
             $who = $c ? e($c->name).($c->company ? ' · '.e($c->company) : '') : 'No contact';
             $link = $c ? ' <a href="'.e($base.'/crm/contacts/'.$c->id).'">Open</a>' : '';
 
-            return '<li><strong>'.e($types[$e->type_id] ?? 'Follow-up').'</strong> · '.$who.' · '.e($e->starts_at->format('g:i a')).$link.($e->note ? '<br>'.e($e->note) : '').'</li>';
+            return '<li><strong>'.e($types[$e->type_id] ?? 'Follow-up').'</strong> · '.$who.' · '.e($e->starts_at->copy()->timezone(CrmBusinessTime::TIMEZONE)->format('g:i a T')).$link.($e->note ? '<br>'.e($e->note) : '').'</li>';
         };
 
         $html = '<p>Good morning '.e(explode(' ', trim($user->name))[0] ?? '').',</p>';

@@ -71,7 +71,7 @@ class CrmProposalService
         try {
             $this->validatePayload($proposal->kind, $payload, $user);
             $contact = $proposal->contact_id ? CrmContact::query()->findOrFail($proposal->contact_id) : null;
-            $result = CrmActivityLogger::asRobbie(fn () => $this->execute($proposal->kind, $contact, $payload, $user));
+            $result = CrmActivityLogger::asRobbie(fn () => $this->execute($proposal->kind, $contact, $payload, $user, $proposal->id));
             $proposal->forceFill(['status' => 'confirmed', 'payload' => $payload, 'result' => $result, 'decided_at' => now()])->save();
         } catch (\Throwable $e) {
             // Release the claim so the user can fix the problem and confirm again.
@@ -134,7 +134,7 @@ class CrmProposalService
         };
     }
 
-    private function execute(string $kind, ?CrmContact $contact, array $p, User $user): array
+    private function execute(string $kind, ?CrmContact $contact, array $p, User $user, int $proposalId): array
     {
         if (! $contact) {
             throw ValidationException::withMessages(['contact_id' => 'Contact not found.']);
@@ -161,14 +161,14 @@ class CrmProposalService
 
                 return ['type' => 'drip', 'id' => $enrollment->id];
             case 'email':
-                return $this->sendEmail($contact, $p, $user);
+                return $this->sendEmail($contact, $p, $user, $proposalId);
         }
 
         throw ValidationException::withMessages(['kind' => 'Unknown action.']);
     }
 
     /** Same rules as a one-off email: approved template, edited wording must pass the content check. */
-    private function sendEmail(CrmContact $contact, array $p, User $user): array
+    private function sendEmail(CrmContact $contact, array $p, User $user, int $proposalId): array
     {
         $template = CrmEmailTemplate::query()->findOrFail((int) $p['template_id']);
         $version = $template->approvedVersion;
@@ -184,7 +184,7 @@ class CrmProposalService
             $send = app(CrmEmailSender::class)->send([
                 'contact' => $contact, 'sender' => $user, 'source_type' => 'one_off', 'template_version' => $version,
                 'content' => ['subject' => $subject, 'body_html' => $body, 'preheader' => $version->preheader, 'image_url' => $version->image_url, 'cta_label' => $version->cta_label, 'cta_url' => $version->cta_url],
-                'marketing' => true, 'counts_as_contact' => true,
+                'marketing' => true, 'counts_as_contact' => true, 'idempotency_key' => 'crm-robbie-proposal-'.$proposalId,
             ]);
         } catch (CrmSendBlocked $e) {
             throw ValidationException::withMessages(['email' => $e->getMessage()]);

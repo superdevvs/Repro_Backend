@@ -45,7 +45,7 @@ class CrmReports
             ->sort()->values();
 
         $events = CrmEvent::query()->whereIn('contact_id', $ids)->whereBetween('completed_at', $period)->where('status', 'done')->count();
-        $emails = DB::table('crm_email_sends')->whereIn('contact_id', $ids)->whereBetween('created_at', $period)->whereIn('status', ['sent', 'logged'])
+        $emails = DB::table('crm_email_sends')->whereIn('contact_id', $ids)->whereBetween('created_at', $period)->whereNotNull('sent_at')->whereNotNull('provider_message_id')
             ->selectRaw('COUNT(*) as sent, SUM(CASE WHEN first_opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened, SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied')->first();
         $quotes = CrmQuote::query()->whereIn('contact_id', $ids)->whereBetween('sent_at', $period)
             ->selectRaw("COUNT(*) as sent, SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) as accepted, SUM(CASE WHEN status = 'accepted' THEN total ELSE 0 END) as accepted_value")->first();

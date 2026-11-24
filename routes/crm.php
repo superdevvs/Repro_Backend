@@ -39,6 +39,8 @@ Route::middleware(['auth:sanctum', 'crm.enabled', 'permission:crm-contacts,view'
         Route::post('contacts/{contact}/assign', [CrmContactController::class, 'assign'])->whereNumber('contact')->name('contacts.assign');
         Route::get('contacts/{contact}/activity', [CrmContactController::class, 'activity'])->whereNumber('contact')->name('contacts.activity');
 
+        Route::post('contacts/{contact}/review', [CrmContactController::class, 'review'])->whereNumber('contact')->name('contacts.review');
+
         Route::get('contacts/{contact}/notes', [CrmNoteController::class, 'index'])->whereNumber('contact')->name('notes.index');
         Route::post('contacts/{contact}/notes', [CrmNoteController::class, 'store'])->whereNumber('contact')->name('notes.store');
         Route::patch('contacts/{contact}/notes/{note}', [CrmNoteController::class, 'update'])->whereNumber(['contact', 'note'])->name('notes.update');

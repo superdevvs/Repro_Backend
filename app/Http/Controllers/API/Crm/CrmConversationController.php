@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\API\Crm;
 
 use App\Models\Crm\CrmContact;
+use App\Models\Crm\CrmEmailEvent;
 use App\Models\Crm\CrmEmailSend;
-use App\Services\Crm\CrmActivityLogger;
+use App\Services\Crm\CrmSmsConsent;
+use App\Services\Crm\CrmSmsSender;
+use App\Services\Crm\Email\CrmMarketingConsent;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +16,7 @@ use Illuminate\Support\Facades\Schema;
 /**
  * Conversations (F5): one timeline of CRM emails and the Dashboard's existing
  * texts and calls with this contact's number. Texting from the CRM needs the
- * contact's SMS consent; sending is switched on in the final stage.
+ * contact's recorded SMS consent and the configured provider.
  */
 class CrmConversationController extends CrmController
 {
@@ -28,6 +31,13 @@ class CrmConversationController extends CrmController
                 'opened' => $s->first_opened_at !== null, 'replied' => $s->replied_at !== null, 'id' => 'email-'.$s->id,
             ]));
 
+        CrmEmailEvent::query()->where('type', 'replied')
+            ->whereIn('send_id', CrmEmailSend::query()->select('id')->where('contact_id', $contact->id))
+            ->orderByDesc('id')->limit(100)->get()->each(fn ($reply) => $items->push([
+                'channel' => 'email', 'direction' => 'in', 'at' => $reply->occurred_at?->toIso8601String(),
+                'title' => $reply->payload['subject'] ?? 'Email reply', 'body' => $reply->payload['text'] ?? '',
+                'status' => 'received', 'id' => 'reply-'.$reply->id,
+            ]));
         $digits = $contact->phone_digits ? substr($contact->phone_digits, -10) : null;
         if ($digits && strlen($digits) === 10) {
             if (Schema::hasTable('messages')) {
@@ -53,11 +63,18 @@ class CrmConversationController extends CrmController
 
         return response()->json([
             'items' => $items->sortByDesc(fn ($i) => strtotime((string) $i['at']) ?: 0)->values()->all(),
+            'marketing_email' => [
+                'consent' => app(CrmMarketingConsent::class)->allows($contact),
+                'consent_at' => $contact->marketing_consent_at?->toIso8601String(), 'source' => $contact->marketing_consent_source,
+            ],
             'sms' => [
-                'consent' => (bool) $contact->sms_consent,
+                'enabled' => (bool) config('crm.sms.enabled'),
+                'timezone' => app(CrmSmsSender::class)->timezone($contact),
+                'consent' => app(CrmSmsConsent::class)->allows($contact),
                 'consent_at' => $contact->sms_consent_at?->toIso8601String(),
                 'source' => $contact->sms_consent_source,
-                'can_send' => (bool) $contact->sms_consent && $digits !== null && (bool) config('crm.sms.enabled', false),
+                'can_send' => app(CrmSmsConsent::class)->allows($contact) && strlen((string) $contact->phone_digits) === 10
+                    && (bool) config('crm.sms.enabled') && $this->access()->can($this->actor($request), 'crm-contacts', 'update'),
             ],
         ]);
     }
@@ -68,13 +85,38 @@ class CrmConversationController extends CrmController
             return $denied;
         }
         $data = $request->validate(['consent' => ['required', 'boolean'], 'source' => ['required_if:consent,true', 'nullable', 'in:verbal,written,website,text_reply']]);
-        $contact->forceFill([
-            'sms_consent' => $data['consent'],
-            'sms_consent_at' => $data['consent'] ? now() : null,
-            'sms_consent_source' => $data['consent'] ? $data['source'] : null,
-        ])->save();
-        app(CrmActivityLogger::class)->log($contact, 'sms_consent', $this->actor($request), $data['consent'] ? 'SMS consent recorded ('.$data['source'].')' : 'SMS consent withdrawn');
+        if ($data['consent'] && ! $contact->phone_digits) {
+            return response()->json(['message' => 'Add a phone number before recording consent.'], 422);
+        }
+        app(CrmSmsConsent::class)->record($contact, $data['consent'], $data['source'] ?? 'manual', $this->actor($request));
 
         return $this->show($request, $contact->fresh());
+    }
+
+    public function marketingConsent(Request $request, CrmContact $contact): JsonResponse
+    {
+        if ($denied = $this->requirePermission($request, 'crm-contacts', 'update')) {
+            return $denied;
+        }
+        $data = $request->validate(['consent' => ['required', 'boolean'],
+            'source' => ['required_if:consent,true', 'nullable', 'in:verbal,written,website,email_reply']]);
+        if ($data['consent'] && ! $contact->email_normalized) {
+            return response()->json(['message' => 'Add an email address before recording consent.'], 422);
+        }
+        app(CrmMarketingConsent::class)->record($contact, $data['consent'], $data['source'] ?? 'manual', $this->actor($request));
+
+        return $this->show($request, $contact->fresh());
+    }
+
+    public function sendSms(Request $request, CrmContact $contact, CrmSmsSender $sender): JsonResponse
+    {
+        if ($denied = $this->requirePermission($request, 'crm-contacts', 'update')) {
+            return $denied;
+        }
+        $data = $request->validate(['body' => ['required', 'string', 'max:1600'], 'request_id' => ['required', 'uuid'],
+            'timezone' => ['nullable', 'timezone']]);
+        $result = $sender->send($contact, $this->actor($request), $data);
+
+        return response()->json($result, 200);
     }
 }

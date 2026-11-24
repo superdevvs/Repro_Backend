@@ -144,7 +144,7 @@ class CrmDripService
         if ($campaign->status !== 'live') {
             throw ValidationException::withMessages(['campaign_id' => 'This drip is not live.']);
         }
-        if (! $contact->email || $contact->email_opt_out_at || in_array($contact->email_status, ['bounced', 'complained'], true)) {
+        if (! app(CrmMarketingConsent::class)->allows($contact) || ! $contact->email || $contact->email_opt_out_at || in_array($contact->email_status, ['bounced', 'complained'], true)) {
             throw ValidationException::withMessages(['campaign_id' => 'This contact cannot receive email.']);
         }
         if ($contact->isLost()) {
@@ -197,6 +197,7 @@ class CrmDripService
         $labels = [
             'reply' => 'they replied', 'unsubscribe' => 'they unsubscribed', 'bounce' => 'their email bounced', 'complaint' => 'they marked an email as spam',
             'booked' => 'a shoot was booked', 'lost' => 'the contact was marked lost', 'manual' => 'stopped by hand', 'replaced' => 'moved to another drip',
+            'delivery_review' => 'delivery needs review', 'consent_withdrawn' => 'marketing consent is missing',
             'completed' => 'all steps were sent', 'campaign_retired' => 'the drip was retired', 'no_sender' => 'the contact has no rep who can send email',
         ];
         if ($contact) {
@@ -231,7 +232,7 @@ class CrmDripService
     public function runDue(int $limit = 200): array
     {
         $counts = ['sent' => 0, 'skipped' => 0, 'stopped' => 0, 'failed' => 0];
-        if (! config('crm.enabled')) {
+        if (! config('crm.enabled') || $this->sender->transport()->name() === 'log') {
             return $counts;
         }
 
@@ -306,12 +307,17 @@ class CrmDripService
                 'marketing' => true,
                 'counts_as_contact' => false,
                 'vars' => [],
-            ]);
+            ])->requireProviderAcceptance();
             $enrollment->forceFill(['steps_sent' => $enrollment->steps_sent + 1])->save();
             $advance();
 
             return 'sent';
         } catch (CrmSendBlocked $e) {
+            if (in_array($e->reason, ['uncertain', 'blocked', 'failed', 'queued', 'no_consent'], true)) {
+                $this->stopEnrollment($enrollment, $e->reason === 'no_consent' ? 'consent_withdrawn' : 'delivery_review', null);
+
+                return 'stopped';
+            }
             if (in_array($e->reason, ['opted_out', 'bounced', 'no_email'], true)) {
                 $this->stopEnrollment($enrollment, $e->reason === 'opted_out' ? 'unsubscribe' : 'bounce', null);
 

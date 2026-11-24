@@ -65,9 +65,10 @@ class CrmMarketingTest extends CrmTestCase
 
     public function test_drip_sends_due_steps_skips_placeholders_and_keeps_one_active_drip(): void
     {
+        $this->fakeAcceptedCrmMail();
         $rep = $this->signed($this->rep());
         $drip = $this->liveDrip();
-        $contact = $this->contactFor($rep, ['email' => 'dana@x.com']);
+        $contact = $this->contactWithMarketingOptIn($rep, ['email' => 'dana@x.com']);
         $this->actAs($rep);
 
         $this->postJson("/api/crm/contacts/{$contact->id}/drip", ['campaign_id' => $drip->id])->assertCreated();
@@ -96,9 +97,10 @@ class CrmMarketingTest extends CrmTestCase
 
     public function test_editing_a_live_drip_changes_only_future_steps(): void
     {
+        $this->fakeAcceptedCrmMail();
         $rep = $this->signed($this->rep());
         $drip = $this->liveDrip();
-        $contact = $this->contactFor($rep, ['email' => 'dana@x.com']);
+        $contact = $this->contactWithMarketingOptIn($rep, ['email' => 'dana@x.com']);
         app(CrmDripService::class)->enrol($contact, $drip, $rep);
         $this->artisan('crm:send-due');
 
@@ -116,12 +118,13 @@ class CrmMarketingTest extends CrmTestCase
 
     public function test_drip_stops_on_booked_lost_unsubscribe_and_reply_and_rep_is_told(): void
     {
+        $this->fakeAcceptedCrmMail();
         $rep = $this->signed($this->rep());
         $drip = $this->liveDrip();
-        $a = $this->contactFor($rep, ['email' => 'a@x.com']);
-        $b = $this->contactFor($rep, ['email' => 'b@x.com']);
-        $c = $this->contactFor($rep, ['email' => 'c@x.com']);
-        $d = $this->contactFor($rep, ['email' => 'd@x.com']);
+        $a = $this->contactWithMarketingOptIn($rep, ['email' => 'a@x.com']);
+        $b = $this->contactWithMarketingOptIn($rep, ['email' => 'b@x.com']);
+        $c = $this->contactWithMarketingOptIn($rep, ['email' => 'c@x.com']);
+        $d = $this->contactWithMarketingOptIn($rep, ['email' => 'd@x.com']);
         foreach ([$a, $b, $c, $d] as $contact) {
             app(CrmDripService::class)->enrol($contact, $drip, $rep);
         }
@@ -139,10 +142,11 @@ class CrmMarketingTest extends CrmTestCase
 
     public function test_campaign_approval_flow_and_edit_after_approval_returns_to_review(): void
     {
+        $this->fakeAcceptedCrmMail();
         $rep = $this->signed($this->rep());
         $template = $this->template('Winter refresh', 'campaign');
-        $mine = $this->contactFor($rep, ['email' => 'mine@x.com', 'segment' => 'residential']);
-        $this->contactFor($this->rep(), ['email' => 'theirs@x.com', 'segment' => 'residential']);
+        $mine = $this->contactWithMarketingOptIn($rep, ['email' => 'mine@x.com', 'segment' => 'residential']);
+        $this->contactWithMarketingOptIn($this->rep(), ['email' => 'theirs@x.com', 'segment' => 'residential']);
         $this->actAs($rep);
 
         $id = $this->postJson('/api/crm/campaigns', ['name' => 'Winter', 'template_id' => $template->id, 'audience' => ['segment' => 'residential']])->assertCreated()->json('campaign.id');
@@ -173,6 +177,29 @@ class CrmMarketingTest extends CrmTestCase
         $this->assertSame(1, $campaign->recipient_count);
         $this->assertSame(['mine@x.com'], CrmEmailSend::query()->where('source_type', 'campaign')->pluck('to_email')->all());
         $this->assertSame($mine->id, CrmEmailSend::query()->where('source_type', 'campaign')->value('contact_id'));
+    }
+
+    public function test_uncertain_delivery_holds_both_campaign_and_drip_without_claiming_a_send(): void
+    {
+        $this->fakeAcceptedCrmMail();
+        $transport = $this->mock(\App\Services\Crm\Email\Transport\CrmMailTransport::class);
+        $transport->shouldReceive('name')->andReturn('resend');
+        $transport->shouldReceive('send')->twice()->andReturn(['status' => 'uncertain', 'error' => 'No confirmation', 'provider_message_id' => null]);
+        $rep = $this->signed($this->rep());
+        $contact = $this->contactWithMarketingOptIn($rep, ['email' => 'person@example.com']);
+        $drip = $this->liveDrip();
+        $enrollment = app(CrmDripService::class)->enrol($contact, $drip, $rep);
+        $template = $this->template('Sample campaign', 'campaign');
+        $campaign = CrmCampaign::create(['name' => 'Sample', 'owner_id' => $rep->id, 'template_id' => $template->id,
+            'template_version_id' => $template->approved_version_id, 'subject' => 'Sample', 'body_html' => '<p>Hello</p>',
+            'audience' => ['contact_ids' => [$contact->id]], 'status' => 'scheduled', 'scheduled_at' => now()->subMinute()]);
+        $this->artisan('crm:send-due')->assertSuccessful();
+        $this->artisan('crm:send-due')->assertSuccessful();
+        $this->assertSame('delivery_review', $enrollment->fresh()->stop_reason);
+        $this->assertSame(0, (int) $enrollment->fresh()->steps_sent);
+        $this->assertSame('needs_review', $campaign->fresh()->status);
+        $this->assertSame(0, (int) $campaign->fresh()->recipient_count);
+        $this->assertNull($contact->fresh()->last_contacted_at);
     }
 
     public function test_reps_see_only_their_own_campaigns(): void

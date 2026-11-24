@@ -17,8 +17,8 @@ use Illuminate\Validation\ValidationException;
 /**
  * Quotes (frame F3): catalogue prices from the Dashboard's services, a
  * discount above the approval threshold needs crm-quotes:approve, sending
- * moves early contacts to Estimate and books a follow-up, acceptance moves
- * the contact to Booked.
+ * moves early contacts to Estimate and books a follow-up. Accepted quotes
+ * enter the existing booking request workflow.
  */
 class CrmQuoteService
 {
@@ -35,7 +35,7 @@ class CrmQuoteService
                 'contact_id' => $contact->id,
                 'number' => 'Q-'.Str::upper(Str::random(10)),
                 'status' => 'draft',
-                'property_address' => $data['property_address'] ?? null,
+                ...collect($data)->only(['property_address', 'property_city', 'property_state', 'property_zip', 'sqft'])->all(),
                 'notes' => $data['notes'] ?? null,
                 'discount_percent' => (float) ($data['discount_percent'] ?? 0),
                 'public_token' => Str::random(48),
@@ -52,19 +52,22 @@ class CrmQuoteService
 
     public function update(CrmQuote $quote, array $data, User $actor): CrmQuote
     {
-        if (! in_array($quote->status, ['draft', 'pending_approval', 'approved'], true)) {
-            throw ValidationException::withMessages(['status' => 'A sent quote can’t be changed. Create a new one.']);
-        }
-
         return LockedWrite::run(fn () => DB::transaction(function () use ($quote, $data) {
-            $quote->fill(collect($data)->only(['property_address', 'notes'])->all());
+            $quote = CrmQuote::query()->lockForUpdate()->findOrFail($quote->id);
+            if (! in_array($quote->status, ['draft', 'pending_approval', 'approved'], true)) {
+                throw ValidationException::withMessages(['status' => 'Only an unsent quote can be edited.']);
+            }
+            $previousSqft = $quote->sqft;
+            $quote->fill(collect($data)->only(['property_address', 'property_city', 'property_state', 'property_zip', 'sqft', 'notes'])->all());
             if (array_key_exists('discount_percent', $data)) {
                 $quote->discount_percent = (float) $data['discount_percent'];
             }
             // Any change to price or lines needs a fresh approval.
             $quote->forceFill(['status' => 'draft', 'approved_by' => null, 'approved_at' => null])->save();
             if (array_key_exists('items', $data)) {
-                $this->replaceItems($quote, $data['items'], isset($data['sqft']) ? (int) $data['sqft'] : null);
+                $this->replaceItems($quote, $data['items'], $quote->sqft);
+            } elseif ($previousSqft !== $quote->sqft) {
+                $this->replaceItems($quote, $quote->items()->get()->toArray(), $quote->sqft);
             } else {
                 $this->recalculate($quote);
             }
@@ -80,10 +83,12 @@ class CrmQuoteService
 
     public function submit(CrmQuote $quote, User $actor): CrmQuote
     {
-        if ($quote->status !== 'draft') {
+        $claimed = CrmQuote::query()->whereKey($quote->id)->where('status', 'draft')
+            ->update(['status' => 'pending_approval']);
+        if (! $claimed) {
             throw ValidationException::withMessages(['status' => 'Only a draft can be sent for approval.']);
         }
-        $quote->forceFill(['status' => 'pending_approval'])->save();
+        $quote->refresh();
         $contact = CrmContact::unscopedForSystem()->find($quote->contact_id);
         $this->notifyApprovers('Quote '.$quote->number.' needs approval', $actor->name.' offered '.rtrim(rtrim(number_format($quote->discount_percent, 2), '0'), '.').'% off'.($contact ? ' to '.$contact->name : '').'.', $quote);
 
@@ -95,10 +100,12 @@ class CrmQuoteService
         if (! $this->access->can($actor, 'crm-quotes', 'approve')) {
             abort(403, 'You can’t approve quotes.');
         }
-        if (! in_array($quote->status, ['draft', 'pending_approval'], true)) {
+        $claimed = CrmQuote::query()->whereKey($quote->id)->whereIn('status', ['draft', 'pending_approval'])
+            ->update(['status' => 'approved', 'approved_by' => $actor->id, 'approved_at' => now()]);
+        if (! $claimed) {
             throw ValidationException::withMessages(['status' => 'This quote is not waiting for approval.']);
         }
-        $quote->forceFill(['status' => 'approved', 'approved_by' => $actor->id, 'approved_at' => now()])->save();
+        $quote->refresh();
         if ((int) $quote->created_by !== (int) $actor->id && $quote->created_by) {
             $this->notices->notify((int) $quote->created_by, 'quote_approved', 'Quote '.$quote->number.' approved', 'You can send it now.', $quote->contact_id, ['quote_id' => $quote->id]);
         }
@@ -108,32 +115,54 @@ class CrmQuoteService
 
     public function send(CrmQuote $quote, User $actor): CrmQuote
     {
-        if (! in_array($quote->status, ['draft', 'approved'], true)) {
-            throw ValidationException::withMessages(['status' => 'This quote can’t be sent.']);
-        }
-        if ($quote->items()->count() === 0) {
-            throw ValidationException::withMessages(['items' => 'Add at least one service.']);
-        }
-        if ($this->needsApproval($quote)) {
-            if (! $this->access->can($actor, 'crm-quotes', 'approve')) {
-                $this->submit($quote, $actor);
-                throw ValidationException::withMessages(['discount_percent' => 'A discount above '.config('crm.quote_discount_approval_percent', 10).'% needs approval. It has been sent to an admin.']);
+        $quote = LockedWrite::run(fn () => DB::transaction(function () use ($quote, $actor) {
+            $quote = CrmQuote::query()->lockForUpdate()->findOrFail($quote->id);
+            if ($quote->sent_at || $quote->status === 'sending') {
+                return $quote;
             }
-            $quote->forceFill(['approved_by' => $actor->id, 'approved_at' => now()])->save();
+            if (! in_array($quote->status, ['draft', 'approved'], true)) {
+                throw ValidationException::withMessages(['status' => 'This quote is not ready to send.']);
+            }
+            if (! $quote->items()->exists()) {
+                throw ValidationException::withMessages(['items' => 'Add at least one service.']);
+            }
+            if ($this->needsApproval($quote)) {
+                if (! $this->access->can($actor, 'crm-quotes', 'approve')) {
+                    return $this->submit($quote, $actor);
+                }
+                $quote->forceFill(['approved_by' => $actor->id, 'approved_at' => now()]);
+            }
+            $quote->forceFill(['status' => 'sending'])->save();
+            return $quote;
+        }), 'crm.quote.prepare-send');
+        if ($quote->sent_at) {
+            return $quote;
+        }
+        if ($quote->status === 'pending_approval') {
+            throw ValidationException::withMessages(['discount_percent' => 'This discount needs approval. The quote has been sent to an admin.']);
         }
         $contact = CrmContact::query()->findOrFail($quote->contact_id);
 
         try {
-            app(CrmEmailSender::class)->send([
+            $send = app(CrmEmailSender::class)->send([
                 'contact' => $contact, 'sender' => $actor, 'source_type' => 'quote', 'source_id' => $quote->id,
                 'content' => $this->emailContent($quote->fresh('items'), $contact), 'marketing' => false,
                 'idempotency_key' => 'crm-quote-'.$quote->id, 'counts_as_contact' => true,
             ]);
+            $send->requireProviderAcceptance();
         } catch (CrmSendBlocked $e) {
+            if (! in_array($e->reason, ['uncertain', 'queued'], true)) {
+                CrmQuote::query()->whereKey($quote->id)->where('status', 'sending')
+                    ->update(['status' => $quote->approved_at ? 'approved' : 'draft']);
+            }
             throw ValidationException::withMessages(['email' => $e->getMessage()]);
         }
 
         return LockedWrite::run(fn () => DB::transaction(function () use ($quote, $contact, $actor) {
+            $quote = CrmQuote::query()->lockForUpdate()->findOrFail($quote->id);
+            if ($quote->sent_at !== null) {
+                return $quote;
+            }
             $days = (int) config('crm.quote_follow_up_days', 5);
             $event = app(CrmEventService::class)->schedule($contact, [
                 'type' => 'call', 'starts_at' => now()->addWeekdays($days)->setTime(10, 0)->toIso8601String(),
@@ -154,51 +183,65 @@ class CrmQuoteService
 
     public function accept(CrmQuote $quote, ?User $actor, string $by = 'client'): CrmQuote
     {
-        if ($quote->status === 'accepted') {
-            return $quote;
-        }
-        if ($quote->status !== 'sent') {
-            throw ValidationException::withMessages(['status' => 'This quote is no longer open.']);
-        }
-        if ($quote->valid_until && $quote->valid_until->lt(now()->startOfDay())) {
-            $quote->forceFill(['status' => 'expired'])->save();
-            throw ValidationException::withMessages(['status' => 'This quote has expired.']);
-        }
-        $contact = CrmContact::unscopedForSystem()->findOrFail($quote->contact_id);
-
-        LockedWrite::run(fn () => DB::transaction(function () use ($quote, $contact, $actor, $by) {
-            $quote->forceFill(['status' => 'accepted', 'accepted_at' => now()])->save();
-            if ($quote->follow_up_event_id) {
-                CrmEvent::query()->whereKey($quote->follow_up_event_id)->where('status', 'planned')->update(['status' => 'cancelled', 'outcome_note' => 'Quote accepted']);
-            }
-            if (in_array($contact->stage, [CrmContact::STAGE_OUTREACH, CrmContact::STAGE_INQUIRY, CrmContact::STAGE_ESTIMATE], true)) {
-                app(CrmStageService::class)->move($contact, CrmContact::STAGE_BOOKED, $actor, 'system', 'Quote '.$quote->number.' accepted');
-            }
-            $this->activity->log($contact, 'quote_accepted', $actor, 'Quote '.$quote->number.' accepted'.($by === 'client' ? ' by the client' : ''), ['quote_id' => $quote->id], false, 'quote', $quote->id);
-        }), 'crm.quote.accept');
-
-        if ($contact->assigned_rep_id && (int) $contact->assigned_rep_id !== (int) $actor?->id) {
-            $this->notices->notify((int) $contact->assigned_rep_id, 'quote_accepted', $contact->name.' accepted quote '.$quote->number, 'Book the shoot.', $contact->id, ['quote_id' => $quote->id]);
-        }
-
-        return $quote;
+        return $this->respond($quote, $actor, $by, true, null);
     }
 
     public function decline(CrmQuote $quote, ?User $actor, ?string $reason, string $by = 'client'): CrmQuote
     {
-        if ($quote->status !== 'sent') {
-            throw ValidationException::withMessages(['status' => 'This quote is no longer open.']);
-        }
-        $quote->forceFill(['status' => 'declined', 'declined_at' => now(), 'decline_reason' => $reason ? mb_substr($reason, 0, 255) : null])->save();
-        $contact = CrmContact::unscopedForSystem()->find($quote->contact_id);
-        if ($contact) {
-            $this->activity->log($contact, 'quote_declined', $actor, 'Quote '.$quote->number.' declined'.($reason ? ': '.$reason : ''), ['quote_id' => $quote->id], false, 'quote', $quote->id);
-            if ($contact->assigned_rep_id && $by === 'client') {
-                $this->notices->notify((int) $contact->assigned_rep_id, 'quote_declined', $contact->name.' declined quote '.$quote->number, $reason, $contact->id, ['quote_id' => $quote->id]);
+        return $this->respond($quote, $actor, $by, false, $reason);
+    }
+
+    private function respond(CrmQuote $quote, ?User $actor, string $by, bool $accept, ?string $reason): CrmQuote
+    {
+        $status = $accept ? 'accepted' : 'declined';
+        $result = LockedWrite::run(fn () => DB::transaction(function () use ($quote, $actor, $by, $status, $reason, $accept) {
+            $quote = CrmQuote::withoutGlobalScopes()->lockForUpdate()->findOrFail($quote->id);
+            if ($quote->status === $status) {
+                return $quote;
             }
+            if ($quote->status !== 'sent') {
+                throw ValidationException::withMessages(['status' => 'This quote is no longer open.']);
+            }
+            if ($quote->valid_until && $quote->valid_until->lt(now()->startOfDay())) {
+                $quote->update(['status' => 'expired']);
+
+                return $quote;
+            }
+            $contact = CrmContact::unscopedForSystem()->findOrFail($quote->contact_id);
+            $quote->forceFill($accept ? ['status' => $status, 'accepted_at' => now()] : [
+                'status' => $status, 'declined_at' => now(), 'decline_reason' => $reason,
+            ])->save();
+            if ($accept) {
+                app(CrmQuoteBooking::class)->convert($quote, $contact);
+            }
+            if ($quote->follow_up_event_id) {
+                $event = CrmEvent::withoutGlobalScopes()->whereKey($quote->follow_up_event_id)
+                    ->where('contact_id', $contact->id)->where('status', 'planned')->first();
+                if ($event) {
+                    $event->update(['status' => 'cancelled', 'completed_at' => now(), 'outcome_note' => 'Quote '.$status]);
+                    if (config('crm.google_sync.enabled')) {
+                        DB::afterCommit(fn () => app(\App\Services\Crm\Calendar\CrmCalendarSync::class)->queue($event));
+                    }
+                }
+            }
+            $summary = 'Quote '.$quote->number.' '.$status.($by === 'client' ? ' by the client' : '');
+            $this->activity->log($contact, 'quote_'.$status, $actor, $summary, ['quote_id' => $quote->id], false, 'quote', $quote->id);
+            $detail = $accept ? ($quote->booking_review_reason ?? 'Booking request #'.$quote->booking_shoot_id.' created.') : $reason;
+            if ($contact->assigned_rep_id) {
+                if ((int) $contact->assigned_rep_id !== (int) $actor?->id) {
+                    $this->notices->notify($contact->assigned_rep_id, 'quote_'.$status, $summary, $detail, $contact->id, ['quote_id' => $quote->id]);
+                }
+            } elseif ($accept) {
+                $this->notices->notifyCrmAdmins('quote_accepted', $summary, $detail, $contact->id, ['quote_id' => $quote->id]);
+            }
+
+            return $quote;
+        }), 'crm.quote.respond');
+        if ($result->status === 'expired') {
+            throw ValidationException::withMessages(['status' => 'This quote has expired.']);
         }
 
-        return $quote;
+        return $result;
     }
 
     public function expireDue(): int
@@ -222,6 +265,9 @@ class CrmQuoteService
             $service = ! empty($item['service_id']) ? $services->get((int) $item['service_id']) : null;
             if (! empty($item['service_id']) && ! $service) {
                 throw ValidationException::withMessages(["items.$i.service_id" => 'This service is not available.']);
+            }
+            if ($service) {
+                app(\App\Services\Shoots\ShootMutationSupportService::class)->assertServiceQuantityAllowed($service, $qty, field: "items.$i.quantity");
             }
             $price = $service ? (float) $service->getPriceForSqft($sqft) : (float) ($item['unit_price'] ?? 0);
             if ($price < 0) {

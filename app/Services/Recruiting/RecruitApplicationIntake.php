@@ -4,7 +4,9 @@ namespace App\Services\Recruiting;
 
 use App\Models\Recruiting\RecruitApplicant;
 use App\Models\Recruiting\RecruitJobPosting;
+use App\Support\LockedWrite;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -55,7 +57,7 @@ class RecruitApplicationIntake
         if (isset($data['gear']) && is_string($data['gear'])) {
             $data['gear'] = preg_split('/[\n,;]+/', $data['gear']) ?: [];
         }
-        $applicant = $this->applicants->fromWebsite($data, $posting);
+        $applicant = $this->resolveApplicant($data, $posting);
 
         $uploads = [];
         foreach (['resume' => 'resume', 'license' => 'license', 'insurance' => 'insurance'] as $field => $kind) {
@@ -69,13 +71,31 @@ class RecruitApplicationIntake
             }
         }
         foreach ($uploads as [$file, $kind]) {
-            try {
-                $this->files->store($applicant, $file, $kind, null);
-            } catch (\Throwable $e) {
-                report($e);
-            }
+            $this->files->storeIntakeFile($applicant, $file, $kind);
         }
 
         return $applicant;
+    }
+
+    private function resolveApplicant(array $data, ?RecruitJobPosting $posting): RecruitApplicant
+    {
+        $reference = $data['external_reference'] ?? null;
+        if (! $reference) {
+            return $this->applicants->fromWebsite($data, $posting);
+        }
+
+        return LockedWrite::run(fn () => DB::transaction(function () use ($data, $posting, $reference) {
+            $receipts = DB::table('recruit_application_receipts');
+            $receipts->insertOrIgnore(['reference' => $reference, 'created_at' => now(), 'updated_at' => now()]);
+            $receipt = $receipts->where('reference', $reference)->lockForUpdate()->first();
+            if ($receipt->applicant_id) {
+                return RecruitApplicant::query()->findOrFail($receipt->applicant_id);
+            }
+
+            $applicant = $this->applicants->fromWebsite($data, $posting);
+            $receipts->update(['applicant_id' => $applicant->id, 'updated_at' => now()]);
+
+            return $applicant;
+        }), 'recruit.application.receipt');
     }
 }

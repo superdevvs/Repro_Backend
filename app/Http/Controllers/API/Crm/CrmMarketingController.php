@@ -245,6 +245,9 @@ class CrmMarketingController extends CrmController
             $out['body_html'] = $c->body_html;
             $out['image_url'] = $c->image_url;
             $out['from'] = $signature ? ['name' => $signature->fields['name'] ?? $owner?->name, 'email' => $signature->sender_email] : null;
+            $out['delivery_summary'] = $this->campaigns->deliverySummary($c);
+            $out['delivery_issues'] = $this->campaigns->deliveryIssues($c);
+            $out['delivery_enabled'] = config('crm.email.transport') === 'resend';
             $out['audience_summary'] = $this->campaigns->audienceSummary($c);
             $out['rendered'] = $renderer->render([
                 'subject' => $c->subject, 'body_html' => $c->body_html, 'image_url' => $c->image_url,

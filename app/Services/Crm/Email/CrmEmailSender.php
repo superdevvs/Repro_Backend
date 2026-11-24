@@ -59,6 +59,13 @@ class CrmEmailSender
         $to = trim((string) ($opts['to_email'] ?? $contact?->email ?? ''));
 
         if ($key = $opts['idempotency_key'] ?? null) {
+            // Namespace one-off keys to the authenticated sender and contact.
+            if (($opts['source_type'] ?? '') === 'one_off') {
+                $key = $opts['idempotency_key'] = hash('sha256', 'one_off|'.$sender?->id.'|'.$contact?->id.'|'.$key);
+            }
+            if ($this->transport()->name() === 'log') {
+                $key = $opts['idempotency_key'] = 'preview-'.hash('sha256', $key);
+            }
             if ($existing = CrmEmailSend::query()->where('idempotency_key', $key)->first()) {
                 return $existing;
             }
@@ -76,7 +83,7 @@ class CrmEmailSender
             throw new CrmSendBlocked('no_content', 'There is nothing to send.');
         }
 
-        $send = CrmEmailSend::create([
+        $attributes = [
             'contact_id' => $contact?->id,
             'applicant_id' => $opts['applicant_id'] ?? null,
             'sender_user_id' => $sender?->id,
@@ -94,7 +101,13 @@ class CrmEmailSender
             'status' => 'queued',
             'idempotency_key' => $opts['idempotency_key'] ?? null,
             'reply_token' => Str::lower(Str::random(24)),
-        ]);
+        ];
+        $send = $key
+            ? CrmEmailSend::query()->firstOrCreate(['idempotency_key' => $key], $attributes)
+            : CrmEmailSend::create($attributes);
+        if (! $send->wasRecentlyCreated) {
+            return $send;
+        }
 
         $unsubscribe = $marketing ? $this->suppression->url($to, $send->id) : null;
         $vars = $this->renderer->varsFor($contact, $sender, $opts['vars'] ?? []);
@@ -124,7 +137,7 @@ class CrmEmailSender
                 ]);
             } catch (\Throwable $e) {
                 report($e);
-                $result = ['status' => 'failed', 'provider_message_id' => null, 'error' => mb_substr($e->getMessage(), 0, 400)];
+                $result = ['status' => 'uncertain', 'provider_message_id' => null, 'error' => 'Provider acceptance could not be confirmed.'];
             }
         }
 
@@ -132,10 +145,10 @@ class CrmEmailSender
             'status' => $result['status'],
             'provider_message_id' => $result['provider_message_id'],
             'error' => $result['error'],
-            'sent_at' => in_array($result['status'], ['sent', 'logged'], true) ? now() : null,
+            'sent_at' => $result['status'] === 'sent' ? now() : null,
         ])->save();
 
-        if ($contact && in_array($result['status'], ['sent', 'logged'], true)) {
+        if ($contact && $send->acceptedByProvider()) {
             $label = match ($opts['source_type']) {
                 'drip' => 'Drip email sent',
                 'campaign' => 'Campaign email sent',
@@ -168,10 +181,17 @@ class CrmEmailSender
         if ($marketing && ($contact?->email_opt_out_at || $this->suppression->isSuppressed($to))) {
             throw new CrmSendBlocked('opted_out', 'This person unsubscribed from email.');
         }
+        if ($marketing && (! $contact || ! app(CrmMarketingConsent::class)->allows($contact)
+            || \App\Services\Crm\CrmNormalizer::email($to) !== $contact->marketing_consent_email)) {
+            throw new CrmSendBlocked('no_consent', 'Record this contact’s marketing email opt-in first.');
+        }
+        if ($marketing && $this->transport()->name() !== 'log' && blank(config('crm.email.company_address'))) {
+            throw new CrmSendBlocked('missing_address', 'Add the company postal address before sending marketing email.');
+        }
         if ($sender) {
             $cap = (int) config('crm.email.daily_send_cap_per_rep', 300);
             $today = CrmEmailSend::query()->where('sender_user_id', $sender->id)->where('created_at', '>=', now()->startOfDay())
-                ->whereIn('status', ['sent', 'logged', 'queued'])->count();
+                ->whereIn('status', ['sent', 'uncertain', 'queued'])->count();
             if ($cap > 0 && $today >= $cap) {
                 throw new CrmSendBlocked('daily_cap', 'You have reached today’s limit of '.$cap.' emails.');
             }
