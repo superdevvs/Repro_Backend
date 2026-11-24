@@ -75,7 +75,22 @@ class CrmContact extends Model
             'assigned_rep_id' => 'integer',
             'client_user_id' => 'integer',
             'company_id' => 'integer',
+            'sms_consent_at' => 'datetime',
+            'health_changed_at' => 'datetime',
+            'last_shoot_on' => 'date',
         ];
+    }
+
+    /** The company text links the contact to a shared company record (created on first use). */
+    protected static function booted(): void
+    {
+        static::saving(function (CrmContact $contact) {
+            // Read the column directly: "company" is also the name of the relation.
+            $name = $contact->getAttributes()['company'] ?? null;
+            if ($contact->isDirty('company') || ($name && ! $contact->company_id)) {
+                $contact->company_id = app(\App\Services\Crm\CrmCompanyService::class)->resolveId($name, $contact->segment);
+            }
+        });
     }
 
     /** Look across every contact, regardless of who is signed in. System use only. */

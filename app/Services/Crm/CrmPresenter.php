@@ -90,6 +90,8 @@ class CrmPresenter
             'needs_review' => (bool) $contact->needs_review,
             'review_reasons' => $contact->review_reasons ?? [],
             'health' => $contact->health,
+            'usual_gap_days' => $contact->usual_gap_days,
+            'last_shoot_on' => $contact->last_shoot_on?->toDateString(),
             'stage_changed_at' => $contact->stage_changed_at?->toIso8601String(),
             'last_contacted_at' => $contact->last_contacted_at?->toIso8601String(),
             'first_contact_due_at' => $contact->first_contact_due_at?->toIso8601String(),

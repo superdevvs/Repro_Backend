@@ -5,7 +5,7 @@ namespace App\Console\Commands;
 use App\Services\Recruiting\RecruitExpiryReminders;
 use Illuminate\Console\Command;
 
-/** 03:15 daily: client health scores and licence/insurance expiry reminders. */
+/** 03:15 daily: client health scores, expired quotes and licence/insurance expiry reminders. */
 class CrmNightly extends Command
 {
     protected $signature = 'crm:nightly';
@@ -28,6 +28,12 @@ class CrmNightly extends Command
                 report($e);
                 $out['health'] = 'failed';
             }
+        }
+        try {
+            $out['quotes_expired'] = app(\App\Services\Crm\CrmQuoteService::class)->expireDue();
+        } catch (\Throwable $e) {
+            report($e);
+            $out['quotes_expired'] = 'failed';
         }
         try {
             $out['expiry_reminders'] = $expiry->run();
