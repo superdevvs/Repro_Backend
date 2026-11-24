@@ -8,6 +8,7 @@ use App\Services\Crm\CrmAssignmentService;
 use App\Services\Crm\CrmContactService;
 use App\Services\Crm\CrmDuplicateException;
 use App\Services\Crm\CrmStageService;
+use App\Support\DatabaseSql;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -60,12 +61,17 @@ class CrmContactController extends CrmController
 
         return $query
             ->when($search !== '', function ($q) use ($search) {
-                $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($search)).'%';
+                $needle = mb_strtolower($search);
+                $mysql = $q->getConnection()->getDriverName() === 'mysql';
+                $pattern = $mysql ? self::mysqlSearchPattern($needle) : '%'.DatabaseSql::escapeLike($needle).'%';
                 $digits = preg_replace('/\D+/', '', $search);
-                $q->where(function ($inner) use ($like, $digits) {
-                    $inner->whereRaw('LOWER(name) LIKE ? ESCAPE \'!\'', [$like])
-                        ->orWhereRaw('LOWER(COALESCE(company, \'\')) LIKE ? ESCAPE \'!\'', [$like])
-                        ->orWhereRaw('LOWER(COALESCE(email, \'\')) LIKE ? ESCAPE \'!\'', [$like]);
+                $q->where(function ($inner) use ($mysql, $pattern, $digits) {
+                    foreach (['name', 'company', 'email'] as $column) {
+                        $expression = $mysql
+                            ? "REGEXP_LIKE(SUBSTRING_INDEX({$column}, CHAR(0 USING utf8mb4), 1), ?, 'c')"
+                            : "LOWER(COALESCE({$column}, '')) LIKE ? ESCAPE '!'";
+                        $inner->orWhereRaw($expression, [$pattern]);
+                    }
                     if (strlen((string) $digits) >= 4) {
                         $inner->orWhere('phone_digits', 'like', '%'.$digits.'%');
                     }
@@ -81,6 +87,17 @@ class CrmContactController extends CrmController
             ->when(! empty($filters['market_state']), fn ($q) => $q->where('market_state', $filters['market_state']))
             ->when(! empty($filters['company_id']), fn ($q) => $q->where('company_id', (int) $filters['company_id']))
             ->when($filters['needs_review'] ?? false, fn ($q) => $q->where('needs_review', true));
+    }
+
+    private static function mysqlSearchPattern(string $needle): string
+    {
+        // SQLite's built-in LOWER only folds ASCII. Keep the same literal
+        // match in MySQL, including the end of SQLite's NUL-terminated pattern.
+        $parts = explode("\0", $needle, 2);
+        $literal = preg_quote($parts[0]);
+        $pattern = preg_replace_callback('/[a-z]/', static fn ($match) => '['.$match[0].strtoupper($match[0]).']', $literal);
+
+        return $pattern.(count($parts) === 2 ? '\\z' : '');
     }
 
     public static function fieldRules(bool $creating): array

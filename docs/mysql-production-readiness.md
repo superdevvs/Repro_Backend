@@ -1,5 +1,50 @@
 # MySQL production readiness
 
+## November 25 Sales CRM rehearsal
+
+**Hold.** The deployed backend `3ceb1f3e` and frontend `2240555e` were
+confirmed from their release metadata. The live configuration still selects
+SQLite. Sales CRM, Resend sending, inbound reply tracking and Google Calendar
+sync were enabled. CRM SMS was disabled. The dedicated Resend receiving
+credential was configured.
+
+The integrated candidate `ba425206` passed all six hosted CI jobs.
+[Exact integrated release CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45475073518)
+The separate [CRM rehearsal draft](https://github.com/superdevvs/Repro_Backend/pull/46)
+includes new verification tools and replay tests.
+
+The fresh private online SQLite copy is 4,460,900,352 bytes and passed the
+backup integrity check. It contains nine CRM migrations, 37 CRM-related
+tables, 4,717 CRM rows and 1,206 linked client contacts. The SHA-256 is
+`83542969cf0017be8b4aac5174101a16c11014c532161bb28e0cfc2b76725034`.
+The compared release catalog had 321 tables. All 62 observed schema
+differences were outside CRM. The eight existing foreign-key exception
+sets matched their reviewed row identities. The verified preservation
+manifest for all 328 tables has SHA-256
+`a3807732af33e799198c3e681b2610ff470605e023d2029fc5b8ec81bf5c99d2`.
+
+The first isolated native 8.4.13 run used durable full-row binlogs.
+The converter and independent PHP reader verified 1,893,048 rows and
+30,506,349 fields with zero differences or conversion warnings. The
+combined forward run took 754.160 seconds against a 720-second nightly
+limit. It did not qualify. The reverse trigger helper refused the logged
+fixture and the temporary target was removed.
+
+The isolated CRM and recent-migration compatibility run passed 104
+tests on MySQL. Representative tests covered receiving credentials,
+fresh and duplicate authenticated Resend replay, partial recruiting
+attachment recovery and an ambiguous SMS send. The separate concurrent
+inquiry run observed two real MySQL sessions contending for the same
+receipt and exactly one completed inquiry. The actual snapshot had
+no applicant attachment rows. The private file verifier checked
+synthetic file and recovery cases in Linux and the CRM tests checked
+authorized and forbidden document retrieval.
+
+The CRM contact search preserves SQLite's literal matching in MySQL,
+including treatment of percent, underscore and regex characters,
+accented case and embedded NULs. The focused fixtures passed on both
+engines. Native load and query latency remain part of the dress rehearsals.
+
 ## Cutover decision on November 24
 
 **Hold.** Production continues on SQLite. Scheduled evidence, the
