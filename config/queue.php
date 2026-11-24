@@ -59,6 +59,8 @@ return [
         'database' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
+            'repro_worker_connection' => env('DB_CONNECTION') === 'mysql'
+                && env('REPRO_MYSQL_QUEUE_WORKER', false) === true ? 'mysql_queue_worker' : null,
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
             // Must remain greater than the longest queued job timeout. The

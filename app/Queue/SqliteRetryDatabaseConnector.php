@@ -9,6 +9,10 @@ class SqliteRetryDatabaseConnector extends DatabaseConnector
     public function connect(array $config)
     {
         $database = $this->connections->connection($config['connection'] ?? null);
+        if (($workerConnection = $config['repro_worker_connection'] ?? null) !== null) {
+            return new MySqlWorkerDatabaseQueue($database, $config, fn () => $this->connections->connection($workerConnection));
+        }
+
         if ($database->getDriverName() !== 'sqlite') {
             return parent::connect($config);
         }

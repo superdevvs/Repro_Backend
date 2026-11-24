@@ -21,6 +21,29 @@ if ($sqliteDatabasePath === null || $sqliteDatabasePath === '') {
     }
 }
 
+$mysql = [
+    'driver' => 'mysql',
+    'repro_require_server_identity' => env('APP_ENV', 'production') === 'production',
+    'repro_expected_server_uuid' => env('REPRO_MYSQL_EXPECTED_SERVER_UUID'),
+    'repro_route_budget_writer_token' => env('REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN', false) === true,
+    'url' => env('DB_URL'),
+    'host' => env('DB_HOST', '127.0.0.1'),
+    'port' => env('DB_PORT', '3306'),
+    'database' => env('DB_DATABASE', 'laravel'),
+    'username' => env('DB_USERNAME', 'root'),
+    'password' => env('DB_PASSWORD', ''),
+    'unix_socket' => env('DB_SOCKET', ''),
+    'charset' => env('DB_CHARSET', 'utf8mb4'),
+    'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+    'prefix' => '',
+    'prefix_indexes' => true,
+    'strict' => true,
+    'engine' => null,
+    'options' => extension_loaded('pdo_mysql') ? array_filter([
+        PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+    ]) : [],
+];
+
 return [
 
     /*
@@ -61,27 +84,16 @@ return [
             'synchronous' => env('DB_SYNCHRONOUS'),
         ],
 
-        'mysql' => [
-            'driver' => 'mysql',
-            'repro_require_server_identity' => env('APP_ENV', 'production') === 'production',
-            'repro_expected_server_uuid' => env('REPRO_MYSQL_EXPECTED_SERVER_UUID'),
-            'repro_route_budget_writer_token' => env('REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN', false) === true,
-            'url' => env('DB_URL'),
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '3306'),
-            'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
-            'unix_socket' => env('DB_SOCKET', ''),
-            'charset' => env('DB_CHARSET', 'utf8mb4'),
-            'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
-            'prefix' => '',
-            'prefix_indexes' => true,
-            'strict' => true,
-            'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
-            ]) : [],
+        'mysql' => $mysql,
+
+        'mysql_queue_worker' => [
+            ...$mysql,
+            'repro_require_server_identity' => true,
+            'repro_route_budget_writer_token' => false,
+            'url' => null,
+            'username' => env('REPRO_MYSQL_QUEUE_WORKER_USERNAME'),
+            'password' => env('REPRO_MYSQL_QUEUE_WORKER_PASSWORD'),
+            'isolation_level' => 'READ COMMITTED',
         ],
 
         'mariadb' => [
