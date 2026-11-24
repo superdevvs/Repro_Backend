@@ -24,12 +24,21 @@ class DeliveryPlanService
     public function usesComponents(Shoot $shoot): bool
     {
         if (! $shoot->id || ! $this->ledgerExists()) return false;
-        return $this->managedCache[$shoot->id] ??= $shoot->serviceItems()->get()->contains(fn ($item) => collect($item->delivery_requirements ?? [])->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy'));
+        return $this->managedCache[$shoot->id] ??= $this->hasManagedRequirements($shoot->serviceItems()->with('service.category')->get());
     }
     /** Only the full authorized batch loader may prime this root-wide fact. */
     public function primeRequirements(Shoot $shoot, iterable $fullItems): void
     {
-        $this->managedCache[$shoot->id] = collect($fullItems)->contains(fn ($item) => collect($item->delivery_requirements ?? [])->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy'));
+        $this->managedCache[$shoot->id] = $this->hasManagedRequirements($fullItems);
+    }
+
+    private function hasManagedRequirements(iterable $items): bool
+    {
+        // Use the same requirements as the delivery plan, including open bookings
+        // without a saved snapshot. The resolver preserves historical deliveries.
+        $requirements = app(DeliveryComponentRequirements::class);
+        return collect($items)->contains(fn ($item) => collect($requirements->forItem($item))
+            ->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy'));
     }
     public function canFinalize(?User $actor): bool
     {

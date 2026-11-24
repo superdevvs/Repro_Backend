@@ -44,7 +44,7 @@ class ShootServiceProgress
         if ($shootState === 'cancelled') return 'cancelled';
         if (in_array($shootState, ['on_hold', 'hold_on', 'declined'], true)) return 'on_hold';
         if ($kind === 'showcase') return 'received';
-        $managed = $shoot->id && $item->id && collect($item->delivery_requirements ?? [])->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy');
+        $managed = $shoot->id && $item->id && collect(app(DeliveryComponentRequirements::class)->forItem($item))->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy');
         if ($managed) {
             $components = collect(app(DeliveryPlanService::class)->plan($shoot, null)['components'])->where('shoot_service_id', $item->id);
             if ($components->contains(fn ($component) => $component['status'] === 'ready')) return 'ready';
