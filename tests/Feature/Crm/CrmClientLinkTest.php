@@ -82,6 +82,8 @@ class CrmClientLinkTest extends CrmTestCase
         $rep = $this->rep();
         $withRep = User::factory()->create(['role' => 'client', 'email' => 'a@x.com', 'metadata' => ['accountRepId' => $rep->id]]);
         $noRep = User::factory()->create(['role' => 'client', 'email' => 'b@x.com']);
+        $ineligible = User::factory()->create(['role' => 'photographer']);
+        $formerRep = User::factory()->create(['role' => 'client', 'email' => 'c@x.com', 'metadata' => ['accountRepId' => $ineligible->id]]);
         config(['crm.enabled' => false]); // build history without the live hook
         $this->shootFor($withRep, ['completed_at' => now()->subMonths(2), 'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED]);
         $this->shootFor($withRep, ['completed_at' => now()->subMonth(), 'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED]);
@@ -95,10 +97,13 @@ class CrmClientLinkTest extends CrmTestCase
 
         $a = CrmContact::unscopedForSystem()->where('client_user_id', $withRep->id)->firstOrFail();
         $b = CrmContact::unscopedForSystem()->where('client_user_id', $noRep->id)->firstOrFail();
-        $this->assertSame(2, CrmContact::unscopedForSystem()->whereNotNull('client_user_id')->count());
+        $this->assertSame(3, CrmContact::unscopedForSystem()->whereNotNull('client_user_id')->count());
         $this->assertSame([CrmContact::STAGE_CLIENT_POOL, 'recurring', $rep->id], [$a->stage, $a->client_type, $a->assigned_rep_id]);
         $this->assertContains('segment_not_confirmed', $a->review_reasons);
         $this->assertNull($b->assigned_rep_id);
         $this->assertContains('no_rep', $b->review_reasons);
+        $c = CrmContact::unscopedForSystem()->where('client_user_id', $formerRep->id)->firstOrFail();
+        $this->assertNull($c->assigned_rep_id);
+        $this->assertContains('account_rep_lacks_crm_access', $c->review_reasons);
     }
 }

@@ -62,10 +62,16 @@ class CrmAssignmentService
     /** Sales reps and admins can own contacts. */
     public function assertAssignable(int $repId): void
     {
-        $rep = User::query()->find($repId);
-        if (! $rep || ! $this->access->can($rep, 'crm-contacts', 'view')) {
+        if (! $this->isAssignable($repId)) {
             throw ValidationException::withMessages(['assigned_rep_id' => 'Choose a team member who can use the CRM.']);
         }
+    }
+
+    public function isAssignable(int $repId): bool
+    {
+        $rep = User::query()->find($repId);
+
+        return $rep !== null && $this->access->can($rep, 'crm-contacts', 'view');
     }
 
     /** Existing Dashboard screens read the client's rep from users.metadata.accountRepId. */
