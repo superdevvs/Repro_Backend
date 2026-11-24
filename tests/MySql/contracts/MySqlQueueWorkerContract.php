@@ -233,7 +233,7 @@ final class MySqlQueueWorkerContract extends TestCase
 
     public function test_opt_out_preserves_the_stock_mysql_queue_and_the_sqlite_connector(): void
     {
-        $this->app['config']->set('queue.connections.database.repro_worker_connection', null);
+        $this->app['config']->set('queue.connections', $this->configuredQueues('mysql', []));
         self::assertSame(DatabaseQueue::class, $this->app['queue']->connection('database')::class);
         $this->app['config']->set([
             'database.connections.sqlite.database' => ':memory:',
@@ -247,13 +247,17 @@ final class MySqlQueueWorkerContract extends TestCase
         foreach (array_keys(self::WORKER_FLAGS) as $enabled) {
             $connections = $this->configuredQueues('mysql', [$enabled]);
             foreach (array_keys(self::WORKER_FLAGS) as $name) {
-                self::assertSame($name === $enabled ? 'mysql_queue_worker' : null, $connections[$name]['repro_worker_connection']);
+                if ($name === $enabled) {
+                    self::assertSame('mysql_queue_worker', $connections[$name]['repro_worker_connection']);
+                } else {
+                    self::assertArrayNotHasKey('repro_worker_connection', $connections[$name]);
+                }
             }
         }
 
         $sqlite = $this->configuredQueues('sqlite', array_keys(self::WORKER_FLAGS));
         foreach (array_keys(self::WORKER_FLAGS) as $name) {
-            self::assertNull($sqlite[$name]['repro_worker_connection']);
+            self::assertArrayNotHasKey('repro_worker_connection', $sqlite[$name]);
         }
     }
 

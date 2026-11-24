@@ -555,7 +555,15 @@ Its isolated MySQL 8.4.13 contract passed six tests and 118 assertions,
 and the stock SQLite queue passed seven tests and 33 assertions. The
 native test log SHA-256 is
 `3c4597bee51458d4880193c1697fa5f304499eadfbd69e2915ddcd8ed33e557a`.
-Studio and iGUIDE queue routes still require separate coverage.
+Studio and iGUIDE Lab Tour now have independent, disabled-by-default
+settings. The hosted socket-only contract at `d30f9dec` passed for the
+three logical queue names. It exercised the original Studio and iGUIDE
+retry intervals, after-commit enqueue, rollback and acknowledgement
+through a reverified worker session. [Hosted contract](https://github.com/superdevvs/Repro_Backend/actions/runs/45396284788/job/138452825929)
+The existing iGUIDE configuration suite passed all nine tests and 136
+assertions after the disabled settings retained their original configuration
+shape. Five targeted checks also compared the settings for enabled MySQL
+routes and the disabled defaults on both engines.
 
 Listing Studio rejection counters use an independent session so they survive
 business rollback. The runtime writer policy must preserve this behavior.
@@ -961,6 +969,14 @@ the host's SQLite 3.45.1 build. The receipt SHA-256 is
 Review the current manifest against a fresh snapshot before counting any
 nightly run. The earlier 291-table snapshot and the 284-table release
 fixture remain historical evidence.
+
+The [candidate scope](../database/schema/migration-scope.json) lists all 291
+tables for preservation. The native scope audit verified available table
+and index size measurements and zero missing or unlisted names on the
+November 24 private snapshot. Its exact manifest SHA-256 is
+`8fcb094f38c2ceeff40c9ee33b5ead2ee802666d87a9bdc854770daf9eb4ab21`.
+Pin the manifest again with the final release and recheck the next
+scheduled snapshot.
 
 The importer now requires MySQL notes to be enabled and stops when a
 conversion statement returns a warning or note. It checks each statement

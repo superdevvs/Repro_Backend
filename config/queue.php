@@ -1,5 +1,9 @@
 <?php
 
+$mysqlWorkerRouting = static fn (string $flag): array => env('DB_CONNECTION') === 'mysql' && env($flag, false) === true
+    ? ['repro_worker_connection' => 'mysql_queue_worker']
+    : [];
+
 return [
 
     /*
@@ -35,8 +39,7 @@ return [
         'studio' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
-            'repro_worker_connection' => env('DB_CONNECTION') === 'mysql'
-                && env('REPRO_MYSQL_STUDIO_QUEUE_WORKER', false) === true ? 'mysql_queue_worker' : null,
+            ...$mysqlWorkerRouting('REPRO_MYSQL_STUDIO_QUEUE_WORKER'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => 'studio',
             'retry_after' => 7260,
@@ -48,8 +51,7 @@ return [
         'iguide-lab-tour' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
-            'repro_worker_connection' => env('DB_CONNECTION') === 'mysql'
-                && env('REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER', false) === true ? 'mysql_queue_worker' : null,
+            ...$mysqlWorkerRouting('REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => 'iguide-lab-tour',
             'retry_after' => 900,
@@ -63,8 +65,7 @@ return [
         'database' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
-            'repro_worker_connection' => env('DB_CONNECTION') === 'mysql'
-                && env('REPRO_MYSQL_QUEUE_WORKER', false) === true ? 'mysql_queue_worker' : null,
+            ...$mysqlWorkerRouting('REPRO_MYSQL_QUEUE_WORKER'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
             // Must remain greater than the longest queued job timeout. The

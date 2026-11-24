@@ -135,4 +135,3 @@ fixture_php=(
 "${fixture_php[@]}" -l tests/MySql/contracts/MySqlQueueWorkerContract.php
 "${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
     --fail-on-phpunit-deprecation -c phpunit.mysql.xml tests/MySql/contracts/MySqlQueueWorkerContract.php
-
