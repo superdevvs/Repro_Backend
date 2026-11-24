@@ -532,9 +532,16 @@ def storage_mounts() -> tuple[str, list[dict]]:
         need(len(fields) >= 10 and "-" in fields[6:] and fields[0].isdigit() and
              re.fullmatch(r"[0-9]+:[0-9]+", fields[2]) is not None,
              "malformed mount metadata")
+        separator = fields.index("-", 6)
+        need(len(fields) == separator + 4, "malformed mount metadata")
         root, target = (re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), field)
                         for field in (fields[3], fields[4]))
-        need(root.startswith("/") and target.startswith("/"), "nonabsolute mount metadata")
+        # Linux renders the root of an nsfs bind mount as a namespace token.
+        # Retain these rows for the device-alias and mount-stability checks.
+        namespace_root = (fields[separator + 1] == "nsfs" and
+                          re.fullmatch(r"[a-z][a-z0-9_]*:\[[0-9]+\]", root) is not None)
+        need(target.startswith("/") and (root.startswith("/") or namespace_root),
+             "nonabsolute mount metadata")
         mounts.append({"id": int(fields[0]), "device": fields[2], "root": root, "target": target})
     need(bool(mounts), "mount metadata unavailable")
     return raw, mounts

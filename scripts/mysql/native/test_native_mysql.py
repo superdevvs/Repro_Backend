@@ -495,11 +495,20 @@ class NativeStorageTests(unittest.TestCase):
                 native.directory_metadata(path / "missing")
 
     def test_mount_parser_decodes_paths_and_refuses_missing_or_malformed_input(self):
-        text = "12 1 8:16 / /mnt/originals\\040drive rw,relatime - ext4 /dev/sdb1 rw\n"
-        with patch.object(Path, "open", mock_open(read_data=text)):
-            _, mounts = native.storage_mounts()
-        self.assertEqual(mounts, [{"id": 12, "device": "8:16", "root": "/", "target": "/mnt/originals drive"}])
-        for text in ("", "invalid", "x" * (1024 * 1024 + 1)):
+        filesystem = "12 1 8:16 / /mnt/originals\\040drive rw,relatime - ext4 /dev/sdb1 rw\n"
+        namespace = "22 1 0:4 net:[4026532707] /run/docker/netns/example rw shared:3 - nsfs nsfs rw\n"
+        with patch.object(Path, "open", mock_open(read_data=filesystem + namespace)):
+            raw, mounts = native.storage_mounts()
+        self.assertEqual(raw, filesystem + namespace)
+        self.assertEqual(mounts, [
+            {"id": 12, "device": "8:16", "root": "/", "target": "/mnt/originals drive"},
+            {"id": 22, "device": "0:4", "root": "net:[4026532707]", "target": "/run/docker/netns/example"},
+        ])
+        for text in ("", "invalid", "x" * (1024 * 1024 + 1),
+                     namespace.replace("nsfs nsfs", "ext4 /dev/sdb1"),
+                     namespace.replace("[4026532707]", "[invalid]"),
+                     namespace.replace("/run/docker", "run/docker"),
+                     namespace.replace("nsfs nsfs rw", "nsfs nsfs")):
             with patch.object(Path, "open", mock_open(read_data=text)), self.assertRaises(native.Refusal):
                 native.storage_mounts()
 
