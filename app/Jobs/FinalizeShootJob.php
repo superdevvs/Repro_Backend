@@ -442,6 +442,9 @@ class FinalizeShootJob implements ShouldQueue
             $isFullOrderDelivery = true;
             $deliverableItems = $shoot->serviceItems()->get();
             foreach ($deliverableItems->whereIn('id', $serviceIds) as $item) {
+                // Snapshot inferred open work before delivered statuses would make
+                // a missing snapshot look like an untracked historical delivery.
+                app(\App\Services\Shoots\DeliveryComponentRequirements::class)->ensure($item);
                 $item->forceFill([
                     'workflow_status' => ShootService::WORKFLOW_DELIVERED,
                     'delivery_status' => ShootService::DELIVERY_DELIVERED,

@@ -150,6 +150,8 @@ class CrmIntegrationsTest extends CrmTestCase
         $thread = collect($this->getJson("/api/crm/contacts/{$contact->id}/conversation")->assertOk()->json('items'));
         $this->assertCount(1, $thread->where('direction', 'in'));
         $this->assertStringContainsString('Thursday', $thread->firstWhere('direction', 'in')['body']);
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && $r->url() === 'https://api.resend.com/emails/receiving/in_1'
+            && $r->hasHeader('Authorization', 'Bearer re_test_key'));
         $this->assertNotNull($send->fresh()->replied_at);
         $this->assertSame('reply', CrmDripEnrollment::query()->value('stop_reason'));
         $this->assertSame(1, CrmNotice::query()->where('user_id', $rep->id)->where('type', 'email_reply')->count());
@@ -157,6 +159,29 @@ class CrmIntegrationsTest extends CrmTestCase
         $this->assertSame('maya@reprophotos.com', $forward->to_email);
         $this->assertStringContainsString('Thursday', $forward->html);
         $this->webhook(['type' => 'email.received', 'data' => ['to' => ['someone@reprophotos.com']]], 'msg_in_2')->assertJsonPath('status', 'ignored');
+    }
+
+    public function test_dedicated_receiving_key_is_only_used_for_fetching_replies(): void
+    {
+        $this->fakeAcceptedCrmMail();
+        config(['crm.email.receiving_key' => 'test-receiving-only', 'services.resend.key' => 'test-sending-only']);
+        $this->app->instance(\App\Services\Messaging\Providers\ResendProvider::class, new \App\Services\Messaging\Providers\ResendProvider);
+        Http::fake([
+            'api.resend.com/emails/receiving/in-1' => Http::response(['text' => 'Received your note']),
+            'api.resend.com/emails' => Http::response(['id' => 'test-forward']),
+        ]);
+        $rep = $this->rep(['email' => 'pilot@example.com']);
+        $token = 'testreplytoken123';
+        CrmEmailSend::create(['sender_user_id' => $rep->id, 'source_type' => 'one_off', 'from_email' => 'rep@reprophotos.com',
+            'to_email' => 'client@example.com', 'subject' => 'Hello', 'html' => 'Hello', 'text' => 'Hello', 'transport' => 'resend',
+            'status' => 'sent', 'reply_token' => $token]);
+        $this->webhook(['type' => 'email.received', 'data' => ['email_id' => 'in-1', 'from' => 'client@example.com',
+            'to' => ["r+$token@reply.reprophotos.com"], 'subject' => 'Re: Hello']], 'msg-dedicated')->assertOk();
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && $r->url() === 'https://api.resend.com/emails/receiving/in-1'
+            && $r->hasHeader('Authorization', 'Bearer test-receiving-only'));
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && $r->url() === 'https://api.resend.com/emails'
+            && $r->hasHeader('Authorization', 'Bearer test-sending-only'));
+        Http::assertSentCount(2);
     }
 
     public function test_follow_ups_sync_both_ways_with_google_calendar(): void

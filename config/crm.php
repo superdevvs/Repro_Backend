@@ -37,10 +37,11 @@ return [
         'sender_domain' => env('CRM_SENDER_DOMAIN', 'reprophotos.com'),
         'reply_domain' => env('CRM_REPLY_DOMAIN', 'reply.reprophotos.com'),
         'reply_tracking' => (bool) env('CRM_REPLY_TRACKING', false),
+        'receiving_key' => env('CRM_RESEND_RECEIVING_KEY'),
         'company_address' => env('CRM_COMPANY_ADDRESS', env('MAIL_COMPANY_ADDRESS', '')),
         'daily_send_cap_per_rep' => (int) env('CRM_DAILY_SEND_CAP_PER_REP', 300),
         'system_from' => env('CRM_SYSTEM_FROM', 'crm@reprophotos.com'),
-        'logo_url' => env('CRM_EMAIL_LOGO_URL', 'https://reprodashboard.com/images/repro-email-logo-light.png'),
+        'logo_url' => env('CRM_EMAIL_LOGO_URL'),
         // Where the public unsubscribe page lives (the Dashboard frontend).
         'public_base_url' => env('CRM_PUBLIC_BASE_URL', env('FRONTEND_URL', env('APP_URL', 'https://reprodashboard.com'))),
     ],

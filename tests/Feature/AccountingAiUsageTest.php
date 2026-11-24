@@ -116,6 +116,15 @@ class AccountingAiUsageTest extends TestCase
             ->assertJsonPath('data.summary.estimated_cost_usd', null)->assertJsonPath('data.features.0.label', 'Email drafting');
     }
 
+    public function test_crm_usage_is_reported_under_its_own_features(): void
+    {
+        $recorder = app(\App\Services\Accounting\AiUsageRecorder::class);
+        foreach (['crm_robbie', 'crm_content_check'] as $feature) {
+            $id = $recorder->begin($feature, 'gpt-6.1-terra', 'chat/completions');
+            $this->assertDatabaseHas('ai_provider_usage', ['id' => $id, 'feature' => $feature]);
+        }
+    }
+
     public function test_image_pricing_requires_modality_split_and_never_uses_chat_rates(): void
     {
         $recorder = app(AiUsageRecorder::class);

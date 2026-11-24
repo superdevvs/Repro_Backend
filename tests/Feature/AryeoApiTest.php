@@ -392,8 +392,9 @@ class AryeoApiTest extends TestCase
     public function test_service_override_releases_only_covered_files_and_revocation_blocks_again(): void
     {
         $this->shoot->update(['payment_status' => 'unpaid', 'total_quote' => 100]);
-        $one = ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => $this->shoot->service_id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'delivery_status' => 'delivered', 'force_unlock_delivery' => true]);
-        $two = ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => \App\Models\Service::factory()->create()->id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'delivery_status' => 'delivered']);
+        // Event::fake bypasses model hooks; explicitly represent reviewed historical delivery.
+        $one = ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => $this->shoot->service_id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'force_unlock_delivery' => true]);
+        $two = ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => \App\Models\Service::factory()->create()->id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
         $this->file->update(['shoot_service_id' => $one->id]);
         $other = $this->file->replicate();
         $other->shoot_service_id = $two->id;

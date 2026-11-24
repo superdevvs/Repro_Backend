@@ -5,7 +5,9 @@ namespace Tests\Feature\Crm;
 use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmEmailSend;
 use App\Models\Crm\CrmEmailTemplate;
+use App\Models\Crm\CrmSignature;
 use App\Models\User;
+use App\Services\Crm\Email\CrmEmailRenderer;
 use App\Services\Crm\Email\CrmHtmlSanitizer;
 use App\Services\Crm\Email\CrmSignatureService;
 use App\Services\Crm\Email\CrmSuppression;
@@ -168,6 +170,45 @@ class CrmEmailTest extends CrmTestCase
         $this->getJson('/api/public/crm/unsubscribe/not-a-token')->assertNotFound();
         $this->postJson("/api/public/crm/unsubscribe/{$token}/one-click")->assertOk();
         $this->assertTrue(app(CrmSuppression::class)->isSuppressed('Dana@X.com'));
+    }
+
+    public function test_shared_design_preserves_signature_tracked_links_and_text_with_escaped_personalization(): void
+    {
+        config(['app.url' => 'https://dashboard.example.test', 'crm.email.company_address' => '85 Postal Road', 'mail.company_address' => 'Other Road']);
+        $renderer = app(CrmEmailRenderer::class);
+        $signature = $renderer->signatureHtml(new CrmSignature([
+            'fields' => ['name' => 'Sarah & Co', 'title' => 'Sales', 'phone' => '202-555-0181'],
+            'headshot_path' => 'crm/signatures/sarah.png', 'sender_email' => 'sarah@example.test',
+        ]));
+        $tracked = 'https://example.test/listings?project=42&source=drip';
+        $unsubscribe = 'https://dashboard.example.test/unsubscribe/contact-token';
+        $content = [
+            'subject' => 'A note for {{name}}', 'preheader' => 'Photos for {{name}}',
+            'body_html' => '<p>Hi {{name}}</p><p>{{rep_signature}}</p><script>bad()</script><a href="{{market}}">Link</a>',
+            'cta_label' => 'See samples', 'cta_url' => $tracked,
+        ];
+        $vars = ['name' => 'A <b>Jones</b>', 'market' => 'javascript:bad()'];
+        $email = $renderer->render($content, $vars, $signature, $unsubscribe);
+
+        $this->assertSame('A note for A <b>Jones</b>', $email['subject']);
+        foreach (['data-email-design="atelier-v6"', 'data-artwork="crm_thank_you"', 'repro-email-logo-grey.png',
+            'Photos for A &lt;b&gt;Jones&lt;/b&gt;', 'Hi A &lt;b&gt;Jones&lt;/b&gt;', 'https://dashboard.example.test/storage/crm/signatures/sarah.png',
+            'button atelier-button', 'href="'.e($tracked).'"', 'href="'.$unsubscribe.'"'] as $expected) {
+            $this->assertStringContainsString($expected, $email['html']);
+        }
+        foreach (['bad()', '{{rep_signature}}', 'Other Road', 'Leave a Review'] as $unexpected) {
+            $this->assertStringNotContainsString($unexpected, $email['html']);
+        }
+        $this->assertSame(1, substr_count($email['html'], 'Sarah &amp; Co'));
+        $this->assertSame(1, substr_count($email['html'], '85 Postal Road'));
+        $this->assertSame("Hi A <b>Jones</b>\n\nLink\n\nSee samples: ".$tracked
+            ."\n\nSarah & Co\nSales · R/E Pro Photos\n202-555-0181 · sarah@example.test"
+            ."\n\n--\nR/E Pro Photos, 85 Postal Road\nUnsubscribe: ".$unsubscribe, $email['text']);
+
+        $email = $renderer->render($content + ['image_url' => '/storage/crm/custom.jpg'], $vars, null, $unsubscribe, false);
+        $this->assertStringContainsString('https://dashboard.example.test/storage/crm/custom.jpg', $email['html']);
+        $this->assertStringNotContainsString('data-artwork="crm_thank_you"', $email['html']);
+        $this->assertStringNotContainsString('Unsubscribe', $email['html'].$email['text']);
     }
 
     public function test_sanitizer_keeps_formatting_and_drops_scripts(): void

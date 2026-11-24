@@ -13,6 +13,7 @@ class AiUsageRecorder
 {
     public const FEATURES = [
         'robbie_chat' => 'Robbie chat', 'email_assistant' => 'Email drafting',
+        'crm_robbie' => 'Sales CRM Robbie', 'crm_content_check' => 'Sales CRM content checks',
         'property_description' => 'Property descriptions', 'photo_classification' => 'Photo classification',
         'object_detection' => 'Object detection', 'image_edit' => 'Image editing',
         'image_outpaint' => 'Image extension', 'voice_summary' => 'Voice intelligence',

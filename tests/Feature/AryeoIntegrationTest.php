@@ -261,7 +261,8 @@ class AryeoIntegrationTest extends TestCase
     public function test_non_media_fee_does_not_hide_an_approved_tour(): void
     {
         $this->shoot->update(['tour_links' => ['zillow_3d' => 'https://www.zillow.com/view-3d-home/test']]);
-        $line = \App\Models\ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => $this->shoot->service_id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'delivery_status' => 'delivered']);
+        // Event::fake bypasses model hooks; both statuses identify historical approval.
+        $line = \App\Models\ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => $this->shoot->service_id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
         \App\Models\ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => \App\Models\Service::factory()->create()->id, 'price' => 25, 'quantity' => 1, 'is_deliverable' => false, 'delivery_status' => 'not_started']);
         $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, ['photos' => 1, 'floorplans' => 0, 'videos' => 0, 'tours' => 1]);
         $this->assertTrue($ready['eligible']);

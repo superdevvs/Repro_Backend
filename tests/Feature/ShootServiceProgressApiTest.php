@@ -6,6 +6,7 @@ use App\Models\AryeoConnection;
 use App\Models\AryeoRequest;
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\ShootUnit;
 use App\Models\User;
@@ -36,6 +37,16 @@ class ShootServiceProgressApiTest extends TestCase
             'price' => 100, 'quantity' => 1, 'workflow_status' => $status,
             'delivery_status' => $status === 'pending' ? 'not_started' : $status, 'is_deliverable' => true,
         ]));
+        // Readiness represents finished output even when imported lines have no
+        // requirements snapshot (Event::fake bypasses the snapshot hook here).
+        (new ShootFile)->forceFill([
+            'shoot_id' => $shoot->id, 'shoot_service_id' => $lines[1]->id,
+            'filename' => 'ready.jpg', 'stored_filename' => 'ready.jpg',
+            'path' => 'shoots/'.$shoot->id.'/ready.jpg', 'file_size' => 100,
+            'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg',
+            'media_type' => 'edited', 'workflow_stage' => 'completed',
+            'scan_status' => 'clean', 'uploaded_by' => $admin->id,
+        ])->save();
         foreach ([$admin, $client, $photographer] as $viewer) {
             Sanctum::actingAs($viewer);
             $response = $this->getJson('/api/shoots/'.$shoot->id)->assertOk();
