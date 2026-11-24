@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import asdict
+from datetime import date, timedelta
 from pathlib import Path
 
 from scripts.cutover.readiness import check
@@ -13,6 +14,7 @@ from scripts.cutover.runner import Identity, digest
 def readiness_fixture():
     identity = asdict(Identity("review-fixture", "a" * 40, "b" * 64, "c" * 64,
                                "d" * 64, "f1d53bff-40ce-46ba-a35b-4591b2be65b7"))
+    last_night = date(1970, 1, 1) + timedelta(days=1_800_000_000 // 86400)
     policy = {
         "version": 1, "identity": identity, "critical_endpoints": ["book", "invoice"],
         "host_profile_sha256": "e" * 64, "workload_sha256": "f" * 64,
@@ -22,6 +24,8 @@ def readiness_fixture():
             "evidence_valid_until_unix_s": 1_800_003_600,
             "backup_health_report_sha256": "8" * 64, "offsite_retention_report_sha256": "9" * 64,
             "external_alerts_report_sha256": "a" * 64, "point_in_time_drills_report_sha256": "b" * 64,
+            "nightly_scope_sha256": "c" * 64, "nightly_data_parity_report_sha256": "d" * 64,
+            "last_nightly_day_utc": last_night.isoformat(),
         },
     }
     operations = policy["operations"]
@@ -69,6 +73,19 @@ def readiness_fixture():
                         "contiguous_binlog_chain": True, "chosen_transaction_verified": True,
                         "database_recovery_ms": 30 * check.MINUTE, "absolute_heartbeat_target_delta_ms": check.MINUTE,
                         "planted_bad_write_excluded": index == 3} for index in (3, 4)],
+        },
+        "nightly_data_parity": report("nightly_data_parity", "nightly_scope_sha256") | {
+            "nights": [
+                {
+                    "scheduled_day_utc": (last_night - timedelta(days=4 - index)).isoformat(),
+                    "report_sha256": f"{30 + index:064x}", "snapshot_sha256": f"{40 + index:064x}",
+                    "release_sha": identity["release_sha"] if index >= 3 else "d" * 40,
+                    "import_and_verify_ms": 12 * check.MINUTE,
+                    "errors": 0, "warnings": 0, "notes": 0, "unexpected_field_differences": 0,
+                    **dict.fromkeys(check.NIGHTLY_PROOFS, True),
+                }
+                for index in range(5)
+            ],
         },
         "dress_rehearsals": [
             {
@@ -265,6 +282,39 @@ class ReadinessTests(unittest.TestCase):
         drills.pop()
         self.repin_summary("point_in_time_drills")
         self.assert_gate("point_in_time_drills", "missing")
+
+    def test_nightly_parity_requires_consecutive_distinct_runs_on_final_release(self):
+        nights = self.receipt["nightly_data_parity"]["nights"]
+        self.assert_gate("nightly_data_parity", "passed")
+        for night, name, value in (
+            (nights[1], "scheduled_day_utc", nights[0]["scheduled_day_utc"]),
+            (nights[1], "report_sha256", nights[0]["report_sha256"]),
+            (nights[-2], "release_sha", "b" * 40),
+            (nights[-1], "release_sha", "b" * 40),
+        ):
+            with self.subTest(name=name):
+                original, night[name] = night[name], value
+                self.repin_summary("nightly_data_parity")
+                self.assert_gate("nightly_data_parity", "failed")
+                night[name] = original
+        nights[1]["snapshot_sha256"] = nights[0]["snapshot_sha256"]
+        self.repin_summary("nightly_data_parity")
+        self.assert_gate("nightly_data_parity", "passed")
+        nights.pop(0)
+        self.repin_summary("nightly_data_parity")
+        self.assert_gate("nightly_data_parity", "missing")
+
+    def test_nightly_parity_rejects_timing_and_clean_data_failures(self):
+        night = self.receipt["nightly_data_parity"]["nights"][0]
+        for name, value in (("import_and_verify_ms", 12 * check.MINUTE + 1), ("warnings", 1),
+                            ("unexpected_field_differences", 1), ("fresh_snapshot_verified", False),
+                            ("sqlite_reverse_parity_verified", False),
+                            ("invoice_and_payout_parity_verified", False)):
+            with self.subTest(name=name):
+                original, night[name] = night[name], value
+                self.repin_summary("nightly_data_parity")
+                self.assert_gate("nightly_data_parity", "failed")
+                night[name] = original
 
     def test_cli_reports_missing_and_invalid_receipts(self):
         with tempfile.TemporaryDirectory() as directory:

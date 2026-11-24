@@ -476,6 +476,19 @@ server. Count and compare restored data and confirm exclusion of commits after
 the selected point. The chain check does no SQL replay. [MySQL recovery with binary logs](https://dev.mysql.com/doc/refman/8.4/en/point-in-time-recovery-binlog.html)
 and [MySQL event positions](https://dev.mysql.com/doc/refman/8.4/en/point-in-time-recovery-positions.html).
 
+### Verify the recovery heartbeat
+
+Use the [review-only heartbeat companion](heartbeat.md) to record the server's
+UTC time in one slot per minute in the selected database. After independently
+restoring and replaying the reviewed files, use the recovered server's separate
+SELECT-only account and protected identity to check the latest stored time at or
+before the chosen target. The maximum accepted gap is 60 seconds.
+
+The native fixture verified the writer, same-minute retry, binlog event and
+recovered-reader boundary. Acceptance still requires the approved one-minute
+schedule and a timed recovery from the protected destination with the source
+unavailable.
+
 ### Verify bucket retention
 
 `--immutable` is a client guard, not a cloud retention lock or conditional

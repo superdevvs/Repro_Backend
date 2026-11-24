@@ -256,6 +256,18 @@ monitoring and proving live retention remain operational acceptance gates.
 The retention verifier tested local evidence for exact prefix, duration,
 provider refusals and unchanged content.
 
+The private R2 rehearsal bucket also enforced a real 24-hour lock on a new
+synthetic prefix. A two-day expiry was configured for the same prefix. R2
+refused an overwrite and a delete with a delete-capable credential with
+`ObjectLockedByBucketPolicy`. The writer lacked delete permission and got
+`AccessDenied`. A second read returned the original 80 bytes. The trial
+removed the object, both rules and the disposable bucket credential. The
+seven-day multipart-abort rule and older rehearsal prefix remained in place.
+The receipt's SHA-256 is
+`8b5f14d8106630077ba689807974022a9f13d6d9e63899ad389957e7a2b6d3f4`.
+Rule settings were observed in the Cloudflare dashboard. The timed lifecycle
+expiry and production backup destination still require acceptance.
+
 An administrator-supervised Maverick rehearsal used the stock scheduled
 runner from `0dfa65dd`, a private dynamic account and loopback-only TLS S3.
 Three real systemd timer activations published a SQLite backup with verified
@@ -321,6 +333,22 @@ private loopback TLS and advanced the checkpoint through `binlog.000003`.
 All twelve temporary units,
 runtime directories and staged packet files were removed. The report SHA-256
 is `c009060b0258d6a70a4f1c6c5a95a3663651d04f6f48790ff45de88256b06952`.
+
+The [recovery heartbeat](../scripts/mysql/offsite/heartbeat.md) passed a
+separate 19.86-second synthetic MySQL 8.4.13 rehearsal. The scoped source
+writer recorded server UTC in one minute slot. A same-minute retry returned
+the stored row with no change to the row count or binlog position. The closed
+binlog contained exactly one committed heartbeat event. A fresh instance
+restored the marker from a single-database dump after the source and its
+volume were removed. Its SELECT-only account accepted the marker exactly 60
+seconds before the target and rejected a 61-second gap and a marker after the
+target. The recovered row remained unchanged. Both instances shut down
+cleanly and the fixture resources were removed. The report SHA-256 is
+`ea7dbd49f9409db8739257f8ee9fa4978326ed50c86074c9beca6bd2ea8dc4f9`.
+
+The heartbeat has no production schema or timer installed. Verify the
+one-minute cadence and clock on the approved source, then prove a preceding
+marker after replay from the protected bucket on a separate recovery host.
 
 The local cutover adapter froze a disposable SQLite Laravel state, copied
 four fixture tables into MySQL, verified read-only application access and
@@ -542,10 +570,20 @@ source spool was removed. The dry-run projection recorded one SMS effect,
 one duplicate and six receipts requiring review. Missing, additional or
 altered receipts failed reconciliation.
 
-The data-only timing is one part of a dress rehearsal. Remaining acceptance
-requires privileged cutover and webhook integration, an independent off-host
-restore, the actual application
-workload and two timed dress rehearsals. Live cutover requires distinct approval.
+Two separate native trials on `917f6357` exercised the stock host runner with
+real Laravel HTTP and queues on disposable four-table databases. The hold to
+verified MySQL read-only smoke took 576 and 582 ms. Verified SQLite recovery
+took 357 ms from the pre-write abort and 623 ms from the post-write hold. The
+second trial independently matched the reverse export, preserved the committed
+MySQL write, excluded an uncommitted write and processed the queue job once.
+Off-site refusal remained enforced. Both trials removed their containers and
+volumes. The timestamped receipt has SHA-256
+`cfe788228e8de3aac98adfa8255ec0b811a42f630c7e6ca8d40501c380f181c3`.
+
+Full dress acceptance combines a fresh production-sized copy, all real writer
+drains, provider intake, representative traffic, protected off-site recovery,
+and both rollback paths under one clock. It requires two timed runs. Live
+cutover requires distinct approval.
 
 ## November 8 refresh
 
@@ -767,7 +805,9 @@ cutover decision after these gates have evidence.
 
 The [offline readiness checker](../scripts/cutover/readiness/README.md) now
 requires independently reviewed report digests for that backup window, exact
-provider retention, both external alert rounds and two point-in-time drills.
+provider retention, both external alert rounds, two point-in-time drills and
+five consecutive nightly parity runs. The last two nightly runs must use the
+exact frozen release.
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.

@@ -30,11 +30,12 @@ shape and supplies synthetic values only.
 | `prerequisites` | The reviewed report digest and identity digest, both engine CI results, exact data and schema parity, critical business workflows, provider isolation, native host capacity and isolation, actual writer-fence restart, and crash recovery. Each result uses the corresponding field in `PREREQUISITES`. |
 | `dress_rehearsals` | Exactly two distinct trial IDs and report digests. Each records its source snapshot, pinned identity, host and workload digests, peak and surge completion, results for the timed operations and workload metrics below. |
 | `offsite_recovery` | Independent restore report and identity digests, proof that the restore used off-site artifacts alone, contiguous binlogs, replay to a chosen transaction, successful decryption of a stored value, database recovery time and measured loss. |
-| `operations` in policy | `destination_sha256`, `monitor_profile_sha256`, `phone_recipient_sha256`, the reviewed `window_end_unix_s`, `interval_s`, and `evidence_valid_until_unix_s`. Pin both the source report and canonical receipt summary digest for each of the four operational reports. Hash the approved destination configuration, monitoring profile, and delivery identity without embedding credentials. |
+| `operations` in policy | `destination_sha256`, `monitor_profile_sha256`, `phone_recipient_sha256`, `nightly_scope_sha256`, the reviewed `last_nightly_day_utc`, `window_end_unix_s`, `interval_s`, and `evidence_valid_until_unix_s`. Pin both the source report and canonical receipt summary digest for each operational report. Hash approved destination configuration, monitoring profile, delivery identity, and data scope without embedding credentials. |
 | `backup_health` | External observations on the pinned profile and destination for the full seven days ending at the reviewed time. Record complete elapsed coverage and distinct scheduled samples, worst verified snapshot age, and elapsed seconds during which the independently recoverable binlog position was at most five minutes behind. |
 | `offsite_retention` | An exact configured-provider policy review and scoped test of the approved writer's overwrite and delete refusals. Preserve separate evidence that a delete-permitted credential was blocked by the lock and that the file's bytes stayed identical. Use the [R2 retention verifier](../../mysql/offsite/README.md#verify-bucket-retention) against the pinned provider capture. |
 | `external_alerts` | Distinct `before_installer` and `before_drill` reports with every named case in `ALERT_LIMITS_MS`, measured from the induced condition to confirmed receipt on the approved phone. Record an independent delivery receipt digest for each case. |
 | `point_in_time_drills` | Two distinct off-site-only restore reports, contiguous logs, verified chosen transactions, recovery duration, heartbeat distance from target, and verified exclusion of a planted bad write in one drill. |
+| `nightly_data_parity` | Five chronological reports for consecutive UTC schedule dates ending on `last_nightly_day_utc`. Each identifies its release and fresh snapshot, elapsed import and independent verification, source scope and integrity, row and exception parity, target settings and engine, SQLite reverse parity, and invoice and payout parity. |
 
 The rehearsal clock starts when write admissions first close. Report the total
 time to the reopen decision, verified SQLite rollback before writes, and verified
@@ -67,8 +68,11 @@ peak queue depth at the beginning and end of the normal peak test.
 - The two point-in-time restores each finish within **30 minutes** and recover
   a heartbeat within **60 seconds** of target. One proves exclusion of the
   planted change. These drills supplement the separate host-loss measurement.
+- All five nightly runs are data-green, with import and both verifications in
+  **12 minutes** or less and zero unexpected field differences, errors, warnings
+  or notes. Both final runs use the exact frozen release.
 
-All four operational reports must match their independently reviewed digests
+All operational reports must match their independently reviewed digests
 in the policy and the current cutover identity. The clock must be between the
 reviewed window end and evidence expiry. A changed summary requires a new
 reviewed digest. Keep the original raw monitoring samples, provider responses,

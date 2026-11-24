@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 import time
 from typing import Callable
@@ -46,7 +47,14 @@ ALERT_LIMITS_MS = dict.fromkeys((
     "queue_stale", "cache_write_failed",
 ), 5 * MINUTE) | {"server_silent": 10 * MINUTE}
 ALERT_MILESTONES = ("before_installer", "before_drill")
-OPERATIONS_REPORTS = ("backup_health", "offsite_retention", "external_alerts", "point_in_time_drills")
+OPERATIONS_REPORTS = ("backup_health", "offsite_retention", "external_alerts", "point_in_time_drills", "nightly_data_parity")
+NIGHTLY_RUN_COUNT = 5
+FROZEN_NIGHT_COUNT = 2
+NIGHTLY_PROOFS = (
+    "fresh_snapshot_verified", "source_scope_verified", "source_integrity_scan_passed", "field_verifiers_agree", "row_counts_match",
+    "historical_exceptions_match", "target_settings_verified", "target_engine_verified",
+    "sqlite_reverse_parity_verified", "invoice_and_payout_parity_verified",
+)
 
 
 class Missing(ValueError):
@@ -240,14 +248,27 @@ def review_recovery(policy: dict, receipt: dict) -> None:
         raise Failed("Measured off-site database data loss exceeds five minutes")
 
 
+def utc_day(record: dict, name: str) -> date:
+    value = field(record, name)
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    raise Failed(f"{name} must be a valid UTC calendar date")
+
+
 def review_operations_policy(policy: dict, *, now_unix_s: int) -> None:
     operations = object_field(policy, "operations")
-    for name in ("destination_sha256", "monitor_profile_sha256", "phone_recipient_sha256"):
+    for name in ("destination_sha256", "monitor_profile_sha256", "phone_recipient_sha256", "nightly_scope_sha256"):
         sha_field(operations, name)
     end = number(operations, "window_end_unix_s", minimum=BACKUP_WINDOW_SECONDS)
     expires = number(operations, "evidence_valid_until_unix_s", minimum=end)
     if not end <= now_unix_s <= expires:
         raise Failed("The reviewed observation window is in the future or has expired")
+    today_ordinal = date(1970, 1, 1).toordinal() + now_unix_s // 86400
+    if utc_day(operations, "last_nightly_day_utc").toordinal() > today_ordinal:
+        raise Failed("The reviewed nightly streak ends in the future")
     cap(operations, "interval_s", BACKUP_LAG_SECONDS)
     for kind in OPERATIONS_REPORTS:
         sha_field(operations, f"{kind}_report_sha256")
@@ -336,6 +357,35 @@ def review_point_in_time_drills(policy: dict, receipt: dict) -> None:
         raise Failed("A point-in-time drill must verify exclusion of a planted bad write")
 
 
+def review_nightly_data_parity(policy: dict, receipt: dict) -> None:
+    report = operations_report(policy, receipt, "nightly_data_parity", scope="nightly_scope_sha256")
+    nights = field(report, "nights")
+    if not isinstance(nights, list) or any(not isinstance(night, dict) for night in nights):
+        raise Failed("Nightly evidence must be a list of reports")
+    if len(nights) < NIGHTLY_RUN_COUNT:
+        raise Missing("Five nightly parity runs are required")
+    if len(nights) != NIGHTLY_RUN_COUNT:
+        raise Failed("Select the five reviewed nightly parity reports")
+    if len({sha_field(night, "report_sha256") for night in nights}) != NIGHTLY_RUN_COUNT:
+        raise Failed("Nightly runs require distinct report digests")
+    last = utc_day(policy["operations"], "last_nightly_day_utc").toordinal()
+    release = load_identity(policy)["release_sha"]
+    for index, night in enumerate(nights, 1):
+        sha_field(night, "snapshot_sha256")
+        if utc_day(night, "scheduled_day_utc").toordinal() != last - NIGHTLY_RUN_COUNT + index:
+            raise Failed("Nightly parity reports must cover five consecutive reviewed dates")
+        tested_release = field(night, "release_sha")
+        if not isinstance(tested_release, str) or not re.fullmatch(r"[a-f0-9]{40}", tested_release):
+            raise Failed("Nightly parity report requires an exact release commit")
+        if index > NIGHTLY_RUN_COUNT - FROZEN_NIGHT_COUNT and tested_release != release:
+            raise Failed("Both final nightly runs must use the frozen release")
+        cap(night, "import_and_verify_ms", 12 * MINUTE)
+        for name in ("errors", "warnings", "notes", "unexpected_field_differences"):
+            zero(night, name)
+        for proof in NIGHTLY_PROOFS:
+            confirmed(night, proof)
+
+
 def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> dict:
     gates = Gates()
     if not gates.check("approved_policy", lambda: review_policy(policy)):
@@ -373,6 +423,7 @@ def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> d
         gates.check("offsite_retention", lambda: review_retention(policy, receipt))
         gates.check("external_alert_delivery", lambda: review_alerts(policy, receipt))
         gates.check("point_in_time_drills", lambda: review_point_in_time_drills(policy, receipt))
+        gates.check("nightly_data_parity", lambda: review_nightly_data_parity(policy, receipt))
     return gates.report(**binding)
 
 
