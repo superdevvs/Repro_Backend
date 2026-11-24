@@ -1,6 +1,10 @@
+@php
+    $outreach = $emailOutreachFooter ?? false;
+    $postalAddress = $emailPostalAddress ?? $brand['company_address'];
+@endphp
 <tr><td class="email-inset footer-inner" data-email-footer="atelier" style="padding:36px 48px;border-top:1px solid {{ $colors['border'] }};">
     <p class="atelier-link" style="margin:0 0 12px;color:{{ $colors['accent'] }};font-size:10px;line-height:16px;font-weight:600;letter-spacing:1.8px;text-transform:uppercase;">Here for you</p>
-    <p class="dark-heading" style="margin:0 0 16px;color:{{ $colors['ink'] }};font-size:23px;line-height:31px;font-weight:500;letter-spacing:-.6px;">Need help with a shoot, invoice, or account question?</p>
+    <p class="dark-heading" style="margin:0 0 16px;color:{{ $colors['ink'] }};font-size:23px;line-height:31px;font-weight:500;letter-spacing:-.6px;">{{ $outreach ? 'Have a question? Get in touch.' : 'Need help with a shoot, invoice, or account question?' }}</p>
     <p class="dark-body footer-contact" style="margin:0;color:{{ $colors['body'] }};font-size:13px;line-height:24px;">Call <a class="footer-contact-link" href="tel:{{ $supportPhoneHref }}" style="color:{{ $colors['accent'] }};text-decoration:underline;">{{ $supportPhone }}</a><br><a class="footer-contact-link" href="mailto:{{ $supportEmail }}" style="color:{{ $colors['accent'] }};text-decoration:underline;">{{ $supportEmail }}</a></p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:28px;">
         <tr>
@@ -10,6 +14,7 @@
             </td>
             <td width="32" align="right" class="footer-rule" style="padding:18px 0;border-top:1px solid {{ $colors['border'] }};vertical-align:middle;"><a class="atelier-link" href="{{ $websiteUrl }}" aria-label="Visit our website" style="color:{{ $colors['accent'] }};font-size:22px;line-height:28px;text-decoration:none;">&#8599;</a></td>
         </tr>
+        @unless($outreach)
         <tr>
             <td class="footer-rule" style="padding:18px 0;border-top:1px solid {{ $colors['border'] }};border-bottom:1px solid {{ $colors['border'] }};">
                 <a class="dark-heading" href="{{ $brand['review_url'] }}" style="display:block;color:{{ $colors['ink'] }};font-size:14px;line-height:22px;font-weight:600;text-decoration:none;">Leave a Review</a>
@@ -17,6 +22,7 @@
             </td>
             <td width="32" align="right" class="footer-rule" style="padding:18px 0;border-top:1px solid {{ $colors['border'] }};border-bottom:1px solid {{ $colors['border'] }};vertical-align:middle;"><a class="atelier-link" href="{{ $brand['review_url'] }}" aria-label="Leave a review" style="color:{{ $colors['accent'] }};font-size:22px;line-height:28px;text-decoration:none;">&#8599;</a></td>
         </tr>
+        @endunless
     </table>
     @hasSection('footer_note')
         <p class="dark-muted" data-email-footer-note="true" style="margin:20px 0 0;color:{{ $colors['muted'] }};font-size:12px;line-height:20px;">@yield('footer_note')</p>
@@ -36,10 +42,13 @@
         </tr>
     </table>
     <p class="dark-heading" style="margin:24px 0 10px;color:{{ $colors['ink'] }};font-size:15px;line-height:23px;font-weight:500;">Thank you for the opportunity.</p>
-    <p class="dark-muted" style="margin:0;color:{{ $colors['muted'] }};font-size:11px;line-height:19px;">This email was sent by {{ $productName }}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.</p>
+    <p class="dark-muted" style="margin:0;color:{{ $colors['muted'] }};font-size:11px;line-height:19px;">This email was sent by {{ $productName }}. @unless($outreach) Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.@endunless</p>
     <div data-email-provider-footer="true" class="dark-muted" style="color:{{ $colors['muted'] }};font-size:11px;line-height:19px;">
-        @if(!empty($brand['company_address']))
-            <p style="margin:12px 0 0;">{{ $brand['company_address'] }}</p>
+        @if(!empty($postalAddress))
+            <p style="margin:12px 0 0;">{{ $postalAddress }}</p>
+        @endif
+        @if(!empty($emailUnsubscribeUrl))
+            <p style="margin:12px 0 0;">You opted in to email from {{ $productName }}. <a class="footer-contact-link" href="{{ $emailUnsubscribeUrl }}" style="color:{{ $colors['accent'] }};text-decoration:underline;">Unsubscribe</a></p>
         @endif
     </div>
 </td></tr>

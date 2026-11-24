@@ -5,12 +5,14 @@ namespace App\Services\Crm\Email;
 use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmSignature;
 use App\Models\User;
+use App\Services\SystemEmails\EmailArtwork;
+use App\Services\SystemEmails\EmailPresentation;
 
 /**
  * Builds the final email in the locked R/E Pro Photos layout. Only the subject,
  * body, one image and one button come from the template or the user; the logo,
  * colours, fonts, signature block, unsubscribe link and company address are
- * fixed here and cannot be edited.
+ * supplied by the shared Dashboard layout and the approved rep signature.
  */
 class CrmEmailRenderer
 {
@@ -24,36 +26,33 @@ class CrmEmailRenderer
     public function render(array $content, array $vars, ?string $signatureHtml, ?string $unsubscribeUrl, bool $isMarketing = true): array
     {
         $subject = $this->merge($content['subject'], $vars, false);
-        $body = $this->merge(CrmHtmlSanitizer::clean($content['body_html']), $vars, true);
-        $body = str_replace('{{rep_signature}}', '', $body);
-
-        $image = ! empty($content['image_url']) ? '<tr><td style="padding:0 32px 20px"><img src="'.e($content['image_url']).'" alt="" width="536" style="display:block;width:100%;max-width:536px;border-radius:8px;border:0"></td></tr>' : '';
-        $cta = ! empty($content['cta_label']) && ! empty($content['cta_url'])
-            ? '<tr><td style="padding:4px 32px 24px"><a href="'.e($this->merge($content['cta_url'], $vars, false)).'" style="display:inline-block;background:#0080ff;color:#ffffff;font-weight:600;font-size:15px;text-decoration:none;padding:11px 20px;border-radius:8px">'.e($content['cta_label']).'</a></td></tr>'
-            : '';
-        $signature = $signatureHtml ? '<tr><td style="padding:0 32px 28px">'.$signatureHtml.'</td></tr>' : '';
-        $preheader = ! empty($content['preheader']) ? '<div style="display:none;max-height:0;overflow:hidden">'.e($this->merge($content['preheader'], $vars, false)).'</div>' : '';
-        $address = trim((string) config('crm.email.company_address'));
-        $footerLines = ['R/E Pro Photos'.($address !== '' ? ' · '.e($address) : '')];
-        if ($isMarketing && $unsubscribeUrl) {
-            $footerLines[] = 'You opted in to email from R/E Pro Photos. <a href="'.e($unsubscribeUrl).'" style="color:#55657a">Unsubscribe</a>';
+        $body = CrmHtmlSanitizer::clean(str_replace('{{rep_signature}}', '', $this->merge($content['body_html'], $vars, true)));
+        $ctaLabel = $this->merge((string) ($content['cta_label'] ?? ''), $vars, false);
+        $ctaUrl = $this->merge((string) ($content['cta_url'] ?? ''), $vars, false);
+        $hasCta = $ctaLabel !== '' && preg_match('#^(https?://|mailto:)#i', $ctaUrl);
+        $imageUrl = (string) ($content['image_url'] ?? '');
+        if (str_starts_with($imageUrl, '/storage/')) {
+            $imageUrl = rtrim((string) config('app.url'), '/').$imageUrl;
         }
-        $logo = e((string) config('crm.email.logo_url', 'https://reprodashboard.com/images/repro-email-logo-light.png'));
+        $address = trim((string) config('crm.email.company_address'));
 
-        $html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>'.e($subject).'</title></head>'
-            .'<body style="margin:0;padding:0;background:#f3f5f7;font-family:Inter,Segoe UI,Arial,sans-serif;color:#0f1a26">'.$preheader
-            .'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f5f7"><tr><td align="center" style="padding:24px 12px">'
-            .'<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border:1px solid #e2e8ee;border-radius:12px">'
-            .'<tr><td style="padding:24px 32px 8px"><img src="'.$logo.'" alt="R/E Pro Photos" height="28" style="display:block;height:28px;border:0"></td></tr>'
-            .'<tr><td style="padding:16px 32px 8px;font-size:15px;line-height:24px">'.$body.'</td></tr>'
-            .$image.$cta.$signature
-            .'</table>'
-            .'<p style="max-width:600px;margin:16px auto 0;font-size:12px;line-height:18px;color:#55657a;text-align:center">'.implode('<br>', $footerLines).'</p>'
-            .'</td></tr></table></body></html>';
+        $html = view('emails.messaging.atelier', [
+            'subject' => $subject,
+            'preheaderText' => $this->merge((string) ($content['preheader'] ?? ''), $vars, false),
+            'heroTitleHtml' => e($subject),
+            'bodyHtml' => view('emails.crm.body', compact('body', 'hasCta', 'ctaLabel', 'ctaUrl', 'signatureHtml'))->render(),
+            'branding' => array_filter(['email_logo_grey_url' => config('crm.email.logo_url')]),
+            'emailAtelier' => preg_match('#^https?://#i', $imageUrl)
+                ? ['kind' => 'illustration', 'asset' => 'crm-template', 'src' => $imageUrl]
+                : ($isMarketing ? app(EmailArtwork::class)->resolve('crm_thank_you') : ['kind' => 'none']),
+            'emailOutreachFooter' => true,
+            'emailPostalAddress' => $address,
+            'emailUnsubscribeUrl' => $isMarketing ? $unsubscribeUrl : null,
+        ])->render();
 
         $text = CrmHtmlSanitizer::toText($body);
-        if (! empty($content['cta_label']) && ! empty($content['cta_url'])) {
-            $text .= "\n\n".$content['cta_label'].': '.$this->merge($content['cta_url'], $vars, false);
+        if ($hasCta) {
+            $text .= "\n\n".$ctaLabel.': '.$ctaUrl;
         }
         if ($signatureHtml) {
             $text .= "\n\n".CrmHtmlSanitizer::toText($signatureHtml);
@@ -89,8 +88,9 @@ class CrmEmailRenderer
             return null;
         }
         $f = $signature->fields ?? [];
+        $colors = EmailPresentation::palette();
         $lines = [
-            '<strong style="font-size:14px">'.e($f['name'] ?? '').'</strong>',
+            '<strong class="dark-strong" style="font-size:14px;color:'.$colors['ink'].'">'.e($f['name'] ?? '').'</strong>',
             e(trim(($f['title'] ?? '').' · R/E Pro Photos', ' ·')),
             e(trim(($f['phone'] ?? '').' · '.$signature->sender_email, ' ·')),
         ];
@@ -98,8 +98,8 @@ class CrmEmailRenderer
             ? '<td style="padding-right:14px;vertical-align:middle"><img src="'.e($this->publicUrl($signature->headshot_path)).'" width="48" height="48" alt="" style="display:block;border-radius:24px;border:0"></td>'
             : '';
 
-        return '<table role="presentation" cellpadding="0" cellspacing="0"><tr>'.$photo
-            .'<td style="border-left:2px solid #0080ff;padding-left:14px;font-size:13px;line-height:19px;color:#3a4a5c">'.implode('<br>', $lines).'</td></tr></table>';
+        return '<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:24px;"><tr>'.$photo
+            .'<td class="dark-muted" style="border-left:2px solid '.$colors['accent'].';padding-left:14px;font-size:13px;line-height:19px;color:'.$colors['muted'].'">'.implode('<br>', $lines).'</td></tr></table>';
     }
 
     private function publicUrl(string $path): string
