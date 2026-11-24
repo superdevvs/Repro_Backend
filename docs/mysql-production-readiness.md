@@ -546,7 +546,16 @@ uncommitted business enqueue. Rolling back removed that enqueue and the
 business update. The scoped account was refused business writes and access
 to the control table. The report SHA-256 is
 `7616c9f3d41726713b168f4d2e194b60d2fe9d43d3685f8370678d4dece6a7ba`.
-Application worker routing and concurrent reservations remain to verify.
+The default database queue now has a disabled-by-default routing pilot
+at `f4b1826f`. Claim, release and acknowledgement use a separately
+authenticated account restricted to the jobs table. Normal enqueue still
+uses the business transaction and is removed by rollback. The pilot
+verifies a replacement PDO session before it can acknowledge existing work.
+Its isolated MySQL 8.4.13 contract passed six tests and 118 assertions,
+and the stock SQLite queue passed seven tests and 33 assertions. The
+native test log SHA-256 is
+`3c4597bee51458d4880193c1697fa5f304499eadfbd69e2915ddcd8ed33e557a`.
+Studio and iGUIDE queue routes still require separate coverage.
 
 Listing Studio rejection counters use an independent session so they survive
 business rollback. The runtime writer policy must preserve this behavior.
@@ -998,6 +1007,14 @@ on both engines in each of the eight weeks. The historical date-only
 fallback excluded 32 rows that fell within the calendar week before
 eligibility filters. Full invoice and payout output parity still requires
 the application rehearsal.
+
+The isolated synthetic finance matrix ran the same 19 cases and 167
+assertions on each engine at `61ba8a83`. It covered invoice summaries and
+past-due results, payment reconciliation, photographer and sales-rep
+payout rules, editor payout state and duplicate prevention. The fixtures
+had networking disabled and were removed after each engine run. The test
+receipt SHA-256 is
+`0009fae84239220e78868898b2fc3f8d511ba30fffccdd5e2c72dba22aaaa930`.
 
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,
