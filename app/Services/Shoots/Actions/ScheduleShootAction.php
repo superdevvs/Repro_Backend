@@ -12,6 +12,7 @@ use App\Services\Messaging\ClientConfirmationRecoveryService;
 use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\ShootWorkflowService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class ScheduleShootAction
@@ -65,7 +66,7 @@ class ScheduleShootAction
             $validated, $plannedServices, $scheduledAt, $targetPhotographer ? (int) $targetPhotographer : null,
             $shoot->timezone, 'schedule'
         ), $shoot, $user);
-        $travelGuard->commit($travelPrepared, function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold, $onlyDigitalServices, $plannedServices) {
+        $writeSchedule = function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold, $onlyDigitalServices, $plannedServices) {
             if ($isMultiUnit) {
                 $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user, $plannedServices);
             }
@@ -77,7 +78,7 @@ class ScheduleShootAction
             if (! $isMultiUnit) {
                 if ($photographerId) {
                     $carbonDate = \Carbon\Carbon::parse($scheduledAt);
-                    \Illuminate\Support\Facades\DB::table('shoots')
+                    DB::table('shoots')
                         ->where('photographer_id', $photographerId)
                         ->whereDate('scheduled_at', $carbonDate->toDateString())
                         ->where('id', '!=', $shoot->id)
@@ -131,6 +132,19 @@ class ScheduleShootAction
                 $this->workflowService->schedule($shoot, $derived, $user);
             }
 
+        };
+
+        $travelGuard->commit($travelPrepared, function () use ($writeSchedule) {
+            // Travel checks are optional. With no enclosing MySQL transaction,
+            // the schedule's row locks and related writes need one of their own.
+            $connection = DB::connection();
+            if ($connection->getDriverName() === 'mysql' && $connection->transactionLevel() === 0) {
+                $connection->transaction($writeSchedule);
+
+                return;
+            }
+
+            $writeSchedule();
         });
 
         if (! $shoot->dropbox_raw_folder) {

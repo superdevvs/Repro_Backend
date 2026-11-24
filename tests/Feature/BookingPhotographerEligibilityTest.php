@@ -2,12 +2,20 @@
 
 namespace Tests\Feature;
 
+use App\Events\ShootActivityBroadcast;
 use App\Models\Category;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\AddressLookupService;
+use App\Services\Schedule\ScheduleDateScopeService;
+use App\Services\Scheduling\SchedulingBufferSettings;
 use App\Services\Scheduling\TravelLocationResolver;
+use App\Services\ShootActivityLogger;
+use App\Services\ShootWorkflowService;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
@@ -404,6 +412,102 @@ class BookingPhotographerEligibilityTest extends TestCase
 
         $this->assertSame($newMain->id, (int) $shoot->fresh()->photographer_id);
         $this->assertSame($newMain->id, (int) $shoot->serviceItems()->firstOrFail()->photographer_id);
+    }
+
+    public function test_schedule_with_travel_disabled_rolls_back_earlier_mutations_on_mysql(): void
+    {
+        config(['availability.hybrid_travel_enabled' => false, 'availability.radius_enforcement' => false]);
+        $this->assertFalse(app(SchedulingBufferSettings::class)->enabled());
+        $this->assertSame(0, DB::transactionLevel());
+        $isMySql = DB::getDriverName() === 'mysql';
+        $shoot = $this->existingShoot();
+        $shoot->forceFill(['status' => Shoot::STATUS_ON_HOLD, 'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'base_quote' => 120, 'total_quote' => 130])->save();
+        $this->mock(ShootActivityLogger::class, function ($logger) use ($shoot, $isMySql) {
+            $logger->shouldReceive('log')->once()->andReturnUsing(function (Shoot $candidate, string $action) use ($shoot, $isMySql) {
+                $this->assertSame($shoot->id, $candidate->id);
+                $this->assertSame('shoot_resumed_from_hold', $action);
+                $this->assertSame($isMySql ? 2 : 1, DB::transactionLevel());
+                $this->assertSame('2031-10-10 11:00:00', $candidate->serviceItems()->firstOrFail()->scheduled_at->format('Y-m-d H:i:s'));
+                $this->assertSame(60.0, (float) $candidate->base_quote);
+
+                throw new \RuntimeException('Stop after the booking writes.');
+            });
+        });
+        Queue::fake();
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", ['scheduled_at' => '2031-10-10T11:00:00Z'])->assertServerError();
+
+        $saved = $shoot->fresh();
+        $this->assertSame(0, DB::transactionLevel());
+        $this->assertSame(Shoot::STATUS_ON_HOLD, $saved->status);
+        $this->assertSame('2031-10-09 10:00:00', $saved->scheduled_at->format('Y-m-d H:i:s'));
+        $this->assertSame($isMySql ? 120.0 : 60.0, (float) $saved->base_quote);
+        $this->assertSame($isMySql ? 130.0 : 70.0, (float) $saved->total_quote);
+        $this->assertSame($isMySql ? '2031-10-09 10:00:00' : '2031-10-10 11:00:00',
+            $saved->serviceItems()->firstOrFail()->scheduled_at->format('Y-m-d H:i:s'));
+        Mail::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    public function test_schedule_cache_and_broadcast_follow_the_mysql_outer_transaction(bool $commit): void
+    {
+        config(['availability.hybrid_travel_enabled' => false]);
+        $this->assertFalse(app(SchedulingBufferSettings::class)->enabled());
+        $isMySql = DB::getDriverName() === 'mysql';
+        $shoot = $this->existingShoot();
+        $shoot->forceFill(['status' => Shoot::STATUS_ON_HOLD, 'workflow_status' => Shoot::STATUS_ON_HOLD])->save();
+        $broadcastLevels = [];
+        Event::listen(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use (&$broadcastLevels): void {
+            if ($event->activityType === 'shoot_resumed_from_hold') {
+                $broadcastLevels[] = DB::transactionLevel();
+                throw new \RuntimeException('database is locked (synthetic broadcast listener failure)');
+            }
+        });
+        $dashboardKey = 'dashboard_overview_admin_'.$this->admin->id;
+        Cache::put($dashboardKey, 'original');
+        $scheduleScope = app(ScheduleDateScopeService::class);
+        $oldDate = '2031-10-09';
+        $newDate = '2031-10-10';
+        $scheduleScope->remember($oldDate, fn () => 'original');
+        $scheduleScope->remember($newDate, fn () => 'original');
+
+        DB::beginTransaction();
+        try {
+            app(ShootWorkflowService::class)->schedule($shoot, new \DateTime($newDate.'T11:00:00Z'), $this->admin);
+            $this->assertSame(1, $shoot->activityLogs()->where('action', 'shoot_resumed_from_hold')->count());
+            $this->assertSame($isMySql ? 'original' : null, Cache::get($dashboardKey));
+            foreach ([$oldDate, $newDate] as $date) {
+                $this->assertSame($isMySql ? 'original' : 'refilled', $scheduleScope->remember($date, fn () => 'refilled'));
+            }
+            $this->assertSame($isMySql ? [] : [3], $broadcastLevels);
+
+            if ($commit) {
+                DB::commit();
+            } else {
+                DB::rollBack();
+            }
+        } finally {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+        }
+
+        $this->assertSame($commit ? 1 : 0, $shoot->activityLogs()->where('action', 'shoot_resumed_from_hold')->count());
+        $this->assertSame($isMySql ? ($commit ? [0] : []) : [3], $broadcastLevels);
+        $this->assertSame($isMySql && ! $commit ? 'original' : null, Cache::get($dashboardKey));
+        foreach ([$oldDate, $newDate] as $date) {
+            // SQLite already invalidated both dates during schedule(). The model's
+            // commit hook sees the saved date, so the refilled old bucket remains.
+            $expected = match (true) {
+                $commit && ($isMySql || $date === $newDate) => 'after transaction',
+                $isMySql => 'original',
+                default => 'refilled',
+            };
+            $this->assertSame($expected, $scheduleScope->remember($date, fn () => 'after transaction'));
+        }
     }
 
     public function test_explicit_service_assignment_is_preserved_when_the_main_changes(): void
