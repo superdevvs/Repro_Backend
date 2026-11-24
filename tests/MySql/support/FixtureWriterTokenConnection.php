@@ -8,7 +8,6 @@ use App\Database\MySqlWriterToken;
 use App\Database\WriterTokenTimeout;
 use Closure;
 use Illuminate\Container\Container;
-use Illuminate\Database\DatabaseTransactionsManager;
 use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\QueryException;
 use Illuminate\Events\Dispatcher;
@@ -16,6 +15,8 @@ use LogicException;
 use PDO;
 use RuntimeException;
 use Throwable;
+
+require_once __DIR__.'/FixtureWriterTransactionsManager.php';
 
 /** Explicit native fixture only. No production resolver, binding or configuration selects this class. */
 final class FixtureWriterTokenConnection extends MySqlConnection
@@ -33,17 +34,17 @@ final class FixtureWriterTokenConnection extends MySqlConnection
 
     private int $acquisitions = 0;
 
-    private DatabaseTransactionsManager $fixtureTransactions;
+    private FixtureWriterTransactionsManager $fixtureTransactions;
 
-    private function __construct(PDO $pdo, array $config)
+    private function __construct(PDO $pdo, array $config, FixtureWriterTransactionsManager $transactions)
     {
         parent::__construct($pdo, 'repro_mysql_test', '', $config);
-        $this->fixtureTransactions = new DatabaseTransactionsManager;
-        $this->setTransactionManager($this->fixtureTransactions);
+        $this->fixtureTransactions = $transactions;
+        $this->setTransactionManager($transactions);
         $this->setEventDispatcher(new Dispatcher(new Container));
     }
 
-    public static function fromEnvironment(): self
+    public static function fromEnvironment(?FixtureWriterTransactionsManager $transactions = null): self
     {
         if (PHP_SAPI !== 'cli' || getenv('APP_ENV') !== 'testing'
             || getenv('MYSQL_WRITER_TOKEN_FIXTURE') !== 'isolated-v1'
@@ -60,7 +61,7 @@ final class FixtureWriterTokenConnection extends MySqlConnection
         $pdo->exec('SET SESSION innodb_lock_wait_timeout = 5');
         $pdo->exec('SET SESSION lock_wait_timeout = 5');
 
-        return new self($pdo, $config);
+        return new self($pdo, $config, $transactions ?? new FixtureWriterTransactionsManager);
     }
 
     protected function getDefaultQueryGrammar()
@@ -269,19 +270,19 @@ final class FixtureWriterTokenConnection extends MySqlConnection
         } catch (Throwable) {
             // No further work is permitted on this PDO, even if cleanup failed.
         }
-        // Outcome may be unknown (COMMIT acknowledgement lost), and a rollback
-        // callback may itself have thrown. Abandon this fixture's private
-        // manager without dispatching or repeating either set of callbacks.
-        $this->fixtureTransactions = new DatabaseTransactionsManager;
-        $this->setTransactionManager($this->fixtureTransactions);
+        // An uncertain COMMIT or a throwing rollback callback must not execute
+        // callbacks again. Other connections still own their manager records.
+        $this->fixtureTransactions->abandon($this->getName());
         parent::disconnect();
     }
 
     public function fixtureState(): array
     {
+        $belongsToConnection = fn ($transaction) => $transaction->connection === $this->getName();
+
         return ['level' => $this->transactionLevel(), 'discarded' => $this->discarded,
             'poisoned' => $this->poisoned, 'acquisitions' => $this->acquisitions,
-            'pending' => $this->fixtureTransactions->getPendingTransactions()->count(),
-            'committed' => $this->fixtureTransactions->getCommittedTransactions()->count()];
+            'pending' => $this->fixtureTransactions->getPendingTransactions()->filter($belongsToConnection)->count(),
+            'committed' => $this->fixtureTransactions->getCommittedTransactions()->filter($belongsToConnection)->count()];
     }
 }

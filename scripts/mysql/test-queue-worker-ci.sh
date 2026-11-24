@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the socket-only queue contract once on the hosted MySQL job.
+# Run the socket-only writer, queue and cache contracts once on the hosted MySQL job.
 set -euo pipefail
 
 if [[ "${GITHUB_ACTIONS:-}" != true || "${RUNNER_OS:-}" != Linux ]]; then
@@ -80,6 +80,22 @@ fi
 password=$(openssl rand -hex 32)
 key=base64:$(openssl rand -base64 32)
 printf '::add-mask::%s\n::add-mask::%s\n' "$password" "$key"
+
+emit_schema_tables() {
+    python3 - "$@" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+schema = Path("database/schema/mysql-schema.sql").read_text(encoding="utf-8")
+for name in sys.argv[1:]:
+    tables = re.findall(rf"^CREATE TABLE `{re.escape(name)}`\s+\([^;]+;", schema, re.MULTILINE)
+    if len(tables) != 1:
+        raise SystemExit(f"Expected one canonical {name} table")
+    print(tables[0])
+PY
+}
+
 {
     cat <<'SQL'
 CREATE DATABASE repro_mysql_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin;
@@ -90,19 +106,8 @@ CREATE TABLE repro_mysql_control.writer_token (
     contract_version INT UNSIGNED NOT NULL
 ) ENGINE=InnoDB;
 INSERT INTO repro_mysql_control.writer_token VALUES (1,'repro_mysql_test',1);
-USE repro_mysql_test;
 SQL
-    python3 - <<'PY'
-from pathlib import Path
-import re
-
-schema = Path("database/schema/mysql-schema.sql").read_text(encoding="utf-8")
-tables = re.findall(r"^CREATE TABLE `jobs`\s+\([^;]+;", schema, re.MULTILINE)
-if len(tables) != 1:
-    raise SystemExit("Expected one canonical jobs table")
-print(tables[0])
-PY
-    for user in repro_test repro_token_fixture repro_queue_worker repro_queue_broad; do
+    for user in repro_test repro_token_fixture repro_queue_worker repro_queue_broad repro_cache_fixture repro_cache_broad; do
         printf "CREATE USER '%s'@'localhost' IDENTIFIED WITH caching_sha2_password BY '%s';\n" "$user" "$password"
     done
     cat <<'SQL'
@@ -110,9 +115,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON `repro\_mysql\_test`.* TO repro_test@loc
 GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO repro_test@localhost;
 GRANT ALL ON `repro\_mysql\_test`.* TO repro_token_fixture@localhost;
 GRANT ALL ON `repro\_mysql\_control`.* TO repro_token_fixture@localhost;
-GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.jobs TO repro_queue_worker@localhost;
-GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.jobs TO repro_queue_broad@localhost;
-GRANT SELECT ON repro_mysql_control.writer_token TO repro_queue_broad@localhost;
 SQL
 } | "${sql[@]}"
 
@@ -127,11 +129,40 @@ fixture_php=(
     CLAMAV_SCAN_ON_UPLOAD=false LOG_CHANNEL=stderr PULSE_ENABLED=false TELESCOPE_ENABLED=false
     DB_CONNECTION=mysql "DB_SOCKET=$socket" DB_DATABASE=repro_mysql_test DB_USERNAME=repro_test
     "DB_PASSWORD=$password" MYSQL_QUEUE_WORKER_FIXTURE=isolated-v1
+    MYSQL_WRITER_TOKEN_FIXTURE=isolated-v1 "MYSQL_WRITER_TOKEN_UUID=$uuid"
     "REPRO_MYSQL_EXPECTED_SERVER_UUID=$uuid" REPRO_MYSQL_QUEUE_WORKER=true
     REPRO_MYSQL_QUEUE_WORKER_USERNAME=repro_queue_worker "REPRO_MYSQL_QUEUE_WORKER_PASSWORD=$password"
+    REPRO_MYSQL_SCHEDULING_CACHE=true REPRO_MYSQL_SCHEDULING_CACHE_USERNAME=repro_cache_fixture
+    "REPRO_MYSQL_SCHEDULING_CACHE_PASSWORD=$password"
     "$php"
 )
+"${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
+    --fail-on-phpunit-deprecation -c phpunit.mysql.xml tests/MySql/contracts/LaravelWriterTokenContract.php \
+    --filter test_lost_commit_acknowledgement
+{
+    printf 'USE repro_mysql_test; DROP TABLE _writer_token_probe;\n'
+    emit_schema_tables jobs
+    cat <<'SQL'
+GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.jobs TO repro_queue_worker@localhost;
+GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.jobs TO repro_queue_broad@localhost;
+GRANT SELECT ON repro_mysql_control.writer_token TO repro_queue_broad@localhost;
+SQL
+} | "${sql[@]}"
 "${fixture_php[@]}" -l config/queue.php
 "${fixture_php[@]}" -l tests/MySql/contracts/MySqlQueueWorkerContract.php
 "${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
     --fail-on-phpunit-deprecation -c phpunit.mysql.xml tests/MySql/contracts/MySqlQueueWorkerContract.php
+
+{
+    printf 'USE repro_mysql_test;\n'
+    emit_schema_tables cache cache_locks
+    cat <<'SQL'
+GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.cache TO repro_cache_fixture@localhost;
+GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.cache_locks TO repro_cache_fixture@localhost;
+GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.cache TO repro_cache_broad@localhost;
+GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.cache_locks TO repro_cache_broad@localhost;
+GRANT SELECT ON repro_mysql_test.jobs TO repro_cache_broad@localhost;
+SQL
+} | "${sql[@]}"
+"${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
+    --fail-on-phpunit-deprecation -c phpunit.mysql.xml tests/MySql/contracts/MySqlSchedulingCacheContract.php

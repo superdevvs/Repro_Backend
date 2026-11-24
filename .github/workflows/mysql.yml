@@ -55,7 +55,7 @@ jobs:
           echo "$RUNNER_TEMP/mysql84" >> "$GITHUB_PATH"
           echo "REPRO_MYSQL_CLIENT=$RUNNER_TEMP/mysql84/mysql" >> "$GITHUB_ENV"
           echo "REPRO_MYSQLDUMP=$RUNNER_TEMP/mysql84/mysqldump" >> "$GITHUB_ENV"
-      - name: Verify socket-only queue worker routing
+      - name: Verify socket-only write recovery, queue and cache routing
         if: matrix.shard == 0
         env:
           MYSQL_CONTAINER: ${{ job.services.mysql.id }}

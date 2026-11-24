@@ -96,6 +96,16 @@ return [
             'isolation_level' => 'READ COMMITTED',
         ],
 
+        'mysql_scheduling_cache' => [
+            ...$mysql,
+            'repro_require_server_identity' => true,
+            'repro_route_budget_writer_token' => false,
+            'repro_scheduling_cache_only' => true,
+            'url' => null,
+            'username' => env('REPRO_MYSQL_SCHEDULING_CACHE_USERNAME'),
+            'password' => env('REPRO_MYSQL_SCHEDULING_CACHE_PASSWORD'),
+        ],
+
         'mariadb' => [
             'driver' => 'mariadb',
             'url' => env('DB_URL'),

@@ -2,6 +2,11 @@
 
 use Illuminate\Support\Str;
 
+$schedulingConnection = env('DB_CONNECTION', 'sqlite') === 'mysql'
+    && env('REPRO_MYSQL_SCHEDULING_CACHE', false) === true
+        ? 'mysql_scheduling_cache'
+        : null;
+
 return [
 
     /*
@@ -42,9 +47,9 @@ return [
         // database avoids the per-owner permissions of ordinary file-cache locks.
         'scheduling' => [
             'driver' => 'database',
-            'connection' => null,
+            'connection' => $schedulingConnection,
             'table' => 'cache',
-            'lock_connection' => null,
+            'lock_connection' => $schedulingConnection,
             'lock_table' => 'cache_locks',
         ],
 

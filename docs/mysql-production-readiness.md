@@ -1,5 +1,17 @@
 # MySQL production readiness
 
+## Cutover decision on November 24
+
+**Hold.** Production continues on SQLite. Scheduled evidence, the
+full application writer policy and the timed dress rehearsals remain open.
+
+| Gate | Latest rehearsal evidence | Remaining evidence |
+| --- | --- | --- |
+| Data and financial parity | The private copy verified 291 tables, 1,857,367 rows and 29,857,089 fields with zero differences. Import and independent verification took 11 minutes 40 seconds. Eight report weeks and sampled invoice and payout generation matched. | Five consecutive qualifying nights, with the last two on the frozen release. |
+| Application writes and rollback | Scoped MySQL worker routing, both synthetic rollback paths, and the administrator schedule inventory passed. | Application-wide writer coverage, restart-safe admission across actual entry points, and two comparable end-to-end rehearsals within the planned outage. |
+| Storage and recovery | Native data and media devices were confirmed separate. The private rehearsal bucket supported an independent encrypted recovery and protected a synthetic object. | The designated backup configuration, seven days of independent backup evidence, and point-in-time recovery drills on that configuration. |
+| Alert delivery | The backup failure reached the phone. The repeated missed check-in reached the inbox. | Confirm missed check-in delivery on the phone and complete both reviewed alert rounds. |
+
 ## November 22 data rehearsal
 
 The candidate is based on deployed backend
@@ -592,7 +604,24 @@ committed cache entry survived business rollback. The fixture verified that
 the cache principal had no business or token access, and cleaned up both
 512 MiB containers and their temporary socket volume. The proof SHA-256 is
 `f7e792544f09fbdd99ae0cc0430301ff5470eb6361056d645e7a588c29715f5c`.
-Application routing and cache-before-business ordering remain to verify.
+The scheduling store has a MySQL-only pilot flag,
+`REPRO_MYSQL_SCHEDULING_CACHE`, which defaults to false. The flag uses a
+separate session for the existing `cache` and `cache_locks` tables for
+this store. The cache username and password come from
+`REPRO_MYSQL_SCHEDULING_CACHE_USERNAME` and
+`REPRO_MYSQL_SCHEDULING_CACHE_PASSWORD`. A newly established or replacement
+session has to match the pinned socket and server, and the local principal
+can have only SELECT, INSERT, UPDATE and DELETE on the two InnoDB tables.
+The default database cache continues to honor its existing settings.
+Three native MySQL 8.4.13 tests verified the routing flags, stock Laravel
+cache and lock behavior across business rollback, and refusal of broader
+grants on a replacement session. A separate 22-case native fixture verified
+that losing a real COMMIT acknowledgement preserves sibling connections'
+pending callbacks without replaying the committed write. The test log
+digests are `8799e47b10ef2faa6a8c1dcaa0a43f5ee5188df594ea410315abcd73367e5309`
+and `454aeebf1b8605c0f9278f78c2195306ac7c50a059bfd2181bd9fed33cd0aa39`.
+The broader cache and business-write ordering and the runtime transaction
+manager binding still need application acceptance.
 
 The refreshed read-only host inventory observed 12 queue workers. Three use
 Supervisor, one uses the media archives service, and eight appear under the
@@ -947,9 +976,18 @@ workers and eight deployment-user workers. The running user Supervisor
 matched its reviewed configuration, which names four realtime voice, two
 voice notification, one voice transcript and one Studio worker. The two
 reviewed backup timers still had no installed units. This inventory covers
-observable processes and the deployment user's schedule. Administrator
-crontabs, provider intake and the PHP-FPM connection stay in the final
-writer review.
+observable processes and the deployment user's schedule.
+
+The November 24 read-only administrator check examined nine cron files
+across the system and user schedules. It found eight named application
+entries, including the application scheduler, two Studio entries and the
+deployment entry. It also identified SMART and inventory monitoring timers.
+The administrative spool was readable and its inspected file had no
+matching application command. The scan only classified named commands.
+Trace wrapper actions, provider intake, manual access and PHP-FPM writers
+through the actual admission fence before counting a timed rehearsal.
+The inventory receipt SHA-256 is
+`c6756eec9e337a2fcea49a2fc70298a42160a58440c34cc885affb15f2884cee`.
 
 A subsequent metadata-only capacity probe found a 4.46 GB SQLite source,
 approximately 143 GB available on the proposed private staging filesystem,
@@ -1093,6 +1131,23 @@ again. The handset gate remains open. Retry receipt SHA-256
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.
+The local, network-disabled Laravel harness ran both rollback paths at
+`2ef68343`. The pre-write path refused promotion, restored SQLite and
+processed its queued job once. The post-write path sealed MySQL, recovered
+one acknowledged HTTP write into a fresh SQLite file, excluded the
+uncommitted MySQL write and processed the recovered queued job once.
+The original SQLite file stayed byte-identical. The report digests are
+`43098b8c617f7e01c3304e3f4d235a9e4386c6ef61c7172d050c8511e789ab13`
+and `5d88e8ff830900538ecff49652ccea3195dc20a60fa2d0ac65dea07da7d4ec35`.
+The fixture uses four small tables, a CLI PHP server and a one-shot queue.
+The production-sized drills still need actual admission, scheduler, load
+and off-site evidence.
+
+The cutover runner also passed a synthetic full-disk regression. A failed
+atomic journal replacement after the SQLite authority proof was written
+left the abort pending and kept admission closed. A verified retry
+restored SQLite authority and reopened admission.
+
 Reopening writes and eventual post-write rollback each require their own
 controlled validation; the old frozen SQLite file cannot retain later MySQL
 activity.

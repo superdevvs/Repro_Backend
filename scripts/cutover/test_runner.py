@@ -1,3 +1,6 @@
+import errno
+import json
+import os
 import tempfile
 import unittest
 from dataclasses import asdict, replace
@@ -273,6 +276,36 @@ class CutoverTest(unittest.TestCase):
         with self.assertRaisesRegex(UnsafeCutover, "unfinished"):
             self.adapter.reopen()
         self.adapter.after_authority_publish = lambda: None
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
+        self.adapter.reopen()
+        self.assertTrue(self.adapter.observe().sqlite_live())
+
+    def test_full_disk_during_sqlite_authority_commit_keeps_admission_closed(self):
+        self.ready()
+        replace_file = os.replace
+
+        def fail_authority_commit(temporary, target):
+            if target == self.journal.path:
+                candidate = Path(temporary).read_bytes()
+                if json.loads(candidate)["phase"] == "sqlite_authoritative":
+                    proof = (self.journal.directory / "fixture-authority.json").read_bytes()
+                    self.assertEqual(self.adapter.authority_evidence("sqlite", candidate), json.loads(proof))
+                    raise OSError(errno.ENOSPC, "Fixture journal device full")
+            replace_file(temporary, target)
+
+        with patch("runner.os.replace", side_effect=fail_authority_commit):
+            with self.assertRaises(OSError) as error:
+                self.runner.perform("abort")
+        self.assertEqual(errno.ENOSPC, error.exception.errno)
+        pending = self.journal.read()
+        self.assertEqual("ready", pending["phase"])
+        self.assertEqual("abort", pending["pending"]["action"])
+        self.assertFalse(pending["writes_possible"])
+        self.assertTrue(self.adapter.observe().sealed("sqlite"))
+        self.assertEqual([], list(self.journal.directory.glob(".journal-*")))
+        with self.assertRaisesRegex(UnsafeCutover, "unfinished"):
+            self.adapter.reopen()
+
         self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
         self.adapter.reopen()
         self.assertTrue(self.adapter.observe().sqlite_live())

@@ -47,10 +47,14 @@ fixture remains within its twelve-connection bound.
   attempts reconnect/replay.
 - A separate fault performs a **real COMMIT**, then throws before Laravel receives
   its acknowledgement. It verifies durable data, no business replay and neither
-  commit nor rollback callbacks. This is boundary fault injection, not a claim
-  that a physical network acknowledgement was dropped.
+  commit nor rollback callbacks for the failed connection. Two other connections
+  sharing the manager retain pending and staged records. Both commit callbacks
+  run on one sibling's commit, and only the outer rollback callback runs on the
+  other sibling's rollback. A fresh connection reusing the discarded name runs
+  its own rollback callback once. The fixture injects the error after PDO
+  confirms COMMIT.
 - A throwing rollback callback is invoked once. Uncertain discard abandons the
-  fixture's private transaction manager without dispatching callbacks that could
+  affected connection's transactions without dispatching callbacks that could
   incorrectly claim rollback or execute twice.
 
 Pre-BEGIN application callbacks and pretend transactions are explicitly outside
@@ -79,11 +83,12 @@ alternate connections, queue bookkeeping exemptions, cache/telemetry ordering,
 and complete SQL classification. Native 1213 deadlock
 and broader business-workflow races still need their own proofs.
 
-The fixture has a **private** transaction manager. Runtime integration must also
-prove that abandoning one uncertain connection does not erase another
-connection's pending callbacks in Laravel's shared manager. Uncertain COMMIT must
-be reconciled with existing idempotency records; an outer layer must not blindly
-replay it.
+The fixture subclass extends Laravel's manager with connection-scoped cleanup.
+Runtime integration still needs to exercise the policy through the actual
+container binding and connection resolver. Laravel registers callbacks against
+the most recent eligible transaction. The fixture registers its callbacks before
+opening a transaction on another connection. Uncertain COMMIT must be reconciled
+with existing idempotency records before any outer layer retries.
 
 Before registration, finish all writer-path coverage and exception policy, fresh
 and imported-schema admission, control-schema restore/grants checks, ordinary CI

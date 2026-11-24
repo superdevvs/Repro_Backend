@@ -6,6 +6,7 @@ use App\Database\WriterTokenTimeout;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitting;
+use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\QueryException;
 use LogicException;
 use PDO;
@@ -14,6 +15,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 use Tests\MySql\Support\FixtureWriterTokenConnection;
+use Tests\MySql\Support\FixtureWriterTransactionsManager;
 
 require_once dirname(__DIR__).'/support/FixtureWriterTokenConnection.php';
 
@@ -23,6 +25,8 @@ final class LaravelWriterTokenContract extends TestCase
     private PDO $admin;
 
     private FixtureWriterTokenConnection $db;
+
+    private FixtureWriterTransactionsManager $transactions;
 
     private string $directory;
 
@@ -49,7 +53,8 @@ final class LaravelWriterTokenContract extends TestCase
             counter INT UNSIGNED NOT NULL) ENGINE=InnoDB');
         $this->admin->exec('INSERT INTO _writer_token_probe VALUES (1,0),(2,0)');
         self::assertSame(1, (int) $this->admin->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='repro_mysql_test'")->fetchColumn());
-        $this->db = FixtureWriterTokenConnection::fromEnvironment();
+        $this->transactions = new FixtureWriterTransactionsManager;
+        $this->db = FixtureWriterTokenConnection::fromEnvironment($this->transactions);
         $this->directory = sys_get_temp_dir().'/repro-laravel-token-'.bin2hex(random_bytes(8));
         mkdir($this->directory, 0700);
     }
@@ -523,12 +528,20 @@ final class LaravelWriterTokenContract extends TestCase
     #[DataProvider('commitStyles')]
     public function test_lost_commit_acknowledgement_does_not_claim_rollback_or_replay(string $style): void
     {
+        $siblingCallbacks = [];
+        $commitSibling = $this->beginSibling('commit-sibling', $siblingCallbacks);
+        $rollbackSibling = $this->beginSibling('rollback-sibling', $siblingCallbacks);
+        $replacement = null;
         $calls = 0;
         $callbacks = [];
         $this->db->getEventDispatcher()->listen(TransactionCommitting::class, function ($event) {
+            self::assertSame(['commit-sibling', 'rollback-sibling', $this->db->getName()],
+                $this->transactions->getPendingTransactions()->pluck('connection')->all());
+            self::assertSame(['commit-sibling', 'rollback-sibling', $this->db->getName()],
+                $this->transactions->getCommittedTransactions()->pluck('connection')->all());
             // Native COMMIT succeeds, but its acknowledgement is lost before
             // Laravel updates its counters. This is an explicit boundary fault.
-            $event->connection->getPdo()->commit();
+            self::assertTrue($event->connection->getPdo()->commit());
             throw new \PDOException('Synthetic lost acknowledgement after a real COMMIT.');
         });
         $body = function ($db) use (&$calls, &$callbacks) {
@@ -539,24 +552,77 @@ final class LaravelWriterTokenContract extends TestCase
             $db->afterRollBack(function () use (&$callbacks) {
                 $callbacks[] = 'rollback';
             });
+            $db->beginTransaction();
+            $db->afterCommit(function () use (&$callbacks) {
+                $callbacks[] = 'nested commit';
+            });
+            $db->commit();
             $db->table('_writer_token_probe')->where('id', 1)->increment('counter');
         };
         try {
-            if ($style === 'manual') {
-                $this->db->beginTransaction();
-                $body($this->db);
-                $this->db->commit();
-            } else {
-                $this->db->transaction($body, 3);
+            try {
+                if ($style === 'manual') {
+                    $this->db->beginTransaction();
+                    $body($this->db);
+                    $this->db->commit();
+                } else {
+                    $this->db->transaction($body, 3);
+                }
+                self::fail('An uncertain acknowledgement cannot report success.');
+            } catch (\PDOException $error) {
+                self::assertSame('Synthetic lost acknowledgement after a real COMMIT.', $error->getMessage());
             }
-            self::fail('An uncertain acknowledgement cannot report success.');
-        } catch (\PDOException $error) {
-            self::assertSame('Synthetic lost acknowledgement after a real COMMIT.', $error->getMessage());
+            self::assertSame(1, $calls);
+            self::assertSame(1, $this->counter());
+            self::assertSame([], $callbacks);
+            self::assertSame([], $siblingCallbacks);
+            $this->assertClosed(true);
+            self::assertSame(['commit-sibling', 'rollback-sibling'],
+                $this->transactions->getPendingTransactions()->pluck('connection')->all());
+            self::assertSame(['commit-sibling', 'rollback-sibling'],
+                $this->transactions->getCommittedTransactions()->pluck('connection')->all());
+
+            $commitSibling->commit();
+            $rollbackSibling->rollBack();
+            self::assertSame(['commit-sibling nested commit', 'commit-sibling commit', 'rollback-sibling rollback'],
+                $siblingCallbacks);
+
+            $replacementCallbacks = [];
+            $replacement = $this->beginSibling($this->db->getName(), $replacementCallbacks);
+            $replacement->rollBack();
+            self::assertSame([$this->db->getName().' rollback'], $replacementCallbacks);
+            self::assertSame([], $callbacks);
+            self::assertTrue($this->transactions->getPendingTransactions()->isEmpty());
+            self::assertTrue($this->transactions->getCommittedTransactions()->isEmpty());
+        } finally {
+            $replacement?->disconnect();
+            $commitSibling->disconnect();
+            $rollbackSibling->disconnect();
         }
-        self::assertSame(1, $calls);
-        self::assertSame(1, $this->counter());
-        self::assertSame([], $callbacks);
-        $this->assertClosed(true);
+    }
+
+    private function beginSibling(string $name, array &$callbacks): MySqlConnection
+    {
+        $pdo = new PDO('mysql:unix_socket=/fixture-socket/mysql.sock;dbname=repro_mysql_test',
+            'repro_test', getenv('DB_PASSWORD'), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $connection = new MySqlConnection($pdo, 'repro_mysql_test', '', ['name' => $name]);
+        $connection->setTransactionManager($this->transactions);
+        // Laravel attaches callbacks to the latest pending record. Register
+        // these before beginning the next connection's transaction.
+        $connection->beginTransaction();
+        $connection->afterCommit(function () use ($name, &$callbacks) {
+            $callbacks[] = "$name commit";
+        });
+        $connection->afterRollBack(function () use ($name, &$callbacks) {
+            $callbacks[] = "$name rollback";
+        });
+        $connection->beginTransaction();
+        $connection->afterCommit(function () use ($name, &$callbacks) {
+            $callbacks[] = "$name nested commit";
+        });
+        $connection->commit();
+
+        return $connection;
     }
 
     public function test_throwing_rollback_callback_executes_once_and_cannot_leak_into_the_next_transaction(): void
