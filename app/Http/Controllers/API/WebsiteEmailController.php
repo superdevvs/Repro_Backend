@@ -60,6 +60,16 @@ class WebsiteEmailController extends Controller
             return $this->result($row->status === 'delivered' ? 'delivered' : 'uncertain', $row->message_id, true);
         }
 
+        // Sales CRM: the inquiry becomes a lead (Unassigned queue for a new person).
+        // Never blocks or fails the office email; replays of a reference are ignored.
+        if ($data['type'] === 'contact') {
+            try {
+                app(\App\Services\Crm\CrmWebsiteIntake::class)->inquiry($data['contact'], $key['reference']);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         try {
             if ($data['type'] === 'contact') {
                 $contact = $data['contact'];

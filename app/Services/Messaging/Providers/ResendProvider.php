@@ -29,6 +29,10 @@ class ResendProvider implements EmailProviderInterface
                 $body[$field] = $payload[$field];
             }
         }
+        // Extra headers, e.g. List-Unsubscribe and List-Unsubscribe-Post on CRM marketing email.
+        if (! empty($payload['headers']) && is_array($payload['headers'])) {
+            $body['headers'] = array_map('strval', $payload['headers']);
+        }
         foreach (['cc', 'bcc'] as $field) {
             if (! empty($payload[$field])) {
                 $body[$field] = array_values((array) $payload[$field]);

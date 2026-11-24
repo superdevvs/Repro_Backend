@@ -17,3 +17,8 @@ Route::middleware('throttle:60,1,crm-public:')->prefix('public/crm')->name('crm.
         require $file;
     }
 });
+
+// The website's careers form posts applications here with the external API key.
+Route::middleware(['external_api_key', 'crm.enabled', 'throttle:30,1,crm-external-careers:'])
+    ->post('external/recruiting/application', [\App\Http\Controllers\API\Crm\ExternalRecruitingController::class, 'store'])
+    ->name('external.recruiting.application');

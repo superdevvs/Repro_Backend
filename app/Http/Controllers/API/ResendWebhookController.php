@@ -23,6 +23,12 @@ class ResendWebhookController extends CakemailWebhookController
 
         $payload = $request->json()->all();
         $event = $payload['type'] ?? '';
+        // Sales CRM: a reply to r+<token>@reply domain (Resend receiving webhook).
+        if ($event === 'email.received') {
+            $handled = config('crm.enabled') && app(\App\Services\Crm\Email\CrmInboundReply::class)->handle($payload, (string) $request->header('svix-id'));
+
+            return response()->json(['status' => $handled ? 'ok' : 'ignored']);
+        }
         if (! in_array($event, ['email.delivered', 'email.opened', 'email.clicked', 'email.bounced', 'email.complained', 'email.failed', 'email.suppressed', 'email.delivery_delayed'], true)) {
             return response()->json(['status' => 'ignored']);
         }
@@ -33,8 +39,16 @@ class ResendWebhookController extends CakemailWebhookController
 
         $processed = LockedWrite::run(fn () => DB::transaction(function () use ($emailId, $payload, $event, $request) {
             $message = Message::where('provider', 'RESEND')->where('provider_message_id', $emailId)->first();
-            // The webhook can race the post-send persistence. Request a retry.
             if (! $message) {
+                // Sales CRM sends are recorded in crm_email_sends, not messages.
+                $crmSend = \App\Models\Crm\CrmEmailSend::query()->where('provider_message_id', $emailId)->first();
+                if ($crmSend) {
+                    app(\App\Services\Crm\Email\CrmEmailEventRecorder::class)->record($crmSend, $event, $payload, (string) $request->header('svix-id'));
+
+                    return true;
+                }
+
+                // The webhook can race the post-send persistence. Request a retry.
                 return false;
             }
             $eventId = (string) $request->header('svix-id');

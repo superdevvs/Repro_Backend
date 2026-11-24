@@ -229,6 +229,13 @@ class ExternalBookingController extends Controller
 
             ProcessExternalShootRequestedJob::dispatch($shoot->id)->afterCommit();
 
+            // Sales CRM: mark the contact as a website lead and tell its rep or the admins.
+            try {
+                app(\App\Services\Crm\CrmWebsiteIntake::class)->booking($shoot, $validated['external_reference'] ?? null, $validated['notes'] ?? null);
+            } catch (\Throwable $exception) {
+                report($exception);
+            }
+
             // Raise the review notification AFTER the transaction commits. A notification
             // failure must never roll back the booking, so it is wrapped in try/catch (2.19).
             try {

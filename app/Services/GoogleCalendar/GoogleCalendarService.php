@@ -120,6 +120,20 @@ class GoogleCalendarService
         return $this->parseCalendarResponse($response);
     }
 
+    /** One event, or null when it was deleted in Google Calendar. Used by the Sales CRM time sync. */
+    public function getEvent(GoogleCalendarConnection $connection, string $eventId): ?array
+    {
+        $response = $this->calendarRequest($connection)
+            ->get($this->eventsUrl($connection->calendar_id) . '/' . urlencode($eventId));
+
+        if (in_array($response->status(), [404, 410], true)) {
+            return null;
+        }
+        $event = $this->parseCalendarResponse($response);
+
+        return ($event['status'] ?? null) === 'cancelled' ? null : $event;
+    }
+
     public function deleteEvent(GoogleCalendarConnection $connection, string $calendarId, string $eventId): void
     {
         $response = $this->calendarRequest($connection)
