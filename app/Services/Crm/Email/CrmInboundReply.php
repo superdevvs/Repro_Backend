@@ -64,7 +64,7 @@ class CrmInboundReply
 
     private function fetch(string $emailId): array
     {
-        $key = trim((string) config('services.resend.key'));
+        $key = trim((string) config('crm.email.receiving_key')) ?: trim((string) config('services.resend.key'));
         abort_if($key === '', 503, 'Inbound mail access is unavailable.');
         $response = Http::withToken($key)->acceptJson()->connectTimeout(5)->timeout(15)
             ->get('https://api.resend.com/emails/receiving/'.rawurlencode($emailId));
