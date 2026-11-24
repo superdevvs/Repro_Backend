@@ -525,6 +525,17 @@ listener failure after commit. The log SHA-256 is
 Runtime registration, the wider autocommit paths, raw connections and cache
 remain open.
 
+The first runtime pilot in `0542467c` guards the exact Google Routes quota
+reservation statement behind a flag that defaults to off. It acquires the
+writer token on the verified MySQL session, confirms the reservation commit
+before the query event, and refuses to replay an uncertain outcome. The
+isolated MySQL 8.4.13 contract passed nine tests with 131 assertions,
+including two processes competing for the last quota unit. The SQLite
+regression passed four tests with 25 assertions. The MySQL log SHA-256 is
+`001b3bd9cadefa690a43e1170f8aaf90d60ddfddc41f644d0f8ed361d984e206`.
+The pilot made no Google requests. Other business write paths require their
+own enforcement and coverage.
+
 The ordinary database queue writes new jobs on the business connection so a
 rolled-back transaction also rolls back its enqueue. Worker reservation,
 release and delete need a separately scoped exemption. In the disposable
@@ -885,6 +896,18 @@ rounds. This comparison measures CLI and queue concurrency. The FPM trial
 above exercised HTTP separately. The verification report SHA-256 is
 `08ccc13193fa9fcf33d1dd1c2bbf5ebff7ae2cace478bd3126e686698f9d1824`.
 
+The booking patch in `9e7b3bca` gives related MySQL schedule writes one
+transaction when the optional travel guard has no enclosing transaction.
+On MySQL 8.4.13 with READ COMMITTED, an injected failure rolled back the
+appointment, hold fee and service alignment. A successful booking broadcast
+after the database commit and invalidated the schedule and dashboard caches.
+An injected broadcast exception did not replay the booking. Three focused
+cases passed with 39 assertions on each engine. A broader MySQL booking run
+passed 90 cases with 815 assertions. The broader SQLite run reached its
+125-second fixture deadline. The focused two-engine log SHA-256 is
+`d972bd525ba0d8e93b21160aa7f0f51447650835705b29443e7ab6eb3e08e184`.
+Application-wide MySQL writer coverage still requires acceptance.
+
 ## Operational work still requiring approval
 
 The read-only inventory observed MySQL **8.0.46**, 32 CPUs, 32 GB RAM, 20 FPM
@@ -902,6 +925,34 @@ The candidate's two off-site backup timers had no installed systemd units
 under their reviewed names. Read-only inspection also confirmed the public
 mount metadata for the configured originals disk. The native data path still
 requires administrator access for the complete storage separation check.
+
+A subsequent metadata-only capacity probe found a 4.46 GB SQLite source,
+approximately 143 GB available on the proposed private staging filesystem,
+and approximately 26 GiB available memory at the time of the probe.
+The installed MySQL binary reported 8.4.13, the CLI PHP process had SQLite
+and MySQL drivers, and the host Python build included SQLite DBSTAT. Measure
+available capacity again before taking a fresh snapshot or starting a
+disposable server. A new production-derived import belongs in a disposable
+data directory. The installed target uses retained full-row binary logs.
+
+The [scope audit](../scripts/mysql/scope-audit.py) checks that a pinned
+manifest classifies every table in a standalone candidate snapshot. It
+reports allocated table and index bytes and refuses incomplete size
+measurements. All 29 synthetic scope and schema drift checks passed with
+the host's SQLite 3.45.1 build. The receipt SHA-256 is
+`2427289754116d0cc65bdd29d9d9493309cc05869ec34e0fb5cac132664836f7`.
+Review the current manifest against a fresh snapshot before counting any
+nightly run. The earlier 291-table snapshot and the 284-table release
+fixture remain historical evidence.
+
+The importer now requires MySQL notes to be enabled and stops when a
+conversion statement returns a warning or note. It checks each statement
+inside a split batch and checks streaming reads at the end of the result.
+The socket-only MySQL 8.4.13 fixture demonstrated both failure modes and a
+successful forward and reverse conversion, including arbitrary binary
+bytes, the approved synthetic historical orphan, and trigger behavior.
+The receipt SHA-256 is
+`2a2405a0a6df3a2a1323ef469aca8127023519aaae255c5e089fbeca12f59feb`.
 
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,

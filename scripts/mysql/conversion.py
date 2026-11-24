@@ -18,6 +18,36 @@ TYPE_POLICY = json.loads(TYPE_POLICY_PATH.read_text(encoding="utf-8"))
 TEMPORAL_TYPES = {"DATE", "DATETIME", "TIMESTAMP", "TIME"}
 REPORTS = None
 
+
+class MySqlImportWarnings(RuntimeError):
+    def __init__(self, count, conditions):
+        super().__init__(f"MySQL returned {count} warnings or notes during conversion. Discard the incomplete target before retrying.")
+        self.count = count
+        self.conditions = conditions
+
+
+def require_warning_free(count, connection):
+    if not count:
+        return
+    try:
+        rows = connection.show_warnings() or ()
+    except pymysql.MySQLError:
+        rows = ()
+    # Condition messages may contain stored values. Record only codes and severity.
+    conditions = sorted({(level, code) for level, code, _ in rows})
+    raise MySqlImportWarnings(count, conditions)
+
+
+if pymysql is not None:
+    class WarningCheckedConnection(pymysql.connections.Connection):
+        def query(self, sql, unbuffered=False):
+            affected = super().query(sql, unbuffered=unbuffered)
+            if not unbuffered:
+                # executemany can issue multiple queries before exposing its final result.
+                require_warning_free(self._result.warning_count, self)
+            return affected
+
+
 def emit(event, **details):
     print(json.dumps({"event": event, **details}), flush=True)
 
@@ -348,6 +378,7 @@ def verify(mysql, src, schema, report_name="data-verification.json"):
             for row in cursor:
                 row_digest(mysql_hash, row, table["columns"])
                 mysql_count += 1
+            require_warning_free(cursor.warning_count, mysql)
         item = {"table": table["name"], "source_rows": sqlite_count, "target_rows": mysql_count,
                 "source_sha256": sqlite_hash.hexdigest(), "target_sha256": mysql_hash.hexdigest(),
                 "match": sqlite_count == mysql_count and sqlite_hash.digest() == mysql_hash.digest()}

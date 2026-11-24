@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 import conversion
 
@@ -75,6 +76,20 @@ class ConversionPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"iguide_lab_tour_surveys\.survey_version"):
             self.schema("iguide_lab_tour_surveys")
 
+    def test_conversion_rejects_nonzero_condition_count(self):
+        connection = Mock()
+        conversion.require_warning_free(0, connection)
+        connection.show_warnings.assert_not_called()
+        connection.show_warnings.return_value = [
+            ("Warning", 1265, "private data"),
+            ("Note", 1064, "private data"),
+        ]
+        with self.assertRaises(conversion.MySqlImportWarnings) as failure:
+            conversion.require_warning_free(2, connection)
+        self.assertEqual(2, failure.exception.count)
+        self.assertEqual([("Note", 1064), ("Warning", 1265)], failure.exception.conditions)
+        self.assertNotIn("private data", str(failure.exception))
+
     def test_real_mysql_forward_and_reverse(self):
         credentials_path = os.environ.get("REPRO_CONVERSION_TEST_CREDENTIALS")
         uuid = os.environ.get("REPRO_CONVERSION_TEST_UUID")
@@ -83,6 +98,24 @@ class ConversionPolicyTest(unittest.TestCase):
         private_config = json.loads(pathlib.Path(credentials_path).read_text())
         self.assertEqual("repro_test", private_config["user"])
         self.assertEqual("/var/run/mysqld/mysqld.sock", private_config["unix_socket"])
+        with conversion.WarningCheckedConnection(**private_config, database="repro_conversion_test",
+                                                 autocommit=True) as mysql:
+            with mysql.cursor() as cursor:
+                cursor.execute("CREATE TEMPORARY TABLE warning_probe (id BIGINT PRIMARY KEY)")
+                cursor.execute("INSERT INTO warning_probe VALUES (1)")
+                cursor.max_stmt_length = len("INSERT IGNORE INTO warning_probe VALUES (1)")
+                with self.assertRaises(conversion.MySqlImportWarnings) as failure:
+                    cursor.executemany("INSERT IGNORE INTO warning_probe VALUES (%s)", [(1,), (2,)])
+                self.assertEqual(1, failure.exception.count)
+                self.assertEqual([("Warning", 1062)], failure.exception.conditions)
+                cursor.execute("SELECT id FROM warning_probe ORDER BY id")
+                self.assertEqual(((1,),), cursor.fetchall())
+            with mysql.cursor(conversion.pymysql.cursors.SSCursor) as cursor:
+                cursor.execute("SELECT CAST('not a number' AS UNSIGNED)")
+                self.assertEqual([(0,)], list(cursor))
+                with self.assertRaises(conversion.MySqlImportWarnings):
+                    conversion.require_warning_free(cursor.warning_count, mysql)
+
         folder = pathlib.Path(__file__).parent.resolve()
         with tempfile.TemporaryDirectory() as path:
             root = pathlib.Path(path)
@@ -136,6 +169,7 @@ class ConversionPolicyTest(unittest.TestCase):
             imported = invoke("migrate.py", "import-empty", *source_args, *connection,
                               "--schema-sha256", planned["schema_sha256"], "--output", root / "import")
             self.assertTrue(imported["import_verified"])
+            self.assertEqual(0, imported["mysql_warning_count"])
 
             with conversion.pymysql.connect(**json.loads(pathlib.Path(credentials_path).read_text()),
                                             database="repro_conversion_test", autocommit=True) as mysql:

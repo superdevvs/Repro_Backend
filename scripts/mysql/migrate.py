@@ -57,14 +57,16 @@ def destination(credentials,database,uuid):
         raise RuntimeError('Only an explicit local Unix socket and scoped maintenance account are accepted.')
     if not re.fullmatch(r'repro_[A-Za-z0-9_]{1,50}',database) or not re.fullmatch(r'[a-f0-9-]{36}',uuid):
         raise RuntimeError('An explicit RePro database and independently observed server UUID are required.')
-    db=core.pymysql.connect(**config,database=database,charset='utf8mb4',autocommit=True,connect_timeout=5,read_timeout=180,write_timeout=180)
+    db=core.WarningCheckedConnection(**config,database=database,charset='utf8mb4',binary_prefix=True,autocommit=True,connect_timeout=5,read_timeout=180,write_timeout=180)
     with db.cursor() as cursor:
-        cursor.execute('SELECT DATABASE(),VERSION(),@@server_uuid,@@innodb_flush_log_at_trx_commit,@@sync_binlog,@@FOREIGN_KEY_CHECKS,@@sql_mode')
-        name,version,actual_uuid,durable,binlog,fk,mode=cursor.fetchone()
+        cursor.execute('SELECT DATABASE(),VERSION(),@@server_uuid,@@innodb_flush_log_at_trx_commit,@@sync_binlog,@@FOREIGN_KEY_CHECKS,@@sql_mode,@@SESSION.sql_notes')
+        name,version,actual_uuid,durable,binlog,fk,mode,sql_notes=cursor.fetchone()
         if name!=database or version.split('-')[0]!='8.4.13' or actual_uuid!=uuid or (durable,binlog,fk)!=(1,1,1):
             raise RuntimeError('Target identity, tested patch version or durability differs from the approved rehearsal.')
         if not {'STRICT_TRANS_TABLES','ONLY_FULL_GROUP_BY'}<=set(mode.split(',')):
             raise RuntimeError('Strict SQL and grouped-query enforcement are required.')
+        if sql_notes!=1:
+            raise RuntimeError('MySQL session notes must be enabled during conversion.')
         cursor.execute('SET SESSION time_zone=\'+00:00\'')
         if 'NO_AUTO_VALUE_ON_ZERO' not in mode.split(','):
             cursor.execute('SET SESSION sql_mode=%s',[mode+',NO_AUTO_VALUE_ON_ZERO'])
@@ -172,7 +174,7 @@ def main():
             if canonical_exceptions(audit_exceptions(db,schema))!=canonical_exceptions(approved):
                 raise RuntimeError('Imported orphan identities differ from the approved exception list.')
             triggers=install_triggers(db,source)
-            result.update(import_verified=True,original_rows=sum(row['source_rows'] for row in verified),triggers=triggers,
+            result.update(import_verified=True,original_rows=sum(row['source_rows'] for row in verified),triggers=triggers,mysql_warning_count=0,
                           target_database=options.database,target_server_uuid=options.expected_server_uuid,
                           next_step='Apply the reviewed application migrations in isolated maintenance configuration, then repeat acceptance gates before any traffic switch.')
         finally:db.close()
@@ -184,7 +186,12 @@ if __name__=='__main__':
     os.umask(0o077)
     try:main()
     except Exception as error:
-        if core.REPORTS is not None:core.save('failure-private.json',{'type':type(error).__name__,'traceback':traceback.format_exc()})
-        print(json.dumps({'stopped':True,'error_type':type(error).__name__,'error_code':error.args[0] if core.pymysql is not None and isinstance(error,core.pymysql.MySQLError) else None,
-                          'details':'See the protected report. No application configuration or source database was changed.'}),flush=True)
+        failure={'type':type(error).__name__,'traceback':traceback.format_exc()}
+        result={'stopped':True,'error_type':type(error).__name__,'error_code':error.args[0] if core.pymysql is not None and isinstance(error,core.pymysql.MySQLError) else None,
+                'details':'See the protected report. No application configuration or source database was changed.'}
+        if isinstance(error,core.MySqlImportWarnings):
+            result['mysql_warning_count']=error.count
+            failure['mysql_conditions']=error.conditions
+        if core.REPORTS is not None:core.save('failure-private.json',failure)
+        print(json.dumps(result),flush=True)
         raise SystemExit(1)
