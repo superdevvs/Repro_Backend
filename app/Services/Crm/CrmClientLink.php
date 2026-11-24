@@ -24,6 +24,7 @@ class CrmClientLink
         private readonly CrmStageService $stages,
         private readonly CrmContactService $contacts,
         private readonly CrmActivityLogger $activity,
+        private readonly CrmAssignmentService $assignment,
     ) {}
 
     public static function rawRepIdFor(User $client): ?int
@@ -111,11 +112,14 @@ class CrmClientLink
         }
 
         $repId = self::rawRepIdFor($client) ?? ($shoot->rep_id ? (int) $shoot->rep_id : null);
+        if ($repId && ! $this->assignment->isAssignable($repId)) {
+            $repId = null;
+        }
 
         $contact = $this->contacts->create($this->clientData($client), null, [
             'source' => 'system',
             'stage' => CrmContact::STAGE_INQUIRY,
-            'assigned_rep_id' => $repId && User::query()->whereKey($repId)->exists() ? $repId : null,
+            'assigned_rep_id' => $repId,
             'skip_duplicate_check' => true,
         ]);
         $contact->forceFill(['client_user_id' => $client->id])->save();
