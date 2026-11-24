@@ -256,6 +256,16 @@ monitoring and proving live retention remain operational acceptance gates.
 The retention verifier tested local evidence for exact prefix, duration,
 provider refusals and unchanged content.
 
+The independent email pilot used one down-only Healthchecks.io integration
+in a dedicated synthetic project. It logged delivery after an explicit
+backup failure and after a scheduled check missed its one-minute interval and
+one-minute grace. The event log for the missed check recorded one successful
+check-in and no explicit failure ping. Both checks were paused afterward.
+The provider observation SHA-256 is
+`af311c838b8e8ecec2787fa6f405b834e2f778bb64692d132a2917e54a872ddd`.
+The iPhone receipt was pending when this evidence was recorded. The full
+external alert rounds still need reviewed condition and receipt evidence.
+
 The private R2 rehearsal bucket also enforced a real 24-hour lock on a new
 synthetic prefix. A two-day expiry was configured for the same prefix. R2
 refused an overwrite and a delete with a delete-capable credential with
