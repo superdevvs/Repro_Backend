@@ -96,11 +96,11 @@ class IguideBundledFloorplanDeliveryTest extends TestCase
         $shoot = Shoot::factory()->create(['client_id' => $client->id, 'iguide_property_id' => 'igTEST', 'payment_status' => 'paid']);
         $catalog = Service::factory()->create(['name' => 'HDR Photos & Premium iGuide', 'upload_intake_type' => 'photo']);
         $item = $shoot->serviceItems()->create(['service_id' => $catalog->id, 'price' => 250, 'quantity' => 1,
-            'is_deliverable' => true, 'workflow_status' => 'in_progress', 'delivery_status' => 'not_started',
-            'delivery_requirements' => [
-                ['key' => 'photo', 'kind' => 'photo', 'label' => 'Photos'],
-                ['key' => 'tour', 'kind' => 'tour', 'label' => 'Property tour', 'provider' => 'iguide'],
-            ]]);
+            'is_deliverable' => true, 'workflow_status' => 'in_progress', 'delivery_status' => 'not_started']);
+        $item->forceFill(['delivery_requirements' => [
+            ['key' => 'photo', 'kind' => 'photo', 'label' => 'Photos'],
+            ['key' => 'tour', 'kind' => 'tour', 'label' => 'Property tour', 'provider' => 'iguide'],
+        ]])->save();
         $bytes = "%PDF-1.7\n% Sample floor plan\n%%EOF\n";
         $response = $this->actingAs($actor)->post('/api/shoots/'.$shoot->id.'/upload', [
             'upload_type' => 'edited', 'media_type' => 'floorplan', 'shoot_service_id' => $item->id,
