@@ -90,6 +90,24 @@ class ConversionPolicyTest(unittest.TestCase):
         self.assertEqual([("Note", 1064), ("Warning", 1265)], failure.exception.conditions)
         self.assertNotIn("private data", str(failure.exception))
 
+    def test_only_reviewed_equivalent_shoot_indexes_are_marked_redundant(self):
+        self.source.executescript("""
+            CREATE TABLE shoots(id INTEGER PRIMARY KEY, status VARCHAR(32), client_id INTEGER,
+                photographer_id INTEGER, editor_id INTEGER, scheduled_date DATE);
+            CREATE INDEX shoots_status_index ON shoots(status);
+            CREATE INDEX idx_shoots_status ON shoots(status);
+            CREATE INDEX another_status_index ON shoots(status);
+            CREATE INDEX shoots_client_id_index ON shoots(client_id);
+            CREATE UNIQUE INDEX idx_shoots_client_id ON shoots(client_id);
+            CREATE INDEX shoots_photographer_id_index ON shoots(photographer_id);
+            CREATE INDEX idx_shoots_photographer_id ON shoots(photographer_id DESC);
+            CREATE INDEX shoots_scheduled_date_index ON shoots(scheduled_date);
+            CREATE INDEX idx_shoots_editor_id ON shoots(editor_id);
+        """)
+        marked = {index["name"]: index["target_redundant_with"]
+                  for index in self.schema("shoots")["indexes"] if "target_redundant_with" in index}
+        self.assertEqual({"idx_shoots_status": "shoots_status_index"}, marked)
+
     def test_real_mysql_forward_and_reverse(self):
         credentials_path = os.environ.get("REPRO_CONVERSION_TEST_CREDENTIALS")
         uuid = os.environ.get("REPRO_CONVERSION_TEST_UUID")
@@ -122,6 +140,10 @@ class ConversionPolicyTest(unittest.TestCase):
             source = root / "source.sqlite"
             with sqlite3.connect(source) as db:
                 db.executescript("""
+                    CREATE TABLE shoots(id INTEGER PRIMARY KEY, status VARCHAR(32));
+                    CREATE INDEX shoots_status_index ON shoots(status);
+                    CREATE INDEX idx_shoots_status ON shoots(status);
+                    INSERT INTO shoots VALUES (1,'scheduled');
                     CREATE TABLE owners(id INTEGER PRIMARY KEY AUTOINCREMENT);
                     CREATE TABLE records(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,10 +192,15 @@ class ConversionPolicyTest(unittest.TestCase):
                               "--schema-sha256", planned["schema_sha256"], "--output", root / "import")
             self.assertTrue(imported["import_verified"])
             self.assertEqual(0, imported["mysql_warning_count"])
+            self.assertEqual([{"table": "shoots", "omitted": "idx_shoots_status", "retained": "shoots_status_index"}],
+                             imported["redundant_mysql_indexes"])
 
             with conversion.pymysql.connect(**json.loads(pathlib.Path(credentials_path).read_text()),
                                             database="repro_conversion_test", autocommit=True) as mysql:
                 with mysql.cursor() as cursor:
+                    cursor.execute("SELECT INDEX_NAME FROM information_schema.STATISTICS "
+                                   "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='shoots'")
+                    self.assertEqual({"PRIMARY", "shoots_status_index"}, {row[0] for row in cursor.fetchall()})
                     with self.assertRaises(conversion.pymysql.err.IntegrityError):
                         cursor.execute("INSERT INTO records(owner_id,day,recorded) VALUES(99,'2026-11-22','2026-11-22')")
                     with self.assertRaises(conversion.pymysql.err.IntegrityError):
@@ -190,6 +217,8 @@ class ConversionPolicyTest(unittest.TestCase):
                                  restored.execute("SELECT day,recorded,hex(payload) FROM records WHERE id=0").fetchone())
                 self.assertEqual(("2026-11-23",), restored.execute("SELECT day FROM records WHERE id=?", (new_id,)).fetchone())
                 self.assertEqual([("records", 7, "owners", 0)], restored.execute("PRAGMA foreign_key_check").fetchall())
+                self.assertEqual({"shoots_status_index", "idx_shoots_status"},
+                                 {row[1] for row in restored.execute("PRAGMA index_list('shoots')")})
 
 
 if __name__ == "__main__":

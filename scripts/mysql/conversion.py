@@ -16,6 +16,7 @@ COLLATION = "utf8mb4_0900_bin"
 TYPE_POLICY_PATH = pathlib.Path(__file__).with_name("type-policy.json")
 TYPE_POLICY = json.loads(TYPE_POLICY_PATH.read_text(encoding="utf-8"))
 TEMPORAL_TYPES = {"DATE", "DATETIME", "TIMESTAMP", "TIME"}
+REDUNDANT_SHOOT_INDEX_COLUMNS = ("client_id", "editor_id", "photographer_id", "scheduled_date", "status")
 REPORTS = None
 
 
@@ -121,6 +122,25 @@ def checks(sql):
     return result
 
 
+def mark_redundant_shoot_indexes(indexes):
+    """Keep the original Laravel index for each reviewed duplicate pair."""
+    by_name = {index["name"]: index for index in indexes}
+    for column in REDUNDANT_SHOOT_INDEX_COLUMNS:
+        retained_name = f"shoots_{column}_index"
+        retained = by_name.get(retained_name)
+        duplicate = by_name.get(f"idx_shoots_{column}")
+        if retained is None or duplicate is None:
+            continue
+        if any(index["unique"] or index["partial"] or index["origin"] != "c" for index in (retained, duplicate)):
+            continue
+        keys = retained["columns"]
+        if keys != duplicate["columns"] or len(keys) != 1:
+            continue
+        key = keys[0]
+        if key["name"] == column and key["cid"] >= 0 and not key["desc"] and key["coll"] == "BINARY":
+            duplicate["target_redundant_with"] = retained_name
+
+
 def table_schema(src, name, sql):
     columns = [dict(row) for row in src.execute("PRAGMA table_info(" + q(name) + ")")]
     indexes = []
@@ -132,6 +152,8 @@ def table_schema(src, name, sql):
         raw = src.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", [index["name"]]).fetchone()
         index.update(columns=info, sql=raw[0] if raw else None)
         indexes.append(index)
+    if name == "shoots":
+        mark_redundant_shoot_indexes(indexes)
     foreign_keys = [dict(row) for row in src.execute("PRAGMA foreign_key_list(" + q(name) + ")")]
     indexed.update(row["from"] for row in foreign_keys)
     indexed.update(column["name"] for column in columns if column["pk"])
@@ -263,10 +285,15 @@ def index_statement(table, index):
 
 
 def add_constraints(mysql, schema, report_name="constraints.json"):
-    result = {"indexes": 0, "foreign_keys": 0, "checks": 0, "failures": []}
+    result = {"indexes": 0, "foreign_keys": 0, "checks": 0, "failures": [], "redundant_indexes": []}
     with mysql.cursor() as cursor:
         for table in schema:
             for index in table["indexes"]:
+                retained_name = index.get("target_redundant_with")
+                if retained_name:
+                    result["redundant_indexes"].append({"table": table["name"], "omitted": index["name"],
+                                                        "retained": retained_name})
+                    continue
                 statement = index_statement(table, index)
                 if not statement:
                     continue

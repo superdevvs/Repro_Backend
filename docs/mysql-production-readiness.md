@@ -952,7 +952,19 @@ The socket-only MySQL 8.4.13 fixture demonstrated both failure modes and a
 successful forward and reverse conversion, including arbitrary binary
 bytes, the approved synthetic historical orphan, and trigger behavior.
 The receipt SHA-256 is
-`2a2405a0a6df3a2a1323ef469aca8127023519aaae255c5e089fbeca12f59feb`.
+`9fd2b488325f1be70c797d5ea894eb98e244627482b314f7998223e89eb8b10d`.
+
+The first strict import of the empty 291-table layout stopped at MySQL
+warning 1831 for a duplicate index on `shoots.status`. The converter now
+retains the original Laravel index in each of five reviewed, equivalent
+nonunique pairs. The schema plan binds the exact omitted and retained
+names. The SQLite reverse template still creates both original indexes.
+The isolated rerun with the installed Maverick MySQL 8.4.13 binary verified
+all 291 empty tables, 671 explicitly created indexes, 477 foreign keys,
+15 checks and 25 triggers with zero warnings or notes in 74.884 seconds.
+The temporary instance stopped and its workspace was removed. The receipt
+SHA-256 is `706cf95d8d021706104316445d3035f94f6949a739d3db7a395146e82b21f4ad`.
+This layout run measured metadata only.
 
 The [eight-week boundary census](../scripts/mysql/report_week_boundaries.py)
 uses a pinned, read-only SQLite snapshot to count differences between the

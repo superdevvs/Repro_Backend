@@ -175,6 +175,7 @@ def main():
                 raise RuntimeError('Imported orphan identities differ from the approved exception list.')
             triggers=install_triggers(db,source)
             result.update(import_verified=True,original_rows=sum(row['source_rows'] for row in verified),triggers=triggers,mysql_warning_count=0,
+                          redundant_mysql_indexes=constraints['redundant_indexes'],
                           target_database=options.database,target_server_uuid=options.expected_server_uuid,
                           next_step='Apply the reviewed application migrations in isolated maintenance configuration, then repeat acceptance gates before any traffic switch.')
         finally:db.close()
