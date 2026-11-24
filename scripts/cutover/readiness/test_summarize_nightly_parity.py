@@ -17,15 +17,32 @@ class NightlyParitySummaryTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.folder = Path(folder.name)
         self.policy, self.receipt = readiness_fixture()
+        self.operations = self.policy["operations"]
+        self.scope_path = self.folder / "scope.json"
+        self.scope = {
+            "schema": nightly.SCOPE_SCHEMA,
+            "tables": {
+                name: {"class": "A"} for name in (
+                    *nightly.SHARED_CRM_TABLES, "email_suppressions",
+                    *(f"crm_test_{index}" for index in range(check.MIN_CRM_TABLES - 1)),
+                )
+            },
+        }
+        self.operations["nightly_scope_sha256"] = self.write(self.scope_path, self.scope)
         original = self.receipt["nightly_data_parity"]
         self.reports = [
-            {key: value for key, value in run.items() if key != "report_sha256"}
-            | {"nightly_scope_sha256": original["nightly_scope_sha256"]}
+            {key: value for key, value in run.items() if key not in ("report_sha256", "crm")}
+            | {"nightly_scope_sha256": self.operations["nightly_scope_sha256"]}
+            for run in original["nights"]
+        ]
+        self.crm_reports = [
+            {key: value for key, value in run["crm"].items() if key != "report_sha256"}
+            | {"nightly_scope_sha256": self.operations["nightly_scope_sha256"]}
             for run in original["nights"]
         ]
         self.paths = [self.folder / f"night-{index}.json" for index in range(check.NIGHTLY_RUN_COUNT)]
+        self.crm_paths = [self.folder / f"crm-{index}.json" for index in range(check.NIGHTLY_RUN_COUNT)]
         self.manifest_path = self.folder / "manifest.json"
-        self.operations = self.policy["operations"]
 
     @staticmethod
     def write(path, record):
@@ -39,18 +56,20 @@ class NightlyParitySummaryTests(unittest.TestCase):
             "identity_sha256": digest(self.policy["identity"]),
             "nightly_scope_sha256": self.operations["nightly_scope_sha256"],
             "nights": [
-                {"scheduled_day_utc": report["scheduled_day_utc"], "report_sha256": self.write(path, report)}
-                for path, report in zip(self.paths, self.reports, strict=True)
+                {"scheduled_day_utc": report["scheduled_day_utc"], "report_sha256": self.write(path, report),
+                 "crm_report_sha256": self.write(crm_path, crm)}
+                for path, report, crm_path, crm in zip(self.paths, self.reports, self.crm_paths, self.crm_reports, strict=True)
             ],
         } | (manifest_overrides or {})
         self.operations["nightly_data_parity_report_sha256"] = self.write(self.manifest_path, manifest)
 
     def summarize(self):
-        return nightly.summarize(self.policy, self.manifest_path, self.paths)
+        return nightly.summarize(self.policy, self.manifest_path, self.scope_path, self.paths, self.crm_paths)
 
     def test_summary_uses_exact_digests_and_passes_existing_gate(self):
         # An unchanged snapshot digest can be recorded on consecutive nights.
         self.reports[1]["snapshot_sha256"] = self.reports[0]["snapshot_sha256"]
+        self.crm_reports[1]["snapshot_sha256"] = self.reports[0]["snapshot_sha256"]
         self.write_reviewed_input()
         summary = self.summarize()
         self.assertEqual(summary["report_sha256"], self.operations["nightly_data_parity_report_sha256"])
@@ -58,16 +77,23 @@ class NightlyParitySummaryTests(unittest.TestCase):
                          hashlib.sha256(self.paths[-1].read_bytes()).hexdigest())
         self.assertEqual(len(summary["nights"]), check.NIGHTLY_RUN_COUNT)
         self.assertNotIn("nightly_scope_sha256", summary["nights"][-1])
+        self.assertEqual(summary["crm_scope_table_count"], check.MIN_CRM_TABLES)
+        self.assertEqual(summary["nights"][-1]["crm"]["report_sha256"],
+                         hashlib.sha256(self.crm_paths[-1].read_bytes()).hexdigest())
+        self.assertEqual(summary["nights"][-1]["crm"]["audit_report_sha256"],
+                         self.crm_reports[-1]["audit_report_sha256"])
         self.operations["nightly_data_parity_summary_sha256"] = digest(summary)
         check.review_nightly_data_parity(self.policy, {"nightly_data_parity": summary})
 
     def test_manifest_and_each_report_are_checked_against_exact_bytes(self):
-        for changed in (self.manifest_path, *self.paths):
+        for changed in (self.scope_path, self.manifest_path, *self.paths, *self.crm_paths):
             with self.subTest(file=changed.name):
                 self.write_reviewed_input()
-                changed.write_bytes(changed.read_bytes() + b"\n")
+                original = changed.read_bytes()
+                changed.write_bytes(original + b"\n")
                 with self.assertRaisesRegex(check.Failed, "reviewed SHA-256"):
                     self.summarize()
+                changed.write_bytes(original)
 
     def test_files_must_match_the_reviewed_scope_and_date_even_when_pinned(self):
         for key in ("identity_sha256", "nightly_scope_sha256"):
@@ -95,16 +121,57 @@ class NightlyParitySummaryTests(unittest.TestCase):
                     self.summarize()
                 self.reports[-1][field] = original
 
-    def test_cli_refuses_to_emit_summary_when_a_report_is_missing(self):
+    def test_crm_reports_must_match_every_identity_and_pass_parity(self):
+        for field, value, expected in (
+            ("scheduled_day_utc", self.reports[0]["scheduled_day_utc"], "release, snapshot or scope"),
+            ("release_sha", "0" * 40, "release, snapshot or scope"),
+            ("snapshot_sha256", "0" * 64, "release, snapshot or scope"),
+            ("nightly_scope_sha256", "0" * 64, "release, snapshot or scope"),
+            ("schema", "repro.nightly-crm-parity.review.v0", "Malformed nightly CRM"),
+            ("crm_tables_verified", check.MIN_CRM_TABLES + 1, "cover every scoped CRM table"),
+            ("crm_client_import_dry_run_verified", False, "did not pass"),
+        ):
+            with self.subTest(field=field):
+                original, self.crm_reports[-1][field] = self.crm_reports[-1][field], value
+                self.write_reviewed_input()
+                with self.assertRaisesRegex(check.Failed, expected):
+                    self.summarize()
+                self.crm_reports[-1][field] = original
+
+    def test_scope_must_preserve_complete_crm_and_shared_tables(self):
+        self.scope["tables"]["users"] = {"class": "B", "approval_sha256": "a" * 64}
+        scope_sha = self.write(self.scope_path, self.scope)
+        with self.assertRaisesRegex(check.Failed, "preserve every CRM and shared table"):
+            nightly.crm_scope_table_count(self.scope_path, scope_sha)
+        self.scope["tables"]["users"] = {"class": "A"}
+        del self.scope["tables"]["email_suppressions"]
+        scope_sha = self.write(self.scope_path, self.scope)
+        with self.assertRaisesRegex(check.Failed, "full CRM release tables"):
+            nightly.crm_scope_table_count(self.scope_path, scope_sha)
+
+    def test_old_manifest_cannot_bypass_crm_review_requirements(self):
+        self.write_reviewed_input({"schema": "repro.nightly-data-parity.manifest.v1"})
+        with self.assertRaisesRegex(check.Failed, "manifest differs"):
+            self.summarize()
+
+    def test_cli_emits_summary_and_refuses_a_missing_crm_review(self):
         self.write_reviewed_input()
         policy_path = self.folder / "policy.json"
         self.write(policy_path, self.policy)
-        self.paths[-1].unlink()
-        result = subprocess.run([
+        command = [
             sys.executable, "-B", "-m", "scripts.cutover.readiness.summarize_nightly_parity",
-            "--policy", str(policy_path), "--manifest", str(self.manifest_path),
+            "--policy", str(policy_path), "--manifest", str(self.manifest_path), "--scope", str(self.scope_path),
             "--nights", *(str(path) for path in self.paths),
-        ], capture_output=True, text=True, check=False)
+            "--crm-reports", *(str(path) for path in self.crm_paths),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["result"], "nightly-parity-summary-ready")
+        self.assertEqual(output["summary_sha256"], digest(output["nightly_data_parity"]))
+
+        self.crm_paths[-1].unlink()
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr, "")
         self.assertEqual(json.loads(result.stdout)["result"], "nightly-parity-summary-refused")

@@ -25,6 +25,8 @@ PREREQUISITES = (
     "mysql_ci_passed",
     "field_and_schema_parity_passed",
     "role_finance_delivery_workflows_passed",
+    "crm_workflow_parity_passed",
+    "crm_admission_and_replay_passed",
     "provider_egress_isolation_passed",
     "native_host_capacity_and_isolation_passed",
     "host_writer_fence_restart_passed",
@@ -55,6 +57,10 @@ PITR_REPLAY_PROOFS = ("offsite_only", "independent_restore", "chosen_transaction
 PITR_PROOFS = (*PITR_REPLAY_PROOFS, "contiguous_binlog_chain")
 NIGHTLY_RUN_COUNT = 5
 FROZEN_NIGHT_COUNT = 2
+NIGHTLY_SUMMARY_SCHEMA = "repro.nightly-data-parity.summary.v2"
+NIGHTLY_CRM_SCHEMA = "repro.nightly-crm-parity.review.v1"
+MIN_CRM_TABLES = 37
+NIGHTLY_IDENTITY_FIELDS = ("scheduled_day_utc", "release_sha", "snapshot_sha256", "nightly_scope_sha256")
 NIGHTLY_COUNTERS = ("errors", "warnings", "notes", "unexpected_field_differences")
 NIGHTLY_PROOFS = (
     "fresh_snapshot_verified", "source_scope_verified", "source_integrity_scan_passed",
@@ -62,6 +68,15 @@ NIGHTLY_PROOFS = (
     "historical_exceptions_match", "target_settings_verified", "target_engine_verified",
     "sqlite_reverse_parity_verified", "invoice_and_payout_parity_verified",
 )
+NIGHTLY_CRM_PROOFS = (
+    "crm_field_and_identity_parity_verified", "crm_relationship_and_exception_parity_verified",
+    "crm_replay_state_parity_verified", "crm_client_import_dry_run_verified",
+    "crm_applicant_file_parity_verified",
+)
+NIGHTLY_CRM_FIELDS = {
+    "schema", "audit_report_sha256", "parity_evidence_sha256", "crm_tables_verified", "verified_linked_client_count",
+    *NIGHTLY_IDENTITY_FIELDS, *NIGHTLY_CRM_PROOFS,
+}
 
 
 class Missing(ValueError):
@@ -374,10 +389,29 @@ def review_point_in_time_runs(drills: object) -> None:
 
 def review_nightly_data_parity(policy: dict, receipt: dict) -> None:
     report = operations_report(policy, receipt, "nightly_data_parity", scope="nightly_scope_sha256")
-    review_nightly_runs(policy, field(report, "nights"))
+    if report.get("schema") != NIGHTLY_SUMMARY_SCHEMA:
+        raise Failed("Nightly parity summary requires the CRM-aware schema")
+    review_nightly_runs(policy, field(report, "nights"), number(report, "crm_scope_table_count", MIN_CRM_TABLES))
 
 
-def review_nightly_runs(policy: dict, nights: object) -> None:
+def review_nightly_crm(crm: dict, night: dict, scope_sha: str, crm_scope_table_count: int) -> None:
+    if set(crm) != NIGHTLY_CRM_FIELDS | {"report_sha256"} or crm["schema"] != NIGHTLY_CRM_SCHEMA:
+        raise Failed("Malformed nightly CRM parity review")
+    for name in ("report_sha256", "audit_report_sha256", "parity_evidence_sha256"):
+        if sha_field(crm, name) == "0" * 64:
+            raise Failed(f"{name} requires a reviewed evidence digest")
+    identity = {name: night[name] for name in NIGHTLY_IDENTITY_FIELDS if name != "nightly_scope_sha256"}
+    identity["nightly_scope_sha256"] = scope_sha
+    if any(crm[name] != value for name, value in identity.items()):
+        raise Failed("Nightly CRM review does not match the scheduled date, release, snapshot or scope")
+    if number(crm, "crm_tables_verified", MIN_CRM_TABLES) != crm_scope_table_count:
+        raise Failed("Nightly CRM review did not cover every scoped CRM table")
+    number(crm, "verified_linked_client_count", minimum=1)
+    for proof in NIGHTLY_CRM_PROOFS:
+        confirmed(crm, proof)
+
+
+def review_nightly_runs(policy: dict, nights: object, crm_scope_table_count: int) -> None:
     if not isinstance(nights, list) or any(not isinstance(night, dict) for night in nights):
         raise Failed("Nightly evidence must be a list of reports")
     if len(nights) < NIGHTLY_RUN_COUNT:
@@ -386,8 +420,11 @@ def review_nightly_runs(policy: dict, nights: object) -> None:
         raise Failed("Select the five reviewed nightly parity reports")
     if len({sha_field(night, "report_sha256") for night in nights}) != NIGHTLY_RUN_COUNT:
         raise Failed("Nightly runs require distinct report digests")
-    last = utc_day(policy["operations"], "last_nightly_day_utc").toordinal()
+    operations = policy["operations"]
+    last = utc_day(operations, "last_nightly_day_utc").toordinal()
+    scope_sha = sha_field(operations, "nightly_scope_sha256")
     release = load_identity(policy)["release_sha"]
+    crm_digests = set()
     for index, night in enumerate(nights, 1):
         sha_field(night, "snapshot_sha256")
         if utc_day(night, "scheduled_day_utc").toordinal() != last - NIGHTLY_RUN_COUNT + index:
@@ -402,6 +439,11 @@ def review_nightly_runs(policy: dict, nights: object) -> None:
             zero(night, name)
         for proof in NIGHTLY_PROOFS:
             confirmed(night, proof)
+        crm = object_field(night, "crm")
+        review_nightly_crm(crm, night, scope_sha, crm_scope_table_count)
+        crm_digests.add(crm["report_sha256"])
+    if len(crm_digests) != NIGHTLY_RUN_COUNT:
+        raise Failed("Nightly runs require distinct CRM review digests")
 
 
 def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> dict:

@@ -65,6 +65,34 @@ To reproduce the small CRM conversion check, run `APP_ENV=testing php scripts/my
 
 The release candidate containing backend 9487965492cc9b9575a951ff9a1e415986327b21 passed both suites on the restored MySQL baseline (100 tests, 861 assertions).
 
+### CRM freeze and replay
+
+Review the effective CRM flags from the cached configuration before each
+rehearsal and before the cutover. Record booleans and whether the dedicated
+Resend receiving credential is configured. Keep the credential, signing
+secret and application encryption key in protected storage.
+
+| Producer | Close and verify | Before releasing normal processing |
+| --- | --- | --- |
+| Staff, FPM and queued jobs | Close admission before Laravel. Include CRM staff routes, shoot observer writes, public quote views and opt-out actions. Hold and drain scheduler, the named `crm:website-intake` task, the four scheduled CRM Artisan commands, all workers and manual imports. | Reconcile the captured work against the authoritative engine. Keep campaign and drip claims held until replies, bounces and opt-outs are applied and uncertain sends have a reviewed disposition. |
+| Website inquiries, bookings and careers | Preserve the producer's original reference and its durable retry or outbox record. Hold the recruiting outbox runner. Require a durable receipt before acknowledging any submission that cannot be retried. | Reapply the same reference, payload and recruiting attachments. Confirm one business effect per reference and reconcile any partial attachment replay. |
+| Shared Resend webhook | Hold at ingress and return a retryable failure until an approved retry or capture path is proven. Turning off CRM can acknowledge an inbound reply without processing it and leaves delivery events and public opt-outs able to write. | Use fresh provider-signed redelivery under the original provider event identity. Verify required received email content is recoverable. Check forwarding effects before retrying any ambiguous send. |
+| Google Calendar | Hold the OAuth callback and poller. Preserve existing mappings and pending pushes. | Reconcile changes made directly in Calendar before releasing sync. Restart an expired OAuth flow from the application. |
+
+Maintain a private ledger of each original identity, payload or attachment
+checksum, acknowledgement, replay disposition and verified effect. Include
+only counts and digests in shared evidence. Test restart while sealed and
+exercise both rollback paths. The authority journal must cross its durable
+first-write boundary before permitting any MySQL replay that can write.
+
+[CRM relationship audit](../scripts/mysql/crm-snapshot-audit.py) compares the
+immutable source and the independently verified SQLite reverse export using
+the same private HMAC key. [Applicant file verifier](../scripts/mysql/verify-crm-applicant-files.py)
+checks metadata against files staged under a private local disk root. Pair
+it with application authorization tests and an actual attachment recovery
+receipt. Include these, the real client-import dry-run comparison, and the
+replay identity checks in the [nightly evidence](../scripts/cutover/readiness/README.md#assemble-five-nightly-parity-reports).
+
 ## Release and target preparation
 
 1. Freeze a reviewed backend commit and the corresponding current frontend

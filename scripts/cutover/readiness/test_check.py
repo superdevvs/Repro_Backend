@@ -34,6 +34,26 @@ def readiness_fixture():
         return {"identity_sha256": digest(identity), "report_sha256": operations[f"{kind}_report_sha256"],
                 scope: operations[scope]}
 
+    nights = []
+    for index in range(check.NIGHTLY_RUN_COUNT):
+        night = {
+            "scheduled_day_utc": (last_night - timedelta(days=4 - index)).isoformat(),
+            "report_sha256": f"{30 + index:064x}", "snapshot_sha256": f"{40 + index:064x}",
+            "release_sha": identity["release_sha"] if index >= 3 else "d" * 40,
+            "import_and_verify_ms": 12 * check.MINUTE,
+            **dict.fromkeys(check.NIGHTLY_COUNTERS, 0), **dict.fromkeys(check.NIGHTLY_PROOFS, True),
+        }
+        night["crm"] = {
+            "schema": check.NIGHTLY_CRM_SCHEMA,
+            "report_sha256": f"{50 + index:064x}", "audit_report_sha256": f"{60 + index:064x}",
+            "parity_evidence_sha256": f"{70 + index:064x}",
+            "scheduled_day_utc": night["scheduled_day_utc"], "release_sha": night["release_sha"],
+            "snapshot_sha256": night["snapshot_sha256"], "nightly_scope_sha256": operations["nightly_scope_sha256"],
+            "crm_tables_verified": check.MIN_CRM_TABLES, "verified_linked_client_count": 1,
+            **dict.fromkeys(check.NIGHTLY_CRM_PROOFS, True),
+        }
+        nights.append(night)
+
     receipt = {
         "version": 1, "identity": identity.copy(),
         "prerequisites": {
@@ -75,17 +95,9 @@ def readiness_fixture():
                         "planted_bad_write_excluded": index == 3} for index in (3, 4)],
         },
         "nightly_data_parity": report("nightly_data_parity", "nightly_scope_sha256") | {
-            "nights": [
-                {
-                    "scheduled_day_utc": (last_night - timedelta(days=4 - index)).isoformat(),
-                    "report_sha256": f"{30 + index:064x}", "snapshot_sha256": f"{40 + index:064x}",
-                    "release_sha": identity["release_sha"] if index >= 3 else "d" * 40,
-                    "import_and_verify_ms": 12 * check.MINUTE,
-                    "errors": 0, "warnings": 0, "notes": 0, "unexpected_field_differences": 0,
-                    **dict.fromkeys(check.NIGHTLY_PROOFS, True),
-                }
-                for index in range(5)
-            ],
+            "schema": check.NIGHTLY_SUMMARY_SCHEMA,
+            "crm_scope_table_count": check.MIN_CRM_TABLES,
+            "nights": nights,
         },
         "dress_rehearsals": [
             {
@@ -303,6 +315,7 @@ class ReadinessTests(unittest.TestCase):
                 self.assert_gate("nightly_data_parity", "failed")
                 night[name] = original
         nights[1]["snapshot_sha256"] = nights[0]["snapshot_sha256"]
+        nights[1]["crm"]["snapshot_sha256"] = nights[0]["snapshot_sha256"]
         self.repin_summary("nightly_data_parity")
         self.assert_gate("nightly_data_parity", "passed")
         nights.pop(0)
@@ -320,6 +333,33 @@ class ReadinessTests(unittest.TestCase):
                 self.repin_summary("nightly_data_parity")
                 self.assert_gate("nightly_data_parity", "failed")
                 night[name] = original
+
+    def test_nightly_parity_requires_crm_reviews_when_an_older_summary_is_repinned(self):
+        summary = self.receipt["nightly_data_parity"]
+        summary["schema"] = "repro.nightly-data-parity.summary.v1"
+        self.repin_summary("nightly_data_parity")
+        self.assert_gate("nightly_data_parity", "failed")
+        summary["schema"] = check.NIGHTLY_SUMMARY_SCHEMA
+        summary["nights"][0].pop("crm")
+        self.repin_summary("nightly_data_parity")
+        self.assert_gate("nightly_data_parity", "missing")
+
+    def test_nightly_crm_reviews_require_positively_verified_scope_and_linked_clients(self):
+        summary = self.receipt["nightly_data_parity"]
+        for name, value in (
+            ("report_sha256", summary["nights"][0]["crm"]["report_sha256"]),
+            ("audit_report_sha256", "0" * 64),
+            ("nightly_scope_sha256", "0" * 64),
+            ("crm_tables_verified", check.MIN_CRM_TABLES - 1),
+            ("verified_linked_client_count", 0),
+            *((proof, False) for proof in check.NIGHTLY_CRM_PROOFS),
+        ):
+            with self.subTest(name=name):
+                crm = summary["nights"][1]["crm"]
+                original, crm[name] = crm[name], value
+                self.repin_summary("nightly_data_parity")
+                self.assert_gate("nightly_data_parity", "failed")
+                crm[name] = original
 
     def test_cli_reports_missing_and_invalid_receipts(self):
         with tempfile.TemporaryDirectory() as directory:

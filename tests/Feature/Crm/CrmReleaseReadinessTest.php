@@ -5,6 +5,7 @@ namespace Tests\Feature\Crm;
 use App\Models\Crm\CrmActivity;
 use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmNotice;
+use App\Models\Recruiting\RecruitApplicant;
 use App\Models\Recruiting\RecruitApplicantFile;
 use App\Services\Crm\CrmWebsiteIntake;
 use App\Services\Crm\CrmWebsiteIntakeReceipt;
@@ -92,6 +93,65 @@ class CrmReleaseReadinessTest extends CrmTestCase
         $this->assertSame($original->id, $repeat->id);
         $file = RecruitApplicantFile::query()->where('applicant_id', $original->id)->sole();
         Storage::disk('local')->assertExists($file->path);
+        $this->assertSame(1, CrmNotice::query()->where('user_id', $admin->id)->where('type', 'recruit_applied')->count());
+    }
+
+    public function test_website_application_retry_recovers_a_partially_saved_attachment_set(): void
+    {
+        $disk = Storage::fake('local');
+        $admin = $this->superAdmin();
+        $ref = (string) Str::uuid();
+        config(['services.external_booking.api_key' => 'synthetic-careers-retry']);
+        $headers = ['Accept' => 'application/json', 'X-API-Key' => 'synthetic-careers-retry'];
+        $url = '/api/external/recruiting/application';
+        $resume = "%PDF-1.4\nSynthetic resume\n%%EOF";
+        $license = "%PDF-1.4\nSynthetic license\n%%EOF";
+        $licenseChecksum = hash('sha256', $license);
+        $payload = fn () => [
+            'name' => 'Sample Applicant',
+            'email' => 'applicant@example.test',
+            'role' => 'photographer',
+            'external_reference' => $ref,
+            'resume' => UploadedFile::fake()->createWithContent('resume.pdf', $resume),
+            'license' => UploadedFile::fake()->createWithContent('license.pdf', $license),
+        ];
+
+        $interrupted = false;
+        RecruitApplicantFile::creating(function (RecruitApplicantFile $file) use ($licenseChecksum, &$interrupted): void {
+            if ($file->kind === 'license' && $file->intake_checksum === $licenseChecksum && ! $interrupted) {
+                $interrupted = true;
+                throw new \RuntimeException('Interrupted after storing the license bytes.');
+            }
+        });
+
+        $this->post($url, $payload(), $headers)->assertStatus(500);
+        $this->assertTrue($interrupted);
+        $applicant = RecruitApplicant::query()->sole();
+        $this->assertDatabaseHas('recruit_application_receipts', ['reference' => $ref, 'applicant_id' => $applicant->id]);
+        $resumeFile = RecruitApplicantFile::query()->where('applicant_id', $applicant->id)->sole();
+        $this->assertSame('resume', $resumeFile->kind);
+        $directory = 'recruiting/'.$applicant->id.'/intake';
+        $licensePath = $directory.'/license-'.$licenseChecksum;
+        $this->assertSame($resume, $disk->get($resumeFile->path));
+        $this->assertSame($license, $disk->get($licensePath));
+        $this->assertEqualsCanonicalizing([$resumeFile->path, $licensePath], $disk->allFiles($directory));
+
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            $this->post($url, $payload(), $headers)->assertCreated()
+                ->assertJsonPath('applicant_id', $applicant->id)->assertJsonPath('stage', 'applied');
+        }
+
+        $this->assertDatabaseCount('recruit_applicants', 1);
+        $this->assertDatabaseCount('recruit_application_receipts', 1);
+        $this->assertDatabaseCount('recruit_applicant_files', 2);
+        $files = RecruitApplicantFile::query()->where('applicant_id', $applicant->id)->get()->keyBy('kind');
+        $this->assertCount(2, $files);
+        $this->assertSame($resumeFile->id, $files['resume']->id);
+        $this->assertSame($licensePath, $files['license']->path);
+        $this->assertSame($licenseChecksum, $files['license']->intake_checksum);
+        $this->assertSame($resume, $disk->get($files['resume']->path));
+        $this->assertSame($license, $disk->get($files['license']->path));
+        $this->assertEqualsCanonicalizing([$resumeFile->path, $licensePath], $disk->allFiles($directory));
         $this->assertSame(1, CrmNotice::query()->where('user_id', $admin->id)->where('type', 'recruit_applied')->count());
     }
 }

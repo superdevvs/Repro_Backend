@@ -27,7 +27,7 @@ shape and supplies synthetic values only.
 | --- | --- |
 | Policy | `critical_endpoints` as reviewed unique labels, `host_profile_sha256`, and `workload_sha256`. Pin the environment and comparable SQLite/MySQL peak and surge workloads before testing. |
 | Receipt header | `policy_sha256` and the same cutover identity. Any change to the policy or target invalidates a prior receipt. |
-| `prerequisites` | The reviewed report digest and identity digest, both engine CI results, exact data and schema parity, critical business workflows, provider isolation, native host capacity and isolation, actual writer-fence restart, the first-release MySQL writer serialization policy, and crash recovery. Each result uses the corresponding field in `PREREQUISITES`. |
+| `prerequisites` | The reviewed report digest and identity digest, both engine CI results, exact data and schema parity, critical business workflows, isolated CRM workflow parity, CRM ingress fencing and replay, provider isolation, native host capacity and isolation, actual writer-fence restart, the first-release MySQL writer serialization policy, and crash recovery. Each result uses the corresponding field in `PREREQUISITES`. |
 | `dress_rehearsals` | Exactly two distinct trial IDs and report digests. Each records its source snapshot, pinned identity, host and workload digests, peak and surge completion, results for the timed operations and workload metrics below. |
 | `offsite_recovery` | Independent restore report and identity digests, proof that the restore used off-site artifacts alone, contiguous binlogs, replay to a chosen transaction, successful decryption of a stored value, database recovery time and measured loss. |
 | `operations` in policy | `destination_sha256`, `monitor_profile_sha256`, `phone_recipient_sha256`, `nightly_scope_sha256`, the reviewed `last_nightly_day_utc`, `window_end_unix_s`, `interval_s`, and `evidence_valid_until_unix_s`. Pin both the source report and canonical receipt summary digest for each operational report. Hash approved destination configuration, monitoring profile, delivery identity, and data scope without embedding credentials. |
@@ -35,7 +35,7 @@ shape and supplies synthetic values only.
 | `offsite_retention` | An exact configured-provider policy review and scoped test of the approved writer's overwrite and delete refusals. Preserve separate evidence that a delete-permitted credential was blocked by the lock and that the file's bytes stayed identical. Use the [R2 retention verifier](../../mysql/offsite/README.md#verify-bucket-retention) against the pinned provider capture. |
 | `external_alerts` | Distinct `before_installer` and `before_drill` reports with every named case in `ALERT_LIMITS_MS`, measured from the induced condition to confirmed receipt on the approved phone. Record an independent delivery receipt digest for each case. |
 | `point_in_time_drills` | Two distinct off-site-only restore reports, contiguous logs, verified chosen transactions, recovery duration, heartbeat distance from target, and verified exclusion of a planted bad write in one drill. |
-| `nightly_data_parity` | Five chronological reports for consecutive UTC schedule dates ending on `last_nightly_day_utc`. Each identifies its release and fresh snapshot, elapsed import and independent verification, source scope and integrity, row and exception parity, target settings and engine, SQLite reverse parity, and invoice and payout parity. |
+| `nightly_data_parity` | Five chronological reports for consecutive UTC schedule dates ending on `last_nightly_day_utc`. Each identifies its release and fresh snapshot, elapsed import and independent verification, source scope and integrity, row and exception parity, target settings and engine, SQLite reverse parity, invoice and payout parity, and a CRM review bound to the same night and input. |
 
 The rehearsal clock starts when write admissions first close. Report the total
 time to the reopen decision, verified SQLite rollback before writes, and verified
@@ -50,6 +50,14 @@ on the exact candidate. Exercise explicit transactions, autocommit writes,
 the bounded queue-bookkeeping exemption, and recovery from a failed or lost
 commit. The cutover fence and isolated writer-token component have their
 own evidence.
+
+Bind CRM workflow parity to the pinned release and include the result of
+private dry-run parity and isolated role, inquiry, booking, recruiting,
+template, send, reply, opt-out and calendar tests. Bind the CRM admission and
+replay result to the exercised host fence and reviewed producer ledger.
+Verify restart, replay using the original provider and website identities,
+attachment recovery, and the hold on outgoing sends until consent,
+suppression and ambiguous sends are reconciled.
 
 ## Derive the seven-day backup health summary
 
@@ -105,23 +113,50 @@ and each boolean result in `NIGHTLY_PROOFS` from
 [`check.py`](check.py). Keep the snapshot creation evidence even when two
 fresh snapshots have identical contents.
 
-Review the exact bytes of those five JSON reports and a manifest with schema
-`repro.nightly-data-parity.manifest.v1`. Include `identity_sha256` for the
-cutover identity, `nightly_scope_sha256` for the reviewed data scope, and
-`nights`, a chronological list of entries containing `scheduled_day_utc` and
-the matching file's `report_sha256`. Pin the manifest's exact file digest as
-`operations.nightly_data_parity_report_sha256`.
+Review the same night's CRM evidence and save a separate JSON object with
+`schema` set to `repro.nightly-crm-parity.review.v1`. Copy the night's exact
+`scheduled_day_utc`, `release_sha`, `snapshot_sha256` and `nightly_scope_sha256`.
+Set `audit_report_sha256` to the independently reviewed CRM source reference
+audit and `parity_evidence_sha256` to the independently reviewed evidence
+index for the MySQL comparisons, client dry run and applicant files. Both
+refer to exact protected report bytes. Record the full CRM table total as
+`crm_tables_verified` and the positive count of verified linked clients as
+`verified_linked_client_count`. Include every boolean in `NIGHTLY_CRM_PROOFS`
+from [`check.py`](check.py). Confirm each from the reviewed source evidence.
+
+| CRM proof | What review verifies |
+| --- | --- |
+| `crm_field_and_identity_parity_verified` | All CRM migrations, table counts, fields and issued identities match across engines. Compare shared records, consent and suppression, ownership, dates, decimals, JSON and high-water marks. |
+| `crm_relationship_and_exception_parity_verified` | CRM and shared links, including existing imported client links and nullable links, match by stable identity. Reviewed historical exceptions are preserved. |
+| `crm_replay_state_parity_verified` | Receipt references, provider identities, idempotency keys, reply tokens and pending, completed and uncertain states match. |
+| `crm_client_import_dry_run_verified` | Both copied engines report the same client-import dry-run counts, including the count of already-linked clients. Existing client-to-contact identities are verified independently. |
+| `crm_applicant_file_parity_verified` | Private file metadata, file bytes and checksums match, and permitted and denied access checks pass on the isolated target. Record an empty inventory when no applicant files exist. |
+
+Review the exact bytes of all ten reports and the actual migration scope.
+Pin the scope file digest as `operations.nightly_scope_sha256` after auditing
+its table names against the fresh snapshot. All CRM and required shared
+tables are preserved in class A. A manifest with schema
+`repro.nightly-data-parity.manifest.v2` carries `identity_sha256` for the cutover
+identity, `nightly_scope_sha256`, and `nights`. Each entry lists the
+`scheduled_day_utc`, the general report's `report_sha256` and the CRM review's
+`crm_report_sha256` in chronological order. Pin the manifest's exact file
+digest as `operations.nightly_data_parity_report_sha256`.
 
 ```sh
-python -B -m scripts.cutover.readiness.summarize_nightly_parity --policy review-policy.json --manifest reviewed-nights.json --nights night1.json night2.json night3.json night4.json night5.json
+python -B -m scripts.cutover.readiness.summarize_nightly_parity \
+  --policy review-policy.json --manifest reviewed-nights.json --scope migration-scope.json \
+  --nights night1.json night2.json night3.json night4.json night5.json \
+  --crm-reports crm1.json crm2.json crm3.json crm4.json crm5.json
 ```
 
-The adapter verifies both levels of file digests, checks scope and dates,
-and applies the nightly parity requirements. On success, put the emitted
+The adapter verifies the supplied file digests and the exact scope, date,
+release and snapshot bindings, then applies the nightly and CRM parity gates.
+Only the CRM-aware summary schema can satisfy the nightly gate. Put the emitted
 `nightly_data_parity` object in the readiness receipt. After review, pin its
 `summary_sha256` as `operations.nightly_data_parity_summary_sha256` and update
-the receipt's `policy_sha256`. Reviewers still establish the provenance of
-the underlying snapshots and verifications.
+the receipt's `policy_sha256`. Independent reviewers establish the provenance
+and parity results of the protected artifacts referred to by the digests. Keep
+CRM rows, applicant files, secrets and raw webhook payloads in private storage.
 
 ## Assemble point-in-time recovery drills
 
