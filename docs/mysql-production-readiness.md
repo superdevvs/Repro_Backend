@@ -923,8 +923,16 @@ Maverick owned eight active queue workers and `www-data` owned four. The
 isolated MySQL service and its rotation timer remained disabled and inactive.
 The candidate's two off-site backup timers had no installed systemd units
 under their reviewed names. Read-only inspection also confirmed the public
-mount metadata for the configured originals disk. The native data path still
-requires administrator access for the complete storage separation check.
+mount metadata for the configured originals disk.
+
+The November 24 read-only inventory refresh confirmed the four `www-data`
+workers and eight deployment-user workers. The running user Supervisor
+matched its reviewed configuration, which names four realtime voice, two
+voice notification, one voice transcript and one Studio worker. The two
+reviewed backup timers still had no installed units. This inventory covers
+observable processes and the deployment user's schedule. Administrator
+crontabs, provider intake and the PHP-FPM connection stay in the final
+writer review.
 
 A subsequent metadata-only capacity probe found a 4.46 GB SQLite source,
 approximately 143 GB available on the proposed private staging filesystem,
@@ -970,9 +978,26 @@ The [eight-week boundary census](../scripts/mysql/report_week_boundaries.py)
 uses a pinned, read-only SQLite snapshot to count differences between the
 existing invoice and sales-rep payout date predicates and calendar-day
 membership. Six synthetic tests passed, including date-only Sunday values
-and fractional timestamps at the end of Saturday. The report includes
-aggregate counts only. It still needs a run on a fresh reviewed copy, and
-invoice and payout result parity needs independent verification.
+and fractional timestamps at the end of Saturday.
+
+The fresh, privately authorized November 24 data rehearsal at `61ba8a83`
+took a 4.46 GB online snapshot from SQLite. The snapshot's 291-table schema
+and exact historical exception list matched their reviewed baselines. The
+disposable native MySQL 8.4.13 import verified 1,857,367 rows with zero
+warnings or notes. The independent PHP reader verified 29,857,089 fields
+with zero differences. Import and both verification passes took 700.066
+seconds. The reverse export and independent verification of the same data
+took 174.563 seconds. The temporary MySQL process and its files were
+removed. The original snapshot remains in the protected test workspace.
+The aggregate receipt SHA-256 is
+`b35c4e231590a62ab1636c5062d937d46c95e574938953d0302bb114f5702dd0`.
+[Exact release CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45375878109)
+
+On that snapshot, the two finance date predicates returned the same counts
+on both engines in each of the eight weeks. The historical date-only
+fallback excluded 32 rows that fell within the calendar week before
+eligibility filters. Full invoice and payout output parity still requires
+the application rehearsal.
 
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,
@@ -985,8 +1010,13 @@ time-specific; do not import this older snapshot into a live application.
 Use the [native storage placement check](../scripts/mysql/native/README.md#read-only-storage-separation-acceptance)
 to compare the reviewed originals drive with MySQL's actual private data
 directory. The Laravel media health command checks the application's local
-`database/` directory in MySQL mode. The native check passed its isolated
-Linux tests. Actual placement on the reviewed host still needs a receipt.
+`database/` directory in MySQL mode. On November 24, the administrator
+check verified the native data directory on device `259:4` and the
+originals mount on `8:0`. All 37 Linux tests and the host's mount parser
+check passed after the parser learned to accept Linux namespace entries.
+The check removed its temporary stage, and the managed native service
+remained inactive and disabled. Storage acceptance receipt SHA-256
+`7ea0fadf04eb6eeb0298990804089aedf541cd118853f05505e7587c1b67b7b5`.
 
 The plan calls for seven clean days of verified backups, a snapshot age under
 26 hours and off-site binlog lag within five minutes 99% of the time. Test
