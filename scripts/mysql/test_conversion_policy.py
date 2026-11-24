@@ -8,7 +8,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from contextlib import nullcontext
+from unittest.mock import Mock, call, patch
 
 import conversion
 
@@ -89,6 +90,93 @@ class ConversionPolicyTest(unittest.TestCase):
         self.assertEqual(2, failure.exception.count)
         self.assertEqual([("Note", 1064), ("Warning", 1265)], failure.exception.conditions)
         self.assertNotIn("private data", str(failure.exception))
+
+    def insert_fixture(self, *batches):
+        source, mysql, cursor = Mock(), Mock(), Mock()
+        source.fetchmany.side_effect = [*batches, []]
+        mysql.cursor.return_value = nullcontext(cursor)
+        return source, mysql, cursor
+
+    def test_insert_groups_bound_rows_without_changing_executemany_batches(self):
+        statement = "INSERT INTO items VALUES (%s)"
+        first = [(index,) for index in range(conversion.INSERT_BATCH_ROWS)]
+        second = [(index + len(first),) for index in range(len(first))]
+        last = [(len(first) + len(second),)]
+        source, mysql, cursor = self.insert_fixture(first, second, last)
+
+        with patch.object(conversion, "INSERT_TRANSACTION_ROWS", len(first) + len(second)):
+            self.assertEqual(len(first) + len(second) + len(last), conversion.insert_rows(mysql, source, statement))
+
+        self.assertEqual([call(conversion.INSERT_BATCH_ROWS)] * 4, source.fetchmany.call_args_list)
+        self.assertEqual([
+            call.execute("START TRANSACTION"),
+            call.executemany(statement, first),
+            call.executemany(statement, second),
+            call.execute("COMMIT"),
+            call.execute("START TRANSACTION"),
+            call.executemany(statement, last),
+            call.execute("COMMIT"),
+        ], cursor.method_calls)
+
+    def test_insert_groups_bound_encoded_bytes_and_do_not_group_large_batches(self):
+        statement = "INSERT INTO items VALUES (%s,%s)"
+        first = [("é 😀 \\\x00", b"\xff\x00\\")]
+        second = [("🍀", b"payload")]
+        large = [("x" * 1_000, b"")]
+        last = [(None, 4.25)]
+        source, mysql, cursor = self.insert_fixture(first, second, large, last)
+        limit = sum(conversion.insert_batch_sql_bytes(statement, batch) for batch in (first, second)) - 1
+
+        with patch.object(conversion, "INSERT_TRANSACTION_BYTES", limit):
+            self.assertEqual(4, conversion.insert_rows(mysql, source, statement))
+
+        self.assertEqual([
+            call.execute("START TRANSACTION"),
+            call.executemany(statement, first),
+            call.execute("COMMIT"),
+            call.execute("START TRANSACTION"),
+            call.executemany(statement, second),
+            call.execute("COMMIT"),
+            call.executemany(statement, large),
+            call.execute("START TRANSACTION"),
+            call.executemany(statement, last),
+            call.execute("COMMIT"),
+        ], cursor.method_calls)
+
+    def test_insert_warning_rolls_back_group_and_never_claims_success(self):
+        statement = "INSERT INTO items VALUES (%s)"
+        first, second, unused = [(1,)], [(2,)], [(3,)]
+        warning = conversion.MySqlImportWarnings(1, [("Warning", 1265)])
+        for rollback_unavailable in (False, True):
+            with self.subTest(rollback_unavailable=rollback_unavailable):
+                source, mysql, cursor = self.insert_fixture(first, second, unused)
+                cursor.executemany.side_effect = [None, warning]
+                if rollback_unavailable:
+                    cursor.execute.side_effect = [None, RuntimeError("Connection closed")]
+                with self.assertRaises(conversion.MySqlImportWarnings) as raised:
+                    conversion.insert_rows(mysql, source, statement)
+                self.assertIs(warning, raised.exception)
+                self.assertEqual([
+                    call.execute("START TRANSACTION"),
+                    call.executemany(statement, first),
+                    call.executemany(statement, second),
+                    call.execute("ROLLBACK"),
+                ], cursor.method_calls)
+                self.assertEqual(2, source.fetchmany.call_count)
+
+    def test_failed_commit_is_never_replayed_or_followed_by_another_write(self):
+        statement = "INSERT INTO items VALUES (%s)"
+        first, excess = [(1,)], [(2,)]
+        source, mysql, cursor = self.insert_fixture(first, excess)
+        cursor.execute.side_effect = [None, RuntimeError("Commit outcome unknown")]
+        with patch.object(conversion, "INSERT_TRANSACTION_ROWS", 1):
+            with self.assertRaisesRegex(RuntimeError, "Commit outcome unknown"):
+                conversion.insert_rows(mysql, source, statement)
+        self.assertEqual([
+            call.execute("START TRANSACTION"),
+            call.executemany(statement, first),
+            call.execute("COMMIT"),
+        ], cursor.method_calls)
 
     def test_only_reviewed_equivalent_shoot_indexes_are_marked_redundant(self):
         self.source.executescript("""

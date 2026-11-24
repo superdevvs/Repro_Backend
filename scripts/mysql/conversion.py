@@ -17,6 +17,9 @@ TYPE_POLICY_PATH = pathlib.Path(__file__).with_name("type-policy.json")
 TYPE_POLICY = json.loads(TYPE_POLICY_PATH.read_text(encoding="utf-8"))
 TEMPORAL_TYPES = {"DATE", "DATETIME", "TIMESTAMP", "TIME"}
 REDUNDANT_SHOOT_INDEX_COLUMNS = ("client_id", "editor_id", "photographer_id", "scheduled_date", "status")
+INSERT_BATCH_ROWS = 200
+INSERT_TRANSACTION_ROWS = 2_000
+INSERT_TRANSACTION_BYTES = 8 * 1024**2
 REPORTS = None
 
 
@@ -352,6 +355,61 @@ def row_digest(hasher, row, columns):
     hasher.update(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
 
 
+def insert_batch_sql_bytes(statement, batch):
+    # Allow a full statement prefix per row because PyMySQL can split a batch.
+    size = (len(statement) + 16) * len(batch)
+    for row in batch:
+        for value in row:
+            kind = type(value)
+            if kind is str:
+                # A utf8mb4 character takes up to four bytes, or two when escaped.
+                size += 4 * len(value) + 2
+            elif kind is bytes:
+                size += 2 * len(value) + len("_binary''")
+            elif kind is int or kind is float or value is None:
+                size += 32
+            else:
+                return INSERT_TRANSACTION_BYTES + 1
+    return size
+
+
+def insert_rows(mysql, source_cursor, statement):
+    count = pending_rows = pending_bytes = 0
+    with mysql.cursor() as cursor:
+        try:
+            while rows := source_cursor.fetchmany(INSERT_BATCH_ROWS):
+                batch = [tuple(row) for row in rows]
+                batch_bytes = insert_batch_sql_bytes(statement, batch)
+                if pending_rows and (pending_rows + len(batch) > INSERT_TRANSACTION_ROWS
+                                     or pending_bytes + batch_bytes > INSERT_TRANSACTION_BYTES):
+                    # A failed COMMIT can have succeeded on the server. Never replay it.
+                    pending_rows = pending_bytes = 0
+                    cursor.execute("COMMIT")
+
+                # Keep the original autocommit path for large batches. This avoids
+                # grouping PyMySQL's separate statements into a larger transaction.
+                if batch_bytes <= INSERT_TRANSACTION_BYTES:
+                    if not pending_rows:
+                        cursor.execute("START TRANSACTION")
+                    pending_rows += len(batch)
+                    pending_bytes += batch_bytes
+                cursor.executemany(statement, batch)
+                count += len(batch)
+
+            if pending_rows:
+                pending_rows = 0
+                cursor.execute("COMMIT")
+        except BaseException:
+            if pending_rows:
+                try:
+                    cursor.execute("ROLLBACK")
+                except Exception:
+                    # The caller closes the connection and the target stays incomplete.
+                    pass
+            raise
+    return count
+
+
 def apply(mysql, src, schema):
     with mysql.cursor() as cursor:
         cursor.execute("SHOW TABLES")
@@ -370,14 +428,7 @@ def apply(mysql, src, schema):
         names = ",".join(q(column["name"]) for column in columns)
         source_cursor = src.execute("SELECT " + names + " FROM " + q(table["name"]))
         statement = "INSERT INTO " + q(table["name"]) + " (" + names + ") VALUES (" + ",".join(["%s"] * len(columns)) + ")"
-        count = 0
-        while True:
-            batch = source_cursor.fetchmany(200)
-            if not batch:
-                break
-            with mysql.cursor() as cursor:
-                cursor.executemany(statement, [tuple(row) for row in batch])
-            count += len(batch)
+        count = insert_rows(mysql, source_cursor, statement)
         if any(column["auto_increment"] for column in columns):
             next_id = int(sequences.get(table["name"], 0)) + 1
             with mysql.cursor() as cursor:
