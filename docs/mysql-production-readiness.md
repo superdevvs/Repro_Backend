@@ -267,6 +267,17 @@ reviewer verified both publication chains against independently pinned SQLite
 snapshot and MySQL coordinate evidence in a local fixture. It rejected
 preflight-only evidence and reused backup IDs.
 
+The native archive coordinator trial used the stock PHP base producer,
+MySQL 8.4.13 and disposable TLS S3 storage. The collector ran as UID 1000
+with a read-only mount of the source log volume. A failed provider call left
+the checkpoint byte-identical. A one-file batch limit required two successive
+verified publications with distinct IDs. The first left a closed log pending
+and the second caught up to the observed active file. A final idle run while
+the provider was unreachable kept the checkpoint and receipt set unchanged.
+The archive phase took 17.385 seconds for this small fixture. Its synthetic
+containers, volume and network were removed. The report SHA-256 is
+`9358b239c2e9898fbef28fcb163c371747ecb794b4435da7eedc4c493a1b1c2b`.
+
 The local cutover adapter froze a disposable SQLite Laravel state, copied
 four fixture tables into MySQL, verified read-only application access and
 refused promotion while the off-site backup gate was unsatisfied. Aborting
@@ -278,18 +289,19 @@ scheduler, writer inventory and representative load together.
 The same test on `08a6e4d855ec29f52c9a24945be888cf41e8d94c` took 587 ms
 through the target smoke and 350 ms from abort to the recovered HTTP read.
 
-A subsequent post-write fixture held HTTP and queue writes, disconnected an
-identified MySQL session with an open transaction and proved native read-only
-enforcement. The real runner required separate recovery. The reverse exporter
-used a SELECT-only credential and created a fresh SQLite file. All fields in
-four synthetic tables matched the sealed MySQL state. Laravel reopened in
-537 ms from the fixture hold, kept the acknowledged MySQL receipt, ran the
-queued effect once and accepted a new SQLite HTTP write. The uncommitted row
-was absent, and the original SQLite file stayed byte-identical. The local
-report SHA-256 is
-`aac1b81b7bd30f3df0baefb49342815fa9eb6b406ec7ab53a41a3dd94cc8857e`.
-The timing covers the small fixture, including export and the first verified
-HTTP read. The production-sized service drains and recovery run are open.
+A pre-write abort against the published `0dfa65dd` source archive reopened
+SQLite HTTP in 305 ms. The post-write fixture held HTTP and queue writes,
+disconnected an identified MySQL session with an open transaction and proved
+native read-only enforcement. The real runner required separate recovery.
+The reverse exporter used a SELECT-only credential and created a fresh SQLite
+file. All fields in four synthetic tables matched sealed MySQL. Laravel
+reopened in 528 ms from the fixture hold, kept the acknowledged MySQL receipt,
+ran the queued effect once and accepted a new SQLite HTTP write. The uncommitted
+row was absent, and the original SQLite file stayed byte-identical. The pre-write
+and post-write reports have SHA-256 digests
+`e3fa03144cebbc05414e763e60bbcc2af20bfff50c70727f3948a1c9bd16533e` and
+`ae67a58a804b6391f521d00f37588dbc056fb0b21c55bd6186a2b090bb743ff6`, respectively.
+The production-sized service drains and recovery run are open.
 
 In a separate isolated webhook trial, the actual capture adapter returned
 HTTP 503 while its intake lock was held and while replica verification was
@@ -640,6 +652,23 @@ tails were slower, including the dashboard overview and shoot list. Email search
 still dominates the workload. Accept endpoint limits and capacity on the actual
 host before production, rather than extrapolating an empty-DB or local result.
 
+The `0dfa65dd` synthetic FPM repeat matched 224 paired GETs and 20 access
+checks across notifications, voice and upload summaries. Peak/surge arrival
+p95 exceeded SQLite by more than 10% in 10 of 16 route-round groups. The
+largest was voice at 185.6 vs 294.1 ms over nine samples per engine. The
+small populations, short test phases and disabled OPcache limit the result.
+Use it to select routes for the representative performance run. The report
+SHA-256 is `8af507fa7c062c86981d70906c90c44416abc83ced504f8c71a74bff0d968b00`.
+
+A separate synthetic CLI comparison at the same commit ran 8,000 measured
+operations and 960 jobs with 20 clients and two Laravel workers in each arm.
+Every expected job effect was present once, with zero failures or backlog.
+SQLite to MySQL write p95 fell from 55.1 to 29.2 ms and from 130.8 to 58.9 ms
+across the two engine orders. Read p95 and queue drain time rose in both
+rounds. This comparison measures CLI and queue concurrency. The FPM trial
+above exercised HTTP separately. The verification report SHA-256 is
+`08ccc13193fa9fcf33d1dd1c2bbf5ebff7ae2cace478bd3126e686698f9d1824`.
+
 ## Operational work still requiring approval
 
 The existing production host has MySQL **8.0.46**, 32 CPUs, 32 GB RAM, 20 FPM
@@ -656,6 +685,14 @@ cron/timer writers and provider event handling, designate any required live
 provider/device checks, and approve a maintenance window. Revalidate current
 release/data drift at that point. The read-only inventory and test copy are
 time-specific; do not import this older snapshot into a live application.
+
+The plan calls for seven clean days of verified backups, a snapshot age under
+26 hours and off-site binlog lag within five minutes 99% of the time. Test
+overwrite and delete refusals with the backup writer credential and verify
+alert delivery independently. Time two end-to-end rehearsals with comparable
+load, the whole writer inventory, provider intake and both rollback paths.
+The agreed maximum production write outage is 60 minutes. Schedule a separate
+cutover decision after these gates have evidence.
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.
