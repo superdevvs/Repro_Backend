@@ -40,7 +40,14 @@ return [
         'reply_tracking' => (bool) env('CRM_REPLY_TRACKING', false),
         'company_address' => env('CRM_COMPANY_ADDRESS', ''),
         'daily_send_cap_per_rep' => (int) env('CRM_DAILY_SEND_CAP_PER_REP', 300),
+        'system_from' => env('CRM_SYSTEM_FROM', 'crm@reprophotos.com'),
+        'logo_url' => env('CRM_EMAIL_LOGO_URL', 'https://reprodashboard.com/images/repro-email-logo-light.png'),
+        // Where the public unsubscribe page lives (the Dashboard frontend).
+        'public_base_url' => env('CRM_PUBLIC_BASE_URL', env('FRONTEND_URL', env('APP_URL', 'https://reprodashboard.com'))),
     ],
+
+    /* Ask Robbie to review rep-written copy as well as the fixed rule list. */
+    'content_check_ai' => (bool) env('CRM_CONTENT_CHECK_AI', false),
 
     /*
      * Robbie inside the CRM. The model is always passed explicitly: the
