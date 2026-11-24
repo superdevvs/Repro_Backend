@@ -514,3 +514,28 @@ copied-data behavior, external delivery, queue-worker behavior and cutover
 readiness still require their dedicated checks. Review the supervisor and
 fixture evidence alongside the generic comparison, which retains
 `production_readiness: false`.
+
+## Local schedule-summary fixture
+
+Use `-ScheduleFixture` with the local launcher and fresh synthetic databases.
+The schedule summary aggregates all shoots, so the launcher refuses
+`-SimulateCopy` in this mode. The fixed clock is March 11, 2024 at 16:00 UTC.
+Six synthetic shoots exercise local midnight, the end of the week, a stored
+date with no timestamp, and cancelled and declined controls. The staff
+response must report one shoot today, one tomorrow and three this week.
+
+The route uses the application's existing Sanctum and role middleware. The
+same synthetic client used for notification reads must receive the exact 403
+JSON from the schedule role check. The fixture hashes the six shoot rows
+before and after each round. The comparator applies its existing exact JSON
+contract to the timed staff responses on both engines.
+
+On the November 24 run at `ee7cd660`, both SQLite and MySQL passed in both
+engine orders. Staff counts matched on every schedule summary response. The
+four authenticated client requests returned the expected 403 payload, and
+each body carried the request ID from the response headers. The harness
+verified unchanged shoot rows, 224 measured and warm-up requests across the
+included read routes, and no logical response mismatches. It removed its
+containers and socket volume. The result SHA-256 is
+`68a1b02bb3b8dc422f3986734ddc718fb53033974417366bdfa58e30d4e5757c`.
+This fixture uses generated records and two FPM workers.

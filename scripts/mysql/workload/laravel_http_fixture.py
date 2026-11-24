@@ -37,6 +37,7 @@ PHASE = 'startup'
 NOTIFICATIONS = '/api/notifications'
 VOICE_OFFERS = '/api/voice/incoming-offers'
 UPLOAD_SUMMARIES = '/api/shoots/{shoot}/upload-summaries'
+SCHEDULE_SUMMARY = '/api/dashboard/schedule-summary'
 ACTORS = {'owner-1': (1, NOTIFICATIONS, 1), 'owner-2': (2, NOTIFICATIONS, 1),
           'voice-operator': (3, VOICE_OFFERS, 6)}
 INVALID_BEARER = 'Bearer repro-fixture-' + 'x' * 32
@@ -44,8 +45,13 @@ COPY_ACTOR_BASE = 2_000_000_000
 TOOLS = Path(__file__).resolve().parent
 
 
-def fixture_actors(media):
-    return {**ACTORS, 'upload-photographer': (4, UPLOAD_SUMMARIES, 2)} if media else ACTORS
+def fixture_actors(media, schedule_summary=False):
+    actors = dict(ACTORS)
+    if media:
+        actors['upload-photographer'] = (4, UPLOAD_SUMMARIES, 2)
+    if schedule_summary:
+        actors['schedule-operator'] = (3, SCHEDULE_SUMMARY, 2)
+    return actors
 
 
 def request_actor(authorization, tokens):
@@ -238,11 +244,12 @@ class Handler(socketserver.BaseRequestHandler):
             except OSError: pass
 
 
-def run_round(profile, schedule, client, application, env, path, seed_digest):
+def run_round(profile, schedule, client, application, env, path, seed_digest, schedule_seed_digest=None):
     root = Path(env.get('REPRO_HTTP_ROOT', '/'))
     workspace = root / 'workspace'
     before = php('verify', application, env)
     media = application.get('media_fixture', False)
+    schedule_summary = application.get('schedule_fixture', False)
     need(datetime.fromtimestamp(application['offer_time'], timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
          == profile['logical_time_utc'], 'fixture-clock-profile-mismatch')
     application['http_contract'] = {'profile-sha256': schedule['profile_sha256'], 'schedule-sha256': schedule['schedule_sha256'],
@@ -300,6 +307,8 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
             probes.extend([('upload-photographer', 'voice-operator', authorizations['voice-operator'], 200),
                            ('upload-photographer', 'owner-1', authorizations['owner-1'], 403),
                            ('upload-photographer', 'upload-unassigned', authorizations['upload-unassigned'], 403)])
+        if schedule_summary:
+            probes.append(('schedule-operator', 'owner-1', authorizations['owner-1'], 403))
         active = transport.ActiveSockets()
         try:
             for route, actor, token, status in probes:
@@ -310,6 +319,10 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
                 result = transport.request(profile, schedule, probe_client, probe, time.monotonic_ns(), active)
                 need(result['status'] == status and result['outcome'] == ('ok' if status == 200 else 'http_error')
                      and result['query_count'] > 0 and result['database_warning_count'] == 0, 'real-role-probe-failed')
+        except contract.Refusal:
+            if proxy.failures:
+                print(json.dumps({'scope': 'synthetic-laravel-http', 'probe_failures': proxy.failures[:4]}), flush=True)
+            raise
         finally:
             active.cancel()
         output = path / 'round.json'
@@ -335,6 +348,8 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         if media:
             expected_traces[(UPLOAD_SUMMARIES.lstrip('/'), 200)] += 1
             expected_traces[(UPLOAD_SUMMARIES.lstrip('/'), 403)] = 2
+        if schedule_summary:
+            expected_traces[(SCHEDULE_SUMMARY.lstrip('/'), 403)] = 1
         def trace_counts(state):
             return Counter({(item['path'].lstrip('/'), int(item['status_code'])): int(item['count']) for item in state['traces']})
         traces = trace_counts(before)
@@ -350,10 +365,13 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
              and verified['actor_sessions'] == actor_sessions and verified['owner_state_preserved']
              and verified['voice_graph_sha256'] == before['voice_graph_sha256'] == seed_digest
              and verified['preexisting_token_unused']
+             and (not schedule_summary or before['schedule_graph_sha256'] == verified['schedule_graph_sha256'] == schedule_seed_digest)
              and (not media or before['upload_graph_sha256'] == verified['upload_graph_sha256']), 'persisted-request-effects')
         logs = list((path / 'storage/logs').glob('laravel*.log'))
         broadcasts = sum(item.read_bytes().count(b'SystemOverviewActivity') for item in logs)
         need(broadcasts >= observed_requests, 'local-broadcast-proof-required')
+        if schedule_summary:
+            verified['schedule_client_exact_json_status'] = 403
         return fragment, {**verified, 'unauthenticated_voice_status': 401, 'unprivileged_voice_status': 403,
                           'preexisting_bearer_bridge_status': 403,
                           'upload_staff_status': 200 if media else None,
@@ -378,7 +396,9 @@ def main():
     parser.add_argument('--baseline-net', required=True)
     parser.add_argument('--simulate-copy', action='store_true')
     parser.add_argument('--media-fixture', action='store_true')
+    parser.add_argument('--schedule-fixture', action='store_true')
     args = parser.parse_args()
+    need(not (args.simulate_copy and args.schedule_fixture), 'schedule-fixture-synthetic-only')
     os.umask(0o077)
     transport.isolation.namespace_check(args.baseline_net)
     transport.isolation.supervised_status_check()
@@ -400,7 +420,7 @@ def main():
     source_hash = transport.isolation.source_digest(Path('/workspace'))
     source_token = os.urandom(32).hex()
     actor_base = COPY_ACTOR_BASE if args.simulate_copy else 0
-    actors = fixture_actors(args.media_fixture)
+    actors = fixture_actors(args.media_fixture, args.schedule_fixture)
     actor_numbers = [number for number, _, _ in actors.values()]
     if args.media_fixture:
         actor_numbers.append(5)
@@ -411,7 +431,7 @@ def main():
     snapshot_hash = '0' * 64
     # The voice offer would be expired at real wall time, so route success also
     # proves that each engine and round uses the same application clock.
-    offer_time = int(time.time()) - 900
+    offer_time = int(datetime(2024, 3, 11, 16, tzinfo=timezone.utc).timestamp()) if args.schedule_fixture else int(time.time()) - 900
 
     def config(path, engine, admin=False, copied=args.simulate_copy):
         return {'scope': 'copied-laravel-http-v1' if copied else 'synthetic-laravel-http-v1',
@@ -419,7 +439,8 @@ def main():
                 'engine': engine, 'database': setup['admin'] if admin else setup['app'], 'monitor': setup['monitor'],
                 'uuid': setup['uuid'], 'owner_token': source_token, 'tokens': tokens, 'preexisting_token': preexisting_token,
                 'password_hash': password,
-                'app_key': app_key, 'sqlite_source_sha256': snapshot_hash, 'offer_time': offer_time, 'media_fixture': args.media_fixture}
+                'app_key': app_key, 'sqlite_source_sha256': snapshot_hash, 'offer_time': offer_time, 'media_fixture': args.media_fixture,
+                'schedule_fixture': args.schedule_fixture}
 
     base = Path('/runs/base-sqlite'); runtime(base)
     PHASE = 'sqlite-baseline'
@@ -427,10 +448,12 @@ def main():
     php('migrate', sqlite_admin, env)
     if args.simulate_copy:
         php('synthetic-history', sqlite_admin, env)
-    sqlite_seed_digest = php('seed', config(base, 'sqlite', True), env)['voice_graph_sha256']
+    sqlite_seed = php('seed', config(base, 'sqlite', True), env)
+    sqlite_seed_digest = sqlite_seed['voice_graph_sha256']
     snapshot_hash = sha(base / 'database.sqlite')
     manifest = {'version': 1, 'seed_receipt_sha256': contract.digest({'source': source_hash, 'snapshot': snapshot_hash,
                 'actors': actors, 'offer_time': offer_time, 'voice_graph_sha256': sqlite_seed_digest,
+                **({'schedule_graph_sha256': sqlite_seed['schedule_graph_sha256']} if args.schedule_fixture else {}),
                 'telemetry': 'enabled', 'broadcast': 'log'}), 'routes': {
         label: {'role': label, 'fixture': label, 'method': 'GET',
                 'path': path.replace('{shoot}', str(actor_base + 1)), 'query': {}}
@@ -457,14 +480,14 @@ def main():
             application = config(path, engine)
             if engine == 'sqlite':
                 shutil.copyfile(base / 'database.sqlite', path / 'database.sqlite')
-                seed_digest = sqlite_seed_digest
+                seed = sqlite_seed
             else:
                 administrator = config(path, engine, True, copied=False)
                 if prepared_mysql: php('reset', administrator, env)
                 php('migrate', administrator, env)
                 if args.simulate_copy:
                     php('synthetic-history', administrator, env)
-                seed_digest = php('seed', {**application, 'database': setup['admin']}, env)['voice_graph_sha256']
+                seed = php('seed', {**application, 'database': setup['admin']}, env)
                 php('warning-probe', application, env)
                 prepared_mysql = True
             client = {'version': 1, 'profile_sha256': schedule['profile_sha256'], 'schedule_sha256': schedule['schedule_sha256'],
@@ -472,7 +495,8 @@ def main():
                       'server_kind': 'reviewed-http-instrumentation', 'run_token': os.urandom(32).hex(), 'socket': {},
                       'fixture_manifest': manifest, 'response_contract': response_contract,
                       'synthetic_authorization': {label: 'Bearer ' + tokens[str(actor_base + number)] for label, (number, _, _) in actors.items()}}
-            fragment, verified = run_round(profile, schedule, client, application, env, path, seed_digest)
+            fragment, verified = run_round(profile, schedule, client, application, env, path,
+                                           seed['voice_graph_sha256'], seed.get('schedule_graph_sha256'))
             fragments[engine].append(fragment)
             evidence_name = engine + '-round-' + str(number) + '.json'
             private_json(Path('/evidence') / evidence_name, fragment)
@@ -495,7 +519,8 @@ def main():
               'database_warning_injection_detected': True, 'fixed_clock_applied': True,
               'voice_control_expired_at_wall_time': True,
               'populated_fixture_tested': args.simulate_copy,
-              'upload_summary_fixture_tested': args.media_fixture,
+               'upload_summary_fixture_tested': args.media_fixture,
+               **({'schedule_summary_fixture_tested': True} if args.schedule_fixture else {}),
               'real_auth_and_existing_route_middleware': True, 'telemetry_writes_enabled': True, 'broadcast_driver': 'log',
               'normalization': 'all-fields-exact-json-preserving-numeric-lexemes',
               'query_metric_scope': 'default Laravel connection during handle and terminate; raw transaction control excluded',

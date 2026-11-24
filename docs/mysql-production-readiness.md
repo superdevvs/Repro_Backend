@@ -8,7 +8,7 @@ full application writer policy and the timed dress rehearsals remain open.
 | Gate | Latest rehearsal evidence | Remaining evidence |
 | --- | --- | --- |
 | Data and financial parity | The private copy verified 291 tables, 1,857,367 rows and 29,857,089 fields with zero differences. Import and independent verification took 11 minutes 40 seconds. Eight report weeks and sampled invoice and payout generation matched. | Five consecutive qualifying nights, with the last two on the frozen release. |
-| Application writes and rollback | Scoped MySQL worker routing, both synthetic rollback paths, and the administrator schedule inventory passed. | Application-wide writer coverage, restart-safe admission across actual entry points, and two comparable end-to-end rehearsals within the planned outage. |
+| Application behavior and rollback | The [scheduling summary](../scripts/mysql/workload/HTTP-COMPARISON.md#local-schedule-summary-fixture) matched on both engines, including role denial. Scoped worker routing, both synthetic rollback paths and the administrator schedule inventory passed. | Application-wide writer coverage, restart-safe admission across actual entry points, and two comparable end-to-end rehearsals within the planned outage. |
 | Storage and recovery | Native data and media devices were confirmed separate. The private rehearsal bucket supported an independent encrypted recovery and protected a synthetic object. | The designated backup configuration, seven days of independent backup evidence, and point-in-time recovery drills on that configuration. |
 | Alert delivery | The backup failure reached the phone. The repeated missed check-in reached the inbox. | Confirm missed check-in delivery on the phone and complete both reviewed alert rounds. |
 

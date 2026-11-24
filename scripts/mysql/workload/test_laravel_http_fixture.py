@@ -70,6 +70,12 @@ class DependencyArchiveBoundaryTest(unittest.TestCase):
 
 
 class RehearsalBearerBoundaryTest(unittest.TestCase):
+    def test_schedule_summary_is_opt_in_and_uses_the_existing_staff_actor(self):
+        self.assertNotIn('schedule-operator', fixture.fixture_actors(False))
+        actors = fixture.fixture_actors(True, schedule_summary=True)
+        self.assertEqual(actors['schedule-operator'], (actors['voice-operator'][0], fixture.SCHEDULE_SUMMARY, 2))
+        self.assertEqual(actors['upload-photographer'][1], fixture.UPLOAD_SUMMARIES)
+
     def test_bridge_refuses_a_non_fixture_bearer_before_fastcgi(self):
         handler = fixture.Handler.__new__(fixture.Handler)
         handler.request = Mock()

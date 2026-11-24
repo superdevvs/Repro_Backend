@@ -105,6 +105,29 @@ function fixtureUploadDigest(PDO $pdo, int $shoot): string
     return hash('sha256', json_encode($seed, JSON_THROW_ON_ERROR));
 }
 
+function fixtureSeedScheduleSummary(PDO $pdo, int $client): void
+{
+    $shoot = $pdo->prepare("INSERT INTO shoots(id,client_id,address,city,state,zip,base_quote,tax_amount,total_quote,status,created_by,scheduled_date,scheduled_at,timezone) VALUES(?,?,'Synthetic property','Example','NA','00000',0,0,0,?,'synthetic-http',?,?,?)");
+    $cases = [
+        // UTC Tuesday, local Monday. The stored date alone would count it tomorrow.
+        ['scheduled', '2024-03-12', '2024-03-12 03:30:00', 'America/Los_Angeles'],
+        ['scheduled', '2024-03-12', null, 'UTC'],
+        // UTC next Monday, local Sunday. Count it within the current week.
+        ['scheduled', '2024-03-18', '2024-03-18 05:30:00', 'America/Los_Angeles'],
+        ['cancelled', '2024-03-11', null, 'UTC'],
+        ['declined', '2024-03-12', null, 'UTC'],
+        ['scheduled', '2024-03-18', null, 'UTC'],
+    ];
+    foreach ($cases as $index => $case) $shoot->execute([$index + 11, $client, ...$case]);
+}
+
+function fixtureScheduleDigest(PDO $pdo): string
+{
+    $rows = $pdo->query('SELECT * FROM shoots WHERE id BETWEEN 11 AND 16 ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    fixtureNeed(count($rows) === 6, 'fixture-schedule-rows');
+    return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
+}
+
 function fixtureOwner(PDO $pdo, array $config): void
 {
     fixtureNeed($pdo->query('SELECT token FROM _repro_http_fixture_owner')->fetchColumn() === $config['owner_token'], 'fixture-ownership-required');
@@ -156,6 +179,8 @@ try {
     $operator = $base + 3;
     $clientIds = [$base + 1, $base + 2];
     $media = ($config['media_fixture'] ?? false) === true;
+    $schedule = ($config['schedule_fixture'] ?? false) === true;
+    fixtureNeed(!$schedule || (!$native && !$copied), 'schedule-fixture-synthetic-only');
     $roles = [$clientIds[0] => 'client', $clientIds[1] => 'client', $operator => 'admin'];
     if ($media) $roles += [$base + 4 => 'photographer', $base + 5 => 'photographer'];
     fixtureNeed(posix_geteuid() !== 0 && getenv('APP_ENV') === 'testing', 'unprivileged-testing-process');
@@ -165,6 +190,7 @@ try {
     $anchor = $config['offer_time'];
     // Even the live fixture offer must already be expired according to wall time.
     fixtureNeed(is_int($anchor) && $anchor >= 946684800 && $anchor < min(time() - 300, 2147483347), 'voice-fixture-anchor');
+    fixtureNeed(!$schedule || gmdate('Y-m-d H:i:s', $anchor) === '2024-03-11 16:00:00', 'schedule-fixture-anchor');
     $environment = [
         'DB_CONNECTION' => $config['engine'], 'DB_DATABASE' => $config['engine'] === 'sqlite' ? $config['sqlite'] : $config['mysql_database'],
         'DB_SOCKET' => $config['mysql_socket'], 'DB_USERNAME' => $config['database']['username'], 'DB_PASSWORD' => $config['database']['password'],
@@ -256,9 +282,11 @@ try {
                 $offer->execute([$id, $base + $index + 1, json_encode($targets, JSON_THROW_ON_ERROR), $expires, $created, $created]);
             }
             if ($media) fixtureSeedUploadSummary($pdo, $base, $anchor);
+            if ($schedule) fixtureSeedScheduleSummary($pdo, $clientIds[0]);
             $pdo->commit();
             echo json_encode(['result' => 'seeded', 'users' => count($roles), 'voice_graph_sha256' => fixtureVoiceDigest($pdo, $base),
-                'upload_graph_sha256' => $media ? fixtureUploadDigest($pdo, $base + 1) : null]);
+                'upload_graph_sha256' => $media ? fixtureUploadDigest($pdo, $base + 1) : null,
+                ...($schedule ? ['schedule_graph_sha256' => fixtureScheduleDigest($pdo)] : [])]);
         } elseif ($mode === 'warning-probe') {
             fixtureNeed($config['engine'] === 'mysql', 'mysql-warning-probe-required');
             $monitor = fixturePdo($config, 'monitor');
@@ -273,7 +301,8 @@ try {
         } else {
             $counts = [];
             $tables = ['users', 'notification_read_states', 'system_overview_request_traces', 'system_overview_sessions', 'system_overview_error_events', 'jobs', 'messages', 'voice_calls', 'voice_incoming_offers', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers'];
-            if ($media) array_push($tables, 'shoots', 'shoot_upload_attempts');
+            if ($media || $schedule) $tables[] = 'shoots';
+            if ($media) $tables[] = 'shoot_upload_attempts';
             foreach ($tables as $table) {
                 $counts[$table] = (int)$pdo->query('SELECT COUNT(*) FROM '.$table)->fetchColumn();
             }
@@ -296,7 +325,8 @@ try {
             echo json_encode(['result' => 'verified', 'engine' => $config['engine'], 'counts' => $counts,
                 'traces' => $traces, 'owner_state_preserved' => count($rows) === 2, 'voice_graph_sha256' => fixtureVoiceDigest($pdo, $base),
                 'actor_sessions' => (int)$actorSessions->fetchColumn(), 'preexisting_token_unused' => (int)$uncheckedToken->fetchColumn() === 1,
-                'upload_graph_sha256' => $media ? fixtureUploadDigest($pdo, $base + 1) : null]);
+                'upload_graph_sha256' => $media ? fixtureUploadDigest($pdo, $base + 1) : null,
+                ...($schedule ? ['schedule_graph_sha256' => fixtureScheduleDigest($pdo)] : [])]);
         }
         exit;
     }
@@ -325,7 +355,8 @@ try {
     $request = Illuminate\Http\Request::capture();
     $voice = $request->path() === 'api/voice/incoming-offers';
     $upload = $media && $request->path() === 'api/shoots/'.($base + 1).'/upload-summaries';
-    fixtureNeed($request->getMethod() === 'GET' && ($voice || $upload || $request->path() === 'api/notifications')
+    $scheduleSummary = $schedule && $request->path() === 'api/dashboard/schedule-summary';
+    fixtureNeed($request->getMethod() === 'GET' && ($voice || $upload || $scheduleSummary || $request->path() === 'api/notifications')
         && $request->getQueryString() === null, 'fixed-fixture-route');
     foreach ($config['http_contract'] as $name => $expected) {
         fixtureNeed($request->header('X-Repro-'.$name) === (string)$expected, 'fixed-http-contract');
@@ -347,6 +378,7 @@ try {
     [$controller, $action] = match (true) {
         $upload => [App\Http\Controllers\API\ShootUploadSummaryController::class, 'index'],
         $voice => [App\Http\Controllers\API\Voice\VoiceTeamController::class, 'offers'],
+        $scheduleSummary => [App\Http\Controllers\API\DashboardController::class, 'scheduleSummary'],
         default => [App\Http\Controllers\API\DashboardController::class, 'notifications'],
     };
     fixtureNeed($request->route()?->getController() instanceof $controller
@@ -357,7 +389,27 @@ try {
         fixtureNeed(in_array(App\Http\Middleware\PermissionMiddleware::class.':voice-calls', $middleware, true)
             && in_array(App\Http\Middleware\PermissionMiddleware::class.':voice-calls,operate', $middleware, true), 'normal-voice-permissions-required');
     }
-    if ($response->getStatusCode() === 200) {
+    if ($scheduleSummary) {
+        fixtureNeed(in_array(App\Http\Middleware\RoleMiddleware::class.':editor,admin,superadmin,editing_manager', $middleware, true),
+            'normal-schedule-role-middleware-required');
+        $body = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR);
+        $id = (int)$request->user()?->id;
+        if ($response->getStatusCode() === 200) {
+            fixtureNeed($id === $operator && $body === ['data' => [
+                'reference_date' => '2024-03-11', 'scheduled_today' => 1, 'scheduled_tomorrow' => 1, 'scheduled_this_week' => 3,
+            ]], 'real-schedule-summary');
+        } else {
+            $requestId = $response->headers->get('X-Request-Id');
+            fixtureNeed(is_string($requestId) && Illuminate\Support\Str::isUuid($requestId)
+                && $response->headers->get('X-Trace-Id') === $requestId, 'real-schedule-error-correlation');
+            fixtureNeed($response->getStatusCode() === 403 && $id === $clientIds[0] && $body === [
+                'message' => 'Unauthorized. Access restricted to specific roles.',
+                'your_role' => 'client', 'your_secondary_roles' => null,
+                'required_roles' => ['editor', 'admin', 'superadmin', 'editing_manager'],
+                'request_id' => $requestId, 'code' => 'forbidden',
+            ], 'real-schedule-permission-denial');
+        }
+    } elseif ($response->getStatusCode() === 200) {
         $id = (int)$request->user()?->id;
         $data = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR)['data'] ?? null;
         if ($upload) {
