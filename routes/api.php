@@ -445,10 +445,9 @@ Route::prefix('address')->group(function () {
 
 // Group of routes that require user authentication (e.g., using Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
-    // Sales reps connect their calendar for Sales CRM follow-ups.
-    Route::middleware('role:photographer,admin,superadmin,editing_manager,salesRep')->post('/google-calendar/connect', [GoogleCalendarController::class, 'connect']);
-    Route::middleware('role:photographer,admin,superadmin,editing_manager,salesRep')->get('/google-calendar/status', [GoogleCalendarController::class, 'status']);
-    Route::middleware('role:photographer,salesRep')->prefix('google-calendar')->group(function () {
+    Route::middleware('role:photographer,admin,superadmin,editing_manager')->post('/google-calendar/connect', [GoogleCalendarController::class, 'connect']);
+    Route::middleware('role:photographer,admin,superadmin,editing_manager')->get('/google-calendar/status', [GoogleCalendarController::class, 'status']);
+    Route::middleware('role:photographer')->prefix('google-calendar')->group(function () {
         Route::delete('/disconnect', [GoogleCalendarController::class, 'disconnect']);
         Route::post('/resync', [GoogleCalendarController::class, 'resync']);
     });

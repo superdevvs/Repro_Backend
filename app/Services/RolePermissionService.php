@@ -419,7 +419,11 @@ class RolePermissionService
         }
 
         foreach ($permissions as $roleId => $ids) {
-            $permissions[$roleId] = $this->normalizePermissionIds($ids, $catalogIds);
+            // The super admin always holds the whole catalog, in catalog order;
+            // sorting it here would make the next load rewrite the stored map.
+            if ($roleId !== 'superadmin') {
+                $permissions[$roleId] = $this->normalizePermissionIds($ids, $catalogIds);
+            }
         }
 
         Setting::query()->updateOrCreate(

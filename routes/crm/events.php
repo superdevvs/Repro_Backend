@@ -11,3 +11,9 @@ Route::get('contacts/{contact}/events', [CrmEventController::class, 'forContact'
 Route::post('contacts/{contact}/events', [CrmEventController::class, 'store'])->whereNumber('contact')->name('events.store');
 Route::patch('events/{event}', [CrmEventController::class, 'update'])->whereNumber('event')->name('events.update');
 Route::post('events/{event}/complete', [CrmEventController::class, 'complete'])->whereNumber('event')->name('events.complete');
+
+// Google Calendar for CRM follow-ups. Sales reps connect here, inside the CRM;
+// the Dashboard's own /google-calendar routes keep their role guard.
+Route::post('calendar/connect', [\App\Http\Controllers\API\GoogleCalendarController::class, 'connect'])->name('calendar.connect');
+Route::get('calendar/status', [\App\Http\Controllers\API\GoogleCalendarController::class, 'status'])->name('calendar.status');
+Route::post('calendar/disconnect', [\App\Http\Controllers\API\GoogleCalendarController::class, 'disconnect'])->name('calendar.disconnect');

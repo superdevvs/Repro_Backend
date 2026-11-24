@@ -173,6 +173,15 @@ class CrmIntegrationsTest extends CrmTestCase
         $this->assertSame('planned', CrmEvent::query()->find($event->id)->status);
     }
 
+    public function test_reps_reach_google_calendar_only_through_the_crm(): void
+    {
+        $this->actAs($this->rep());
+        $this->getJson('/api/google-calendar/status')->assertForbidden();
+        $this->getJson('/api/crm/calendar/status')->assertOk();
+        config(['crm.enabled' => false]);
+        $this->getJson('/api/crm/calendar/status')->assertNotFound();
+    }
+
     public function test_the_website_careers_form_posts_with_the_api_key(): void
     {
         config(['services.external_booking.api_key' => 'test-external-key']);
