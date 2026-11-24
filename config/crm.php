@@ -23,6 +23,12 @@ return [
     'expiry_reminder_days' => (int) env('CRM_EXPIRY_REMINDER_DAYS', 30),
 
     /*
+     * When a Dashboard client with no CRM contact books a shoot, create the
+     * contact (owned by their account rep, or Unassigned).
+     */
+    'auto_create_from_shoots' => (bool) env('CRM_AUTO_CREATE_FROM_SHOOTS', true),
+
+    /*
      * Email. Nothing is delivered for real until the transport is switched to
      * "resend" in the final integration stage; until then sends are recorded
      * with the exact content and marked as not delivered.
