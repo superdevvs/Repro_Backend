@@ -47,6 +47,9 @@ class CrmEventPresenter
                 'stage' => $contact->stage, 'stage_label' => $contact->stageLabel(),
             ] : null,
             'applicant_id' => $event->applicant_id,
+            'applicant' => $withContact && $event->applicant_id
+                ? \App\Models\Recruiting\RecruitApplicant::query()->whereKey($event->applicant_id)->first(['id', 'name', 'role', 'stage'])?->only(['id', 'name', 'role', 'stage'])
+                : null,
             'on_calendar' => (bool) \Illuminate\Support\Facades\DB::table('crm_event_calendar_links')->where('event_id', $event->id)->whereNotNull('google_event_id')->exists(),
         ];
     }

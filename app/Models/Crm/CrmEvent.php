@@ -41,13 +41,19 @@ class CrmEvent extends Model
 
     /**
      * Events the signed-in user may see: on contacts visible to them (the owner
-     * scope applies), plus events assigned to them that have no contact.
+     * scope applies), plus events assigned to them that have no contact, plus
+     * interviews for people who can see recruiting.
      */
     public function scopeVisible(Builder $query, ?User $user): Builder
     {
-        return $query->where(function ($q) use ($user) {
+        $recruiter = $user && app(\App\Services\Crm\CrmAccess::class)->can($user, 'crm-recruiting', 'view');
+
+        return $query->where(function ($q) use ($user, $recruiter) {
             $q->whereIn('contact_id', CrmContact::query()->select('id'))
                 ->orWhere(fn ($q) => $q->whereNull('contact_id')->whereNull('applicant_id')->where('assigned_user_id', $user?->id));
+            if ($recruiter) {
+                $q->orWhere(fn ($q) => $q->whereNull('contact_id')->whereNotNull('applicant_id'));
+            }
         });
     }
 }

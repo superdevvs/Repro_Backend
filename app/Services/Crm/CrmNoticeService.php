@@ -33,4 +33,15 @@ class CrmNoticeService
             ->filter(fn (User $user) => $this->permissions->userCan($user, 'crm-contacts', 'view-all'))
             ->each(fn (User $user) => $this->notify($user->id, $type, $title, $body, $contactId, $data));
     }
+
+    /** Notify everyone who can see recruiting: the super admin and anyone they granted. */
+    public function notifyRecruiters(string $type, string $title, ?string $body = null, array $data = []): void
+    {
+        User::query()
+            ->whereIn('role', ['admin', 'superadmin'])
+            ->get()
+            ->filter(fn (User $user) => ($user->account_status ?? 'active') === 'active' || $user->account_status === null)
+            ->filter(fn (User $user) => $this->permissions->userCan($user, 'crm-recruiting', 'view'))
+            ->each(fn (User $user) => $this->notify($user->id, $type, $title, $body, null, $data));
+    }
 }
