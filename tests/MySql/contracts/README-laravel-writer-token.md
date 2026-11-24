@@ -60,11 +60,24 @@ five-second row/metadata wait settings; those are per-lock waits, not a total
 end-to-end deadline. Three failed acquisitions therefore take approximately
 fifteen seconds, before any business callback runs.
 
+## Single-statement write proof
+
+The fixture recognizes two exact probe statements. A query-builder `insertGetId`
+and a bound `affectingStatement` reservation each wait for the same writer token
+before executing on the same PDO. The contract checks that a contended write
+times out without creating a row, an ordinary read proceeds while a peer holds
+the token, and a new attempt after release creates one row. The generated ID or
+affected-row count is preserved. Query observers run after the row is visible to
+an independent connection. A throwing observer cannot undo the commit or replay
+the statement. Rejected SQL rolls back and releases the token. An explicit
+transaction still owns its insert and can roll it back. The probe match applies
+to the two fixture statements only.
+
 ## Gates before runtime integration
 
-This is not complete write serialization. Ordinary autocommit writes, raw PDO,
+Complete write serialization still needs the remaining autocommit paths, raw PDO,
 alternate connections, queue bookkeeping exemptions, cache/telemetry ordering,
-and complete SQL classification remain outside this slice. Native 1213 deadlock
+and complete SQL classification. Native 1213 deadlock
 and broader business-workflow races still need their own proofs.
 
 The fixture has a **private** transaction manager. Runtime integration must also

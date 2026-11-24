@@ -20,6 +20,11 @@ use Throwable;
 /** Explicit native fixture only. No production resolver, binding or configuration selects this class. */
 final class FixtureWriterTokenConnection extends MySqlConnection
 {
+    public const PROBE_INSERT = 'insert into `_writer_token_probe` (`counter`) values (?)';
+
+    public const PROBE_RESERVATION = 'INSERT INTO _writer_token_probe (counter) '
+        .'SELECT ? WHERE COALESCE((SELECT SUM(counter) FROM _writer_token_probe), 0) + ? <= ?';
+
     private bool $discarded = false;
 
     private bool $poisoned = false;
@@ -181,6 +186,12 @@ final class FixtureWriterTokenConnection extends MySqlConnection
 
     protected function runQueryCallback($query, $bindings, Closure $callback)
     {
+        // Exact fixture SQL only. Runtime SQL classification is a separate contract.
+        if ($this->transactionLevel() === 0 && ! $this->pretending()
+            && in_array($query, [self::PROBE_INSERT, self::PROBE_RESERVATION], true)) {
+            return $this->runAutonomousProbe($query, $bindings, $callback);
+        }
+
         try {
             return parent::runQueryCallback($query, $bindings, $callback);
         } catch (Throwable $error) {
@@ -192,6 +203,38 @@ final class FixtureWriterTokenConnection extends MySqlConnection
             }
             throw $error;
         }
+    }
+
+    private function runAutonomousProbe(string $query, array $bindings, Closure $callback): mixed
+    {
+        $this->executeBeginTransactionStatement();
+        $pdo = $this->getPdo();
+        try {
+            // MySqlConnection's insert callback reads lastInsertId before COMMIT.
+            $result = parent::runQueryCallback($query, $bindings, $callback);
+        } catch (Throwable $error) {
+            try {
+                if (! $pdo->inTransaction() || ! $pdo->rollBack() || $pdo->inTransaction()) {
+                    throw new RuntimeException('The autonomous writer did not confirm rollback.');
+                }
+            } catch (Throwable) {
+                $this->discard();
+                throw new RuntimeException('Autonomous write failed without a confirmed rollback.', 0, $error);
+            }
+            throw $error;
+        }
+
+        try {
+            if (! $pdo->inTransaction() || ! $pdo->commit() || $pdo->inTransaction()) {
+                throw new RuntimeException('The autonomous writer did not confirm commit.');
+            }
+        } catch (Throwable $error) {
+            $this->discard();
+            throw $error;
+        }
+
+        // Illuminate runs QueryExecuted listeners after this callback returns.
+        return $result;
     }
 
     protected function handleQueryException(QueryException $error, $query, $bindings, Closure $callback)

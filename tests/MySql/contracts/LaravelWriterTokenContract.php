@@ -3,6 +3,7 @@
 namespace Tests\MySql\Contracts;
 
 use App\Database\WriterTokenTimeout;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitting;
 use Illuminate\Database\QueryException;
@@ -43,8 +44,9 @@ final class LaravelWriterTokenContract extends TestCase
         $this->admin->exec('CREATE TABLE repro_mysql_control.writer_token (id TINYINT UNSIGNED PRIMARY KEY CHECK(id=1),
             application_database VARBINARY(64) NOT NULL, contract_version INT UNSIGNED NOT NULL) ENGINE=InnoDB');
         $this->admin->exec("INSERT INTO repro_mysql_control.writer_token VALUES (1, 'repro_mysql_test', 1)");
-        $this->admin->exec('CREATE TABLE IF NOT EXISTS _writer_token_probe (id INT PRIMARY KEY, counter INT NOT NULL) ENGINE=InnoDB');
-        $this->admin->exec('DELETE FROM _writer_token_probe');
+        $this->admin->exec('DROP TABLE IF EXISTS _writer_token_probe');
+        $this->admin->exec('CREATE TABLE _writer_token_probe (id INT AUTO_INCREMENT PRIMARY KEY,
+            counter INT UNSIGNED NOT NULL) ENGINE=InnoDB');
         $this->admin->exec('INSERT INTO _writer_token_probe VALUES (1,0),(2,0)');
         self::assertSame(1, (int) $this->admin->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='repro_mysql_test'")->fetchColumn());
         $this->db = FixtureWriterTokenConnection::fromEnvironment();
@@ -124,6 +126,104 @@ final class LaravelWriterTokenContract extends TestCase
         self::assertTrue($process->isSuccessful(), $process->getErrorOutput());
 
         return json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    public static function autonomousWrites(): array
+    {
+        return [
+            'builder insertGetId' => [FixtureWriterTokenConnection::PROBE_INSERT,
+                static fn ($db) => $db->table('_writer_token_probe')->insertGetId(['counter' => 8]), 3],
+            'raw affectingStatement' => [FixtureWriterTokenConnection::PROBE_RESERVATION,
+                static fn ($db) => $db->affectingStatement(FixtureWriterTokenConnection::PROBE_RESERVATION, [8, 8, 9]), 1],
+        ];
+    }
+
+    #[DataProvider('autonomousWrites')]
+    public function test_autonomous_write_waits_before_execution_and_commits_once(string $sql, \Closure $write, int $expected): void
+    {
+        $holder = $this->worker('hold');
+        $this->awaitMarker('written');
+        $seen = [];
+        $this->db->getEventDispatcher()->listen(QueryExecuted::class, function ($event) use ($sql, &$seen) {
+            if ($event->sql === $sql) {
+                $seen[] = [$event->connection->getPdo()->inTransaction(), $this->counter(3)];
+            }
+        });
+
+        $started = microtime(true);
+        self::assertSame(0, (int) $this->db->table('_writer_token_probe')->where('id', 1)->value('counter'));
+        self::assertLessThan(4.5, microtime(true) - $started);
+        self::assertSame(0, $this->db->fixtureState()['acquisitions']);
+
+        $started = microtime(true);
+        try {
+            $write($this->db);
+            self::fail('The held token must prevent either autonomous write from executing.');
+        } catch (WriterTokenTimeout) {
+            self::assertSame([], $seen);
+        }
+        self::assertGreaterThanOrEqual(4.5, microtime(true) - $started);
+        self::assertSame(1, $this->db->fixtureState()['acquisitions']);
+        self::assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM _writer_token_probe WHERE id > 2')->fetchColumn());
+        $this->assertClosed();
+
+        file_put_contents($this->directory.'/release', '1');
+        self::assertSame(1, $this->processResult($holder)['value']);
+        self::assertSame($expected, $write($this->db));
+        self::assertSame([[false, 8]], $seen);
+        self::assertSame(1, (int) $this->admin->query('SELECT COUNT(*) FROM _writer_token_probe WHERE id > 2')->fetchColumn());
+        self::assertSame(2, $this->db->fixtureState()['acquisitions']);
+        $this->assertClosed();
+    }
+
+    public function test_probe_insert_inside_explicit_transaction_preserves_outer_rollback(): void
+    {
+        $this->db->beginTransaction();
+        self::assertSame(3, $this->db->table('_writer_token_probe')->insertGetId(['counter' => 8]));
+        self::assertSame(1, $this->db->fixtureState()['acquisitions']);
+        self::assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM _writer_token_probe WHERE id > 2')->fetchColumn());
+        $this->db->rollBack();
+        self::assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM _writer_token_probe WHERE id > 2')->fetchColumn());
+        $this->assertClosed();
+    }
+
+    public function test_rejected_autonomous_statement_rolls_back_before_reuse(): void
+    {
+        try {
+            $this->db->table('_writer_token_probe')->insertGetId(['counter' => -1]);
+            self::fail('An invalid counter must fail as a MySQL query error.');
+        } catch (QueryException $error) {
+            self::assertSame(1264, $error->errorInfo[1]);
+        }
+
+        self::assertSame(1, $this->db->fixtureState()['acquisitions']);
+        self::assertSame(2, (int) $this->admin->query('SELECT COUNT(*) FROM _writer_token_probe')->fetchColumn());
+        $this->assertClosed();
+        // A different physical PDO can acquire immediately after failed SQL.
+        self::assertSame(1, $this->processResult($this->worker('increment'))['value']);
+    }
+
+    public function test_autonomous_listener_failure_surfaces_after_one_durable_commit(): void
+    {
+        $calls = 0;
+        $this->db->getEventDispatcher()->listen(QueryExecuted::class, static function ($event) use (&$calls) {
+            if ($event->sql === FixtureWriterTokenConnection::PROBE_INSERT) {
+                $calls++;
+                throw new RuntimeException('Synthetic query observer failure.');
+            }
+        });
+
+        try {
+            $this->db->table('_writer_token_probe')->insertGetId(['counter' => 8]);
+            self::fail('The listener failure must be visible to the caller.');
+        } catch (RuntimeException $error) {
+            self::assertSame('Synthetic query observer failure.', $error->getMessage());
+        }
+        self::assertSame(1, $calls);
+        self::assertSame(1, (int) $this->admin->query('SELECT COUNT(*) FROM _writer_token_probe WHERE id > 2')->fetchColumn());
+        self::assertSame(8, $this->counter(3));
+        self::assertSame(1, $this->db->fixtureState()['acquisitions']);
+        $this->assertClosed();
     }
 
     public function test_manual_nested_savepoint_keeps_token_and_discards_inner_callbacks_until_outer_commit(): void

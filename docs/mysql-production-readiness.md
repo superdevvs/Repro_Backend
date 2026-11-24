@@ -503,9 +503,34 @@ A fixture-only integration exercised Laravel's actual transaction manager and
 the same native writer lock. The 40 combined native contract tests covered
 outer and nested transactions, deferred callbacks, pre-write retry, lock
 failures caught by a caller, and a lost commit acknowledgement. They verified
-that an uncertain commit cannot replay the callback. Cover autocommit writes,
-raw connections, queue and cache behavior before considering application
-registration.
+that an uncertain commit cannot replay the callback.
+
+The next native fixture run passed 45 tests and 705 assertions on MySQL
+8.4.13. Laravel's builder insert and a bound `affectingStatement` waited for
+the token while a plain read proceeded. Both timed out before writing with
+the token held and each committed once after release. The fixture verified
+the generated ID, outer rollback, token release after failed SQL and a query
+listener failure after commit. The log SHA-256 is
+`96bb99fe9252be422470264f5d7dea27b83bbc01e0dbca858f940aa80bc611cc`.
+Runtime registration, the wider autocommit paths, raw connections and cache
+remain open.
+
+The ordinary database queue writes new jobs on the business connection so a
+rolled-back transaction also rolls back its enqueue. Worker reservation,
+release and delete need a separately scoped exemption. In the disposable
+native fixture, two Laravel workers with jobs-only access reserved, released,
+reclaimed and deleted one synthetic job while a separate business transaction
+held the writer token. The workers and a separate reader could not see an
+uncommitted business enqueue. Rolling back removed that enqueue and the
+business update. The scoped account was refused business writes and access
+to the control table. The report SHA-256 is
+`7616c9f3d41726713b168f4d2e194b60d2fe9d43d3685f8370678d4dece6a7ba`.
+Application worker routing and concurrent reservations remain to verify.
+
+Listing Studio rejection counters use an independent session so they survive
+business rollback. The runtime writer policy must preserve this behavior.
+Having that second session wait for a token held by the business session
+would block its own caller.
 
 The refreshed read-only host inventory observed 12 queue workers. Three use
 Supervisor, one uses the media archives service, and eight appear under the
@@ -580,6 +605,21 @@ MySQL write, excluded an uncommitted write and processed the queue job once.
 Off-site refusal remained enforced. Both trials removed their containers and
 volumes. The timestamped receipt has SHA-256
 `cfe788228e8de3aac98adfa8255ec0b811a42f630c7e6ca8d40501c380f181c3`.
+
+A separate isolated FPM run at `42d4c678` closed ingress with a Laravel
+request already admitted. The later request received HTTP 503 without
+reaching FPM or writing to SQLite. The admitted request returned HTTP 200
+and committed one matching trace. An early seal was refused. After the
+response and database effect were verified, the test sent SIGQUIT to the
+owned FPM master and verified its exit and both worker exits before sealing
+SQLite. The hold-to-seal measurement was 208.098 ms. The receipt SHA-256 is
+`2adfb4cde33c94d5dcd05eca6f216f422417785e1f41d26a92de53ea86824e7b`.
+Stopping while a request was held failed with the default FPM timeout. A
+separate run with an explicit 16-second process-control timeout preserved the
+admitted response and trace and verified the same seal ordering. Its receipt
+SHA-256 is `fdc196456c7f9554d67230f974ad5e8d43399bd4e704309f66a9ac114b29ce2e`.
+This scope covers synthetic FPM ingress. The actual host needs a coordinated
+drain of its ingress, workers and scheduler.
 
 Full dress acceptance combines a fresh production-sized copy, all real writer
 drains, provider intake, representative traffic, protected off-site recovery,
