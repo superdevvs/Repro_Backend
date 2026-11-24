@@ -251,10 +251,21 @@ The backup and watchdog unit definitions passed Linux parser checks and
 fixed-argument alert tests. A separate transient timer in Maverick's user
 manager started its synthetic job. A failed watchdog fired the alert handler in
 order. All test units and scratch were removed. Activating the real backup
-units in the accepted environment, delivering alerts to monitoring and live
-retention remain operational acceptance gates. The retention verifier tested
-local evidence for exact prefix, duration, provider refusals and unchanged
-content.
+schedule against the approved destination, delivering alerts to external
+monitoring and proving live retention remain operational acceptance gates.
+The retention verifier tested local evidence for exact prefix, duration,
+provider refusals and unchanged content.
+
+An administrator-supervised Maverick rehearsal used the stock scheduled
+runner from `0dfa65dd`, a private dynamic account and loopback-only TLS S3.
+Three real systemd timer activations published a SQLite backup with verified
+read-back, reported a forced storage failure, and published a fresh backup
+after recovery. The failure preserved the last verified receipt and invoked
+the systemd `OnFailure` alert. A separate restore process used its own fixture
+credential. With the original SQLite file hidden, it independently read and
+verified the expected row in the decrypted backup. All ten temporary units,
+cgroups and private staging directories were removed. The report SHA-256 is
+`1c428eca504dec29b03bfc9391f830f488f0b2d658da6d6907de51054f93f919`.
 
 The closed-binlog stager accepted two CRC-checked files from actual MySQL
 8.4.13 rotations and proved the next filename. It refused the current active
@@ -659,6 +670,17 @@ largest was voice at 185.6 vs 294.1 ms over nine samples per engine. The
 small populations, short test phases and disabled OPcache limit the result.
 Use it to select routes for the representative performance run. The report
 SHA-256 is `8af507fa7c062c86981d70906c90c44416abc83ced504f8c71a74bff0d968b00`.
+
+A follow-up emphasized voice incoming offers and upload summaries. Across
+four counterbalanced synthetic arms, 800 requests and 20 access checks
+matched with zero errors, warnings or logical differences. Peak MySQL p95
+rose 15% and 26% for voice, and 6% and 16% for upload summaries. Laravel
+reported higher database time on MySQL for both routes in both peak rounds.
+At surge, slower service in each second arm occupied both request slots and
+accounted for the longer wait. Dispatch after a slot freed took under 1 ms.
+The cause of the slower service and representative host performance remain
+open. The verified timing report SHA-256 is
+`5aba1afe821239b2e895408b9f5b4a2eb0a2e4f4df3e19c124def6da229eeab2`.
 
 A separate synthetic CLI comparison at the same commit ran 8,000 measured
 operations and 960 jobs with 20 clients and two Laravel workers in each arm.
