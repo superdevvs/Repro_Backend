@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from dataclasses import asdict
@@ -49,8 +50,12 @@ ALERT_LIMITS_MS = dict.fromkeys((
 ), 5 * MINUTE) | {"server_silent": 10 * MINUTE}
 ALERT_MILESTONES = ("before_installer", "before_drill")
 OPERATIONS_REPORTS = ("backup_health", "offsite_retention", "external_alerts", "point_in_time_drills", "nightly_data_parity")
+PITR_DRILL_COUNT = 2
+PITR_REPLAY_PROOFS = ("offsite_only", "independent_restore", "chosen_transaction_verified")
+PITR_PROOFS = (*PITR_REPLAY_PROOFS, "contiguous_binlog_chain")
 NIGHTLY_RUN_COUNT = 5
 FROZEN_NIGHT_COUNT = 2
+NIGHTLY_COUNTERS = ("errors", "warnings", "notes", "unexpected_field_differences")
 NIGHTLY_PROOFS = (
     "fresh_snapshot_verified", "source_scope_verified", "source_integrity_scan_passed",
     "field_verifiers_agree", "row_counts_match",
@@ -322,6 +327,10 @@ def review_alerts(policy: dict, receipt: dict) -> None:
     report = operations_report(policy, receipt, "external_alerts", scope="monitor_profile_sha256")
     if sha_field(report, "phone_recipient_sha256") != policy["operations"]["phone_recipient_sha256"]:
         raise Failed("Alert delivery is for a different phone recipient")
+    review_alert_rounds(report)
+
+
+def review_alert_rounds(report: dict) -> None:
     rounds = {milestone: object_field(report, milestone) for milestone in ALERT_MILESTONES}
     if len({sha_field(round_report, "report_sha256") for round_report in rounds.values()}) != len(rounds):
         raise Failed("Alert milestones require distinct report digests")
@@ -342,15 +351,19 @@ def review_alerts(policy: dict, receipt: dict) -> None:
 
 def review_point_in_time_drills(policy: dict, receipt: dict) -> None:
     report = operations_report(policy, receipt, "point_in_time_drills", scope="destination_sha256")
-    drills = field(report, "drills")
+    review_point_in_time_runs(field(report, "drills"))
+
+
+def review_point_in_time_runs(drills: object) -> None:
     if not isinstance(drills, list) or any(not isinstance(drill, dict) for drill in drills):
         raise Failed("Point-in-time drills must be a list of reports")
-    if len(drills) < 2:
+    if len(drills) < PITR_DRILL_COUNT:
         raise Missing("Two point-in-time drills are required")
-    if len(drills) != 2 or len({sha_field(drill, "report_sha256") for drill in drills}) != 2:
+    if (len(drills) != PITR_DRILL_COUNT
+            or len({sha_field(drill, "report_sha256") for drill in drills}) != PITR_DRILL_COUNT):
         raise Failed("Expected exactly two distinct point-in-time drill reports")
     for drill in drills:
-        for proof in ("offsite_only", "independent_restore", "contiguous_binlog_chain", "chosen_transaction_verified"):
+        for proof in PITR_PROOFS:
             confirmed(drill, proof)
         cap(drill, "database_recovery_ms", 30 * MINUTE)
         if number(drill, "absolute_heartbeat_target_delta_ms") > MINUTE:
@@ -361,7 +374,10 @@ def review_point_in_time_drills(policy: dict, receipt: dict) -> None:
 
 def review_nightly_data_parity(policy: dict, receipt: dict) -> None:
     report = operations_report(policy, receipt, "nightly_data_parity", scope="nightly_scope_sha256")
-    nights = field(report, "nights")
+    review_nightly_runs(policy, field(report, "nights"))
+
+
+def review_nightly_runs(policy: dict, nights: object) -> None:
     if not isinstance(nights, list) or any(not isinstance(night, dict) for night in nights):
         raise Failed("Nightly evidence must be a list of reports")
     if len(nights) < NIGHTLY_RUN_COUNT:
@@ -382,7 +398,7 @@ def review_nightly_data_parity(policy: dict, receipt: dict) -> None:
         if index > NIGHTLY_RUN_COUNT - FROZEN_NIGHT_COUNT and tested_release != release:
             raise Failed("Both final nightly runs must use the frozen release")
         cap(night, "import_and_verify_ms", 12 * MINUTE)
-        for name in ("errors", "warnings", "notes", "unexpected_field_differences"):
+        for name in NIGHTLY_COUNTERS:
             zero(night, name)
         for proof in NIGHTLY_PROOFS:
             confirmed(night, proof)
@@ -440,7 +456,7 @@ def unique_keys(pairs: list[tuple[str, object]]) -> dict:
     return record
 
 
-def load(path: Path) -> dict:
+def load(path: Path, *, expected_sha256: str | None = None) -> dict:
     try:
         with path.open("rb") as stream:
             payload = stream.read(1024 * 1024 + 1)
@@ -452,6 +468,8 @@ def load(path: Path) -> dict:
         raise Missing("Evidence file is empty")
     if len(payload) > 1024 * 1024:
         raise Failed("Evidence file exceeds the receipt size limit")
+    if expected_sha256 is not None and hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise Failed("Evidence file differs from its reviewed SHA-256 digest")
     try:
         record = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_keys,
                             parse_constant=reject_constant, parse_float=reject_constant)

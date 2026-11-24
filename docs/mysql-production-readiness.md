@@ -556,6 +556,16 @@ was stubbed in the isolated fixture. The two report SHA-256 values are
 and `f0ab9ec918ba2f225deae68e48928207e40f9a3268f4742b45fd312c898c720a`.
 Runtime account routing and the other telemetry writes still need evidence.
 
+An isolated cache test at `30b3892c` used a separate table-scoped MySQL
+principal. Stock Laravel cache writes and scheduler locks progressed while a
+business transaction held the writer token. Studio's middleware released a
+contended job once and freed its own lock after a downstream failure. The
+committed cache entry survived business rollback. The fixture verified that
+the cache principal had no business or token access, and cleaned up both
+512 MiB containers and their temporary socket volume. The proof SHA-256 is
+`f7e792544f09fbdd99ae0cc0430301ff5470eb6361056d645e7a588c29715f5c`.
+Application routing and cache-before-business ordering remain to verify.
+
 The refreshed read-only host inventory observed 12 queue workers. Three use
 Supervisor, one uses the media archives service, and eight appear under the
 cron service. PHP-FPM and nginx are active. The final rehearsal must verify
@@ -613,6 +623,29 @@ same. The synthetic witness report has SHA-256
 `b82cea13b4fa9b79094de86936361bc2fc47f5fa5f8f44e0bbc92ae15e60ebc7`.
 Laravel's scheduler and all other writer sources still need to exercise the
 production adapter during the complete dress rehearsals.
+
+A native synthetic run at `30b3892c` added the stock Laravel scheduler command
+with one explicitly registered event to the actual cutover Runner. The hold
+denied later HTTP, queue and scheduler work while an admitted scheduler
+transaction was still open. The Runner refused to seal SQLite before it saw
+that process exit. The scheduled write committed once, appeared in the sealed
+snapshot and was visible in read-only MySQL. Abort reopened SQLite through the
+authority guard, and the restarted schedule and queued job each completed once.
+The hold-to-MySQL-read measurement was 673.063 ms. The report SHA-256 is
+`649c30536635bdba16219d0b1d9e266c628ad67a64af50e7e8bed12fdbcdb00e`.
+The fixture exercised synthetic Laravel and database processes. The physical
+host's systemd and production writer inventory still require an integrated run.
+
+A second synthetic run exercised the scheduled writer after MySQL opened.
+The hold refused later starts, waited for the admitted transaction to commit
+and exit, then disconnected a separate uncommitted writer before sealing.
+The SELECT-only reverse export matched all four fixture tables. Guarded
+SQLite reopening preserved one scheduled and one HTTP effect, refused a
+retry on the old MySQL route, and completed the queued effect once. The
+uncommitted row was absent. The Runner kept the off-site refusal and
+`recovery_required` state. SQLite HTTP reopened in 648 ms within the fixture.
+The report SHA-256 is
+`7bee4be318d74584be677c9f8e51db77fb6ff50fa06ab73b20b7c8571a7bdf11`.
 
 A separate disposable PHP process recovered and authenticated all eight
 synthetic acknowledged receipts from the second encrypted spool after the
@@ -861,6 +894,15 @@ passed empty-instance acceptance. The last attended check left its service
 and timer stopped and disabled. Reconfirm the installed bundle and saved
 identity before another attended trial.
 
+A read-only inventory on November 24 at 15:19 IST matched the live backend to
+`9ef19f68` and the frontend to `1e3e26d3`. The configured driver was SQLite.
+Maverick owned eight active queue workers and `www-data` owned four. The
+isolated MySQL service and its rotation timer remained disabled and inactive.
+The candidate's two off-site backup timers had no installed systemd units
+under their reviewed names. Read-only inspection also confirmed the public
+mount metadata for the configured originals disk. The native data path still
+requires administrator access for the complete storage separation check.
+
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,
 off-host backup destination/retention and an independent restore. Inventory all
@@ -891,6 +933,11 @@ exact frozen release. The checker also requires proof that the application
 enforces the first-release MySQL writer serialization policy. The offline
 backup-health adapter derives the seven-day elapsed metrics from independently
 reviewed observations, including unverified recovery points.
+Matching offline adapters derive the reviewed nightly, point-in-time and
+external alert receipts from SHA-256-pinned source evidence. Provider emails
+from the synthetic pilot were reported delivered. The operator observed the
+backup-failure notification, and handset receipt of the missed check-in
+remains unconfirmed.
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.

@@ -94,6 +94,104 @@ false and exits one. Invalid input exits one without a summary. The adapter
 checks the supplied evidence and its digest. Independent review establishes the
 raw monitor provenance. The adapter's tests use synthetic observations.
 
+## Assemble five nightly parity reports
+
+For each actual nightly run, retain the original evidence and have a reviewer
+record its results in a UTF-8 JSON object. Include `scheduled_day_utc`
+(`YYYY-MM-DD`), `release_sha`, `snapshot_sha256`, `nightly_scope_sha256`,
+and `import_and_verify_ms` (elapsed time from import start to the end of both
+independent verifications). Include each integer counter in `NIGHTLY_COUNTERS`
+and each boolean result in `NIGHTLY_PROOFS` from
+[`check.py`](check.py). Keep the snapshot creation evidence even when two
+fresh snapshots have identical contents.
+
+Review the exact bytes of those five JSON reports and a manifest with schema
+`repro.nightly-data-parity.manifest.v1`. Include `identity_sha256` for the
+cutover identity, `nightly_scope_sha256` for the reviewed data scope, and
+`nights`, a chronological list of entries containing `scheduled_day_utc` and
+the matching file's `report_sha256`. Pin the manifest's exact file digest as
+`operations.nightly_data_parity_report_sha256`.
+
+```sh
+python -B -m scripts.cutover.readiness.summarize_nightly_parity --policy review-policy.json --manifest reviewed-nights.json --nights night1.json night2.json night3.json night4.json night5.json
+```
+
+The adapter verifies both levels of file digests, checks scope and dates,
+and applies the nightly parity requirements. On success, put the emitted
+`nightly_data_parity` object in the readiness receipt. After review, pin its
+`summary_sha256` as `operations.nightly_data_parity_summary_sha256` and update
+the receipt's `policy_sha256`. Reviewers still establish the provenance of
+the underlying snapshots and verifications.
+
+## Assemble point-in-time recovery drills
+
+Retain each drill's tool output and a reviewed native replay report in a
+separate evidence directory.
+
+- `artifacts.json` is the database artifact recovery receipt from
+  `restore_backup.py`.
+- `chain.json` is the result of `verify_mysql_binlog_chain.py` for the selected
+  stopping point.
+- `heartbeat.json` is the result of `heartbeat.py verify` on the recovered
+  instance at that target.
+- `replay.json` records the independently observed native SQL replay. Set
+  `result` to `native-mysql-replay-verified` only after executing and verifying
+  the replay. Include `run_id`, `destination_sha256`, `source_uuid`,
+  `restored_uuid`, the exact UTC second `target_utc`, and `replayed_stop` as
+  the verified binlog file and position. Include each boolean in
+  `PITR_REPLAY_PROOFS` and `planted_bad_write_excluded`. Include
+  `recovery_started_monotonic_ns` from the start of off-site retrieval and
+  `recovery_verified_monotonic_ns` from completion of target verification,
+  taken on the same monotonic clock. Bind the exact bytes of the other three
+  files in `artifacts_sha256`, `chain_sha256`, and `heartbeat_sha256`.
+
+Create a reviewed JSON manifest with schema
+`repro.point-in-time-drills.manifest.v1`, `identity_sha256`,
+`destination_sha256`, and `replay_report_sha256s` containing the two replay
+file digests in directory order. Pin the manifest's exact digest under
+`operations.point_in_time_drills_report_sha256`.
+
+```sh
+python -B -m scripts.cutover.readiness.summarize_point_in_time --policy review-policy.json --manifest reviewed-drills.json --drills drill-a drill-b
+```
+
+The adapter matches source and recovery identities, binds the replay stop to
+the verified chain, and derives the recovery duration and heartbeat gap. The
+artifact download and chain verification cannot replace the replay report.
+Review the original execution records, including destination and recovery
+host isolation. Place the emitted `point_in_time_drills` object in the receipt,
+pin the reviewed `summary_sha256` as
+`operations.point_in_time_drills_summary_sha256`, and update `policy_sha256`.
+
+## Derive the external alert summary
+
+Keep the original induced-condition and handset observations. After reviewing
+them, record their SHA-256 digests in a JSON observation report with schema
+`repro.external-alerts.observations.v1`. Include `identity_sha256`,
+`monitor_profile_sha256`, and `phone_recipient_sha256` from the reviewed scope.
+Use digests in place of addresses, phone numbers, or credentials.
+
+The `rounds` record contains `before_installer` and `before_drill`. Each has
+the original round's `report_sha256` and a `cases` record containing all names
+in `ALERT_LIMITS_MS`. For each case record `triggered_at_unix_ms`,
+`condition_evidence_sha256`, `phone_observed_at_unix_ms`, and
+`delivery_receipt_sha256`. Use UTC epoch milliseconds. Record the original
+start of the induced condition, including when the server is made silent.
+Use null for the time and receipt of an unconfirmed handset delivery. A
+provider's delivery report alone leaves the handset observation pending.
+
+Pin the exact observation file as `external_alerts_report_sha256` in the
+reviewed policy. The command derives elapsed times, checks both rounds against
+the existing alert deadlines, and emits a receipt only with complete proof.
+
+```sh
+python -B -m scripts.cutover.readiness.summarize_external_alerts --policy review-policy.json --observations alert-observations.json
+```
+
+Pin the emitted `summary_sha256` as `external_alerts_summary_sha256` after
+review, add `external_alerts` to the readiness receipt, and update
+`policy_sha256`. Verify receipt provenance independently.
+
 ## Pass marks
 
 - Both rehearsals reach the reopen decision within **40 minutes**, restore
