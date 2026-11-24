@@ -24,3 +24,19 @@ The trial exercises these operations in order.
 The report records the exact source commit and harness hashes, freeze-to-target-smoke time, abort-to-SQLite-HTTP time and the acknowledged effects. The cleanup receipt records the source archive digest and confirms removal of owned resources.
 
 The scope covers a dedicated fixture HTTP route on PHP's CLI server and a one-shot database worker. The scheduler inventory is empty by construction. Actual application HTTP ingress, privileged and restart-safe writer admission, the systemd scheduler, provider replay, production-sized parity, comparable load and off-site restore require separate evidence. The fixture's local backup values remain false, and the adapter refuses to open MySQL for writes.
+
+## Post-write failback fixture
+
+Request a separate disposable run with fresh evidence.
+
+~~~powershell
+$params.Scenario = 'postwrite'
+$params.EvidenceDirectory = 'C:/rehearsal/postwrite-trial-01'
+./scripts/cutover/host/run-local.ps1 @params
+~~~
+
+The real runner still refuses preparation and promotion without off-site backup evidence. After that check, a separate fixture admission record allows the disposable MySQL stack to accept an HTTP receipt and a Laravel database queue job. It cannot publish cutover authority.
+
+The fixture closes HTTP and queue writes, disconnects the one identified MySQL session holding an uncommitted write, and verifies that the native MySQL read-only seal rejects subsequent writes. The runner records that separate recovery is required and declines the pre-write abort. The existing native reverse exporter uses a SELECT-only account to create a new SQLite file. The harness independently compares the fields to sealed MySQL and checks SQLite integrity and foreign keys.
+
+Laravel then opens the fresh SQLite file with the same test application key, reads the previously acknowledged MySQL receipt, drains the migrated job exactly once, and accepts a new fixture HTTP write. The trial verifies the old SQLite file stayed byte-identical, sealed MySQL did not change and the cutover journal still requires separate recovery. The report measures from closure of fixture admissions through the first verified SQLite HTTP read. It records synthetic IDs and evidence digests. Production ingress, real daemon/scheduler drains, post-write operator approval and full-size data remain outside this local fixture.

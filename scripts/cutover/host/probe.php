@@ -64,13 +64,15 @@ function runProbe(): array
     $application->useStoragePath('/private/storage');
     $application->make(Kernel::class)->bootstrap();
     $database = DB::connection();
+    $sqlite = (string) getenv('REPRO_DRESS_SQLITE_PATH');
     requireFixture($application->configurationIsCached()
         && $application->getCachedConfigPath() === '/private/active-config.php'
         && config('app.env') === 'testing' && config('queue.default') === 'database'
         && config('mail.default') === 'array' && config('cache.default') === 'array'
         && config('session.driver') === 'array' && $database->getDriverName() === $engine
         && ($engine === 'sqlite'
-            ? $database->getDatabaseName() === '/private/source.sqlite'
+            ? in_array($sqlite, ['/private/source.sqlite', '/private/failback/database.sqlite'], true)
+                && $database->getDatabaseName() === $sqlite
             : $database->getDatabaseName() === 'repro_dress_fixture'
                 && $database->getConfig('unix_socket') === '/fixture-socket/mysql.sock'));
 
@@ -94,9 +96,14 @@ function runProbe(): array
     $request = Request::create('/fixture/notification-state');
     $request->setUserResolver(static fn () => $actor);
     $service = $application->make(NotificationReadStateService::class);
+    $receipt = match (true) {
+        $engine === 'mysql' => 'synthetic-mysql-receipt',
+        $sqlite === '/private/failback/database.sqlite' => 'synthetic-sqlite-reopened',
+        default => 'synthetic-http-receipt',
+    };
     $state = $operation === 'read'
         ? $service->get($request)
-        : $service->merge($request, ['synthetic-http-receipt'], null);
+        : $service->merge($request, [$receipt], null);
 
     return ['engine' => $engine, 'receipts' => (array) $state['readIds'],
         'pending' => $database->table('jobs')->count(), 'key_fingerprint' => hash('sha256', config('app.key'))];

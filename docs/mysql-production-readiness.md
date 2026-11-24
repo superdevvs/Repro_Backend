@@ -251,19 +251,21 @@ The backup and watchdog unit definitions passed Linux parser checks and
 fixed-argument alert tests. A separate transient timer in Maverick's user
 manager started its synthetic job. A failed watchdog fired the alert handler in
 order. All test units and scratch were removed. Activating the real backup
-units in the accepted environment, delivering alerts to monitoring, automatic
-closed-binlog archival and live retention remain operational acceptance gates.
-The retention verifier tested local evidence for exact prefix, duration,
-provider refusals and unchanged content.
+units in the accepted environment, delivering alerts to monitoring and live
+retention remain operational acceptance gates. The retention verifier tested
+local evidence for exact prefix, duration, provider refusals and unchanged
+content.
 
 The closed-binlog stager accepted two CRC-checked files from actual MySQL
 8.4.13 rotations and proved the next filename. It refused the current active
-log. The checkpoint advances only when the next expected file and the
-verified publication match. The frozen-base reviewer verified both publication chains
-against independently pinned SQLite snapshot and MySQL coordinate evidence
-in a local fixture. It rejected preflight-only evidence and reused backup
-IDs. The production collector and off-site destination still need their
-timed operational acceptance.
+log. The collector and archive runner now connect the socket-only catalog,
+bounded staging, encrypted publication and read-back to the checkpoint.
+The checkpoint advances only when the next expected file and the verified
+publication match. Rotation cadence, backlog alerts and timed replay against
+the accepted destination still require operational proof. The frozen-base
+reviewer verified both publication chains against independently pinned SQLite
+snapshot and MySQL coordinate evidence in a local fixture. It rejected
+preflight-only evidence and reused backup IDs.
 
 The local cutover adapter froze a disposable SQLite Laravel state, copied
 four fixture tables into MySQL, verified read-only application access and
@@ -275,6 +277,19 @@ worker. The full timed host rehearsals still need the real ingress,
 scheduler, writer inventory and representative load together.
 The same test on `08a6e4d855ec29f52c9a24945be888cf41e8d94c` took 587 ms
 through the target smoke and 350 ms from abort to the recovered HTTP read.
+
+A subsequent post-write fixture held HTTP and queue writes, disconnected an
+identified MySQL session with an open transaction and proved native read-only
+enforcement. The real runner required separate recovery. The reverse exporter
+used a SELECT-only credential and created a fresh SQLite file. All fields in
+four synthetic tables matched the sealed MySQL state. Laravel reopened in
+537 ms from the fixture hold, kept the acknowledged MySQL receipt, ran the
+queued effect once and accepted a new SQLite HTTP write. The uncommitted row
+was absent, and the original SQLite file stayed byte-identical. The local
+report SHA-256 is
+`aac1b81b7bd30f3df0baefb49342815fa9eb6b406ec7ab53a41a3dd94cc8857e`.
+The timing covers the small fixture, including export and the first verified
+HTTP read. The production-sized service drains and recovery run are open.
 
 In a separate isolated webhook trial, the actual capture adapter returned
 HTTP 503 while its intake lock was held and while replica verification was

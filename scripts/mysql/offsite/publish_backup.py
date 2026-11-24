@@ -354,6 +354,7 @@ def main() -> int:
                 json.dump({"input_manifest_sha256": sha256(raw), "backup_id": manifest["backup_id"]}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
+            sync_directory(args.workdir)
             with tempfile.TemporaryDirectory(prefix="publish-", dir=args.workdir) as temporary:
                 scratch = Path(temporary)
                 snapshot = scratch / "rclone.conf"
@@ -367,6 +368,7 @@ def main() -> int:
                 stream.write(encode(report).decode("utf-8"))
                 stream.flush()
                 os.fsync(stream.fileno())
+            sync_directory(args.workdir)
             print(json.dumps(report, sort_keys=True))
         return 0
     except Refusal as error:

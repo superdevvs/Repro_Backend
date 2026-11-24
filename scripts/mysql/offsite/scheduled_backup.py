@@ -157,10 +157,10 @@ def check(plan: dict, plan_sha: str, *, now: dt.datetime) -> dict:
     return evaluate(plan, record["verified"], now)
 
 
-def child(argv: list, env: dict, deadline: float) -> None:
+def child(argv: list, env: dict, deadline: float, *, stdout=subprocess.DEVNULL) -> None:
     remaining = deadline - time.monotonic()
     backup.need(remaining > 0, "scheduled backup deadline expired")
-    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout,
                           stderr=subprocess.DEVNULL, env=env, start_new_session=True) as process:
         try:
             code = process.wait(timeout=remaining)

@@ -24,6 +24,7 @@ from scripts.cutover.runner import Evidence, Identity, Journal, Observation, Run
 PRIVATE = Path("/private")
 SOURCE = PRIVATE / "source.sqlite"
 SNAPSHOT = PRIVATE / "snapshot.sqlite"
+FAILBACK = PRIVATE / "failback" / "database.sqlite"
 CONFIG = PRIVATE / "active-config.php"
 STORAGE = PRIVATE / "storage"
 SOCKET = "/fixture-socket/mysql.sock"
@@ -79,12 +80,15 @@ class ContainerRehearsal:
     def __init__(self, pymysql, release, artifact):
         require(os.getuid() == 1000 and Path("/workspace").is_dir() and Path("/host").is_dir(),
                 "The disposable fixture entrypoint is required")
-        require(stat.S_ISSOCK(os.stat(SOCKET).st_mode), "The private fixture socket is unavailable")
+        socket_mount = Path(SOCKET).parent
+        require(stat.S_ISSOCK(os.stat(SOCKET).st_mode) and os.statvfs(socket_mount).f_flag & os.ST_RDONLY,
+                "The private fixture socket and read-only socket mount are required")
         require(len(Path("/proc/net/route").read_text().splitlines()) <= 1, "The fixture requires no default routes")
         require(not SOURCE.exists() and not CONFIG.exists() and not Path("/workspace/.env").exists(),
                 "A fresh fixture and clean application tree are required")
         self.pymysql = pymysql
         self.server = None
+        self.sqlite_path = SOURCE
         self.mysql_password = secrets.token_hex(32)
         self.app_key = "base64:" + base64.b64encode(secrets.token_bytes(32)).decode()
         try:
@@ -150,10 +154,10 @@ class ContainerRehearsal:
             "APP_URL": "http://127.0.0.1:8764", "APP_CONFIG_CACHE": str(CONFIG),
             "APP_STORAGE_PATH": str(STORAGE), "CACHE_STORE": "array", "SESSION_DRIVER": "array",
             "LOG_CHANNEL": "stderr", "MAIL_MAILER": "array", "QUEUE_CONNECTION": "database",
-            "DB_CONNECTION": engine, "DB_DATABASE": str(SOURCE) if engine == "sqlite" else DATABASE,
+            "DB_CONNECTION": engine, "DB_DATABASE": str(self.sqlite_path) if engine == "sqlite" else DATABASE,
             "DB_HOST": "localhost", "DB_SOCKET": SOCKET, "DB_USERNAME": "dresser",
             "DB_PASSWORD": self.mysql_password, "DB_FOREIGN_KEYS": "true", "FILESYSTEM_DISK": "local",
-            "REPRO_DRESS_ENGINE": engine,
+            "REPRO_DRESS_ENGINE": engine, "REPRO_DRESS_SQLITE_PATH": str(self.sqlite_path),
         }
 
     def php(self, engine, *args):
@@ -205,7 +209,7 @@ class ContainerRehearsal:
             return result
 
     def queue(self, operation):
-        return json.loads(self.php("sqlite", "/host/probe.php", operation))
+        return json.loads(self.php(self.gate()["engine"], "/host/probe.php", operation))
 
     def identity(self):
         return self._identity
@@ -375,14 +379,15 @@ class ContainerRehearsal:
             require(self.observe().sqlite_live() and self.http() == self.baseline, "SQLite failed to reopen")
 
 
-def exercise(adapter):
+def prepare_fixture(adapter, *, queue_before_freeze):
     runner = Runner(adapter.journal, adapter.identity(), adapter)
     initial = runner.initialize()
     require(initial["phase"] == "planned", "Runner did not start planned")
     require(set(adapter.http("POST")["receipts"]) == {"synthetic-http-receipt"}, "Synthetic write not acknowledged")
-    require(adapter.queue("enqueue") == {"queued": 1}, "Synthetic queue payload was not stored")
+    if queue_before_freeze:
+        require(adapter.queue("enqueue") == {"queued": 1}, "Synthetic queue payload was not stored")
     adapter.baseline = adapter.http()
-    require(adapter.baseline["pending"] == 1, "Synthetic queue payload was not read")
+    require(adapter.baseline["pending"] == int(queue_before_freeze), "Unexpected fixture queue baseline")
     runner.perform("freeze", runner.approval_request("freeze"))
     try:
         runner.perform("prepare")
@@ -403,6 +408,11 @@ def exercise(adapter):
     else:
         raise UnsafeCutover("Promotion proceeded with unresolved local backup evidence")
 
+    return runner
+
+
+def exercise(adapter):
+    runner = prepare_fixture(adapter, queue_before_freeze=True)
     before_abort = time.monotonic()
     runner.perform("abort")
     adapter.reopen()
@@ -424,14 +434,18 @@ def exercise(adapter):
     }
 
 
-def main():
+def load_pymysql():
     wheel = Path("/offline-pymysql.whl")
     require(file_digest(wheel) == "e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9",
             "The pinned offline wheel changed")
     sys.path.insert(0, str(wheel))
     import pymysql
 
-    adapter = ContainerRehearsal(pymysql, *sys.argv[1:])
+    return pymysql
+
+
+def main():
+    adapter = ContainerRehearsal(load_pymysql(), *sys.argv[1:])
     try:
         print(json.dumps(exercise(adapter), sort_keys=True))
     finally:

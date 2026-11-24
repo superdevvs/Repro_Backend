@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$LockedVendorArchive,
     [Parameter(Mandatory = $true)][string]$PinnedPyMySqlWheel,
-    [Parameter(Mandatory = $true)][string]$EvidenceDirectory
+    [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+    [ValidateSet('prewrite', 'postwrite')][string]$Scenario = 'prewrite'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +56,12 @@ tar --no-same-owner -xzf /vendor.tar.gz
 test ! -e .env && test ! -e .env.production && test ! -e .env.testing && test ! -e bootstrap/cache/config.php
 python3 -c 'import json; lock=json.load(open("composer.lock")); installed=json.load(open("vendor/composer/installed.json")); entries=lambda packages:{p["name"]:(p["version"],p.get("source",{}).get("reference")) for p in packages}; assert entries(installed["packages"])==entries(lock["packages"]+lock["packages-dev"])'
 php -l /host/probe.php >/dev/null
-timeout -k 6 120 python3 -I -B -c 'import runpy,sys; sys.path.insert(0,"/workspace"); runpy.run_path("/host/rehearse.py",run_name="__main__")' "$1" "$2"
+case "$3" in
+    prewrite) entrypoint=/host/rehearse.py ;;
+    postwrite) entrypoint=/host/postwrite.py ;;
+    *) exit 3 ;;
+esac
+timeout -k 6 120 python3 -I -B -c 'import runpy,sys;sys.path[:0]=["/workspace","/host"];runpy.run_path(sys.argv.pop(1),run_name="__main__")' "$entrypoint" "$1" "$2"
 '@
 $dbCommand = $dbCommand.Replace([string][char]13, '')
 $appCommand = $appCommand.Replace([string][char]13, '')
@@ -72,7 +78,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $ready) { throw 'Owned fixture MySQL did not become ready' }
-    docker run --rm --pull never --name $app --label $label --network none --read-only --cap-drop ALL --security-opt no-new-privileges --cpus 1 --memory 768m --pids-limit 64 --user '1000:1000' --tmpfs '/workspace:rw,exec,size=384m,uid=1000,gid=1000,mode=0700' --tmpfs '/private:rw,noexec,size=40m,uid=1000,gid=1000,mode=0700' --tmpfs '/tmp:rw,noexec,size=32m,mode=1777' --mount "$socket,readonly" --mount "type=bind,source=$PSScriptRoot,target=/host,readonly" --mount "type=bind,source=$archive,target=/release.tar,readonly" --mount "type=bind,source=$vendor,target=/vendor.tar.gz,readonly" --mount "type=bind,source=$wheel,target=/offline-pymysql.whl,readonly" --workdir /workspace --entrypoint /bin/sh $appImage -c $appCommand fixture $release $artifact | Tee-Object -FilePath (Join-Path $evidence 'report.json')
+    docker run --rm --pull never --name $app --label $label --network none --read-only --cap-drop ALL --security-opt no-new-privileges --cpus 1 --memory 768m --pids-limit 64 --user '1000:1000' --tmpfs '/workspace:rw,exec,size=384m,uid=1000,gid=1000,mode=0700' --tmpfs '/private:rw,noexec,size=40m,uid=1000,gid=1000,mode=0700' --tmpfs '/tmp:rw,noexec,size=32m,mode=1777' --mount "$socket,readonly" --mount "type=bind,source=$PSScriptRoot,target=/host,readonly" --mount "type=bind,source=$archive,target=/release.tar,readonly" --mount "type=bind,source=$vendor,target=/vendor.tar.gz,readonly" --mount "type=bind,source=$wheel,target=/offline-pymysql.whl,readonly" --workdir /workspace --entrypoint /bin/sh $appImage -c $appCommand fixture $release $artifact $Scenario | Tee-Object -FilePath (Join-Path $evidence 'report.json')
     $result = $LASTEXITCODE
 } finally {
     foreach ($container in @($app, $db)) {

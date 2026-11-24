@@ -355,9 +355,89 @@ publication receipt pin. It rejects discontinuities and accepts an exact
 retry of the latest successful advancement. See the command's `--help`
 for input paths and identity flags.
 
-The stager checks checksums and terminal rotations, including in the last
-file. Collection, rotation, invocation and lag monitoring belong to the
-scheduler that invokes these tools.
+The stager checks checksums and terminal rotations, including in the last file.
+
+### Collect and publish closed logs on a schedule
+
+`archive_binlogs.py` runs one bounded batch. Install it with
+`collect_closed_binlogs.py`, the staging and checkpoint tools, and their
+reviewed dependencies in the protected tools directory. Initialize the
+private checkpoint from the verified base snapshot's producer receipt before
+the first run. Keep that base snapshot, its receipt and its hash independently
+recoverable. The backup account needs a socket-only MySQL credential with
+`REPLICATION CLIENT` and OS read access to the exact binary-log directory and
+files. Verify these permissions against newly rotated files. Keep database
+table and filesystem write permissions out of this account.
+
+Save this example as a root-owned `0640` collector plan. Replace example
+identity, release, server paths, version and receipt hash with reviewed values.
+
+```json
+{
+  "version": 1,
+  "release": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "identity": "11111111-2222-4333-8444-555555555555",
+  "database": "repro_dashboard",
+  "server_id": 5384,
+  "server_version": "8.4.13",
+  "crypt_remote": "repro_encrypted",
+  "checkpoint_dir": "/var/lib/repro-backup/closed-log-checkpoint",
+  "base_receipt": "/var/lib/repro-backup/evidence/base/database-backup.json",
+  "base_receipt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "spool_dir": "/var/lib/repro-backup/closed-log-spool",
+  "mysql": "/usr/bin/mysql",
+  "defaults_file": "/var/lib/repro-backup/credentials/archive-mysql.cnf",
+  "socket": "/run/repro-mysql84/mysql.sock",
+  "binlog_base": "/var/lib/repro-mysql84/binlog",
+  "mysql_owner_uid": 999,
+  "max_files": 4,
+  "max_batch_bytes": 1073741824,
+  "query_timeout_seconds": 15
+}
+```
+
+Create separate account-owned `0700` directories for the checkpoint, staging
+spool and publisher state. The orchestration plan is also root-owned `0640`.
+Review the destination and exactly pin both plan files before invocation.
+
+```json
+{
+  "version": 1,
+  "collector_plan": "/etc/repro-backup/closed-log-collector.json",
+  "collector_plan_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "publish_state_dir": "/var/lib/repro-backup/closed-log-publication",
+  "rclone_config": "/var/lib/repro-backup/credentials/archive-rclone.conf",
+  "rclone": "/usr/bin/rclone",
+  "destination": "storage:APPROVED_BUCKET/APPROVED_BINLOG_PREFIX",
+  "run_timeout_seconds": 240,
+  "transfer_timeout_seconds": 180
+}
+```
+
+```sh
+/usr/bin/python3 -I -B /opt/repro-backup-tools/archive_binlogs.py \
+  --plan /etc/repro-backup/closed-log-archive.json \
+  --plan-sha256 REVIEWED_ARCHIVE_PLAN_SHA256
+```
+
+The collector compares the expected socket, server and catalog, then copies
+only the closed files that start at the checkpoint. The publisher verifies
+remote bytes before the checkpoint can move. On failure the previous anchor
+stays available for retry. A retry collects a new batch with a fresh UUID. If
+the process stopped after read-back but before advancing, this can safely
+republish the same closed files under a fresh UUID. Keep the protected journal
+of publication receipts. Inspect abandoned scratch only after confirming the
+job has stopped. The coordinator never rotates or purges MySQL files.
+
+`observed_active_file` identifies the active file at collection time. If
+`caught_up_to_observed_active_file` is false, closed files remain to archive.
+An idle run means the checkpoint was at the observed active file. Measure
+the time from a synthetic committed marker through approved rotation, archive,
+independent restore and verification. That interval, along with tests of
+failures and missed runs, is needed to establish the recovery point and alert
+thresholds. Size the local binlog retention window to survive a destination
+outage and backlog. Use a single scheduler owner and arrange catch-up runs for
+backlog, with an independent timely-rotation policy and external monitoring.
 
 ### Check rotated MySQL logs before replay
 
