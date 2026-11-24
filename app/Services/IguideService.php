@@ -15,6 +15,7 @@ class IguideService
     public const FAILURE_NONE = null;
     public const FAILURE_WEBHOOK_ONLY = 'webhook_only';
     public const FAILURE_NOT_FOUND = 'not_found';
+    public const FAILURE_AMBIGUOUS_ADDRESS = 'ambiguous_address';
     public const FAILURE_AUTH = 'auth';
     public const FAILURE_OTHER = 'other';
 
@@ -91,7 +92,7 @@ class IguideService
         if (!$iguideData && $this->hasPortalCredentials()) {
             $links = is_array($shoot->tour_links) ? $shoot->tour_links : [];
             $seenAliases = [];
-            foreach ([$shoot->iguide_tour_url, $links['iguide_branded'] ?? null, $links['iguide_mls'] ?? null] as $url) {
+            foreach ([$shoot->iguide_tour_url, $links['iguide_branded'] ?? null, $links['iguide_mls'] ?? null, $links['iGuide'] ?? null] as $url) {
                 $alias = $this->tourAlias($url);
                 if ($alias !== null && !isset($seenAliases[$alias])) {
                     $seenAliases[$alias] = true;
@@ -514,6 +515,7 @@ class IguideService
         // rather than materialising the whole table.
         $best = null;
         $bestRank = -1;
+        $candidateUnit = null;
 
         foreach ($query->orderByDesc('id')->cursor() as $shoot) {
             $shootAddress = $this->buildFullAddress($shoot);
@@ -525,7 +527,13 @@ class IguideService
                 continue;
             }
 
+            $shootUnit = $this->parseAddressComponents($shootAddress)['unit'];
+            if ($components['unit'] === '' && $shootUnit !== '') {
+                if ($candidateUnit !== null && $candidateUnit !== $shootUnit) return null;
+                $candidateUnit = $shootUnit;
+            }
             $rank = $this->addressMatchRank($shoot);
+            if ($components['unit'] !== '' && $components['unit'] === $shootUnit) $rank += 3;
 
             // Strictly greater keeps the newest among equals, because the
             // cursor already walks newest first.
@@ -535,7 +543,7 @@ class IguideService
             }
 
             // Live booking that owns floor-plan work: nothing can beat it.
-            if ($bestRank === 2) {
+            if ($bestRank === 5) {
                 break;
             }
         }
@@ -652,18 +660,35 @@ class IguideService
 
         // Street spelling and city capitalization vary; the provider's exact
         // text filters would miss them. Check both locally, and bound requests.
+        $matches = [];
         for ($page = 0; $page < 5; $page++) {
             $response = $this->portalRequest('get', '/iguides', $query + ['page.offset' => $page * 100]);
             if ($this->isSignedAppForbidden($response)) {
                 $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
                 return null;
             }
-            $match = $this->findAddressMatchInPayload($response, $address);
-            if ($match) {
-                return $match;
+            if (!$response?->successful()) {
+                if ($response) Log::warning('iGUIDE Portal address lookup failed', ['status' => $response->status()]);
+                return null;
             }
-            if (!$response?->successful() || count($this->extractRecords($response->json())) < 100) {
-                break;
+            $records = $this->extractRecords($response->json());
+            foreach ($records as $record) {
+                foreach ($this->extractCandidateAddresses($record) as $candidate) {
+                    if (!$this->addressesMatch($candidate, $address)) continue;
+                    if ($components['unit'] !== '' && $this->parseAddressComponents($candidate)['unit'] !== $components['unit']) continue;
+                    $id = $this->extractPropertyId($record);
+                    if (!$id) continue;
+                    if ($components['unit'] !== '') return $this->hydratePortalProperty($record);
+                    $matches[$id] = $record;
+                    if (count($matches) > 1) {
+                        $this->lastFailureReason = self::FAILURE_AMBIGUOUS_ADDRESS;
+                        return null;
+                    }
+                    break;
+                }
+            }
+            if (count($records) < 100) {
+                return $matches ? $this->hydratePortalProperty(reset($matches)) : null;
             }
         }
 
@@ -717,28 +742,14 @@ class IguideService
         return preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/D', $path) ? $path : null;
     }
 
-    private function findAddressMatchInPayload(?Response $response, string $targetAddress): ?array
+    public function hasNewTourLink(array $before, array $after): bool
     {
-        if (!$response?->successful()) {
-            if ($response) {
-                Log::warning('iGUIDE Portal lookup request failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-            }
+        $aliases = fn (array $links) => array_filter(array_map(
+            fn ($key) => $this->tourAlias($links[$key] ?? null),
+            ['iguide_branded', 'iguide_mls', 'iGuide']
+        ));
 
-            return null;
-        }
-
-        foreach ($this->extractRecords($response->json()) as $record) {
-            foreach ($this->extractCandidateAddresses($record) as $candidate) {
-                if ($this->addressesMatch($candidate, $targetAddress)) {
-                    return $this->hydratePortalProperty($record);
-                }
-            }
-        }
-
-        return null;
+        return array_diff($aliases($after), $aliases($before)) !== [];
     }
 
     private function extractRecords(mixed $payload): array
@@ -911,6 +922,11 @@ class IguideService
         $properties = $data['properties'] ?? $data['data'] ?? ($data ? [$data] : []);
 
         if (empty($properties)) {
+            return null;
+        }
+
+        if (count($properties) > 1) {
+            $this->lastFailureReason = self::FAILURE_AMBIGUOUS_ADDRESS;
             return null;
         }
 
@@ -1664,6 +1680,7 @@ class IguideService
         // Collapse ZIP+4 to the 5-digit base before punctuation is stripped,
         // otherwise the +4 survives as a separate token.
         $address = preg_replace('/\b(\d{5})-\d{4}\b/', '$1', $address) ?? $address;
+        $address = preg_replace('/#\s*(?=[A-Z0-9])/', ' UNIT ', $address) ?? $address;
 
         $address = preg_replace('/[^A-Z0-9]+/', ' ', $address) ?? '';
         $address = preg_replace('/\s+/', ' ', $address) ?? '';
@@ -1747,9 +1764,9 @@ class IguideService
 
         // Explicit unit marker, e.g. "UNIT 4B".
         $unit = '';
-        if (preg_match('/\bUNIT\s+([A-Z0-9]+)\b/', $normalizedStreetLine, $m)) {
-            $unit = $m[1];
-            $normalizedStreetLine = trim(preg_replace('/\bUNIT\s+' . preg_quote($unit, '/') . '\b/', ' ', $normalizedStreetLine) ?? $normalizedStreetLine);
+        if (preg_match('/\b(?:UNIT\s+)+([A-Z0-9]+)\b/', $normalizedStreetLine, $m, PREG_OFFSET_CAPTURE)) {
+            $unit = $m[1][0];
+            $normalizedStreetLine = substr_replace($normalizedStreetLine, ' ', $m[0][1], strlen($m[0][0]));
             $normalizedStreetLine = trim(preg_replace('/\s+/', ' ', $normalizedStreetLine) ?? $normalizedStreetLine);
         }
 

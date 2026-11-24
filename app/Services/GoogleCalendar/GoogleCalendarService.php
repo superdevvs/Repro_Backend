@@ -105,6 +105,16 @@ class GoogleCalendarService
         $response = $this->calendarRequest($connection)
             ->post($this->eventsUrl($connection->calendar_id), $payload);
 
+        if ($response->status() === 409 && isset($payload['id'], $payload['extendedProperties']['private']['repro_crm_event_id'])) {
+            // A previous attempt may have reached Google before its response reached us.
+            $existing = $this->getEvent($connection, $payload['id']);
+            if (data_get($existing, 'extendedProperties.private.repro_crm_event_id') === $payload['extendedProperties']['private']['repro_crm_event_id']) {
+                unset($payload['id']);
+
+                return $this->updateEvent($connection, $existing['id'], $payload);
+            }
+        }
+
         return $this->parseCalendarResponse($response);
     }
 
@@ -118,6 +128,28 @@ class GoogleCalendarService
         }
 
         return $this->parseCalendarResponse($response);
+    }
+
+    /** A follow-up deleted remotely stays unlinked until explicitly scheduled again. */
+    public function updateLinkedEvent(GoogleCalendarConnection $connection, string $calendarId, string $eventId, array $payload): ?array
+    {
+        $response = $this->calendarRequest($connection)->patch($this->eventsUrl($calendarId).'/'.urlencode($eventId), $payload);
+
+        return in_array($response->status(), [404, 410], true) ? null : $this->parseCalendarResponse($response);
+    }
+
+    /** One event, or null when it was deleted in Google Calendar. Used by the Sales CRM time sync. */
+    public function getEvent(GoogleCalendarConnection $connection, string $eventId, ?string $calendarId = null): ?array
+    {
+        $response = $this->calendarRequest($connection)
+            ->get($this->eventsUrl($calendarId ?? $connection->calendar_id) . '/' . urlencode($eventId));
+
+        if (in_array($response->status(), [404, 410], true)) {
+            return null;
+        }
+        $event = $this->parseCalendarResponse($response);
+
+        return ($event['status'] ?? null) === 'cancelled' ? null : $event;
     }
 
     public function deleteEvent(GoogleCalendarConnection $connection, string $calendarId, string $eventId): void

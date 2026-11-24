@@ -30,13 +30,16 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
     /** Release the uniqueness lock even if the worker dies mid-job. */
     public int $uniqueFor = 600;
 
-    public function __construct(public int $shootId)
+    public ?int $shootServiceId = null;
+
+    public function __construct(public int $shootId, ?int $shootServiceId = null)
     {
+        $this->shootServiceId = $shootServiceId;
     }
 
     public function uniqueId(): string
     {
-        return (string) $this->shootId;
+        return $this->shootServiceId ? "{$this->shootId}:{$this->shootServiceId}" : (string) $this->shootId;
     }
 
     /**
@@ -53,13 +56,20 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
     public function handle(IguideService $iguideService): void
     {
         $shoot = Shoot::with('services.category')->find($this->shootId);
-        if (!$shoot || $shoot->isInternalTestShoot() || $shoot->units()->exists()) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
+            return;
+        }
+        if ($this->shootServiceId) {
+            $line = $shoot->serviceItems()->with('service', 'unit')->find($this->shootServiceId);
+            if (!$line?->unit || !app(\App\Services\Shoots\IguideServiceOwnership::class)->isProviderLine($shoot, $line)) return;
+            $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->project($shoot, $line->unit, $line);
+        } elseif ($shoot->units()->exists()) {
             return;
         }
 
         // Only auto-sync iGUIDE when the shoot booked a floorplan / iGuide
         // service. Otherwise this is just unnecessary external traffic.
-        if (!$shoot->hasIguideEligibleService()) {
+        if (!$this->shootServiceId && !$shoot->hasIguideEligibleService()) {
             Log::info('Auto iGUIDE sync skipped (no floorplan/iGuide service booked)', [
                 'shoot_id' => $shoot->id,
             ]);
@@ -78,7 +88,7 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
 
             $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
             if (!empty($floorplans)) {
-                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans);
+                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $this->shootServiceId);
             }
 
             Log::info('Auto iGUIDE sync completed', [

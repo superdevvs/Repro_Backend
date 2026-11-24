@@ -8,6 +8,7 @@ use App\Models\ContactSubmission;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
 use App\Services\MailService;
+use App\Services\Crm\CrmWebsiteIntakeReceipt;
 use App\Services\Messaging\MessagingService;
 use App\Services\SystemEmails\DirectEmailTemplates;
 use App\Support\LockedWrite;
@@ -25,13 +26,14 @@ class WebsiteEmailController extends Controller
             'type' => ['required', 'in:contact,booking'],
             'reference' => ['required', 'uuid'],
             'shoot_id' => ['required_if:type,booking', 'integer', 'min:1'],
-            'contact' => ['required_if:type,contact', 'array:first_name,last_name,email,phone,message,sms_consent,created_at'],
+            'contact' => ['required_if:type,contact', 'array:first_name,last_name,email,phone,message,sms_consent,marketing_email_consent,created_at'],
             'contact.first_name' => ['required_if:type,contact', 'string', 'max:100'],
             'contact.last_name' => ['required_if:type,contact', 'string', 'max:100'],
             'contact.email' => ['required_if:type,contact', 'email', 'max:254'],
             'contact.phone' => ['required_if:type,contact', 'string', 'max:40'],
             'contact.message' => ['required_if:type,contact', 'string', 'max:5000'],
             'contact.sms_consent' => ['required_if:type,contact', 'boolean'],
+            'contact.marketing_email_consent' => ['sometimes', 'boolean'],
             'contact.created_at' => ['required_if:type,contact', 'date'],
         ]);
 
@@ -56,6 +58,16 @@ class WebsiteEmailController extends Controller
         if (! hash_equals($row->payload_hash, $hash)) {
             return response()->json(['ok' => false, 'outcome' => 'failed', 'error' => 'reference_conflict'], 409);
         }
+        if ($data['type'] === 'contact') {
+            try {
+                $intake = app(CrmWebsiteIntakeReceipt::class);
+                $intake->register('inquiry', $key['reference'], $data['contact']);
+                $intake->process('inquiry', $key['reference']);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         if (in_array($row->status, ['sending', 'uncertain', 'delivered'], true)) {
             return $this->result($row->status === 'delivered' ? 'delivered' : 'uncertain', $row->message_id, true);
         }

@@ -209,11 +209,17 @@ class ExternalBookingController extends Controller
                     'is_guest_booking' => !$createAccount,
                 ];
                 $submission->complete($validated, $this->bookingResponseData($result));
+                app(\App\Services\Crm\CrmWebsiteIntakeReceipt::class)->register(
+                    'booking', $validated['external_reference'] ?? 'shoot-'.$shoot->id,
+                    ['shoot_id' => $shoot->id, 'notes' => $validated['notes'] ?? null],
+                );
 
                 return $result;
             }), 'external-booking-submit');
 
             if (isset($result['replayed_response'])) {
+                $shootId = $result['replayed_response']['shoot_id'];
+                app(\App\Services\Crm\CrmWebsiteIntakeReceipt::class)->process('booking', $validated['external_reference'] ?? 'shoot-'.$shootId);
                 return response()->json([
                     'message' => 'Shoot request submitted successfully. It will be reviewed by our team.',
                     'data' => $result['replayed_response'],
@@ -228,6 +234,8 @@ class ExternalBookingController extends Controller
             }
 
             ProcessExternalShootRequestedJob::dispatch($shoot->id)->afterCommit();
+
+            app(\App\Services\Crm\CrmWebsiteIntakeReceipt::class)->process('booking', $validated['external_reference'] ?? 'shoot-'.$shoot->id);
 
             // Raise the review notification AFTER the transaction commits. A notification
             // failure must never roll back the booking, so it is wrapped in try/catch (2.19).

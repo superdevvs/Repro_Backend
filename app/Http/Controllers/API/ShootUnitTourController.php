@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Jobs\IngestCubiCasaAssetsJob;
 use App\Jobs\IngestIguideAssetsJob;
+use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use App\Models\ShootUnit;
 use App\Services\CubiCasaService;
@@ -67,7 +68,7 @@ class ShootUnitTourController extends Controller
             abort_unless(app(ShootRealtorOptionsService::class)->canAssignRealtor($request->user(), isset($data['tour_links']['realtor_client_id']) ? (int) $data['tour_links']['realtor_client_id'] : null), 403, 'Choose yourself or a linked account as the realtor.');
         }
         $line = $request->hasAny(['iguide_property_id', 'iguide_work_order_id']) ? $this->scope->resolveLine($unit, $request->input('shoot_service_id'), 'iguide') : null;
-        LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $unit, $data, $line) {
+        $syncLine = LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $unit, $data, $line, $isOperator) {
             app(\App\Services\Shoots\ActiveVideoLinkOutput::class)->ensureBaseline($shoot);
             $unit->refresh();
             $incomingLinks = Arr::except($data['tour_links'] ?? [], PublicTourVisibility::KEYS);
@@ -75,6 +76,7 @@ class ShootUnitTourController extends Controller
                 if (! array_key_exists($key, $unit->tour_links ?? []) && array_key_exists($key, $incomingLinks) && $incomingLinks[$key] === ($shoot->tour_links[$key] ?? null)) unset($incomingLinks[$key]);
             }
             $links = array_replace($unit->tour_links ?? [], $incomingLinks);
+            $linkSaved = $isOperator && app(IguideService::class)->hasNewTourLink($unit->tour_links ?? [], $links);
             if (! empty($data['reset_building_defaults'])) {
                 $links = Arr::except($links, ShootUnitTourScope::INHERITED_SETTINGS);
             }
@@ -92,7 +94,21 @@ class ShootUnitTourController extends Controller
             $unit->save();
             app(\App\Services\Shoots\ActiveVideoLinkOutput::class)->recordChangedLinks($shoot->fresh());
             if ($dimensionsChanged) Shoot::whereKey($shoot->id)->increment('units_revision');
+            if (!$linkSaved || $shoot->isInternalTestShoot()) return null;
+            $candidates = $unit->serviceItems()->with('service', 'unit')->get()
+                ->filter(fn ($item) => app(\App\Services\Shoots\IguideServiceOwnership::class)->isProviderLine($shoot, $item));
+            $target = !empty($data['shoot_service_id'])
+                ? $candidates->firstWhere('id', (int) $data['shoot_service_id'])
+                : ($candidates->count() === 1 ? $candidates->first() : null);
+            return $target?->id;
         }), 'shoot-unit.tour-update');
+        if ($syncLine) {
+            try {
+                SyncShootIguideJob::dispatch($shoot->id, $syncLine)->afterCommit();
+            } catch (\Throwable $error) {
+                report($error);
+            }
+        }
         $unit->refresh();
         if ($isVideoEditor) {
             return response()->json(['data' => ['id' => $unit->id, 'tour_links' => Arr::only($unit->tour_links ?? [], ShootAuthorizationSupport::VIDEO_TOUR_LINK_KEYS)]]);
@@ -121,9 +137,8 @@ class ShootUnitTourController extends Controller
         $view = $this->scope->project($shoot, $unit, $line);
         abort_if($view->isInternalTestShoot(), 422, 'Provider actions are unavailable for internal test shoots.');
         if ($provider === 'iguide') {
-            abort_unless($view->iguide_property_id, 422, 'Set this unit’s iGUIDE property ID before syncing.');
             $parsed = app(IguideService::class)->syncShoot($view);
-            if (! $parsed) return response()->json(['success' => false, 'message' => 'iGUIDE did not return this unit. Signed app tokens may require the ready webhook.'], 409);
+            if (! $parsed) return response()->json(['success' => false, 'message' => 'iGUIDE did not return this unit. Check the saved iGuide URL or Property ID and try again.'], 409);
         } else {
             $service = app(CubiCasaService::class);
             $parsed = $operation === 'order' ? $service->createOrder($view, $request->user()) : $service->syncShoot($view);

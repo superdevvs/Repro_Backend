@@ -356,6 +356,10 @@ class ShootMediaStorageService
                         $saved = $this->persistStagedUpload($staged);
                         DB::afterCommit(function () use ($staged, $saved) {
                             try {
+                                if ($saved->path !== $staged->storedPath) {
+                                    $staged->discard();
+                                    return;
+                                }
                                 $this->finishStagedUpload($staged, $saved);
                             } catch (\Throwable $error) {
                                 Log::channel(self::LOG_CHANNEL)->error('Media saved; post-commit processing needs retry.', [
@@ -707,6 +711,7 @@ class ShootMediaStorageService
     {
         $shoot = $staged->shoot;
         $serverPath = $staged->storedPath;
+        $iguideFloorplanTarget = null;
         if (! $staged->isOpaqueIguidePackage) {
             $freshShoot = $shoot->fresh();
             $actor = \App\Models\User::find($staged->attributes['uploaded_by'] ?? null);
@@ -723,6 +728,25 @@ class ShootMediaStorageService
                 $family = $policy->family($staged->attributes['file_type'] ?? null, $staged->attributes['media_type'] ?? null);
                 abort_unless($target && $policy->accepts($target, $family, $type), 422, 'The upload target no longer accepts this content.');
                 abort_unless($type !== 'edited' || $policy->canUploadFamilies($freshShoot, $actor, $target, [$family]), 403, 'Your editing lane assignment changed before the file was saved.');
+                if ($type === 'edited' && $family === 'floorplan' && $policy->canAddIguideFloorplan($target)) {
+                    abort_unless(in_array($staged->attributes['file_type'], ['application/pdf', 'image/png', 'image/jpeg'], true),
+                        422, 'iGuide floor plans must be PDF, PNG or JPG files.');
+                    $iguideFloorplanTarget = $target;
+                    $sha256 = data_get($staged->attributes, 'metadata.floorplan_content_sha256');
+                    if ($sha256) {
+                        $same = $freshShoot->files()->where('shoot_service_id', $scope)->where('media_type', 'floorplan')
+                            ->when($staged->existingFile, fn ($query, $file) => $query->whereKey($file->id))
+                            ->where('content_version', 1)
+                            ->where('is_hidden', false)
+                            ->whereIn('scan_status', [ShootFile::SCAN_STATUS_CLEAN, ShootFile::SCAN_STATUS_QUARANTINED])
+                            ->where(fn ($query) => $query->where('metadata->floorplan_content_sha256', $sha256)
+                                ->orWhere('metadata->provider_content_sha256', $sha256))->first();
+                        if ($same) {
+                            app(\App\Services\Shoots\DeliveryComponentRequirements::class)->registerManualIguideFloorplan($target);
+                            return $same;
+                        }
+                    }
+                }
             } else {
                 abort_if($freshShoot->serviceItems()->exists(), 422, 'Select a booked service before saving this media.');
             }
@@ -750,6 +774,9 @@ class ShootMediaStorageService
             $shootFile->processed_at = null;
         }
         $shootFile->save();
+        if ($iguideFloorplanTarget) {
+            app(\App\Services\Shoots\DeliveryComponentRequirements::class)->registerManualIguideFloorplan($iguideFloorplanTarget);
+        }
 
         return $shootFile;
     }
@@ -1024,6 +1051,9 @@ class ShootMediaStorageService
     ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
+        if ($mediaType === 'floorplan' && $shootServiceId) {
+            $metadataOverride = array_replace($metadataOverride ?? [], ['floorplan_content_sha256' => hash_file('sha256', $file->getRealPath())]);
+        }
 
         return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType, $shootServiceId, $metadataOverride, $replaceFileId);
     }

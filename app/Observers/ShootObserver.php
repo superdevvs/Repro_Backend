@@ -53,6 +53,22 @@ class ShootObserver
         // Cover booking paths that forget an explicit calendar dispatch. CreateShootAction
         // also dispatches; duplicate afterCommit jobs are idempotent (fingerprint no-op).
         $this->ensureGoogleCalendarSync($shoot, true);
+        $this->syncCrm($shoot, true);
+    }
+
+    /** Keep the Sales CRM stage in step with real shoots. Never blocks a shoot save. */
+    private function syncCrm(Shoot $shoot, bool $created): void
+    {
+        if (! config('crm.enabled')) {
+            return;
+        }
+        \Illuminate\Support\Facades\DB::afterCommit(function () use ($shoot, $created) {
+            try {
+                app(\App\Services\Crm\CrmClientLink::class)->handleShoot($shoot, $created);
+            } catch (\Throwable $exception) {
+                report($exception);
+            }
+        });
     }
 
     public function updated(Shoot $shoot): void
@@ -65,6 +81,10 @@ class ShootObserver
 
         if ($shoot->wasChanged(['workflow_status', 'status', 'admin_verified_at', 'completed_at'])) {
             app(CompensationEligibilityService::class)->syncForShoot($shoot);
+        }
+
+        if ($shoot->wasChanged(['workflow_status', 'status', 'completed_at', 'client_id', 'scheduled_at'])) {
+            $this->syncCrm($shoot, false);
         }
 
         if ($shoot->wasChanged(['workflow_status', 'status', 'editor_id'])) {
@@ -302,20 +322,21 @@ class ShootObserver
             return;
         }
 
-        if (!$shoot->wasChanged('scheduled_at')
-            && !$shoot->wasChanged('workflow_status')
-            && !$shoot->wasChanged('status')
-        ) {
+        $linkSaved = $shoot->wasChanged('tour_links')
+            && app(\App\Services\IguideService::class)->hasNewTourLink(
+                $shoot->getOriginal('tour_links') ?? [], $shoot->tour_links ?? []
+            );
+        if (!$linkSaved && !$shoot->wasChanged(['scheduled_at', 'workflow_status', 'status'])) {
             return;
         }
 
-        if ($shoot->scheduled_at === null) {
+        if (!$linkSaved && $shoot->scheduled_at === null) {
             return;
         }
 
         // Already resolved: the tour URL is the done-marker the reconciliation
         // command uses, so honour it here too.
-        if (!empty($shoot->iguide_tour_url)) {
+        if (!empty($shoot->iguide_tour_url) && (!$linkSaved || $shoot->iguide_property_id)) {
             return;
         }
 

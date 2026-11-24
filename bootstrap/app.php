@@ -24,6 +24,13 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withSchedule(function (Schedule $schedule) {
+        // Sales CRM. Every command returns early while CRM_ENABLED is off.
+        $schedule->command('crm:send-due')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+        $schedule->command('crm:nightly')->dailyAt('03:15')->withoutOverlapping()->onOneServer();
+        $schedule->command('crm:follow-up-digest')->weekdays()->at('07:00')->timezone(\App\Services\Crm\CrmBusinessTime::TIMEZONE)->withoutOverlapping()->onOneServer();
+        $schedule->call(fn () => app(\App\Services\Crm\CrmWebsiteIntakeReceipt::class)->retryPending())
+            ->name('crm:website-intake')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+        $schedule->command('crm:calendar-sync')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
         $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();
         $schedule->command('groundwire-sms:recover')->everyMinute()->withoutOverlapping();
         // Laravel 11 in this project boots schedules from the application builder.
@@ -127,6 +134,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission' => PermissionMiddleware::class,
             'external_api_key' => ValidateExternalApiKey::class,
             'telnyx.toolbridge' => TelnyxToolBridgeAuth::class,
+            'crm.enabled' => \App\Http\Middleware\EnsureCrmEnabled::class,
         ]);
     })
     ->withBroadcasting(

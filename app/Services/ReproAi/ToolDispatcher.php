@@ -27,6 +27,18 @@ class ToolDispatcher
         'transfer_to_staff' => ['HandoffTools', 'transferToStaff'],
         'set_recording_consent' => ['RecordingConsentTools', 'setConsent'],
         'search_support_knowledge' => ['KnowledgeTools', 'search'],
+        // Sales CRM: offered only by the CRM panel; each refuses without a signed-in CRM user.
+        'crm_search_contacts' => ['CrmTools', 'searchContacts'],
+        'crm_get_contact' => ['CrmTools', 'getContact'],
+        'crm_contact_brief' => ['CrmTools', 'contactBrief'],
+        'crm_plan_day' => ['CrmTools', 'planDay'],
+        'crm_list_email_templates' => ['CrmTools', 'listEmailTemplates'],
+        'crm_list_drips' => ['CrmTools', 'listDrips'],
+        'crm_propose_note' => ['CrmTools', 'proposeNote'],
+        'crm_propose_event' => ['CrmTools', 'proposeEvent'],
+        'crm_propose_stage_change' => ['CrmTools', 'proposeStageChange'],
+        'crm_propose_email' => ['CrmTools', 'proposeEmail'],
+        'crm_propose_drip_enrolment' => ['CrmTools', 'proposeDripEnrolment'],
     ];
 
     public function dispatch(string $toolName, array $params, array $context = []): array

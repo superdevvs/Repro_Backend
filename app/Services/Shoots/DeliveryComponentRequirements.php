@@ -55,6 +55,18 @@ class DeliveryComponentRequirements
         if ($item->delivery_requirements === null) $item->delivery_requirements = $this->forItem($item);
     }
 
+    /** Add a reviewable floorplan output to an open iGuide booking that predates the separate component. */
+    public function registerManualIguideFloorplan(ShootService $item): void
+    {
+        if (!app(ShootUploadTargetPolicy::class)->canAddIguideFloorplan($item)) return;
+        $parts = $this->forItem($item);
+        if (in_array('floorplan', array_column($parts, 'kind'), true)) return;
+        $tour = collect($parts)->firstWhere('kind', 'tour');
+        $parts[] = array_replace($tour, ['key' => 'floorplan', 'kind' => 'floorplan', 'label' => 'Floorplans']);
+        $item->delivery_requirements = $parts;
+        $item->save();
+    }
+
     /** Only an explicit execution-state reset reopens work; labels/revisions do not. */
     public function reopenIfRequested(ShootService $item, ?Shoot $shoot): bool
     {

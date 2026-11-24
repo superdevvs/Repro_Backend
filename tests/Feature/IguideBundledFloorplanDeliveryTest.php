@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\FinalizeShootJob;
+use App\Jobs\IngestIguideAssetsJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -12,6 +13,7 @@ use App\Services\ShootActivityLogger;
 use App\Services\Shoots\DeliveryComponentRequirements;
 use App\Services\Shoots\DeliveryPlanService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
@@ -84,6 +86,39 @@ class IguideBundledFloorplanDeliveryTest extends TestCase
         $this->assertSame($snapshot, app(DeliveryComponentRequirements::class)->forItem($item));
         $item->forceFill(['delivery_requirements' => null, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
         $this->assertSame(['legacy'], array_column(app(DeliveryComponentRequirements::class)->forItem($item), 'kind'));
+    }
+
+    public function test_manual_floorplan_on_older_bundle_is_reviewable_and_reused_when_iguide_imports_the_same_bytes(): void
+    {
+        Storage::fake('local');
+        $actor = User::factory()->create(['role' => 'superadmin']);
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id, 'iguide_property_id' => 'igTEST', 'payment_status' => 'paid']);
+        $catalog = Service::factory()->create(['name' => 'HDR Photos & Premium iGuide', 'upload_intake_type' => 'photo']);
+        $item = $shoot->serviceItems()->create(['service_id' => $catalog->id, 'price' => 250, 'quantity' => 1,
+            'is_deliverable' => true, 'workflow_status' => 'in_progress', 'delivery_status' => 'not_started']);
+        $item->forceFill(['delivery_requirements' => [
+            ['key' => 'photo', 'kind' => 'photo', 'label' => 'Photos'],
+            ['key' => 'tour', 'kind' => 'tour', 'label' => 'Property tour', 'provider' => 'iguide'],
+        ]])->save();
+        $bytes = "%PDF-1.7\n% Sample floor plan\n%%EOF\n";
+        $response = $this->actingAs($actor)->post('/api/shoots/'.$shoot->id.'/upload', [
+            'upload_type' => 'edited', 'media_type' => 'floorplan', 'shoot_service_id' => $item->id,
+            'files' => [UploadedFile::fake()->createWithContent('floorplan.pdf', $bytes)],
+        ], ['Accept' => 'application/json'])->assertOk()->assertJsonPath('success_count', 1);
+        $fileId = $response->json('uploaded_files.0.id');
+        $this->assertSame('in_progress', $item->fresh()->workflow_status);
+        $this->assertContains('floorplan', array_column($item->fresh()->delivery_requirements, 'kind'));
+        $this->actingAs($client)->getJson('/api/shoots/'.$shoot->id.'/media/'.$fileId.'/download')->assertForbidden();
+
+        $url = 'https://youriguide.com/sample/doc/floorplan_imperial.pdf';
+        Http::fake([$url => Http::response($bytes, 200, ['Content-Type' => 'application/pdf'])]);
+        (new IngestIguideAssetsJob($shoot->id, [[
+            'url' => $url, 'asset_key' => 'pdf_imperial', 'filename' => 'floorplan_imperial.pdf', 'type' => 'pdf',
+        ]], $item->id))->handle(app(ShootActivityLogger::class));
+        $this->assertSame(1, $shoot->files()->where('media_type', 'floorplan')->count());
+        $this->assertSame('pdf_imperial', ShootFile::findOrFail($fileId)->metadata['iguide_asset_key']);
+        $this->assertSame(0, DB::table('shoot_delivery_receipts')->where('shoot_id', $shoot->id)->count());
     }
 
     public function test_paid_client_gets_floorplans_only_after_the_floorplan_component_is_approved(): void

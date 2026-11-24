@@ -62,3 +62,11 @@ existing account setup email, verification email and configured SMS automation.
 `create_account: false` creates a locked guest record and skips those setup
 messages. Both modes queue the existing shoot-request notification workflow;
 provider success is separate from persistence. Replays do not repeat these effects.
+
+## Sales CRM
+
+These apply only when `CRM_ENABLED=true` on the Dashboard. With it off, nothing below runs and the endpoints return 404.
+
+- **Contact form** (`POST /api/external/website-email`, `type: contact`): besides the office email, the inquiry becomes a CRM contact with lead source Website. A new person goes to the admin-only Unassigned queue with a first-contact target (one business day, Eastern time); an existing contact gets the inquiry on their history and their rep is told. `sms_consent: true` is recorded as consent from the website. The same `reference` never creates a second lead.
+- **Bookings** (`POST /api/external/book-shoot`): the client's CRM contact is marked as a website lead, the booking (and `notes`) goes on its history, and its rep, or the admins if there is none, gets a notice. `external_reference` keeps replays from repeating this.
+- **Careers form** (`POST /api/external/recruiting/application`, same `X-API-Key`): the website form keeps working as it does and also posts here. JSON or multipart. Fields: `name`, `email` (required), `role` (`photographer` or `sales_rep`, required unless `posting_slug` names an open posting), `phone`, `city`, `state`, `states[]`, `metros`, `travel_radius`, `portfolio_url`, `gear` (array or newline-separated text), `part107_number`, `part107_expiry`, `insurance_expiry`, `sales_experience`, `specialty`, `external_reference`, and files `resume`, `license`, `insurance`, `samples[]` (up to 6). Returns `201 {received, applicant_id, stage}`. The same `external_reference`, or the same email for the same role, updates the existing applicant instead of adding another. Throttled to 30 a minute.

@@ -259,13 +259,32 @@ class IngestIguideAssetsJob implements ShouldQueue
                             $target = \App\Models\ShootService::where('shoot_id', $this->shootId)->find($this->shootServiceId);
                             abort_unless($target && app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->isWorkItem($target), 409, 'Provider target changed during import.');
                         }
-                        return ShootFile::where('shoot_id', $this->shootId)->where('shoot_service_id', $this->shootServiceId)
-                            ->where('metadata->source', 'iguide')->where('metadata->iguide_asset_key', $attributes['metadata']['iguide_asset_key'])->first()
-                            ?? ShootFile::create($attributes);
+                        $plans = ShootFile::where('shoot_id', $this->shootId)->where('shoot_service_id', $this->shootServiceId)
+                            ->where('media_type', 'floorplan');
+                        $existing = (clone $plans)->where('metadata->source', 'iguide')
+                            ->where('metadata->iguide_asset_key', $attributes['metadata']['iguide_asset_key'])->first();
+                        if ($existing) return $existing;
+
+                        $manual = $this->shootServiceId ? $plans->whereNull('metadata->source')
+                            ->where('metadata->floorplan_content_sha256', $attributes['metadata']['provider_content_sha256'])
+                            ->where('content_version', 1)
+                            ->whereIn('scan_status', [ShootFile::SCAN_STATUS_CLEAN, ShootFile::SCAN_STATUS_QUARANTINED])
+                            ->where('is_hidden', false)->first() : null;
+                        if ($manual) {
+                            // Keep the existing scan state and any release receipt for these exact bytes.
+                            $manual->metadata = array_replace($manual->metadata ?? [], $attributes['metadata']);
+                            $manual->save();
+                            return $manual;
+                        }
+                        return ShootFile::create($attributes);
                     }), 'iguide.asset.publish');
                 }
 
                 $ingestedFileIds[] = $shootFile->id;
+                if ($shootFile->path !== $relativePath) {
+                    $mediaStorage->delete($relativePath);
+                    continue;
+                }
                 // Floorplan originals remain withheld until the real scan is clean.
                 ScanShootFileJob::dispatch($shootFile->id)->afterCommit();
 

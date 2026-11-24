@@ -1334,6 +1334,11 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
+        if ($message->send_source === 'CRM' && ! app(\App\Services\Crm\CrmSmsSender::class)->mayDispatchStored($message)) {
+            $message->update(['status' => 'CANCELLED', 'error_message' => 'CRM texting access or recipient consent changed.']);
+
+            return $message->refresh();
+        }
         if (data_get($message->metadata, 'groundwire_request_id')) {
             // A stalled native send may already have reached the carrier. Only an
             // operator can reconcile it; generic queue recovery must never resend.
@@ -1391,9 +1396,17 @@ class MessagingService
             }
 
             $number = $this->resolveSmsNumberForMessage($message);
+            if ($message->send_source === 'CRM') {
+                // Keep an interrupted carrier attempt out of the scheduled retry queue.
+                $claimed = Message::query()->whereKey($message->id)->where('status', 'SCHEDULED')->update(['status' => 'SENDING']);
+                if (! $claimed) {
+                    return $message->refresh();
+                }
+            }
             $providerMessageId = $this->telnyxProvider->send($number, [
                 'to' => $message->to_address,
                 'text' => $message->body_text ?? '',
+                'single_attempt' => $message->send_source === 'CRM',
             ]);
 
             $message->update([
@@ -1425,6 +1438,9 @@ class MessagingService
                 'Scheduled SMS dispatch failed',
                 'TELNYX'
             );
+            if ($message->send_source === 'CRM' && app(\App\Services\Crm\CrmSmsSender::class)->uncertain($exception)) {
+                $message->update(['status' => 'UNCERTAIN', 'error_message' => 'Carrier acceptance is unknown. Review before resending.']);
+            }
 
             throw $exception;
         }

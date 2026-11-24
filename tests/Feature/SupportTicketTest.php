@@ -165,6 +165,7 @@ class SupportTicketTest extends TestCase
         $legacy = collect(config('permissions.groups'))->flatMap(fn ($group) => $group['items'])
             // Reconstruct the frozen pre-support default, excluding later permission additions.
             ->filter(fn ($item) => ! in_array($item['resource'], ['support', 'email-notifications', 'shoot-pricing'], true)
+                && ! str_starts_with($item['resource'], 'crm-')
                 && ! ($item['resource'] === 'integrations' && $item['action'] === 'edit')
                 && ! ($item['resource'] === 'shoots' && in_array($item['action'], ['update', 'manage'], true))
                 && ! ($item['resource'] === 'payments' && $item['action'] === 'mark-paid')

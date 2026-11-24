@@ -48,6 +48,13 @@ class PermissionController extends Controller
 
         try {
             $validated = $this->permissions->validateUpdatePayload($input);
+            $stored = $this->permissions->storedRoleMap();
+            foreach ($validated as $roleId => $ids) {
+                if ($roleId === 'superadmin' || ! is_array($ids)) {
+                    continue;
+                }
+                $this->permissions->assertCrmRestrictedChangeAllowed($request->user(), $stored[$roleId] ?? [], $ids);
+            }
             $saved = $this->permissions->updatePermissions($validated);
         } catch (\InvalidArgumentException $exception) {
             return response()->json([
@@ -104,6 +111,9 @@ class PermissionController extends Controller
 
         try {
             $validated = $this->permissions->validateOverridesPayload($input);
+            $current = $this->permissions->currentOverrides($user);
+            $this->permissions->assertCrmRestrictedChangeAllowed($request->user(), $current['allow'], $validated['allow']);
+            $this->permissions->assertCrmRestrictedChangeAllowed($request->user(), $current['deny'], $validated['deny'], false);
             $payload = $this->permissions->updateUserOverrides($user, $validated);
         } catch (\InvalidArgumentException $exception) {
             return response()->json([

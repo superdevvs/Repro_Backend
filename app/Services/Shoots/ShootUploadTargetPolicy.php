@@ -53,7 +53,16 @@ final class ShootUploadTargetPolicy
     {
         if (! $this->isWorkItem($item)) return false;
         if ($uploadType === 'raw') return app(UploadIntakeResolver::class)->supportsLane($item, $family);
-        return in_array($family, $this->kinds($item), true);
+        return in_array($family, $this->kinds($item), true)
+            || ($family === 'floorplan' && $this->canAddIguideFloorplan($item));
+    }
+
+    public function canAddIguideFloorplan(ShootService $item): bool
+    {
+        if (!$this->isWorkItem($item)) return false;
+        $parts = collect(app(DeliveryComponentRequirements::class)->forItem($item));
+        return $parts->contains(fn ($part) => $part['kind'] === 'floorplan' && ($part['provider'] ?? null) === 'iguide')
+            || ($this->isOutstanding($item) && $parts->contains(fn ($part) => $part['kind'] === 'tour' && ($part['provider'] ?? null) === 'iguide'));
     }
 
     /** @param iterable<UploadedFile> $files */

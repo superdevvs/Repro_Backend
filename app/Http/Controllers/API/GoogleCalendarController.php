@@ -270,6 +270,11 @@ class GoogleCalendarController extends Controller
         $actor = $request->user();
         $targetUserId = (int) $request->input('user_id');
 
+        // Sales CRM: everyone connects their own calendar for their own follow-ups.
+        if ($request->routeIs('crm.calendar.*')) {
+            return $actor;
+        }
+
         if ($actor->role === 'photographer') {
             return $actor;
         }
@@ -302,6 +307,11 @@ class GoogleCalendarController extends Controller
         $actor = $request->user();
         $targetUserId = (int) $request->query('user_id', 0);
 
+        // Sales CRM: everyone connects their own calendar for their own follow-ups.
+        if ($request->routeIs('crm.calendar.*')) {
+            return $actor;
+        }
+
         if ($actor->role === 'photographer') {
             return $actor;
         }
@@ -333,6 +343,7 @@ class GoogleCalendarController extends Controller
     {
         return match ($source) {
             'availability' => '/availability',
+            'crm' => '/crm/follow-ups',
             default => '/photographer-account?tab=notifications',
         };
     }

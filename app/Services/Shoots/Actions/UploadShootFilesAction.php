@@ -821,7 +821,9 @@ class UploadShootFilesAction
                                     ])->save();
                                 }
 
-                                if ($uploadType === 'edited' && app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->isWorkItem($serviceItem)
+                                if ($uploadType === 'edited'
+                                    && !($shootFile->media_type === 'floorplan' && app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->canAddIguideFloorplan($serviceItem))
+                                    && app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->isWorkItem($serviceItem)
                                     && $serviceItem->workflow_status !== ShootService::WORKFLOW_DELIVERED) {
                                     $serviceItem->forceFill([
                                         'workflow_status' => ShootService::WORKFLOW_READY,
