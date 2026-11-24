@@ -1,5 +1,5 @@
 -- MySQL baseline for the SQLite-to-MySQL migration rehearsal.
--- Contains schema and applied migration names only; no application/customer rows.
+-- Contains schema, applied migrations and the fixed CRM defaults created by those migrations. No customer rows.
 -- Existing SQLite databases continue to use the normal PHP migration history.
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
@@ -6993,3 +6993,837 @@ INSERT INTO `migrations` (`id`,`migration`,`batch`) VALUES
 (372,'2026_11_04_190000_index_mysql_invoice_effective_period',194),
 (373,'2026_11_04_200000_restore_optional_equipment_assignment',194),
 (374,'2026_11_04_210000_restore_mysql_nullable_invoice_role',194);
+
+-- Sales CRM additions verified from a disposable database migrated from the previous baseline.
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_activities` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `type` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `actor_id` bigint unsigned DEFAULT NULL,
+  `via_robbie` tinyint(1) NOT NULL DEFAULT '0',
+  `summary` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `data` json DEFAULT NULL,
+  `subject_type` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `subject_id` bigint unsigned DEFAULT NULL,
+  `occurred_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_activities_contact_idx` (`contact_id`,`occurred_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_ai_proposals` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `contact_id` bigint unsigned DEFAULT NULL,
+  `kind` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `summary` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `payload` json NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `result` json DEFAULT NULL,
+  `error` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `expires_at` timestamp NOT NULL,
+  `decided_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_ai_proposals_user_idx` (`user_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_assignment_changes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `from_rep_id` bigint unsigned DEFAULT NULL,
+  `to_rep_id` bigint unsigned DEFAULT NULL,
+  `changed_by` bigint unsigned DEFAULT NULL,
+  `source` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'user',
+  `occurred_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_assignment_contact_idx` (`contact_id`,`occurred_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_campaign_recipients` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `campaign_id` bigint unsigned NOT NULL,
+  `contact_id` bigint unsigned NOT NULL,
+  `send_id` bigint unsigned DEFAULT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `reason` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_campaign_recipients_uq` (`campaign_id`,`contact_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_campaigns` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `owner_id` bigint unsigned NOT NULL,
+  `template_id` bigint unsigned NOT NULL,
+  `template_version_id` bigint unsigned NOT NULL,
+  `subject` varchar(200) COLLATE utf8mb4_0900_bin NOT NULL,
+  `body_html` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `image_url` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `audience` json NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `content_check` json DEFAULT NULL,
+  `review_comment` varchar(1000) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `reviewed_by` bigint unsigned DEFAULT NULL,
+  `reviewed_at` timestamp NULL DEFAULT NULL,
+  `submitted_at` timestamp NULL DEFAULT NULL,
+  `scheduled_at` timestamp NULL DEFAULT NULL,
+  `sent_at` timestamp NULL DEFAULT NULL,
+  `recipient_count` int unsigned NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_campaigns_due_idx` (`status`,`scheduled_at`),
+  KEY `crm_campaigns_owner_idx` (`owner_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_companies` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `name_normalized` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `website` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `phone` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `address` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `city` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `state` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `segment` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_0900_bin,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_companies_name_uq` (`name_normalized`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_contacts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `name_normalized` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `company` varchar(160) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `title` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `email` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `email_normalized` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `phone` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `phone_digits` varchar(20) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `address` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `website` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `market_state` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `market_city` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `segment` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `client_type` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `stage` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `stage_before_lost` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `lost_reason` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `lost_note` text COLLATE utf8mb4_0900_bin,
+  `lost_at` timestamp NULL DEFAULT NULL,
+  `assigned_rep_id` bigint unsigned DEFAULT NULL,
+  `lead_source` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'other',
+  `first_shoot_date` date DEFAULT NULL,
+  `client_user_id` bigint unsigned DEFAULT NULL,
+  `company_id` bigint unsigned DEFAULT NULL,
+  `email_opt_out_at` timestamp NULL DEFAULT NULL,
+  `email_status` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `sms_consent` tinyint(1) NOT NULL DEFAULT '0',
+  `needs_review` tinyint(1) NOT NULL DEFAULT '0',
+  `review_reasons` json DEFAULT NULL,
+  `health` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usual_gap_days` smallint unsigned DEFAULT NULL,
+  `stage_changed_at` timestamp NULL DEFAULT NULL,
+  `last_contacted_at` timestamp NULL DEFAULT NULL,
+  `first_contact_due_at` timestamp NULL DEFAULT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `sms_consent_at` timestamp NULL DEFAULT NULL,
+  `sms_consent_source` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `health_changed_at` timestamp NULL DEFAULT NULL,
+  `last_shoot_on` date DEFAULT NULL,
+  `marketing_consent_email` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `marketing_consent_at` timestamp NULL DEFAULT NULL,
+  `marketing_consent_source` varchar(32) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `sms_consent_phone` varchar(32) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_contacts_client_user_uq` (`client_user_id`),
+  KEY `crm_contacts_rep_stage_idx` (`assigned_rep_id`,`stage`),
+  KEY `crm_contacts_stage_idx` (`stage`),
+  KEY `crm_contacts_email_idx` (`email_normalized`),
+  KEY `crm_contacts_phone_idx` (`phone_digits`),
+  KEY `crm_contacts_name_idx` (`name_normalized`),
+  KEY `crm_contacts_company_idx` (`company_id`),
+  KEY `crm_contacts_review_idx` (`needs_review`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_drip_campaign_versions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `campaign_id` bigint unsigned NOT NULL,
+  `version_no` int unsigned NOT NULL,
+  `published_at` timestamp NULL DEFAULT NULL,
+  `published_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_drip_versions_uq` (`campaign_id`,`version_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_drip_campaigns` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `length_key` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `published_version_id` bigint unsigned DEFAULT NULL,
+  `draft_version_id` bigint unsigned DEFAULT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_drip_enrollments` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `campaign_id` bigint unsigned NOT NULL,
+  `active_contact_id` bigint unsigned DEFAULT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'active',
+  `started_at` timestamp NOT NULL,
+  `last_sent_day` int NOT NULL DEFAULT '-1',
+  `steps_sent` smallint unsigned NOT NULL DEFAULT '0',
+  `next_send_at` timestamp NULL DEFAULT NULL,
+  `claimed_at` timestamp NULL DEFAULT NULL,
+  `stop_reason` varchar(32) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `stopped_at` timestamp NULL DEFAULT NULL,
+  `enrolled_by` bigint unsigned DEFAULT NULL,
+  `via_robbie` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_drip_enrol_active_uq` (`active_contact_id`),
+  KEY `crm_drip_enrol_due_idx` (`status`,`next_send_at`),
+  KEY `crm_drip_enrol_contact_idx` (`contact_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_drip_steps` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `campaign_version_id` bigint unsigned NOT NULL,
+  `send_day` smallint unsigned NOT NULL,
+  `template_id` bigint unsigned DEFAULT NULL,
+  `template_version_id` bigint unsigned DEFAULT NULL,
+  `label` varchar(160) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_drip_steps_version_idx` (`campaign_version_id`,`send_day`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_duplicate_alerts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `attempted_by` bigint unsigned DEFAULT NULL,
+  `matched_contact_id` bigint unsigned NOT NULL,
+  `match_type` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `payload` json DEFAULT NULL,
+  `origin` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'form',
+  `resolved_by` bigint unsigned DEFAULT NULL,
+  `resolved_at` timestamp NULL DEFAULT NULL,
+  `resolution` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_dup_alerts_open_idx` (`resolved_at`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_email_events` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `send_id` bigint unsigned NOT NULL,
+  `provider_event_id` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `type` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `link` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `payload` json DEFAULT NULL,
+  `occurred_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_email_events_provider_uq` (`provider_event_id`),
+  KEY `crm_email_events_send_idx` (`send_id`,`type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_email_sends` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned DEFAULT NULL,
+  `applicant_id` bigint unsigned DEFAULT NULL,
+  `sender_user_id` bigint unsigned DEFAULT NULL,
+  `source_type` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_id` bigint unsigned DEFAULT NULL,
+  `template_version_id` bigint unsigned DEFAULT NULL,
+  `signature_id` bigint unsigned DEFAULT NULL,
+  `from_email` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `from_name` varchar(160) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `reply_to` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `to_email` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `subject` varchar(200) COLLATE utf8mb4_0900_bin NOT NULL,
+  `html` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `text` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `transport` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `provider_message_id` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `error` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `idempotency_key` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `reply_token` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `sent_at` timestamp NULL DEFAULT NULL,
+  `delivered_at` timestamp NULL DEFAULT NULL,
+  `first_opened_at` timestamp NULL DEFAULT NULL,
+  `open_count` int unsigned NOT NULL DEFAULT '0',
+  `click_count` int unsigned NOT NULL DEFAULT '0',
+  `bounced_at` timestamp NULL DEFAULT NULL,
+  `complained_at` timestamp NULL DEFAULT NULL,
+  `replied_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_email_sends_provider_uq` (`provider_message_id`),
+  UNIQUE KEY `crm_email_sends_idem_uq` (`idempotency_key`),
+  UNIQUE KEY `crm_email_sends_reply_uq` (`reply_token`),
+  KEY `crm_email_sends_contact_idx` (`contact_id`,`created_at`),
+  KEY `crm_email_sends_sender_idx` (`sender_user_id`,`created_at`),
+  KEY `crm_email_sends_source_idx` (`source_type`,`source_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_email_template_versions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `template_id` bigint unsigned NOT NULL,
+  `version_no` int unsigned NOT NULL,
+  `subject` varchar(200) COLLATE utf8mb4_0900_bin NOT NULL,
+  `preheader` varchar(200) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `body_html` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `image_url` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `cta_label` varchar(80) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `cta_url` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `created_by` bigint unsigned DEFAULT NULL,
+  `reviewed_by` bigint unsigned DEFAULT NULL,
+  `reviewed_at` timestamp NULL DEFAULT NULL,
+  `review_comment` varchar(1000) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `content_check` json DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_tpl_versions_uq` (`template_id`,`version_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_email_templates` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `kind` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'one_off',
+  `name` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `approved_version_id` bigint unsigned DEFAULT NULL,
+  `latest_version_id` bigint unsigned DEFAULT NULL,
+  `owner_id` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_email_templates_kind_idx` (`kind`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_event_calendar_links` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `event_id` bigint unsigned NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `calendar_id` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'primary',
+  `google_event_id` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `fingerprint` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `last_synced_at` timestamp NULL DEFAULT NULL,
+  `last_error` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `push_pending` tinyint(1) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_event_cal_links_uq` (`event_id`,`user_id`),
+  KEY `crm_event_cal_links_google_idx` (`user_id`,`google_event_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_event_types` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `key` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `label` varchar(80) COLLATE utf8mb4_0900_bin NOT NULL,
+  `icon` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'calendar',
+  `counts_as_contact` tinyint(1) NOT NULL DEFAULT '1',
+  `is_system` tinyint(1) NOT NULL DEFAULT '0',
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `sort` smallint unsigned NOT NULL DEFAULT '100',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_event_types_key_uq` (`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_events` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned DEFAULT NULL,
+  `applicant_id` bigint unsigned DEFAULT NULL,
+  `type_id` bigint unsigned NOT NULL,
+  `starts_at` timestamp NOT NULL,
+  `duration_min` smallint unsigned NOT NULL DEFAULT '15',
+  `assigned_user_id` bigint unsigned NOT NULL,
+  `note` text COLLATE utf8mb4_0900_bin,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'planned',
+  `outcome_note` text COLLATE utf8mb4_0900_bin,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `next_event_id` bigint unsigned DEFAULT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `via_robbie` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_events_user_due_idx` (`assigned_user_id`,`status`,`starts_at`),
+  KEY `crm_events_contact_idx` (`contact_id`,`status`,`starts_at`),
+  KEY `crm_events_applicant_idx` (`applicant_id`,`starts_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_goals` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `month` varchar(7) COLLATE utf8mb4_0900_bin NOT NULL,
+  `metric` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL,
+  `target` int unsigned NOT NULL,
+  `set_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_goals_user_month_metric_uq` (`user_id`,`month`,`metric`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_note_versions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `note_id` bigint unsigned NOT NULL,
+  `body` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `saved_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_note_versions_note_idx` (`note_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_notes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `author_id` bigint unsigned DEFAULT NULL,
+  `body` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `via_robbie` tinyint(1) NOT NULL DEFAULT '0',
+  `edited_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_notes_contact_idx` (`contact_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_notices` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `type` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `title` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `body` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `contact_id` bigint unsigned DEFAULT NULL,
+  `data` json DEFAULT NULL,
+  `read_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_notices_user_idx` (`user_id`,`read_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_quote_items` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `quote_id` bigint unsigned NOT NULL,
+  `service_id` bigint unsigned DEFAULT NULL,
+  `name` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `quantity` smallint unsigned NOT NULL DEFAULT '1',
+  `unit_price` decimal(10,2) NOT NULL,
+  `total` decimal(10,2) NOT NULL,
+  `sort` smallint unsigned NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_quote_items_quote_idx` (`quote_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_quotes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `number` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `property_address` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `subtotal` decimal(10,2) NOT NULL DEFAULT '0.00',
+  `discount_percent` decimal(5,2) NOT NULL DEFAULT '0.00',
+  `discount_amount` decimal(10,2) NOT NULL DEFAULT '0.00',
+  `total` decimal(10,2) NOT NULL DEFAULT '0.00',
+  `notes` text COLLATE utf8mb4_0900_bin,
+  `valid_until` date DEFAULT NULL,
+  `public_token` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `approved_by` bigint unsigned DEFAULT NULL,
+  `approved_at` timestamp NULL DEFAULT NULL,
+  `sent_at` timestamp NULL DEFAULT NULL,
+  `viewed_at` timestamp NULL DEFAULT NULL,
+  `accepted_at` timestamp NULL DEFAULT NULL,
+  `declined_at` timestamp NULL DEFAULT NULL,
+  `decline_reason` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `follow_up_event_id` bigint unsigned DEFAULT NULL,
+  `booking_reference` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `via_robbie` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `property_city` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `property_state` varchar(2) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `property_zip` varchar(10) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `sqft` int unsigned DEFAULT NULL,
+  `booking_status` varchar(20) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `booking_shoot_id` bigint unsigned DEFAULT NULL,
+  `booking_review_reason` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_quotes_number_uq` (`number`),
+  UNIQUE KEY `crm_quotes_token_uq` (`public_token`),
+  UNIQUE KEY `crm_quote_booking_shoot_uq` (`booking_shoot_id`),
+  KEY `crm_quotes_contact_idx` (`contact_id`,`status`),
+  KEY `crm_quotes_status_idx` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_signatures` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `version` int unsigned NOT NULL DEFAULT '1',
+  `fields` json NOT NULL,
+  `headshot_path` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `sender_email` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `review_comment` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `reviewed_by` bigint unsigned DEFAULT NULL,
+  `reviewed_at` timestamp NULL DEFAULT NULL,
+  `is_current_approved` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_signatures_user_idx` (`user_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_sms_requests` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `payload_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `message_id` bigint unsigned DEFAULT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_sms_requests_user_id_request_id_unique` (`user_id`,`request_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_stage_changes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `contact_id` bigint unsigned NOT NULL,
+  `from_stage` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `to_stage` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `reason` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `changed_by` bigint unsigned DEFAULT NULL,
+  `source` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'user',
+  `occurred_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `crm_stage_changes_contact_idx` (`contact_id`,`occurred_at`),
+  KEY `crm_stage_changes_to_idx` (`to_stage`,`occurred_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `crm_website_intake_receipts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `kind` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `reference` varchar(120) COLLATE utf8mb4_0900_bin NOT NULL,
+  `payload` text COLLATE utf8mb4_0900_bin,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `crm_website_receipt_identity` (`kind`,`reference`),
+  KEY `crm_website_receipt_pending` (`completed_at`,`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `email_suppressions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `email_normalized` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `reason` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `contact_id` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email_suppressions_email_uq` (`email_normalized`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_applicant_files` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `applicant_id` bigint unsigned NOT NULL,
+  `kind` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `path` varchar(500) COLLATE utf8mb4_0900_bin NOT NULL,
+  `original_name` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `mime` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `size` bigint unsigned NOT NULL DEFAULT '0',
+  `uploaded_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `intake_checksum` char(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `recruit_file_intake_identity` (`applicant_id`,`kind`,`intake_checksum`),
+  KEY `recruit_files_applicant_idx` (`applicant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_applicants` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `role` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `name` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `email` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `email_normalized` varchar(190) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `phone` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `city` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `state` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `stage` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'applied',
+  `stage_before_exit` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `exit_reason` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `posting_id` bigint unsigned DEFAULT NULL,
+  `source` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'other',
+  `states` json DEFAULT NULL,
+  `metros` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `travel_radius` smallint unsigned DEFAULT NULL,
+  `portfolio_url` varchar(500) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `gear` json DEFAULT NULL,
+  `flies_drone` tinyint(1) NOT NULL DEFAULT '0',
+  `part107_number` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `part107_expiry` date DEFAULT NULL,
+  `insurance_expiry` date DEFAULT NULL,
+  `sales_experience` text COLLATE utf8mb4_0900_bin,
+  `specialty` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `scores` json DEFAULT NULL,
+  `score` decimal(3,1) DEFAULT NULL,
+  `hired_user_id` bigint unsigned DEFAULT NULL,
+  `external_reference` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `stage_changed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `recruit_applicants_ext_uq` (`external_reference`),
+  KEY `recruit_applicants_role_stage_idx` (`role`,`stage`),
+  KEY `recruit_applicants_email_idx` (`email_normalized`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_application_receipts` (
+  `reference` varchar(120) COLLATE utf8mb4_0900_bin NOT NULL,
+  `applicant_id` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`reference`),
+  KEY `recruit_application_receipts_applicant_id_index` (`applicant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_job_postings` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `role` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `title` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `state` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `region` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `slug` varchar(190) COLLATE utf8mb4_0900_bin NOT NULL,
+  `description` text COLLATE utf8mb4_0900_bin,
+  `status` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `opened_at` timestamp NULL DEFAULT NULL,
+  `closed_at` timestamp NULL DEFAULT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `recruit_postings_slug_uq` (`slug`),
+  KEY `recruit_postings_status_idx` (`status`,`role`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_notes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `applicant_id` bigint unsigned NOT NULL,
+  `author_id` bigint unsigned DEFAULT NULL,
+  `kind` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'note',
+  `body` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `scores` json DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `recruit_notes_applicant_idx` (`applicant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_roster` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL,
+  `role` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `applicant_id` bigint unsigned DEFAULT NULL,
+  `states` json DEFAULT NULL,
+  `metros` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `travel_radius` smallint unsigned DEFAULT NULL,
+  `gear` json DEFAULT NULL,
+  `part107_number` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `part107_expiry` date DEFAULT NULL,
+  `insurance_expiry` date DEFAULT NULL,
+  `part107_reminded_for` date DEFAULT NULL,
+  `insurance_reminded_for` date DEFAULT NULL,
+  `active` tinyint(1) NOT NULL DEFAULT '1',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `recruit_roster_user_uq` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `recruit_stage_changes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `applicant_id` bigint unsigned NOT NULL,
+  `from_stage` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `to_stage` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `reason` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `changed_by` bigint unsigned DEFAULT NULL,
+  `occurred_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `recruit_stage_changes_idx` (`applicant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+-- The eight system event types and three unpublished starter drips come from the CRM migrations.
+INSERT INTO `crm_drip_campaign_versions` (`id`, `campaign_id`, `version_no`, `published_at`, `published_by`, `created_at`, `updated_at`) VALUES (1,1,1,NULL,NULL,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_campaign_versions` (`id`, `campaign_id`, `version_no`, `published_at`, `published_by`, `created_at`, `updated_at`) VALUES (2,2,1,NULL,NULL,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_campaign_versions` (`id`, `campaign_id`, `version_no`, `published_at`, `published_by`, `created_at`, `updated_at`) VALUES (3,3,1,NULL,NULL,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_campaigns` (`id`, `name`, `length_key`, `status`, `published_version_id`, `draft_version_id`, `created_by`, `created_at`, `updated_at`) VALUES (1,'12-week new agent drip','12_weeks','draft',NULL,1,NULL,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_campaigns` (`id`, `name`, `length_key`, `status`, `published_version_id`, `draft_version_id`, `created_by`, `created_at`, `updated_at`) VALUES (2,'6-month nurture','6_months','draft',NULL,2,NULL,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_campaigns` (`id`, `name`, `length_key`, `status`, `published_version_id`, `draft_version_id`, `created_by`, `created_at`, `updated_at`) VALUES (3,'12-month stay in touch','12_months','draft',NULL,3,NULL,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (1,1,0,NULL,NULL,'Placeholder step 1','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (2,1,7,NULL,NULL,'Placeholder step 2','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (3,1,14,NULL,NULL,'Placeholder step 3','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (4,1,28,NULL,NULL,'Placeholder step 4','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (5,1,42,NULL,NULL,'Placeholder step 5','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (6,1,56,NULL,NULL,'Placeholder step 6','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (7,1,70,NULL,NULL,'Placeholder step 7','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (8,1,84,NULL,NULL,'Placeholder step 8','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (9,2,0,NULL,NULL,'Placeholder step 1','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (10,2,14,NULL,NULL,'Placeholder step 2','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (11,2,30,NULL,NULL,'Placeholder step 3','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (12,2,45,NULL,NULL,'Placeholder step 4','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (13,2,60,NULL,NULL,'Placeholder step 5','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (14,2,90,NULL,NULL,'Placeholder step 6','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (15,2,120,NULL,NULL,'Placeholder step 7','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (16,2,150,NULL,NULL,'Placeholder step 8','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (17,2,180,NULL,NULL,'Placeholder step 9','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (18,3,0,NULL,NULL,'Placeholder step 1','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (19,3,30,NULL,NULL,'Placeholder step 2','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (20,3,60,NULL,NULL,'Placeholder step 3','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (21,3,90,NULL,NULL,'Placeholder step 4','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (22,3,120,NULL,NULL,'Placeholder step 5','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (23,3,150,NULL,NULL,'Placeholder step 6','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (24,3,180,NULL,NULL,'Placeholder step 7','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (25,3,210,NULL,NULL,'Placeholder step 8','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (26,3,240,NULL,NULL,'Placeholder step 9','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (27,3,270,NULL,NULL,'Placeholder step 10','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (28,3,300,NULL,NULL,'Placeholder step 11','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (29,3,330,NULL,NULL,'Placeholder step 12','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_drip_steps` (`id`, `campaign_version_id`, `send_day`, `template_id`, `template_version_id`, `label`, `created_at`, `updated_at`) VALUES (30,3,360,NULL,NULL,'Placeholder step 13','2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (1,'call','Call','phone',1,1,1,10,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (2,'email','Email','mail',1,1,1,20,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (3,'checkin_call','Check-in call','phone',1,1,1,30,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (4,'checkin_email','Check-in email','mail',1,1,1,40,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (5,'meeting','Meeting','users',1,1,1,50,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (6,'shoot','Shoot','camera',0,1,1,60,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (7,'interview','Interview','video',0,1,1,70,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+INSERT INTO `crm_event_types` (`id`, `key`, `label`, `icon`, `counts_as_contact`, `is_system`, `is_active`, `sort`, `created_at`, `updated_at`) VALUES (8,'other','Other','calendar',0,1,1,90,'2026-11-24 00:00:00','2026-11-24 00:00:00');
+
+INSERT INTO `migrations` (`id`,`migration`,`batch`) VALUES
+(375,'2026_11_24_100000_create_crm_core_tables',195),
+(376,'2026_11_24_110000_create_crm_event_tables',195),
+(377,'2026_11_24_120000_create_crm_email_tables',195),
+(378,'2026_11_24_130000_create_crm_drip_and_campaign_tables',195),
+(379,'2026_11_24_140000_create_recruit_tables',195),
+(380,'2026_11_24_150000_create_crm_feature_tables',195),
+(381,'2026_11_24_160000_create_crm_intake_receipts',195),
+(382,'2026_11_24_161000_add_booking_details_to_crm_quotes',195),
+(383,'2026_11_24_180000_add_crm_communication_receipts',195);

@@ -9,6 +9,62 @@ service is outside this migration. The actual target host, its administrator
 preparation, backup destination/retention, and maintenance window must be
 confirmed before cutover. Local success does not substitute for that acceptance.
 
+## Sales CRM on SQLite before cutover
+
+The CRM release adds nine migrations dated 24 November and 37 tables with the `crm_` or `recruit_` prefix or the name `email_suppressions`. Production conversion must start with a SQLite online backup taken **after** those migrations and the client import. The MySQL schema dump is a clean-install baseline. It includes the migration ledger, eight system event types and three unpublished starter drips with their 30 steps. It contains no contacts, applicants, quotes, messages, tokens or provider credentials.
+
+1. On a rehearsal copy, identify the deployed backend commit and verify every CRM migration is applied using `artisan migrate:status`. Take a new SQLite online backup, verify integrity, preserve its SHA-256 and run the schema drift and `migrate.py plan` commands below. Include all 37 CRM tables plus the existing linked users, shoots and messaging tables in the new inventory. Count populated CRM rows and record issued IDs, opt-outs, explicit consent, live enrolments, queued sends, outstanding replies, public quotes and intake receipts.
+2. Audit application-level references before import. CRM currently indexes many relationship columns without database foreign keys. Check contact-to-client and rep IDs, quote-to-shoot links, calendar links, message receipts, applicant documents and their parent records. Record every exception by stable row identity. Reconcile or explicitly account for each exception before using the fresh plan.
+3. Run the documented empty-target import with the fresh snapshot and exception manifest, then the independent read-only PHP verifier for that exact snapshot. Require identical field hashes and counts, including every CRM table and the highest issued identity for each auto-increment column. Compare the audited application references again and exercise the CRM feature suite on MySQL with fake providers. For the import workflow, restore into a new isolated target and rerun `crm:import-clients --dry-run` against the copied data to confirm already-linked clients remain linked.
+4. At the traffic handoff include the CRM scheduler (including website intake replay), workers, website intake, Resend inbound and Google Calendar changes in the existing writer freeze and replay accounting. Keep each provider idempotency key and each pending or uncertain send. Exercise representative CRM requests and webhook replays against the copy with external delivery disabled. A production cutover uses the separately reviewed full-site rehearsal and rollback procedure.
+
+On the production application host, create a protected rehearsal snapshot and inventory its CRM references. This reads the live database through SQLite's online backup API. Use the new file as the source for the isolated target. Run the final frozen backup separately at cutover.
+
+```bash
+set -euo pipefail
+umask 077
+cd /var/www/backend
+install -d -m 0700 "$HOME/mysql-rehearsals"
+run_dir=$(mktemp -d "$HOME/mysql-rehearsals/crm-XXXXXXXX")
+source_db=$(php -r 'require "vendor/autoload.php"; $app=require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); $db=$app["db"]->connection(); if ($db->getDriverName()!=="sqlite" || !is_file($db->getDatabaseName())) {exit(1);} echo realpath($db->getDatabaseName());')
+php scripts/deploy/backup-sqlite.php "$source_db" "$run_dir/frozen.sqlite"
+sha256sum "$run_dir/frozen.sqlite" | tee "$run_dir/frozen.sha256"
+python3 - "$run_dir/frozen.sqlite" <<'PY'
+import pathlib, sqlite3, sys
+snapshot = pathlib.Path(sys.argv[1]).resolve(strict=True)
+db = sqlite3.connect(snapshot.as_uri() + "?mode=ro&immutable=1", uri=True)
+tables = sorted(row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                if row[0].startswith(("crm_", "recruit_")) or row[0] == "email_suppressions")
+assert len(tables) >= 37, "Snapshot predates the complete CRM release"
+for table in tables:
+    name = '"' + table.replace('"', '""') + '"'
+    print(table, db.execute("SELECT count(*) FROM " + name).fetchone()[0])
+for source, column, parent in [
+    ("crm_contacts", "client_user_id", "users"), ("crm_contacts", "assigned_rep_id", "users"),
+    ("crm_quotes", "contact_id", "crm_contacts"), ("crm_quotes", "booking_shoot_id", "shoots"),
+    ("crm_event_calendar_links", "event_id", "crm_events"), ("crm_sms_requests", "message_id", "messages"),
+    ("recruit_applicant_files", "applicant_id", "recruit_applicants"),
+]:
+    query = f"SELECT count(*) FROM {source} c LEFT JOIN {parent} p ON p.id=c.{column} WHERE c.{column} IS NOT NULL AND p.id IS NULL"
+    print(f"{source}.{column} missing parent", db.execute(query).fetchone()[0])
+PY
+```
+
+On the isolated rehearsal host, set `snapshot` to the protected copy's absolute path. Check it against the source checksum from the previous command before planning. The following uses the rehearsal branch scripts.
+
+```bash
+snapshot=/protected/frozen.sqlite
+snapshot_sha=$(sha256sum "$snapshot" | cut -d' ' -f1)
+test "$snapshot_sha" = "$EXPECTED_SNAPSHOT_SHA256"
+python3 scripts/mysql/migrate.py plan --snapshot "$snapshot" --snapshot-sha256 "$snapshot_sha" --output /protected/new-crm-plan
+```
+
+Review the new exceptions and schema plan. Use the `import-empty` and `verify-fields.php` commands below with the same snapshot and their independently checked fingerprints. Keep the full private reports with the rehearsal. Production customer records never belong in the schema dump.
+
+To reproduce the small CRM conversion check, run `APP_ENV=testing php scripts/mysql/crm-rehearsal-fixture.php /tmp/crm-test.sqlite` with an unused filename. The fixture is created with mode 0600. Run the same checksum-bound plan, empty-target import and independent read as below against an isolated, socket-only MySQL 8.4.13 service. The fixture is synthetic and contains consent, a quote, Unicode JSON intake, an SMS request and the fixed campaign/event defaults. The November 24 run verified 37 tables, 48 rows and 462 fields with zero mismatches and zero MySQL warnings. Test the native Laravel migration path with `php vendor/bin/phpunit -c phpunit.mysql.xml tests/MySql/RecentFeatureMigrationCompatibilityTest.php` and `php vendor/bin/phpunit -c phpunit.mysql.xml tests/Feature/Crm` on the dedicated test database.
+
+The release candidate containing backend 9487965492cc9b9575a951ff9a1e415986327b21 passed both suites on the restored MySQL baseline (100 tests, 861 assertions).
+
 ## Release and target preparation
 
 1. Freeze a reviewed backend commit and the corresponding current frontend

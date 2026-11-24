@@ -165,6 +165,69 @@ final class RecentFeatureMigrationCompatibilityTest extends TestCase
         $this->assertConstraintError(fn () => DB::table('editor_payouts')->insert($row + ['shoot_service_id' => 103]), 1062);
     }
 
+    #[DataProvider('parentTypes')]
+    public function test_crm_migrations_support_existing_parent_ids_and_reference_data(bool $unsigned): void
+    {
+        $this->assertSame('mysql', DB::getDriverName());
+        $this->assertSame('repro_mysql_test', DB::connection()->getDatabaseName());
+        $this->assertSame('repro_test', DB::connection()->getConfig('username'));
+        $connection = DB::getDefaultConnection();
+        $probe = 'crm_recent_feature_probe';
+        config(['database.connections.'.$probe => array_replace(DB::connection()->getConfig(), [
+            'prefix' => 'q_', 'prefix_indexes' => true,
+        ])]);
+        DB::setDefaultConnection($probe);
+        Schema::clearResolvedInstance('db.schema');
+        $tables = fn () => array_column(DB::select(
+            'SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LEFT(TABLE_NAME,2)=?',
+            ['q_']
+        ), 'name');
+        $ownsTables = false;
+        try {
+            $this->assertSame([], $tables(), 'Refuse existing CRM migration probe tables.');
+            $ownsTables = true;
+            foreach (['users', 'shoots'] as $parent) {
+                Schema::create($parent, fn (Blueprint $t) => $t->bigInteger('id', unsigned: $unsigned)->primary());
+                DB::table($parent)->insert(['id' => 4294967301]);
+            }
+            $migrations = array_filter(glob(database_path('migrations/2026_11_24_*.php')),
+                fn ($file) => preg_match('/_(crm|recruit)_/', basename($file)));
+            $this->assertCount(9, $migrations);
+            foreach ($migrations as $file) {
+                (require $file)->up();
+            }
+            $this->assertCount(39, $tables());
+            $this->assertSame(8, DB::table('crm_event_types')->count());
+            $this->assertSame(3, DB::table('crm_drip_campaigns')->where('status', 'draft')->count());
+            $this->assertSame(30, DB::table('crm_drip_steps')->count());
+            $id = DB::table('crm_contacts')->insertGetId([
+                'name' => 'Migration fixture', 'name_normalized' => 'migration fixture', 'stage' => 'inquiry',
+                'segment' => 'residential', 'client_user_id' => 4294967301,
+                'review_reasons' => json_encode(['audit'], JSON_THROW_ON_ERROR),
+            ]);
+            DB::table('crm_quotes')->insert(['number' => 'Q-TEST', 'public_token' => 'fixture', 'contact_id' => $id,
+                'booking_status' => 'requested', 'booking_shoot_id' => 4294967301, 'total' => 15.25]);
+            $this->assertSame(1, DB::table('crm_contacts')->join('users', 'users.id', '=', 'crm_contacts.client_user_id')->count());
+            $this->assertSame(1, DB::table('crm_quotes')->join('shoots', 'shoots.id', '=', 'crm_quotes.booking_shoot_id')->count());
+            $this->assertSame(1, DB::table('crm_contacts')->whereJsonContains('review_reasons', 'audit')->count());
+            $this->assertConstraintError(fn () => DB::table('crm_quotes')->insert(['number' => 'Q-TEST2',
+                'public_token' => 'fixture2', 'contact_id' => $id, 'booking_shoot_id' => 4294967301]), 1062);
+            foreach (array_reverse($migrations) as $file) {
+                (require $file)->down();
+            }
+            $this->assertCount(2, $tables());
+        } finally {
+            if ($ownsTables) {
+                foreach ($tables() as $name) {
+                    Schema::dropIfExists(substr($name, 2));
+                }
+            }
+            DB::setDefaultConnection($connection);
+            Schema::clearResolvedInstance('db.schema');
+            DB::purge($probe);
+        }
+    }
+
     private function assertConstraintError(callable $write, int $number): void
     {
         try {
