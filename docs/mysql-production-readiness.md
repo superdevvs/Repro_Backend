@@ -532,6 +532,20 @@ business rollback. The runtime writer policy must preserve this behavior.
 Having that second session wait for a token held by the business session
 would block its own caller.
 
+Two more native fixtures at `26cc2fe4` exercised the actual Listing Studio
+services. The counter used a narrowly granted synthetic account and committed
+while an independent observer verified the business token was held. A
+contended counter write took about one second, logged one generic error and
+added no duplicate. The business connection kept its five-second lock timeout.
+In the quota-rejection run, the actual service consumed a synthetic admission
+under the token, then returned `trial_daily_limit` with HTTP status 429.
+An independent reader verified rollback restored the admission and guard,
+and exactly one counter committed afterward. The provider readiness check
+was stubbed in the isolated fixture. The two report SHA-256 values are
+`bcfbf43a2f8f265f41bcec9bed70c79b707a8120825b8ab0171ecc1128641f47`
+and `f0ab9ec918ba2f225deae68e48928207e40f9a3268f4742b45fd312c898c720a`.
+Runtime account routing and the other telemetry writes still need evidence.
+
 The refreshed read-only host inventory observed 12 queue workers. Three use
 Supervisor, one uses the media archives service, and eight appear under the
 cron service. PHP-FPM and nginx are active. The final rehearsal must verify
