@@ -308,8 +308,19 @@ intact. The server exited normally and its private runtime was removed. The
 report SHA-256 is
 `7a96ef45b3e5a142000b6261c49ec9f5b30654bdd4b4d3d5485bc4b99f53bf85`.
 The disabled-by-default two-minute timer, dispatch units and unknown-outcome
-guard passed offline contract checks. Running the composed timer and follower
-together on the isolated target remains a separate operational test.
+guard passed offline contract checks.
+
+The combined Maverick rehearsal passed with transient systemd units on a
+disposable native MySQL 8.4.13 source. Two real timer activations occurred
+120.180 seconds apart. The first rotated one file and dispatched the archive
+job on success. On the next tick, the rotator saw automatic purge enabled,
+refused to call the routine, cleared the rotation guard and dispatched the
+archive job on failure. The archive job used its separate account and an
+explicit read-only mount. It verified both encrypted publications over
+private loopback TLS and advanced the checkpoint through `binlog.000003`.
+All twelve temporary units,
+runtime directories and staged packet files were removed. The report SHA-256
+is `c009060b0258d6a70a4f1c6c5a95a3663651d04f6f48790ff45de88256b06952`.
 
 The local cutover adapter froze a disposable SQLite Laravel state, copied
 four fixture tables into MySQL, verified read-only application access and

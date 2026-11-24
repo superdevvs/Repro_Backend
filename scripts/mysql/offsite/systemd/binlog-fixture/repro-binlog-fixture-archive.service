@@ -31,4 +31,5 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=yes
+ReadOnlyPaths=/var/lib/repro-mysql84-binlog-fixture
 InaccessiblePaths=-/var/lib/repro-binlog-fixture-rotation
