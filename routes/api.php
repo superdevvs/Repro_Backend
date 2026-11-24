@@ -5,6 +5,7 @@ require __DIR__.'/mobile-assistant.php';
 require __DIR__.'/copilot.php';
 require __DIR__.'/groundwire-sms.php';
 require __DIR__.'/message-media.php';
+require __DIR__.'/crm.php';
 
 use App\Http\Controllers\Admin\AccountingExpenseController;
 use App\Http\Controllers\Admin\AccountLinkController;

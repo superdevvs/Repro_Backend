@@ -168,7 +168,7 @@ class RolePermissionService
             $normalized[$roleId] = $this->normalizePermissionIds($incomingIds, $catalogIds);
         }
 
-        $normalized = $this->revokeEditorAiStudio($normalized, $catalogIds);
+        $normalized = $this->revokeCrmRestricted($this->revokeEditorAiStudio($normalized, $catalogIds), $catalogIds);
         $this->savePermissions($normalized);
 
         return $normalized;
@@ -383,7 +383,104 @@ class RolePermissionService
             $permissions[$roleId] = $this->normalizePermissionIds($rolePermissions, $catalogIds);
         }
 
-        return $this->revokeEditorAiStudio($permissions, $catalogIds);
+        $permissions = $this->seedCrmDefaults($permissions, $catalogIds);
+
+        return $this->revokeCrmRestricted($this->revokeEditorAiStudio($permissions, $catalogIds), $catalogIds);
+    }
+
+    /** Settings key that records the CRM permissions were seeded once. */
+    public const CRM_SEEDED_KEY = 'permissions.seeded.crm.v1';
+
+    /** Never grantable to any role or user except the super admin. */
+    public const CRM_NEVER_GRANTABLE = ['crm-signatures-approve'];
+
+    /**
+     * Existing installs already have a stored role map, so new catalog entries
+     * would never reach any role. Apply the CRM defaults exactly once; after
+     * that an administrator's changes to the role map are left alone.
+     */
+    private function seedCrmDefaults(array $permissions, array $catalogIds): array
+    {
+        if (Setting::query()->where('key', self::CRM_SEEDED_KEY)->exists()) {
+            return $permissions;
+        }
+
+        foreach ($this->catalog() as $group) {
+            foreach ($group['permissions'] as $permission) {
+                if (! str_starts_with($permission['resource'], 'crm-')) {
+                    continue;
+                }
+                foreach ($permission['defaultRoles'] as $roleId) {
+                    if (isset($permissions[$roleId]) && $roleId !== 'superadmin') {
+                        $permissions[$roleId][] = $permission['id'];
+                    }
+                }
+            }
+        }
+
+        foreach ($permissions as $roleId => $ids) {
+            $permissions[$roleId] = $this->normalizePermissionIds($ids, $catalogIds);
+        }
+
+        Setting::query()->updateOrCreate(
+            ['key' => self::CRM_SEEDED_KEY],
+            ['value' => now()->toIso8601String(), 'type' => 'string', 'description' => 'Sales CRM default permissions were applied to the role map.'],
+        );
+
+        return $permissions;
+    }
+
+    /** Signature approval stays with the super admin, whatever the stored map says. */
+    private function revokeCrmRestricted(array $permissions, array $catalogIds): array
+    {
+        foreach ($permissions as $roleId => $ids) {
+            if ($roleId === 'superadmin') {
+                continue;
+            }
+            $permissions[$roleId] = $this->normalizePermissionIds(array_values(array_diff($ids, self::CRM_NEVER_GRANTABLE)), $catalogIds);
+        }
+
+        return $permissions;
+    }
+
+    public static function isCrmRecruitingPermission(string $permissionId): bool
+    {
+        return str_starts_with($permissionId, 'crm-recruiting-');
+    }
+
+    /**
+     * Guard changes that only the super admin may make.
+     *
+     * - Signature approval can never be granted to a role or a user.
+     * - Recruiting access (role map or per-user) can only be changed by a super admin,
+     *   otherwise an administrator could grant it to themselves.
+     *
+     * @param  string[]  $before  permission ids before the change
+     * @param  string[]  $after  permission ids after the change
+     */
+    public function assertCrmRestrictedChangeAllowed(?User $actor, array $before, array $after, bool $grants = true): void
+    {
+        if ($grants && array_intersect($after, self::CRM_NEVER_GRANTABLE) !== []) {
+            throw new \App\Exceptions\PublicBusinessRuleException('Email signature approval stays with the Super Admin and cannot be granted.');
+        }
+
+        $changed = array_merge(array_diff($before, $after), array_diff($after, $before));
+        $recruitingChanged = array_filter($changed, fn ($id) => self::isCrmRecruitingPermission((string) $id));
+
+        if ($recruitingChanged !== [] && ! ($actor && $this->normalizedUserRoles($actor)->contains('superadmin'))) {
+            throw new \App\Exceptions\PublicBusinessRuleException('Only the Super Admin can grant or remove recruiting access.');
+        }
+    }
+
+    /** @return array{allow: string[], deny: string[]} */
+    public function currentOverrides(User $user): array
+    {
+        return $this->normalizedOverridesForUser($user);
+    }
+
+    public function storedRoleMap(): array
+    {
+        return $this->storedPermissions();
     }
 
     /**

@@ -127,6 +127,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission' => PermissionMiddleware::class,
             'external_api_key' => ValidateExternalApiKey::class,
             'telnyx.toolbridge' => TelnyxToolBridgeAuth::class,
+            'crm.enabled' => \App\Http\Middleware\EnsureCrmEnabled::class,
         ]);
     })
     ->withBroadcasting(
