@@ -549,6 +549,9 @@ class NightlyRunner:
                     try:
                         try:
                             result, outputs = getattr(self, f"stage_{name}")(journal)
+                        except Refused as error:
+                            # A host check that refuses mid-night stops the night like any other stage failure.
+                            raise Stop(str(error)) from error
                         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                             raise Stop(f"unexpected-{type(error).__name__}") from error
                     except Stop as stop:
@@ -685,11 +688,12 @@ class NightlyRunner:
             raise Stop("insufficient-disk")
         live_release = host.deployed_release()
         snapshot = self.run_dir / "snapshot.sqlite"
+        path = self.run_dir / "copy-receipt.json"
         started = host.monotonic()
-        result = host.run(self.commands("capture", {"live_db": live.path, "snapshot": snapshot}), timeout_s=360,
-                          env=self.tool_env(self.run_dir), cwd=self.run_dir)
-        copy_seconds = host.monotonic() - started
         try:
+            result = host.run(self.commands("capture", {"live_db": live.path, "snapshot": snapshot}), timeout_s=360,
+                              env=self.tool_env(self.run_dir), cwd=self.run_dir)
+            copy_seconds = host.monotonic() - started
             if result.returncode != 0 or result.stdout.strip() != "sqlite_consistent_backup=passed":
                 raise Stop("capture-failed")
             after = host.live_database()
@@ -705,28 +709,30 @@ class NightlyRunner:
             completed = host.utc_now()
             if completed.date() != self.scheduled:
                 raise Stop("capture-date-differs")
-        except Stop:
+            receipt = {
+                "backup_tool_sha256": file_sha256(self.tools["backup"]), "completed_utc": completed.isoformat(),
+                "copy_seconds": round(copy_seconds, 3), "crm_migrations": crm["migrations"],
+                "crm_tables": crm["tables"], "linked_client_contacts": crm["linked"], "release": live_release,
+                "result": "read-only-online-backup-pass", "snapshot_bytes": snapshot.stat().st_size,
+                "snapshot_path": str(snapshot), "snapshot_sha256": file_sha256(snapshot),
+                "source_opened_read_only": True,
+            }
+            write_json(path, receipt, indent=None)
+            try:
+                verify_nightly_capture.read_capture(path, file_sha256(path), expected_source_release=live_release)
+            except (check.Missing, check.Failed) as error:
+                raise Stop("capture-receipt-invalid") from error
+            tool_sha256 = {name: file_sha256(tool) for name, tool in self.tools.items()}
+        except BaseException:
+            # A copy that did not pass every check, including one cut short by a
+            # timeout, a refusal or a signal, is private data with no receipt.
             snapshot.unlink(missing_ok=True)
-            raise
-        receipt = {
-            "backup_tool_sha256": file_sha256(self.tools["backup"]), "completed_utc": completed.isoformat(),
-            "copy_seconds": round(copy_seconds, 3), "crm_migrations": crm["migrations"], "crm_tables": crm["tables"],
-            "linked_client_contacts": crm["linked"], "release": live_release, "result": "read-only-online-backup-pass",
-            "snapshot_bytes": snapshot.stat().st_size, "snapshot_path": str(snapshot),
-            "snapshot_sha256": file_sha256(snapshot), "source_opened_read_only": True,
-        }
-        path = self.run_dir / "copy-receipt.json"
-        write_json(path, receipt, indent=None)
-        try:
-            verify_nightly_capture.read_capture(path, file_sha256(path), expected_source_release=live_release)
-        except (check.Missing, check.Failed) as error:
             path.unlink(missing_ok=True)
-            raise Stop("capture-receipt-invalid") from error
+            raise
         return {"snapshot_sha256": receipt["snapshot_sha256"], "snapshot_bytes": receipt["snapshot_bytes"],
                 "live_release": live_release, "completed_utc": receipt["completed_utc"],
                 "as_of_utc": completed.strftime("%Y-%m-%dT%H:%M:%SZ"), "copy_ms": milliseconds(copy_seconds),
-                "linked_client_contacts": crm["linked"],
-                "tool_sha256": {name: file_sha256(path) for name, path in self.tools.items()}}, ["copy-receipt.json"]
+                "linked_client_contacts": crm["linked"], "tool_sha256": tool_sha256}, ["copy-receipt.json"]
 
     def crm_ledger(self, snapshot: Path) -> dict:
         expected = self.cfg["crm_migrations"]
@@ -1249,20 +1255,44 @@ class LocalHost:
         return True
 
     def stop_stale_mysqld(self, pid: int | None, work: Path) -> None:
-        if not isinstance(pid, int) or pid <= 1:
-            return
-        try:
-            command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-        except OSError:
-            return
-        if f"--datadir={work}/data".encode() not in command:
-            return
-        os.kill(pid, signal.SIGTERM)
+        """Stop every process still serving this night's work directory.
+
+        The journaled pid is only a hint: the runner can stop between starting
+        mysqld and journaling its pid, so processes are found by their exact
+        `--datadir` argument, which names this night's private work directory.
+        """
+        marker = f"--datadir={work}/data".encode()
+
+        def holders() -> list[int]:
+            found = []
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdigit() or int(entry.name) <= 1 or int(entry.name) == os.getpid():
+                    continue
+                try:
+                    if marker in (entry / "cmdline").read_bytes().split(b"\0"):
+                        found.append(int(entry.name))
+                except OSError:
+                    continue
+            return found
+
+        def signal_all(signum: int) -> None:
+            for holder in holders():
+                try:
+                    os.kill(holder, signum)
+                except ProcessLookupError:
+                    pass
+
+        signal_all(signal.SIGTERM)
         for _ in range(70):
-            if not Path(f"/proc/{pid}").exists():
+            if not holders():
                 return
             time.sleep(0.5)
-        os.kill(pid, signal.SIGKILL)
+        signal_all(signal.SIGKILL)
+        for _ in range(10):
+            if not holders():
+                return
+            time.sleep(0.5)
+        raise Refused("stale-mysqld-did-not-stop")
 
     def start_mysqld(self, argv: list[str], *, env: dict, cwd: Path):
         return subprocess.Popen(list(map(str, argv)), env=env, cwd=cwd, stdin=subprocess.DEVNULL,

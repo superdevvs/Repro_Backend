@@ -463,6 +463,37 @@ class NightlyRunnerTests(unittest.TestCase):
         self.assertFalse((self.outputs() / "snapshot.sqlite").exists())
         self.assertFalse((self.outputs() / "copy-receipt.json").exists())
 
+    def test_a_refusal_after_the_copy_is_a_journaled_stop_and_the_copy_is_removed(self):
+        live_release = self.host.deployed_release
+        reads = []
+
+        def deploy_metadata():
+            reads.append(1)
+            if len(reads) > 1:  # unreadable when re-read after the copy, as during a deploy
+                raise nightly.Refused("deploy-metadata-unreadable")
+            return live_release()
+
+        self.host.deployed_release = deploy_metadata
+        receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                         ("stopped", "capture", "deploy-metadata-unreadable"))
+        self.assertEqual(json.loads((self.outputs() / "journal.json").read_bytes())["status"], "stopped")
+        self.assertTrue((self.outputs() / "run-receipt.json").exists())
+        self.assertFalse((self.outputs() / "snapshot.sqlite").exists())
+
+    def test_a_copy_that_fails_part_way_leaves_no_partial_snapshot(self):
+        copy_file = self.host.on_backup
+
+        def interrupted(argv, timeout_s, _input):
+            copy_file(argv, timeout_s, _input)  # the backup tool is killed after writing part of the copy
+            raise subprocess.TimeoutExpired("backup-sqlite.php", timeout_s)
+
+        self.host.on_backup = interrupted
+        receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"]), ("stopped", "capture"))
+        self.assertFalse((self.outputs() / "snapshot.sqlite").exists())
+        self.assertFalse((self.outputs() / "copy-receipt.json").exists())
+
     def test_unconfigured_finance_and_applicant_steps_leave_a_non_qualifying_draft(self):
         config = copy.deepcopy(self.config) | {"finance": None, "applicant_files_root": None}
         receipt = self.run_night(config=config)

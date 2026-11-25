@@ -142,6 +142,19 @@ class LocalHostTests(unittest.TestCase):
         self.host.stop_stale_mysqld(ours.pid, work)
         self.assertIsNotNone(ours.wait(timeout=10))
 
+    def test_a_stale_mysqld_without_a_journaled_pid_is_found_by_its_work_directory(self):
+        # The runner can stop between starting mysqld and journaling its pid.
+        work = self.root / "work-def"
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                  f"--datadir={self.root}/elsewhere/data"])
+        ours = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"--datadir={work}/data"])
+        self.addCleanup(other.kill)
+        self.addCleanup(ours.kill)
+        time.sleep(0.2)
+        self.host.stop_stale_mysqld(None, work)
+        self.assertIsNotNone(ours.wait(timeout=10))
+        self.assertIsNone(other.poll())
+
 
 if __name__ == "__main__":
     unittest.main()
