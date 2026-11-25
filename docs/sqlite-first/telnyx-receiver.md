@@ -132,6 +132,23 @@ code without the replay command, run the replay by hand. Texts wait in
   longer than that can still skip a reminder.
 - Cross-check a long window against Telnyx's own failed-delivery list.
 
+## Owner decisions still open
+
+- **Off-server copy before the 200.** The receiver answers 200 once the
+  entry is fsynced on the local disk. Losing that disk during a maintenance
+  window loses texts Telnyx was told we have. Closing this needs an approved
+  private off-server target, written and confirmed before the 200.
+- **Turning the switches on.** `TELNYX_MAINTENANCE_CAPTURE_ENABLED` and
+  `SCHEDULER_HOLD_ENABLED` stay `false` until the owner approves, through a
+  separately approved deploy and `php artisan config:cache`.
+- **Callers during maintenance.** The AI tool bridge (`/api/telnyx-ai/tools/*`)
+  still gets 503. What an inbound caller hears then is for the drill to check.
+- **Unique index on `messages.provider_message_id`.** On SQLite the inbound
+  handler now checks for a stored copy inside its write, which stops a live
+  delivery and a replay of the same text from both being stored. MySQL needs
+  the index (or a locking read) for the same guarantee. Existing duplicate
+  rows must be checked before an index can be added.
+
 ## Tests
 
 ```bash
@@ -140,3 +157,35 @@ php vendor/bin/phpunit tests/Feature/TelnyxMaintenanceCaptureTest.php \
   tests/Feature/SchedulerHoldTest.php
 python3 scripts/deploy/test_deploy_maintenance_window.py   # Linux only
 ```
+
+Two tests fork a second PHP process (pcntl and posix) to play PHP-FPM or the
+replay at the same moment as the other.
+
+## Codex review round (25 Nov)
+
+Codex reviewed 6fa49bbd; fixes are on top of 171d25dd.
+
+- telnyx-receiver#1 (replay after `up` could miss a text still being saved;
+  the failed-deploy cleanup only replayed before `up`): fixed in 0fc6b324.
+  Capture lock with a re-check of maintenance mode, a 30-second wait in every
+  replay, and a second replay after `up` in the cleanup.
+- telnyx-receiver#2 (a replayed text showed and sorted at the replay time):
+  fixed in ceaf39bd. A replayed incoming text's `created_at` is its arrival
+  time.
+- telnyx-receiver#3 (deploy hold ignored `SCHEDULER_HOLD_DIRECTORY`): fixed
+  in c78a9729. The deploy asks `php artisan scheduler:hold path`.
+- reviewer#1 (no off-server copy before the 200): owner decision, above.
+- reviewer#2 (switches off; callers during maintenance): owner decision, above.
+- reviewer#3 (the about-1-second race around `up`): fixed with #1 in 0fc6b324.
+- reviewer#4 (a live delivery and a replay could both store one text): fixed
+  for SQLite in 1edefe87; the MySQL index is an owner decision, above.
+- reviewer#5 (Pint not run over the whole controller): not a defect. 14 of
+  the 16 PHP files this lane touches pass `pint --test`. The other two, the
+  controller and `AppServiceProvider.php`, fail it on base 8bb478e6 too, with
+  the same rules; reformatting them would bury the real change.
+- reviewer#6 (environment-only full-suite failures): not a defect. DNS checks
+  under `--network none` and uid-33 forks against the read-only vendor volume
+  fail the same way on base 8bb478e6.
+- MySQL 8.4.13: not run for this lane. Main's migrations stop on MySQL at
+  `2024_07_09_000001_create_shoot_service_table.php` (error 1824, `shoots`
+  does not exist yet); that is PR #46's work.
