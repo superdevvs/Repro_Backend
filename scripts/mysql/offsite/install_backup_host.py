@@ -290,7 +290,7 @@ def build_job(name: str, settings: dict) -> Job:
                  "disks": settings["disks"], "access_logs": settings["access_logs"],
                  "laravel_log": f"{app}/storage/logs/laravel.log",
                  "cache_dir": f"{app}/storage/framework/cache/data", "cache_group_writable": True,
-                 "money_queries": None, "money_baseline_file": None, "binlog_checkpoint_file": None,
+                 "money_queries": None, "money_baseline_file": None, "binlog_checkpoint_file": None, "binlog_dir": None,
                  "restore_receipts": None, "rehearsal_receipts": None}
         job.files = tool_files(ALERT_TOOLS) + [
             FileItem("/etc/repro-alert/bridge.json", "root", "repro-alert", 0o640, json_bytes(bridge), "rendered config"),

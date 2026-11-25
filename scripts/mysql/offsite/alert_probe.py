@@ -34,12 +34,13 @@ SAFE_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C", "TZ": "UTC"}
 PLAN_FIELDS = {
     "version", "inbox_dir", "memory_file", "conditions", "app_root", "expected_engine", "sqlite_database",
     "mysql", "disks", "access_logs", "laravel_log", "cache_dir", "cache_group_writable", "money_queries",
-    "money_baseline_file", "binlog_checkpoint_file", "restore_receipts", "rehearsal_receipts",
+    "money_baseline_file", "binlog_checkpoint_file", "binlog_dir", "restore_receipts", "rehearsal_receipts",
 }
 ACCESS_LINE = re.compile(rb'\[(\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\] "[^"]*" (\d{3}) ')
 CACHE_ERROR = re.compile(rb"storage/framework/cache.*(Permission denied|No space left|Read-only file system|"
                          rb"Failed to open stream|Unable to create)", re.IGNORECASE)
 SELECT_ONLY = re.compile(r"\s*SELECT\s[^;]*", re.IGNORECASE | re.DOTALL)
+BINLOG_NAME = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*)\.([0-9]{6,})")
 
 
 class Refusal(RuntimeError):
@@ -90,6 +91,9 @@ def parse_plan(raw: bytes) -> dict:
     need(plan["expected_engine"] in ("sqlite", "mysql"), "expected_engine must be sqlite or mysql")
     for name in ("inbox_dir", "memory_file", "app_root"):
         need(isinstance(plan[name], str) and Path(plan[name]).is_absolute(), "probe paths must be absolute")
+    for name in ("binlog_checkpoint_file", "binlog_dir"):
+        need(plan[name] is None or (isinstance(plan[name], str) and Path(plan[name]).is_absolute()),
+             "probe paths must be absolute")
     mysql = plan["mysql"]
     need(mysql is None or (isinstance(mysql, dict) and {"client", "defaults_file", "socket"} <= set(mysql)
                            <= {"client", "defaults_file", "socket", "database"}), "invalid MySQL monitor settings")
@@ -99,7 +103,7 @@ def parse_plan(raw: bytes) -> dict:
         "historical_money_totals_changed": ["money_queries", "money_baseline_file"],
         "queue_stale": ["sqlite_database" if plan["expected_engine"] == "sqlite" else "mysql"],
         "cache_write_failed": ["cache_dir", "laravel_log"], "mysql_restarted": ["mysql"],
-        "database_contention": ["mysql"], "backup_lag": ["binlog_checkpoint_file"],
+        "database_contention": ["mysql"], "backup_lag": ["binlog_checkpoint_file", "binlog_dir"],
         "restore_overdue": ["restore_receipts"], "rehearsal_failed": ["rehearsal_receipts"],
     }
     for name in chosen:
@@ -456,16 +460,33 @@ def database_contention(context: Context) -> tuple[str, str]:
     return ("fail" if increase > limit else "ok"), f"{increase} deadlocks or lock timeouts in the last hour"
 
 
+def archived_through(plan: dict) -> int:
+    """When MySQL closed the newest archived binary log: its last write, the rotation to the checkpoint's next file.
+
+    MySQL 8.4.13 last writes a log when it rotates away from it (its mtime is the FLUSH second,
+    checked natively), and every transaction committed before then is archived. The checkpoint's own write
+    time is not the recovery point: after an outage the collector's file and byte limits cut
+    each catch-up batch to the oldest closed logs, and every batch rewrites the checkpoint now."""
+    with open(plan["binlog_checkpoint_file"], "rb") as stream:
+        record = json.loads(stream.read(64 * 1024 + 1))
+    next_file = record.get("next_file") if isinstance(record, dict) else None
+    match = BINLOG_NAME.fullmatch(next_file) if isinstance(next_file, str) else None
+    if match is None:
+        raise ValueError("the archive checkpoint names no binary log")
+    archived = f"{match.group(1)}.{int(match.group(2)) - 1:06d}"
+    return int(os.stat(Path(plan["binlog_dir"]) / archived).st_mtime)
+
+
 def backup_lag(context: Context) -> tuple[str, str]:
     limits = context.threshold("backup_lag")
     try:
-        lag = context.now - int(Path(context.plan["binlog_checkpoint_file"]).stat().st_mtime)
-    except OSError:
-        lag = None
+        lag = context.now - archived_through(context.plan)
+    except (OSError, ValueError):
+        lag = None  # No checkpoint, or the newest archived log is gone (purged only when over an hour old).
     late = lag is None or lag > limits["max_lag_seconds"]
     count = context.memory.get("backup_lag_late", 0) + 1 if late else 0
     context.memory["backup_lag_late"] = count
-    detail = "no archive checkpoint" if lag is None else f"last archive {lag} s ago"
+    detail = "no archived binary log found" if lag is None else f"archived through {lag} s ago"
     return ("fail" if count >= limits["consecutive_checks"] else "ok"), detail
 
 

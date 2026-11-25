@@ -200,7 +200,7 @@ later conditions are tried.
 | wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan) | set the probe plan's expected engine to the other one |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
-| backup_lag | wake | probe (archive checkpoint older than 300 s, two checks) | pause the archive timer |
+| backup_lag | wake | probe (newest archived binlog, the one before the checkpoint's `next_file`, last written over 300 s ago, two checks; needs `binlog_dir`) | pause the archive timer |
 | server_error_rate | wake | probe (5xx over 2% in 30 min, at least 50 requests; reads `access.log.1` too) | fixture access log |
 | historical_money_totals_changed | wake | probe (reviewed SELECTs vs baseline digest) | change a row on the rehearsal copy |
 | rehearsal_failed | daytime | probe (newest nightly receipt red or older than 36 h) | fixture receipt |
@@ -219,6 +219,15 @@ baseline from `alert_probe.py money-digest`. The MySQL monitor account needs
 `PROCESS` (MySQL 8.4.13 refuses `INNODB_METRICS` without it, checked in review)
 and `SELECT` on the app's `jobs` table and the money query tables. Without
 `PROCESS`, `database_contention` fails every minute.
+
+`backup_lag` measures the recovery point, not the archive's last run: the
+checkpoint's `next_file` says every earlier log is published, and the newest
+of those was last written by MySQL when it rotated away from it. After an
+outage each catch-up batch is cut to the oldest closed logs and rewrites the
+checkpoint at once, so the checkpoint's own write time would report `ok` while
+recovery is still hours behind. The probe plan needs `binlog_checkpoint_file`
+and `binlog_dir` (the folder of the source's binary logs, which `repro-backup`
+can already traverse for the archive).
 
 `wrong_database_engine` reads the cached config first, because `Deploy-App`
 runs `php artisan config:cache` and Laravel then ignores `.env`: it takes the

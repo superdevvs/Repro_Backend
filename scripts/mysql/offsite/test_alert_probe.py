@@ -168,14 +168,23 @@ class DetectorTests(unittest.TestCase):
             "cache_dir": str(self.cache), "cache_group_writable": True,
             "money_queries": {"invoices": "SELECT COUNT(*), SUM(total) FROM invoices WHERE issued_on < '2026-11-01'"},
             "money_baseline_file": str(self.root / "money-baseline.json"),
-            "binlog_checkpoint_file": str(self.root / "checkpoint.json"),
+            "binlog_checkpoint_file": str(self.root / "checkpoint.json"), "binlog_dir": str(self.root / "binlogs"),
             "restore_receipts": {"directory": str(self.root / "restores"), "pattern": "restore-test-*.json",
                                  "result": "restore-test-passed"},
             "rehearsal_receipts": {"directory": str(self.root / "nightly"), "pattern": "nightly-*.json",
                                    "result": "nightly-data-green"},
         }
-        (self.root / "checkpoint.json").write_text("{}")
-        os.utime(self.root / "checkpoint.json", (NOW - 60, NOW - 60))
+        # The archive checkpoint as advance_binlog_checkpoint.py writes it: every log before
+        # next_file is published. binlog.000009 is the newest archived log; MySQL last wrote
+        # it when it rotated to binlog.000010.
+        (self.root / "checkpoint.json").write_text(json.dumps({
+            "schema": "repro.mysql.closed-binlog-checkpoint.v1", "source": {}, "next_file": "binlog.000010",
+            "last": {"first_file": "binlog.000009", "next_file": "binlog.000010"}}))
+        os.utime(self.root / "checkpoint.json", (NOW - 30, NOW - 30))
+        (self.root / "binlogs").mkdir()
+        for number, moment in ((8, NOW - 180), (9, NOW - 60), (10, NOW - 1)):
+            (self.root / "binlogs" / f"binlog.{number:06d}").write_bytes(b"\xfebin")
+            os.utime(self.root / "binlogs" / f"binlog.{number:06d}", (moment, moment))
         for kind, result in (("restores", "restore-test-passed"), ("nightly", "nightly-data-green")):
             (self.root / kind).mkdir()
             name = "restore-test-1.json" if kind == "restores" else "nightly-1.json"
@@ -457,10 +466,39 @@ class DetectorTests(unittest.TestCase):
     def test_backup_lag_needs_two_consecutive_late_checks(self):
         self.baseline()
         self.write_access(100, 1)
-        os.utime(self.root / "checkpoint.json", (NOW - 400, NOW - 400))
+        os.utime(self.root / "binlogs" / "binlog.000009", (NOW - 400, NOW - 400))
         self.assertEqual(self.run_probe()["backup_lag"]["state"], "ok")
         self.assertEqual(self.run_probe(NOW + 60)["backup_lag"]["state"], "fail")
         self.assertEqual(self.fail_pings(NOW + 60), {"backup_lag"})
+
+    def test_backup_lag_follows_the_last_archived_log_not_the_checkpoint_write(self):
+        # After an archive outage the collector's file and byte limits cut each catch-up batch to
+        # the oldest closed logs. Every such batch rewrites the checkpoint, so its write time is
+        # fresh while recovery is still an hour behind. Recovery reaches only the rotation that
+        # closed the newest archived log, which is the last write MySQL made to that file.
+        self.baseline()
+        self.write_access(100, 1)
+        os.utime(self.root / "binlogs" / "binlog.000009", (NOW - 3600, NOW - 3600))
+        os.utime(self.root / "checkpoint.json", (NOW - 5, NOW - 5))
+        self.run_probe()
+        statuses = self.run_probe(NOW + 60)
+        self.assertEqual(statuses["backup_lag"]["state"], "fail", statuses["backup_lag"])
+        self.assertIn("3660 s", statuses["backup_lag"]["detail"])
+
+    def test_backup_lag_fails_when_the_last_archived_log_is_gone(self):
+        self.baseline()
+        self.write_access(100, 1)
+        (self.root / "binlogs" / "binlog.000009").unlink()  # Purged: archived, but over an hour old.
+        self.run_probe()
+        self.assertEqual(self.run_probe(NOW + 60)["backup_lag"]["state"], "fail")
+
+    def test_backup_lag_needs_the_binlog_folder_in_the_plan(self):
+        self.plan["conditions"] = ["backup_lag"]
+        self.plan["expected_engine"] = "mysql"
+        probe.parse_plan(json.dumps(self.plan).encode())
+        self.plan["binlog_dir"] = None
+        with self.assertRaises(probe.Refusal):
+            probe.parse_plan(json.dumps(self.plan).encode())
 
     def test_restore_overdue_after_eight_days(self):
         def change():

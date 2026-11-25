@@ -246,6 +246,17 @@ class JobTests(unittest.TestCase):
         inbox = next(item for item in job.directories if item.path == "/var/lib/repro-alert-inbox")
         self.assertEqual((inbox.owner, inbox.group, inbox.mode), ("repro-backup", "repro-alert", 0o2750))
 
+    @unittest.skipUnless(os.name == "posix", "the tools check POSIX absolute paths")
+    def test_rendered_alert_configs_are_ones_the_bridge_and_probe_accept(self):
+        import alert_bridge
+        import alert_probe
+
+        job = installer.build_job("alerts", self.settings)
+        data = {item.path: item.data for item in job.files}
+        alert_bridge.parse_config(data["/etc/repro-alert/bridge.json"])
+        plan = alert_probe.parse_plan(data["/etc/repro-backup/alert-probe.json"])
+        self.assertEqual(plan["conditions"], installer.SETTING_DEFAULTS["probe_conditions"])
+
     def test_r2_rules_match_the_retention_verifier_format(self):
         locks, lifecycle = installer.r2_rules()
         expected = {"daily/": 30, "binlog/": 30, "monthly/": 365, "final-sqlite/": 365}
