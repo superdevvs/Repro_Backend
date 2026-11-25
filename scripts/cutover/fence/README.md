@@ -74,7 +74,9 @@ the worker itself still runs as its service account.
    measure the route seals, writer state, live database identity, effective
    configuration and release independently of the policy's expected values.
    The refresh takes the controller lock and then the exclusive writer lock
-   (failing at once if either is held), revokes prior authority
+   (failing at once if either is held), runs the caller's optional
+   `precondition` (for example: ingress still held, deploy fence published),
+   revokes prior authority
    and activation evidence, verifies the observation, rechecks the boot,
    policy, journal and lock inode, then atomically publishes the refreshed
    authority. If a probe fails, admissions remain held. Pending transitions

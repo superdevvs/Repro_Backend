@@ -243,11 +243,15 @@ def _publish(directory: int, record: bytes) -> None:
             pass
 
 
-def refresh_engine_evidence(observe: Callable[[str], HostAuthority]) -> None:
+def refresh_engine_evidence(observe: Callable[[str], HostAuthority],
+                            precondition: Callable[[], None] | None = None) -> None:
     """Refresh committed-journal authority while a trusted adapter has drained writers.
 
     The caller supplies a bounded read-only host probe. This entrypoint owns
     the exclusive flock and is separate from a runner's pending transition.
+    The optional precondition runs once both locks are held and before any
+    evidence is revoked, so its checks cannot race another controller; it
+    raises to leave the current proof untouched.
     """
     _require_root_installation()
     import fcntl
@@ -260,6 +264,8 @@ def refresh_engine_evidence(observe: Callable[[str], HostAuthority]) -> None:
     with open_protected(controller_path) as controller, open_protected(lock_path) as lock:
         fcntl.flock(controller, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if precondition is not None:
+            precondition()
         directory = os.open(EVIDENCE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             trusted(os.fstat(directory), directory=True)

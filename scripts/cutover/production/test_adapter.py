@@ -418,6 +418,60 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertTrue((self.root / "run" / "verified-engine.json").exists())
         self.assertFalse((self.root / "ingress" / "open").exists())
 
+    def test_refresh_racing_a_reopen_neither_fences_deploys_nor_revokes_the_proof(self):
+        # The reopen completes right after refresh's first ingress check.
+        self.race_refresh_with_reopen(after_check=1)
+
+    def test_reopen_racing_inside_the_refresh_locks_is_refused(self):
+        # The reopen starts while refresh holds the guard's locks, after its second ingress check.
+        self.assertFalse(self.race_refresh_with_reopen(after_check=2), "The reopen ran inside the refresh locks")
+
+    def race_refresh_with_reopen(self, after_check):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        runner.perform("abort")
+        _, racer, _ = self.host()
+        raced, checks = [], []
+
+        class ReopenAfterCheck(type(Path())):
+            def exists(self, *args, **kwargs):
+                observed = super().exists(*args, **kwargs)
+                checks.append(observed)
+                if len(checks) == after_check:
+                    # A second operator's reopen runs to completion right after this check.
+                    try:
+                        racer.reopen()
+                        raced.append("reopened")
+                    except UnsafeCutover as error:
+                        raced.append(str(error))
+                return observed
+
+        adapter.paths["ingress_open"] = ReopenAfterCheck(adapter.paths["ingress_open"])
+        with self.guard_paths():
+            try:
+                adapter.refresh()
+            except (UnsafeCutover, guard.Refused):
+                pass
+        self.assertEqual(1, len(raced))
+        marker = self.root / "etc" / "active"
+        if (self.root / "ingress" / "open").exists():
+            # The reopen won: the host is live, so refresh must leave it exactly as reopened.
+            self.assertFalse(deploy_marker.published(marker, IDENTITY.run_id),
+                             "refresh fenced deploys again on the reopened host")
+            policy = (self.root / "etc" / "policy.json").read_bytes()
+            evidence = (self.root / "run" / "verified-engine.json").read_bytes()
+            activation = (self.root / "run" / "verified-activation.json").read_bytes()
+            guard.verify(policy, journal.path.read_bytes(), evidence,
+                         machine_sha=guard.sha256((self.root / "machine-id").read_bytes()),
+                         boot_id=self.boot.read_text().strip(), action="deploy", expected_engine="sqlite",
+                         activation_raw=activation)
+        else:
+            # The refresh won: the reopen was refused and the host stays measured and held.
+            self.assertIn("Another host operator", raced[0])
+            self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id))
+        return (self.root / "ingress" / "open").exists()
+
     def test_refresh_on_an_open_host_keeps_the_current_proof(self):
         self.started()
         (self.root / "ingress" / "open").unlink()

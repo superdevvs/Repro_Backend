@@ -373,17 +373,26 @@ class ProductionAdapter:
 
         The guard revokes the current proof before it measures the host. On a
         live host that would hold the scheduler and every restarted worker, so
-        refresh refuses while the ingress open marker exists.
+        refresh refuses while the ingress open marker exists. The check and the
+        fence run inside the guard's controller and writer locks, before any
+        revocation, so a reopen cannot finish between them; the early check only
+        gives a clear message without taking the locks.
         """
-        if self.paths["ingress_open"].exists() or self.paths["ingress_open"].is_symlink():
-            raise UnsafeCutover("Ingress is open. Refresh measures a held host only, for example after a reboot")
+        def held_host() -> None:
+            self._refuse_open_ingress()
+            state = self.journal.read()
+            if (state is not None and state.get("phase") in ("planned", "sqlite_authoritative")
+                    and state.get("pending") is None):
+                self.hold_deploys()
+
+        self._refuse_open_ingress()
         # The guard checks the evidence directory's chain before it publishes into it.
         _runtime_directory(self.paths["evidence"].parent)
-        state = self.journal.read()
-        if (state is not None and state.get("phase") in ("planned", "sqlite_authoritative")
-                and state.get("pending") is None):
-            self.hold_deploys()
-        guard.refresh_engine_evidence(self.host_authority)
+        guard.refresh_engine_evidence(self.host_authority, precondition=held_host)
+
+    def _refuse_open_ingress(self) -> None:
+        if self.paths["ingress_open"].exists() or self.paths["ingress_open"].is_symlink():
+            raise UnsafeCutover("Ingress is open. Refresh measures a held host only, for example after a reboot")
 
     def reopen(self) -> None:
         """Reopen SQLite writers in order once the guard accepts the committed SQLite authority.
