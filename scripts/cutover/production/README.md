@@ -10,7 +10,8 @@ approval for each action (handoff item W1).
 | --- | --- | --- |
 | `../fence/guard.py` | `/opt/repro-cutover-fence/guard.py` | Admission check (fixed path) |
 | `../runner.py` | `/opt/repro-cutover-fence/runner.py` | Journal and state machine |
-| `cli.py`, `adapter.py`, `admit.py`, `deploy_marker.py`, `sqlite_seal.py` | `/opt/repro-cutover-fence/production/` | Controller, host adapter, writer wrapper, fences |
+| `cli.py`, `adapter.py`, `admit.py`, `deploy_marker.py`, `sqlite_seal.py`, `mysql_probe.py` | `/opt/repro-cutover-fence/production/` | Controller, host adapter, writer wrapper, fences, MySQL probe |
+| `mysql/accounts.sql`, `mysql/fixture.sh` | run once by the administrator (session A1): `fixture.sh render` fills the passwords | The eight MySQL accounts; the probe account's defaults file goes to `/etc/repro-cutover-fence/mysql-probe.cnf` (root 0600) |
 | `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.json` | Writer profiles: user, command, action, engine |
 | host config (see below) | `/etc/repro-cutover-fence/host.json` | Paths, queues, host commands, owner options |
 | `identity.example.json` | `/etc/repro-cutover-fence/identity.json` (root 0644, with the run's policy) | The identity probe's inputs and the `.env` denylist |
@@ -152,6 +153,70 @@ fixed location (as `cli.py` does for the markers).
 `start_workers` and `drain_fpm`). Their shapes beyond that belong to the
 slices that run them.
 
+## MySQL probe: the write gate (design 1.2, 2.2)
+
+`commands.mysql` runs
+`/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/mysql_probe.py --config /etc/repro-cutover-fence/host.json`.
+As root it loads `host.json` with `load_config`, checks that `mysql.client`
+and `mysql.probe_defaults` are root-owned in a root-owned chain (the defaults
+file also readable by root only), and runs the client once:
+`--defaults-file=<probe_defaults> --no-login-paths --protocol=SOCKET
+--socket=<mysql.socket> --batch --raw --skip-column-names --connect-timeout=10`
+with two `SELECT JSON_OBJECT(...)` statements (server identity, then every
+gate input as one JSON document, so the server escapes the values).
+
+The gate is read for each `mysql.gated_accounts` entry, as
+`repro_cutover_probe@localhost`, from the nine grant tables (`mysql.user`,
+`global_grants`, `role_edges` and `default_roles` and `proxies_priv` in
+either direction, `procs_priv`, `db`, `tables_priv`, `columns_priv`),
+`@@GLOBAL.mandatory_roles` and `CURRENT_USER()`:
+
+| State | Rule | Exit |
+| --- | --- | --- |
+| closed | Every global privilege `N`, not locked; one `db` row `repro\_dashboard` with `SELECT` only; one `tables_priv` row `writer_token` with `Select` and no column privilege; no other rows | 0 |
+| open | As closed, plus `INSERT`, `UPDATE`, `DELETE` on the schema and `UPDATE (id)` on the token (`tables_priv.Column_priv = 'Update'` and its `columns_priv` row) | 0 in measured mode, 4 in strict mode |
+| partial | Any other subset of those four, everything else exactly closed. `open_privileges` names them (`INSERT`, `UPDATE`, `DELETE`, `UPDATE(id)`) for `gate.py` | 4 |
+| unrecognised | Anything else: a role or default role (either direction), a mandatory role, a routine or proxy grant, a global static or dynamic privilege, a lock, another schema or table row, an unescaped schema grant, a missing account, `CURRENT_USER()` other than the probe (another account in the defaults file, or `--skip-grant-tables`), or a probe without `PROCESS` (it could not see app sessions) | 4 |
+
+Other exits: 3 when nothing listens at the socket (the client's error 2002
+with `ENOENT` or `ECONNREFUSED`, or, while the client or the defaults file is
+not installed yet, a socket connect that finds nothing), stdout
+`{"version": 2, "reachable": false}`; 6 for a wrong server (UUID other than
+`mysql.target_uuid`, version not `8.4.x`, `skip_networking` off); 4 when the
+state is not readable (login refused, a missing grant-table read, a server
+that accepts but does not answer within the timeouts, or a listening server
+with no client or defaults file); 1 for a probe failure (config, unsafe
+files, a malformed or unknown-phase journal). A
+refused reading prints `gate`, `mode`, `problems` and, when classified,
+`open_privileges`, and never `writable` or `business_activity`.
+
+**Strict and measured.** The probe reads the journal
+(`<paths.state>/state.json`, through the protected-file check). With no
+journal, `planned` or `sqlite_authoritative` it is strict: only `closed`
+exits 0. In `holding`, `frozen`, `ready`, `writes_possible`,
+`mysql_authoritative` and `recovery_required` it is measured. Exit 0 prints:
+
+```json
+{"version": 2, "reachable": true, "server_uuid": "...", "database": "repro_dashboard",
+ "gate": "closed", "writable": false, "business_activity": false, "foreign_activity": false,
+ "boundary": null, "receipt": null, "gated_sessions": 0, "scanned_events": 0, "mode": "strict"}
+```
+
+**Not yet built here (slice D05).** The receipt, the binary log scan and the
+activity latches. Until they exist the probe exits 1 whenever
+`paths.receipt`, `paths.activity` or `paths.activated` exists, so it never
+reports `business_activity: false` after `prepare`.
+
+**Accounts.** `mysql/accounts.sql` is design 2.2 verbatim with `:name`
+placeholders instead of passwords; it needs `repro_mysql_control.writer_token`
+to exist first (runbook Release step 4, without its generic grant). Render it
+with `mysql/fixture.sh render accounts.sql <password-dir>`: one file per
+placeholder (`app`, `maint`, `migrator`, `reader`, `check`, `probe`, `gate`,
+`monitor`), owned by the caller, mode 0600, 16 to 256 characters of
+`A-Z a-z 0-9 . _ ~ + / = -`; nothing is printed unless every placeholder is
+filled. The probe account reads only the columns it needs (never
+`authentication_string`).
+
 ## Owner options (the safe value for each)
 
 Every option must be written in `host.json`; none is filled in.
@@ -217,6 +282,10 @@ lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
 run in a disposable container through `../run-linux-tests.sh`. The host
 config contract tests in `test_adapter.py` (`HostConfigContractTests`,
 `HostConfigQueueTests`) need only a POSIX system and also run as an ordinary
-user. The cron and unit-file tests also run on Windows. Real systemd, Supervisor, nginx reloads
+user. The cron and unit-file tests also run on Windows.
+`test_mysql_probe.py` needs Linux root and a disposable MySQL 8.4.13 built by
+`mysql/fixture.sh serve` from `accounts.sql` itself (plus a networking and a
+`--skip-grant-tables` variant); its docstring has the container recipe. Its
+accounts and renderer tests run anywhere with bash. Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).

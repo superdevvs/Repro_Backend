@@ -23,6 +23,9 @@ python3 -B -m unittest discover -s "$cutover" -p test_process_contract.py -v
 for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.py; do
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
+# The MySQL probe's fixture tests run when REPRO_MYSQL_PROBE_FIXTURE names a fixture built by
+# production/mysql/fixture.sh (recipe in test_mysql_probe.py); otherwise they are skipped.
+python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_mysql_probe.py
 python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
 for extra in "$@"; do
     python3 -B -m unittest discover -s "$(dirname "$cutover/$extra")" -p "$(basename "$extra")" -v
