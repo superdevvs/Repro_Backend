@@ -104,6 +104,36 @@ class RetentionTest(unittest.TestCase):
             guard.retention(self.base, apply=True, now=later)
         self.assertFalse(old.exists())
 
+    def test_applied_retention_clears_a_partial_gzip_still_linked_to_the_published_gzip(self):
+        # Killed between os.link(partial, gz) and os.unlink(partial): both names
+        # point at the verified gzip (link count 2). Dropping the partial name
+        # keeps the data under database.sqlite.gz and lets the bundle age out.
+        self.bundle(1, success=True)
+        old = self.bundle(30, success=True)
+        published = old / guard.SQLITE_GZIP
+        published.write_bytes(gzip.compress(b'database fixture'))
+        os.link(published, old / guard.PARTIAL_GZIP)
+        # A partial name linked to anything else is not ours to judge: kept.
+        foreign = self.bundle(31, success=True)
+        outside = Path(self.temporary.name) / 'outside.gz'
+        outside.write_bytes(b'not ours to delete')
+        os.link(outside, foreign / guard.PARTIAL_GZIP)
+        stamp = (datetime.fromtimestamp(self.now) - timedelta(days=30)).timestamp()
+        for path in [*old.iterdir(), old]:
+            os.utime(path, (stamp, stamp))
+        output = self.run_retention()
+        self.assertFalse((old / guard.PARTIAL_GZIP).exists())
+        self.assertEqual(published.stat().st_nlink, 1)
+        self.assertEqual(gzip.decompress(published.read_bytes()), b'database fixture')
+        self.assertIn(f'removed-stale-partial bundle={old.name}', output)
+        self.assertIsNotNone(guard.inspect_backup(old, 'backend'))
+        self.assertTrue((foreign / guard.PARTIAL_GZIP).exists())
+        self.assertEqual(outside.read_bytes(), b'not ours to delete')
+        later = datetime.now().timestamp() + timedelta(days=guard.RETENTION_DAYS + 1).total_seconds()
+        with redirect_stdout(io.StringIO()):
+            guard.retention(self.base, apply=True, now=later)
+        self.assertFalse(old.exists())
+
     def test_tiered_policy_keeps_last_five_and_one_a_day_for_fourteen_days(self):
         created = {}
         for day in range(20):

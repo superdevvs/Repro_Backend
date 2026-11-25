@@ -343,7 +343,9 @@ def remove_stale_partials(directory):
     The caller (the compress step or applied retention) holds the backend deploy
     lock, so no compression is running and any partial file is stale. Left in place, it would make retention treat the
     bundle as unrecognized and keep its raw copy forever. Only that exact name,
-    as a plain file owned by this user, is removed.
+    as a plain file owned by this user, is removed: either its only link, or a
+    second name for this bundle's database.sqlite.gz (a run killed between
+    link() and unlink(); the gzip was verified before the link).
     """
     for path in sorted(directory.iterdir()):
         if not STAMP.fullmatch(path.name):
@@ -355,8 +357,15 @@ def remove_stale_partials(directory):
         try:
             folder = os.fstat(descriptor)
             partial = os.stat(PARTIAL_GZIP, dir_fd=descriptor, follow_symlinks=False)
+            removable = partial.st_nlink == 1
+            if partial.st_nlink == 2:
+                try:
+                    published = os.stat(SQLITE_GZIP, dir_fd=descriptor, follow_symlinks=False)
+                    removable = (published.st_dev, published.st_ino) == (partial.st_dev, partial.st_ino)
+                except FileNotFoundError:
+                    pass
             if (folder.st_uid == os.getuid() and stat.S_ISREG(partial.st_mode)
-                    and partial.st_nlink == 1 and partial.st_uid == os.getuid()):
+                    and removable and partial.st_uid == os.getuid()):
                 os.unlink(PARTIAL_GZIP, dir_fd=descriptor)
                 os.fsync(descriptor)
                 print(f'sqlite_backup_compression=removed-stale-partial bundle={path.name}')
