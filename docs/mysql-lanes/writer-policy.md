@@ -34,9 +34,10 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   replayed. `transaction($callback, $attempts)` lets the wait at BEGIN retry up
   to `$attempts` times before the callback runs. `LockedWrite` runs its
   callback once, at its own depth, and lets every token wait inside retry up
-  to four times. The rate limiter retries `WriterTokenTimeout`; the controller
-  is outside the retry. Lock errors 1205 and 1213 after the token are never
-  retried.
+  to four times. The rate limiter does the same for each limiter operation:
+  it runs once and its token waits retry in place; a wait that runs out is a
+  503, and the controller is outside the retry. Lock errors 1205 and 1213
+  after the token are never retried.
 - **Poison guard.** After a lock error or a lost session inside a
   transaction, the connection refuses every statement until rollback reaches
   level 0 or the session is replaced (`DB::disconnect()`, `DB::reconnect()`).
@@ -65,10 +66,12 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   automation run claims its rule's period in one transaction and skips a
   period another run started less than 30 minutes ago.
 - **Deploy check.** `php artisan db:writer-policy-check` exits 1 unless only
-  the default connection carries the token, every other MySQL connection has a
-  table limit, a fresh session is READ COMMITTED with 5/5 lock waits, and the
-  token can be taken. It resolves `DB_URL` as Laravel does. On SQLite it
-  reports "not applicable" and exits 0.
+  the default connection carries the token, every other MySQL connection is
+  limited to its own bookkeeping tables (`jobs`; `cache` and `cache_locks`;
+  `cache_locks`), a fresh session is READ COMMITTED with 5/5 lock waits, and
+  the token can be taken. It resolves `DB_URL` for the default connection as
+  Laravel does; the unused templates that also read `DB_URL` do not fail it.
+  On SQLite it reports "not applicable" and exits 0.
 
 Design choices that differ from the plan, and every behaviour change, are in
 [`docs/mysql-known-differences.md`](../mysql-known-differences.md) for owner
@@ -291,6 +294,36 @@ durable flushing on a socket-only fixture, PHP 8.3.33:
   configuration stage, the known fixture failures listed above.
 - `vendor/bin/pint --test` on every changed PHP file: pass.
 
+### Second Codex round (25 Nov)
+
+Codex reviewed the whole branch against `a6e799bb` at `d1ac72f3`, the WP-7
+stage included. Fixes on top of it, one commit each, test first: each new test
+failed on the unfixed code for the reason given, then passed.
+
+- `r2#1` (P2) **fixed** in `d46cf5a9`: the limiter replayed a whole hit after a `WriterTokenTimeout`; when Laravel's final `put` of a counter at 0 waited out the token, the replay incremented again (RED: 298 left of 300 in the Feature test, 3 of 5 on MySQL with a real holder taking the token right after the increment commits). Each limiter operation now runs once with in-place token waits, as `LockedWrite` does; a wait that runs out is a 503 (B2 extended). Tests: `WriterTokenRetryLayersTest::test_a_limiter_hit_whose_last_write_waited_for_the_token_counts_once`, `WriterExemptionsTest::test_a_limiter_hit_whose_final_write_waits_for_the_token_counts_once`. Not changed: SQLite's own lock refusal still replays a limiter operation, as on `a6e799bb`.
+- `r2#2` (P2) **fixed** in `557ffcc8`: the deploy check passed a token-free connection exempted for `users` (RED: exit 0). Each token-free connection may now name only its own bookkeeping tables; any other connection none (D4 extended). Test: `WriterPolicyCheckCommandTest::test_a_token_free_connection_may_skip_the_token_only_for_its_own_bookkeeping_tables` (five data sets) and the control `..._the_shipped_mysql_connection_layout_passes`.
+- `r2#3` (P2) **fixed** in `1a583ec4`, a regression from `writer-policy#4`: with `DB_URL` in the environment the check parsed it into the unused sqlite, mariadb, pgsql and sqlsrv templates and failed a healthy deploy with four problems (RED on both engines). Only the default connection is resolved through `DB_URL` now. Tests: `WriterPolicyCheckCommandTest::test_a_database_url_in_the_environment_passes_with_the_shipped_connections` and the same name in `WriterPolicyCheckTest` (MySQL), both with a real `DB_URL` environment variable and the shipped config.
+- Re-check of reviewer 3 (CI not run on GitHub): **stays documented**. The workflow runs the script on shard 0 and `bash -n` passes; the push it needs is the owner's call. Measured locally, the writer suite takes about 7 minutes on a Windows bind mount (3 min 38 s in the second stage), well under the 10 to 20 minute estimate.
+- Re-check of reviewer 5 (proofs that passed without the token): **holds**. With `MYSQL_WRITER_PROOF_TOKEN=off` the Routes race failed (8 reservations, not 1) and the twelve-worker queue run passed, as relabelled.
+- Re-check of reviewer 7 (deploy check not in the deploy pipeline): **stays documented**. `r2#3` shows the case for checking first: wired in before that fix, the check would have blocked every deploy that sets `DB_URL`.
+
+Runs for this round, local and offline, MySQL 8.4.13 with durable flushing on
+a socket-only fixture, PHP 8.3.33, `--fail-on-warning --fail-on-risky
+--fail-on-phpunit-deprecation`:
+
+- Writer suite on a fresh schema before the fixes (`d1ac72f3`): OK (93 tests,
+  1,321 assertions). After them: OK (95 tests, 1,344 assertions, 7 min).
+- SQLite: `tests/Unit/Database` and the Feature files `WriterTokenRetryLayersTest`,
+  `WriterPolicyCheckCommandTest`, `ThrottleDatabaseResilienceTest`,
+  `ThrottleConfigurationTest`, `LeftoverTransactionCleanupTest`,
+  `IguideLabTourHttpTest`, `ShootGuestShareTest`, `OnboardingEventControllerTest`,
+  `RestrictedLogPrivacyTest`: OK (218 tests, 1,804 assertions).
+- MySQL profile, the same Feature files on a freshly migrated schema: OK (118
+  tests, 1,688 assertions). Run on a schema the writer suite had already
+  filled, `ShootGuestShareTest` hit a duplicate category name from those
+  leftover rows; the profile expects a fresh schema, as in CI.
+- `vendor/bin/pint --test` on every PHP file changed in this round: pass.
+
 ## WP-7 business proofs (second stage, 25 Nov)
 
 `tests/MySqlWriters/WriterBusinessRacesTest.php`, workers in
@@ -411,4 +444,4 @@ several times slower over a Windows bind mount.
   load and the dress rehearsals with the policy on (WP-11, WP-12); the
   read-only writer re-inventory on the server (WP-10).
 - **Owner decisions:** D1 to D6 and B1 to B18 in the known-differences
-  register.
+  register (B2 and D4 extended in the second Codex round).
