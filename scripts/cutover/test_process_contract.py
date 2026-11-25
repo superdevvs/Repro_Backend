@@ -49,8 +49,16 @@ def child_main(directory, role, operation):
         return 2
     journal = Journal(directory)
     adapter = ProcessAdapter(journal, IDENTITY)
-    runner = Runner(journal, IDENTITY, adapter)
+    runner = Runner(journal, IDENTITY, adapter, max_drain_seconds=1, controller_wait_seconds=4)
     try:
+        if role == "control":
+            with journal.acquire():
+                print("controlling", flush=True)
+                sys.stdin.buffer.read(1)
+            return 0
+        if role == "runner" and operation == "tick":
+            print(json.dumps(runner.perform("tick")), flush=True)
+            return 0
         if role in {"check", "hold"}:
             fixture_runtime = SimpleNamespace(
                 platform="linux", executable="/usr/bin/python3", flags=SimpleNamespace(isolated=1, no_site=1),
@@ -121,7 +129,7 @@ class CutoverProcessContractTests(unittest.TestCase):
         if child.poll() is None:
             child.kill()
         for pipe in (child.stdin, child.stdout, child.stderr):
-            if not pipe.closed:
+            if pipe is not None and not pipe.closed:
                 pipe.close()
         child.wait(timeout=5)
 
@@ -138,7 +146,7 @@ class CutoverProcessContractTests(unittest.TestCase):
     def test_active_wrapper_prevents_another_process_from_freezing(self):
         original = self.journal.path.read_bytes()
         wrapper = self.pause_at("hold", "sqlite", "admitted")
-        self.call("runner", "freeze", error="holds the cutover lock")
+        self.call("runner", "freeze", error="did not drain")
         self.assertIsNone(wrapper.poll())
         self.assertEqual(original, self.journal.path.read_bytes())
         _, errors = wrapper.communicate(b"x", timeout=5)
@@ -146,6 +154,20 @@ class CutoverProcessContractTests(unittest.TestCase):
         self.call("runner", "freeze")
         self.assertEqual("frozen", self.journal.read()["phase"])
         self.call("check", "sqlite", error="holds all admissions")
+
+    def test_watchdog_tick_waits_for_controller_lock(self):
+        original = self.journal.path.read_bytes()
+        controller = self.pause_at("control", "none", "controlling")
+        tick = subprocess.Popen(self.command("runner", "tick"), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(self.close_child, tick)
+        self.assertFalse(select.select([tick.stdout], [], [], 0.5)[0], "Tick ran while a controller held the lock")
+        self.assertIsNone(tick.poll())
+        controller.communicate(b"x", timeout=5)
+        output, errors = tick.communicate(timeout=5)
+        self.assertEqual(0, tick.returncode, errors)
+        self.assertEqual("planned", json.loads(output)["phase"])
+        self.assertEqual(original, self.journal.path.read_bytes())
 
     def kill_after_publishing(self, action, *, writes_possible):
         child = self.pause_at("pause-publication", action, "proof published")

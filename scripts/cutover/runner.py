@@ -158,8 +158,59 @@ class SchedulerDrain:
             raise UnsafeCutover("Current scheduler hold and zero unresolved permits could not be verified")
 
 
+CONTROLLER_LOCK = "controller.lock"
+# Admitted writers share this lock; the guard and installed wrappers use this name.
+WRITER_LOCK = "operator.lock"
+LOCK_POLL_SECONDS = 0.01
+
+
+def _try_lock(stream) -> bool:
+    stream.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_lock(stream, seconds: float) -> bool:
+    """Poll for an exclusive lock. flock has no writer preference, so polling is bounded."""
+    limit = time.monotonic() + max(0.0, seconds)
+    while not _try_lock(stream):
+        if time.monotonic() >= limit:
+            return False
+        time.sleep(LOCK_POLL_SECONDS)
+    return True
+
+
+def _unlock(stream) -> None:
+    if stream.closed:
+        return
+    stream.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 class Journal:
-    """One operation at a time, using an OS lock and atomically replaced state."""
+    """One controller at a time, using an OS lock and atomically replaced state.
+
+    The controller lock serializes the runner, the watchdog tick and the
+    authority refresh. Admitted writers share the separate writer lock. A
+    controller can therefore journal a hold while old writers still run, and
+    takes the writer lock exclusively only when it drains them.
+    """
 
     def __init__(self, directory: Path):
         directory.mkdir(mode=0o700, parents=False, exist_ok=True)
@@ -201,25 +252,41 @@ class Journal:
             Path(temporary).unlink(missing_ok=True)
 
     @contextmanager
-    def acquire(self):
-        with (self.directory / "operator.lock").open("a+b") as stream:
-            stream.seek(0)
+    def acquire(self, wait_seconds: float = 0):
+        with (self.directory / CONTROLLER_LOCK).open("a+b") as stream:
+            if not _wait_lock(stream, wait_seconds):
+                raise UnsafeCutover("Another host operator holds the cutover lock")
+            # The guard opens the writer lock read-only and never creates it.
+            (self.directory / WRITER_LOCK).open("a+b").close()
+            lease = None
             try:
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as error:
-                raise UnsafeCutover("Another host operator holds the cutover lock") from error
-            state = self.read()
-            generation = 1 if state is None else state["generation"] + 1
-            lease = Lease(self, generation)
-            try:
+                state = self.read()
+                generation = 1 if state is None else state["generation"] + 1
+                lease = Lease(self, generation)
                 yield state, lease
             finally:
-                lease.active = False
+                if lease is not None:
+                    lease.release()
+                _unlock(stream)
+
+    def drain_writers(self, lease: "Lease", seconds: float) -> float:
+        """Wait until every admitted writer has released its shared lease, then keep them out.
+
+        Returns the seconds waited. The exclusive writer lock stays held until
+        the controller lease ends.
+        """
+        if not lease.active:
+            raise UnsafeCutover("Cutover operator no longer owns the journal generation")
+        if lease.writers is not None:
+            lease.require_current()
+            return 0.0
+        stream = (self.directory / WRITER_LOCK).open("a+b")
+        started = time.monotonic()
+        if not _wait_lock(stream, seconds):
+            stream.close()
+            raise UnsafeCutover("Admitted writers did not drain before the deadline")
+        lease.writers = stream
+        return time.monotonic() - started
 
 
 @dataclass
@@ -227,11 +294,25 @@ class Lease:
     journal: Journal
     generation: int
     active: bool = True
+    writers: object = None
 
     def require_current(self) -> None:
         state = self.journal.read()
         if not self.active or state is None or state["generation"] != self.generation:
             raise UnsafeCutover("Cutover operator no longer owns the journal generation")
+        if self.writers is not None and self.writers.closed:
+            raise UnsafeCutover("Cutover operator no longer excludes admitted writers")
+
+    def require_writers_drained(self) -> None:
+        self.require_current()
+        if self.writers is None:
+            raise UnsafeCutover("Admitted writers have not been drained under this lease")
+
+    def release(self) -> None:
+        self.active = False
+        if self.writers is not None:
+            _unlock(self.writers)
+            self.writers.close()
 
 
 class Adapter(Protocol):
@@ -257,11 +338,28 @@ class Runner:
     WINDOW_SECONDS = 60 * 60
     APPROVAL_SECONDS = 5 * 60
 
-    def __init__(self, journal: Journal, identity: Identity, adapter: Adapter, clock: Callable[[], float] = time.time):
+    # A watchdog tick waits this long for another controller, below the 1-minute timer period.
+    CONTROLLER_WAIT_SECONDS = 50
+    # Longest wait for admitted writers to finish once admissions are closed (plan: ten minutes).
+    MAX_DRAIN_SECONDS = 10 * 60
+
+    def __init__(self, journal: Journal, identity: Identity, adapter: Adapter, clock: Callable[[], float] = time.time,
+                 *, max_drain_seconds: float | None = None, controller_wait_seconds: float | None = None):
         self.journal = journal
         self.identity = identity
         self.adapter = adapter
         self.clock = clock
+        self.max_drain_seconds = self.MAX_DRAIN_SECONDS if max_drain_seconds is None else max_drain_seconds
+        self.controller_wait_seconds = (
+            self.CONTROLLER_WAIT_SECONDS if controller_wait_seconds is None else controller_wait_seconds
+        )
+
+    def _exclude_writers(self, lease: Lease, deadline: float) -> float:
+        """Drain admitted writers within both the drain limit and the action deadline."""
+        seconds = min(self.max_drain_seconds, deadline - self.clock())
+        if seconds <= 0:
+            raise UnsafeCutover("Admitted writers did not drain before the deadline")
+        return self.journal.drain_writers(lease, seconds)
 
     def initialize(self) -> dict:
         with self.journal.acquire() as (prior, lease):
@@ -364,6 +462,7 @@ class Runner:
             raise UnsafeCutover("Scheduler hold changed during cutover")
 
     def _publish_authority(self, state: dict, lease: Lease, engine: str, deadline: int) -> None:
+        lease.require_writers_drained()
         self._verify_scheduler_hold(state)
         after = self.adapter.observe()
         if not after.sealed(engine) or int(self.clock()) >= deadline:
@@ -392,6 +491,7 @@ class Runner:
         self._intent(state, "abort", before, now)
         # Even a late watchdog must attempt recovery with a bounded fresh budget.
         rollback_deadline = max(state["started_at"] + self.WINDOW_SECONDS, now + 10 * 60)
+        self.journal.drain_writers(lease, rollback_deadline - self.clock())
         self._hold_scheduler(state, lease, rollback_deadline)
         self.adapter.seal_sqlite(lease, rollback_deadline)
         self._publish_authority(state, lease, "sqlite", rollback_deadline)
@@ -399,7 +499,8 @@ class Runner:
     def perform(self, action: str, approval: Approval | None = None) -> dict:
         if action not in {"freeze", "prepare", "promote", "tick", "abort"}:
             raise ValueError("Unknown cutover action")
-        with self.journal.acquire() as (_, lease):
+        wait = self.controller_wait_seconds if action == "tick" else 0
+        with self.journal.acquire(wait) as (_, lease):
             state = self.status()
             self._verify_identity()
             self.adapter.require_quiescent()
@@ -462,6 +563,7 @@ class Runner:
         self._require_approval(state, "freeze", approval, now)
         if not before.sqlite_live() or self.adapter.preflight_sha256() != state["preflight_sha256"]:
             raise UnsafeCutover("SQLite preflight changed after approval")
+        self._exclude_writers(lease, now + self.DECISION_SECONDS)
         now = int(self.clock())
         self._require_approval(state, "freeze", approval, now)
         state["started_at"] = now
@@ -481,6 +583,7 @@ class Runner:
             raise UnsafeCutover("Writer freeze was lost")
         self._verify_scheduler_hold(state)
         deadline = state["started_at"] + self.DECISION_SECONDS
+        self._exclude_writers(lease, deadline)
         self._intent(state, "prepare", before, now)
         self.adapter.prepare(lease, deadline)
         self._verify_scheduler_hold(state)
@@ -498,6 +601,7 @@ class Runner:
         self._require_approval(state, "promote", approval, now)
         if not before.frozen() or before.engine != "mysql":
             raise UnsafeCutover("Writer freeze or read-only target was lost")
+        self._exclude_writers(lease, state["started_at"] + self.DECISION_SECONDS)
         self._verify_scheduler_hold(state)
         evidence = self.adapter.evidence()
         evidence.require_verified()

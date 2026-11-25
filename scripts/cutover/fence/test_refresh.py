@@ -79,6 +79,13 @@ class AuthorityRefreshTests(unittest.TestCase):
             guard.refresh_engine_evidence(self.observe)
         self.assertEqual(before, self.evidence.read_bytes())
 
+    def test_running_controller_blocks_refresh_and_leaves_evidence_untouched(self):
+        guard.refresh_engine_evidence(self.observe)
+        before = self.evidence.read_bytes()
+        with self.journal.acquire(), self.assertRaises(BlockingIOError):
+            guard.refresh_engine_evidence(self.observe)
+        self.assertEqual(before, self.evidence.read_bytes())
+
     def test_frozen_journal_revokes_old_evidence_without_probing(self):
         guard.refresh_engine_evidence(self.observe)
         self.runner.perform("freeze", self.runner.approval_request("freeze"))

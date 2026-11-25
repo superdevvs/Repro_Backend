@@ -2,7 +2,10 @@ import errno
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
@@ -88,6 +91,78 @@ class CutoverTest(unittest.TestCase):
     @staticmethod
     def crash():
         raise SimulatedPowerLoss()
+
+    @contextmanager
+    def admitted_writer(self):
+        """Hold the lock an admitted writer shares (exclusive on Windows, which has no flock)."""
+        with (self.journal.directory / "operator.lock").open("a+b") as stream:
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def test_admitted_writer_does_not_block_a_planned_watchdog_tick(self):
+        original = self.journal.path.read_bytes()
+        with self.admitted_writer():
+            self.now += 60
+            self.assertEqual("planned", self.runner.perform("tick")["phase"])
+        self.assertEqual(original, self.journal.path.read_bytes())
+
+    def test_second_controller_is_refused_while_writers_stay_admitted(self):
+        with self.journal.acquire():
+            with self.assertRaisesRegex(UnsafeCutover, "holds the cutover lock"):
+                self.runner.perform("abort")
+            with self.admitted_writer():
+                pass
+
+    def test_drain_writers_waits_for_admitted_writer_then_excludes_new_ones(self):
+        with self.journal.acquire() as (state, lease):
+            self.journal.write(state | {"generation": lease.generation})
+            with self.admitted_writer():
+                with self.assertRaisesRegex(UnsafeCutover, "did not drain"):
+                    self.journal.drain_writers(lease, 0.05)
+                with self.assertRaisesRegex(UnsafeCutover, "not been drained"):
+                    lease.require_writers_drained()
+            self.journal.drain_writers(lease, 1)
+            lease.require_writers_drained()
+            with self.assertRaises(OSError):
+                with self.admitted_writer():
+                    self.fail("A writer was admitted after the drain")
+            lease.writers.close()
+            with self.assertRaisesRegex(UnsafeCutover, "no longer excludes admitted writers"):
+                lease.require_current()
+        with self.admitted_writer():
+            pass
+
+    def test_watchdog_tick_waits_for_the_controller_lock(self):
+        held, release = threading.Event(), threading.Event()
+
+        def other_controller():
+            with self.journal.acquire():
+                held.set()
+                release.wait(5)
+
+        thread = threading.Thread(target=other_controller)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(release.set)
+        self.assertTrue(held.wait(5))
+        threading.Timer(0.3, release.set).start()
+        started = time.monotonic()
+        self.now += 60
+        self.assertEqual("planned", self.runner.perform("tick")["phase"])
+        self.assertGreaterEqual(time.monotonic() - started, 0.25)
 
     def test_prepare_promotion_and_exact_marker_order(self):
         self.ready()

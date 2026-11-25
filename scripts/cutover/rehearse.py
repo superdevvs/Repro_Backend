@@ -16,6 +16,7 @@ from runner import Approval, Evidence, Identity, Journal, Lease, Observation, Ru
 class FixtureAdapter:
     MACHINE_SHA256 = "e" * 64
     BOOT_ID = "2fb9e4be-f041-45a0-9055-8d3ed47f9857"
+    REOPEN_DRAIN_SECONDS = 5
 
     def __init__(self, journal: Journal, identity: Identity):
         self.journal = journal
@@ -102,10 +103,11 @@ class FixtureAdapter:
         self.journal.write_record("fixture-authority.json", self.authority_evidence(engine, candidate))
 
     def reopen(self) -> None:
-        # The cross-platform fixture takes a conflicting lock on the same
-        # journal without changing its generation. The installed Linux guard
-        # and host admission wrappers use the real shared lease.
-        with self.journal.acquire():
+        # The cross-platform fixture takes the controller lock and drains the
+        # writer lock without changing the journal generation. The installed
+        # Linux guard and host admission wrappers use the real shared lease.
+        with self.journal.acquire() as (_, lease):
+            self.journal.drain_writers(lease, self.REOPEN_DRAIN_SECONDS)
             observed = self.observe()
             engine = observed.engine
             if not (observed.sealed(engine) or observed.sqlite_live() or observed.mysql_live()):

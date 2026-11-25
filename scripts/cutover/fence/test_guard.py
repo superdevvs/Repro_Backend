@@ -88,20 +88,25 @@ class HostWriterGuardTests(unittest.TestCase):
         ):
             yield
 
+    def assert_writers_drain(self, drains=True):
+        with self.journal.acquire() as (_, lease):
+            if drains:
+                self.journal.drain_writers(lease, 0.05)
+            else:
+                with self.assertRaisesRegex(UnsafeCutover, "did not drain"):
+                    self.journal.drain_writers(lease, 0.05)
+
     @unittest.skipUnless(sys.platform == "linux", "Exercises the Linux flock shared lease")
-    def test_verified_admission_blocks_transition_until_the_scope_ends(self):
+    def test_verified_admission_blocks_writer_drain_until_the_scope_ends(self):
         with self.fixture_guard():
             with guard.admitted("scheduler", "sqlite") as lease_fd:
                 self.assertFalse(os.get_inheritable(lease_fd))
-                with self.assertRaisesRegex(UnsafeCutover, "holds the cutover lock"):
-                    with self.journal.acquire():
-                        self.fail("Transition acquired during the bounded admission")
+                # A controller may still run, but cannot drain the admitted writer.
+                self.assert_writers_drain(False)
 
-            with self.journal.acquire():
-                pass
+            self.assert_writers_drain()
             guard.check("scheduler", "sqlite")
-            with self.journal.acquire():
-                pass
+            self.assert_writers_drain()
 
     @unittest.skipUnless(sys.platform == "linux", "Exercises the Linux flock shared lease")
     def test_invalid_evidence_never_enters_operation_and_releases_the_lease(self):
@@ -109,8 +114,7 @@ class HostWriterGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(guard.Refused, "this boot"):
                 with guard.admitted("scheduler", "sqlite"):
                     self.fail("Operation entered without valid evidence")
-            with self.journal.acquire():
-                pass
+            self.assert_writers_drain()
 
     @unittest.skipUnless(sys.platform == "linux", "Exercises inherited Linux flock descriptors")
     def test_bounded_child_retains_admission_after_wrapper_scope_closes(self):
@@ -123,13 +127,10 @@ class HostWriterGuardTests(unittest.TestCase):
                     stdin=subprocess.PIPE, pass_fds=(lease_fd,),
                 )
             self.assertIsNone(child.poll())
-            with self.assertRaisesRegex(UnsafeCutover, "holds the cutover lock"):
-                with self.journal.acquire():
-                    self.fail("Transition acquired before the admitted child exited")
+            self.assert_writers_drain(False)
             child.communicate(b"x", timeout=5)
             self.assertEqual(0, child.returncode)
-            with self.journal.acquire():
-                pass
+            self.assert_writers_drain()
         finally:
             if child is not None and child.poll() is None:
                 child.kill()
