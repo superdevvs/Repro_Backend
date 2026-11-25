@@ -20,6 +20,21 @@ TIMINGS = {
     "prewrite_rollback_ms": 10 * MINUTE,
     "postwrite_failback_ms": 60 * MINUTE,
 }
+# The approved plan's pass marks for both dress rehearsals ("Speed",
+# "Stress and crash", "Data" and "Way back"). They apply in addition to the
+# engineering thresholds above and the critical-endpoint p95 ratio below.
+SPEED_ENDPOINT_COUNT = 50
+SPEED_MIN_WITHIN = 45
+SPEED_WITHIN_US = 20_000
+SPEED_MAX_SLOWER_US = 100_000
+STRESS_MIN_MS = 10 * MINUTE
+STRESS_MIN_CLIENTS = 20
+STRESS_ZERO_COUNTS = ("server_errors", "unhandled_lock_errors", "confirmed_writes_missing",
+                      "duplicate_business_effects")
+CRASH_KILL_COUNT = 3
+CRASH_RECOVERY_MS = MINUTE
+DRESS_DATA_PROOFS = ("source_scope_verified", "source_integrity_scan_passed", "field_verifiers_agree")
+DRESS_WAY_BACK_PROOFS = ("sqlite_reverse_parity_verified", "invoice_and_payout_parity_verified")
 PREREQUISITES = (
     "sqlite_ci_passed",
     "mysql_ci_passed",
@@ -234,6 +249,81 @@ def review_p95(policy: dict, rehearsal: dict) -> None:
         endpoint = object_field(measurements, label)
         if number(endpoint, "mysql", minimum=1) * 100 > number(endpoint, "sqlite", minimum=1) * 110:
             raise Failed("A critical endpoint p95 is more than 10% slower")
+
+
+def busiest_endpoints(policy: dict) -> list[str]:
+    values = field(policy, "busiest_endpoints")
+    if (not isinstance(values, list) or len(values) != SPEED_ENDPOINT_COUNT
+            or any(not isinstance(value, str) or not value.strip() for value in values)
+            or len(values) != len(set(values))):
+        raise Failed("The busiest endpoints must be the reviewed list of 50 unique labels")
+    return values
+
+
+def review_speed(policy: dict, rehearsal: dict) -> None:
+    """Plan pass mark: none of the 50 busiest requests makes a layout lookup,
+    at least 45 are within 20 ms of SQLite at p95 and none is over 100 ms slower."""
+    expected = set(busiest_endpoints(policy))
+    measurements = object_field(rehearsal, "busiest_p95_us")
+    if expected - measurements.keys():
+        raise Missing("P95 measurements do not cover the 50 busiest endpoints")
+    if measurements.keys() - expected:
+        raise Failed("P95 measurements differ from the reviewed busiest endpoint list")
+    within = 0
+    for label in sorted(expected):
+        endpoint = object_field(measurements, label)
+        if number(endpoint, "mysql_layout_lookups") != 0:
+            raise Failed("A busiest endpoint made a layout lookup on MySQL")
+        slower_us = number(endpoint, "mysql", minimum=1) - number(endpoint, "sqlite", minimum=1)
+        if slower_us > SPEED_MAX_SLOWER_US:
+            raise Failed("A busiest endpoint p95 is more than 100 ms slower on MySQL")
+        within += slower_us <= SPEED_WITHIN_US
+    if within < SPEED_MIN_WITHIN:
+        raise Failed("Fewer than 45 of the busiest endpoints are within 20 ms of SQLite at p95")
+
+
+def review_stress_and_crash(rehearsal: dict) -> None:
+    """Plan pass mark: ten minutes at 20 parallel clients while workers clear a
+    backlog, then MySQL killed mid-write three times and back within a minute."""
+    stress = object_field(rehearsal, "stress")
+    if number(stress, "duration_ms") < STRESS_MIN_MS or number(stress, "parallel_clients") < STRESS_MIN_CLIENTS:
+        raise Failed("Stress run was shorter than ten minutes or used fewer than 20 clients")
+    start = number(stress, "backlog_start_depth")
+    if start < 1 or number(stress, "backlog_end_depth") > start:
+        raise Failed("Workers did not clear a queue backlog during the stress run")
+    for name in STRESS_ZERO_COUNTS:
+        if number(stress, name) != 0:
+            raise Failed(f"Stress run recorded {name}")
+    kills = field(rehearsal, "mysql_kills")
+    if not isinstance(kills, list) or any(not isinstance(kill, dict) for kill in kills):
+        raise Failed("MySQL kills must be a list of records")
+    if len(kills) < CRASH_KILL_COUNT:
+        raise Failed("MySQL must be killed mid-write at least three times")
+    for kill in kills:
+        confirmed(kill, "killed_during_write")
+        cap(kill, "recovery_ms", CRASH_RECOVERY_MS)
+        for name in ("confirmed_writes_missing", "duplicate_business_effects"):
+            zero(kill, name)
+
+
+def review_dress_data(rehearsal: dict) -> None:
+    """Plan pass mark: import and both verifications within 12 minutes, zero
+    errors, warnings and notes, no unexplained cell difference, scan clean and
+    the tables moved equal the reviewed scope."""
+    data = object_field(rehearsal, "data")
+    cap(data, "import_and_verify_ms", 12 * MINUTE)
+    for name in NIGHTLY_COUNTERS:
+        zero(data, name)
+    for proof in DRESS_DATA_PROOFS:
+        confirmed(data, proof)
+
+
+def review_way_back(rehearsal: dict) -> None:
+    """Plan pass mark: the export to SQLite reproduces every stored value and
+    the weekly invoice and payout runs give the same result on it."""
+    way_back = object_field(rehearsal, "way_back")
+    for proof in DRESS_WAY_BACK_PROOFS:
+        confirmed(way_back, proof)
 
 
 def review_queue(rehearsal: dict) -> None:
@@ -476,6 +566,10 @@ def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> d
                 gates.check(f"{prefix}.{name}", lambda: zero(rehearsal, name))
             gates.check(f"{prefix}.queue", lambda: review_queue(rehearsal))
             gates.check(f"{prefix}.critical_p95", lambda: review_p95(policy, rehearsal))
+            gates.check(f"{prefix}.speed", lambda: review_speed(policy, rehearsal))
+            gates.check(f"{prefix}.stress_and_crash", lambda: review_stress_and_crash(rehearsal))
+            gates.check(f"{prefix}.data", lambda: review_dress_data(rehearsal))
+            gates.check(f"{prefix}.way_back", lambda: review_way_back(rehearsal))
         if len(comparable) == 2:
             gates.check("repeatable_write_improvement", lambda: review_repeatability(comparable))
 

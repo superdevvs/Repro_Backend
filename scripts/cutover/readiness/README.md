@@ -25,10 +25,10 @@ shape and supplies synthetic values only.
 
 | Record | Required evidence |
 | --- | --- |
-| Policy | `critical_endpoints` as reviewed unique labels, `host_profile_sha256`, and `workload_sha256`. Pin the environment and comparable SQLite/MySQL peak and surge workloads before testing. |
+| Policy | `critical_endpoints` as reviewed unique labels, `busiest_endpoints` as the reviewed list of the 50 busiest request labels, `host_profile_sha256`, and `workload_sha256`. Pin the environment and comparable SQLite/MySQL peak and surge workloads before testing. The [dress profile tool](../nightly/README.md#dress-rehearsal-profile) derives and pins these values. |
 | Receipt header | `policy_sha256` and the same cutover identity. Any change to the policy or target invalidates a prior receipt. |
 | `prerequisites` | The reviewed report digest and identity digest, both engine CI results, exact data and schema parity, critical business workflows, isolated CRM workflow parity, CRM ingress fencing and replay, provider isolation, native host capacity and isolation, actual writer-fence restart, the first-release MySQL writer serialization policy, and crash recovery. Each result uses the corresponding field in `PREREQUISITES`. |
-| `dress_rehearsals` | Exactly two distinct trial IDs and report digests. Each records its source snapshot, pinned identity, host and workload digests, peak and surge completion, results for the timed operations and workload metrics below. |
+| `dress_rehearsals` | Exactly two distinct trial IDs and report digests. Each records its source snapshot, pinned identity, host and workload digests, peak and surge completion, results for the timed operations and workload metrics below, and the four plan records: `busiest_p95_us`, `stress` with `mysql_kills`, `data` and `way_back`. |
 | `offsite_recovery` | Independent restore report and identity digests, proof that the restore used off-site artifacts alone, contiguous binlogs, replay to a chosen transaction, successful decryption of a stored value, database recovery time and measured loss. |
 | `operations` in policy | `destination_sha256`, `monitor_profile_sha256`, `phone_recipient_sha256`, `nightly_scope_sha256`, the reviewed `last_nightly_day_utc`, `window_end_unix_s`, `interval_s`, and `evidence_valid_until_unix_s`. Pin both the source report and canonical receipt summary digest for each operational report. Hash approved destination configuration, monitoring profile, delivery identity, and data scope without embedding credentials. |
 | `backup_health` | External observations on the pinned profile and destination for the full seven days ending at the reviewed time. Record complete elapsed coverage and distinct scheduled samples, worst verified snapshot age, and elapsed seconds during which the independently recoverable binlog position was at most five minutes behind. |
@@ -44,6 +44,17 @@ SQLite and MySQL p95 measurements in integer microseconds for every pinned
 critical endpoint. Write metrics include attempt and contention counts and p95
 latency for each engine. Use the same load profile on both engines. Capture
 peak queue depth at the beginning and end of the normal peak test.
+
+Each dress rehearsal also carries the approved plan's pass marks. They apply
+in addition to the engineering thresholds above.
+
+| Record | Plan mark | Fields |
+| --- | --- | --- |
+| `busiest_p95_us` | Speed | One entry for each of the policy's 50 `busiest_endpoints`, with integer microsecond `sqlite` and `mysql` p95 and `mysql_layout_lookups`. No entry may make a layout lookup. At least 45 must be at most 20 ms slower on MySQL, and none more than 100 ms slower. |
+| `stress` | Stress and crash | `duration_ms` of at least ten minutes, `parallel_clients` of at least 20, `backlog_start_depth` of at least one and `backlog_end_depth` no higher, and zero `server_errors`, `unhandled_lock_errors`, `confirmed_writes_missing` and `duplicate_business_effects`. |
+| `mysql_kills` | Stress and crash | At least three records. Each has `killed_during_write: true`, `recovery_ms` of at most 60 seconds, and zero `confirmed_writes_missing` and `duplicate_business_effects`. |
+| `data` | Data | `import_and_verify_ms` of at most 12 minutes, each zero counter in `NIGHTLY_COUNTERS`, and each boolean in `DRESS_DATA_PROOFS`. |
+| `way_back` | Way back | Each boolean in `DRESS_WAY_BACK_PROOFS`: reverse SQLite parity and the weekly invoice and payout runs on the exported file. |
 
 The writer serialization result requires the application policy to be active
 on the exact candidate. Exercise explicit transactions, autocommit writes,
@@ -266,6 +277,15 @@ review, add `external_alerts` to the readiness receipt, and update
   backlog does not grow and no critical endpoint p95 regresses by more than
   **10%**. Either write p95 or the proportion of writes experiencing contention
   must be strictly lower on MySQL in both rehearsals.
+- Both meet the plan's marks. Speed: none of the 50 busiest requests makes a
+  layout lookup, at least 45 are within **20 ms** of SQLite at p95 and none is
+  more than **100 ms** slower. Stress and crash: **ten minutes** at **20**
+  parallel clients while workers clear a backlog with no server error,
+  unhandled lock error, missing confirmed write or duplicate, then MySQL killed
+  mid-write at least **three** times and back within **60 seconds** each time.
+  Data: import and both verifications within **12 minutes** with a clean scan
+  and zero errors, warnings, notes or unexplained differences. Way back: the
+  exported SQLite file reproduces every value and the weekly money runs match.
 - The independent database recovery takes at most **60 minutes** and loses at
   most **five minutes** of data in the measured host-loss case. Application and
   media recovery require separate evidence.
