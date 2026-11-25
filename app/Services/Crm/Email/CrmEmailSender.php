@@ -71,6 +71,9 @@ class CrmEmailSender
             }
         }
 
+        if ($marketing && config('crm.outbound_hold')) {
+            throw new CrmSendBlocked('outbound_hold', 'CRM marketing email is paused for maintenance. Try again after the hold is released.');
+        }
         $this->assertSendable($to, $contact, $sender, $marketing);
 
         $signature = $sender ? $this->signatures->currentApproved($sender->id) : null;

@@ -232,7 +232,8 @@ class CrmDripService
     public function runDue(int $limit = 200): array
     {
         $counts = ['sent' => 0, 'skipped' => 0, 'stopped' => 0, 'failed' => 0];
-        if (! config('crm.enabled') || $this->sender->transport()->name() === 'log') {
+        // Outbound hold: claim nothing, so held steps stay due for after the release.
+        if (! config('crm.enabled') || config('crm.outbound_hold') || $this->sender->transport()->name() === 'log') {
             return $counts;
         }
 
