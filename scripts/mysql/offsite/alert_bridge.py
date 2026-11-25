@@ -185,10 +185,35 @@ def forward(config: dict, urls: dict[str, str], *, context: ssl.SSLContext | Non
     return results
 
 
+FIXED_CHECKS = ("server_silent", "backup_stale", "backup_failed")
+
+
+def enter_urls(config: dict, *, read=None) -> list[str]:
+    """Prompt without echo for each check URL and create the private URL file once."""
+    import getpass
+
+    read = read or (lambda prompt: getpass.getpass(prompt))
+    names = list(FIXED_CHECKS) + [name for name in config["forward"] if name not in FIXED_CHECKS]
+    checks = {name: check_url(read(f"{name} check ping URL (not shown): ").strip()) for name in names}
+    raw = (json.dumps({"version": 1, "checks": checks}, indent=2) + "\n").encode()
+    parse_urls(raw)
+    try:
+        fd = os.open(config["urls_file"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        raise Refusal("the ping URL file already exists; remove it before entering new URLs") from None
+    with os.fdopen(fd, "wb") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    print(json.dumps({"result": "ping-urls-written", "checks": names}))
+    return names
+
+
 def run(argv: list[str], *, config: bytes | None = None, urls: bytes | None = None,
         context: ssl.SSLContext | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("signal", "forward"))
+    parser.add_argument("action", choices=("signal", "forward", "enter-urls"))
     parser.add_argument("--config", type=Path, default=Path("/etc/repro-alert/bridge.json"))
     parser.add_argument("--condition")
     parser.add_argument("--state", choices=("ok", "fail"))
@@ -198,6 +223,9 @@ def run(argv: list[str], *, config: bytes | None = None, urls: bytes | None = No
             with args.config.open("rb") as stream:
                 config = stream.read(LIMIT + 1)
         settings = parse_config(config)
+        if args.action == "enter-urls":
+            enter_urls(settings)
+            return 0
         checks = parse_urls(urls) if urls is not None else read_private_urls(Path(settings["urls_file"]))
         if args.action == "signal":
             need(args.condition is not None and args.state is not None, "signal needs --condition and --state")
@@ -209,7 +237,7 @@ def run(argv: list[str], *, config: bytes | None = None, urls: bytes | None = No
     except Refusal as error:
         print(json.dumps({"result": "alert-bridge-refused", "reason": str(error)}))
         return 1
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, EOFError, KeyboardInterrupt):
         print(json.dumps({"result": "alert-bridge-refused", "reason": "unreadable bridge config or URL file"}))
         return 1
     for item in results:

@@ -209,3 +209,31 @@ class PrivateUrlFileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.name == "posix", "private file creation needs Linux")
+class EnterUrlsTests(unittest.TestCase):
+    def test_prompts_for_each_check_and_writes_a_private_file_without_echo(self):
+        with tempfile.TemporaryDirectory(dir=Path.home()) as name:
+            folder = Path(name)
+            os.chmod(folder, 0o700)
+            config = {"version": 1, "urls_file": str(folder / "ping-urls.json"), "inbox_dir": str(folder),
+                      "fail_suffix": "/fail", "timeout_seconds": 5, "max_status_age_seconds": 180,
+                      "forward": ["disk_nearly_full"]}
+            asked = []
+
+            def answer(prompt):
+                asked.append(prompt)
+                return "https://hc-ping.com/" + TOKEN + "-" + prompt.split()[0]
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                bridge.enter_urls(bridge.parse_config(json.dumps(config).encode()), read=answer)
+            self.assertEqual([prompt.split()[0] for prompt in asked],
+                             ["server_silent", "backup_stale", "backup_failed", "disk_nearly_full"])
+            self.assertEqual(os.stat(folder / "ping-urls.json").st_mode & 0o777, 0o600)
+            self.assertEqual(sorted(bridge.read_private_urls(folder / "ping-urls.json")),
+                             ["backup_failed", "backup_stale", "disk_nearly_full", "server_silent"])
+            self.assertNotIn(TOKEN, stdout.getvalue())
+            with self.assertRaises(bridge.Refusal):
+                bridge.enter_urls(bridge.parse_config(json.dumps(config).encode()), read=answer)
