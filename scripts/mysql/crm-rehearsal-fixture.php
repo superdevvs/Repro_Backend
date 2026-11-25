@@ -20,11 +20,13 @@ $app->make(Kernel::class)->bootstrap();
 config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => realpath($argv[1])]);
 DB::purge('sqlite');
 DB::statement('PRAGMA journal_mode=DELETE');
-// Every migration that creates or changes a CRM table (crm_*, recruit_*, email_suppressions), in order,
-// whatever its date: the same set as crm_migrations in scripts/cutover/nightly/nightly-config.json.
+// Every migration that names a CRM table (crm_*, recruit_*, email_suppressions) anywhere, so a
+// DB::statement change is run too, in order, whatever its date: the same rule and set as crm_migrations
+// in scripts/cutover/nightly/nightly-config.json (scripts/cutover/nightly/test_runner.py crm_migrations).
 foreach (glob(database_path('migrations/*.php')) as $file) {
-    if (preg_match("/Schema::(?:create|table)\(\s*'(?:(?:crm|recruit)_[a-z0-9_]*|email_suppressions)'/", file_get_contents($file))) {
+    if (preg_match('/\b(?:(?:crm|recruit)_[a-z0-9_]*|email_suppressions)\b/', file_get_contents($file))) {
         (require $file)->up();
+        echo 'Ran '.basename($file, '.php')."\n";
     }
 }
 $contact = DB::table('crm_contacts')->insertGetId([
