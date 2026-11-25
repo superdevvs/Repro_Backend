@@ -134,7 +134,8 @@ other jobs running.
    `reverse_triggers` unset. Decide whether to commit it or pin the reviewed
    copy on the host.
 3. **Applicant files.** `applicant_files_root` is unset. Setting it lets the
-   runner read applicant files on the live private disk, read-only.
+   runner read applicant files on the live private disk, read-only. With files
+   present, `crm_applicant_file_parity_verified` stays false (see "Left to do").
 4. **Snapshot retention.** `retain_snapshots` is unset, so nothing is ever
    deleted. Each night keeps about 4.5 GB. A number keeps only that many of the
    newest snapshots; deleting older copies on the server needs approval.
@@ -212,17 +213,9 @@ Tests rerun by the review:
 | `python -B -m unittest discover -s scripts/cutover -p 'test_*.py'` | Windows: 41 OK, 4 skipped. Linux uid 1000: 1 error in `test_final_backup_check` ("unsafe path owner"); the same error on `a6e799bb` in the same setup, and no file it uses changed. |
 | Full SQLite suite, `php -d memory_limit=1800M vendor/bin/phpunit --no-progress` on an export of `87ddc5d4`, container tmpfs, network none | 9,589 tests, 320,416 assertions, 3 skipped, 2 errors, 2 failures (73 min). The same four tests as above; running those four files on `a6e799bb` in the same setup gives the same 2 errors and 2 failures. The review commits change no PHP file. |
 
-Notes left open (not defects of the stated items):
-
-- A second SIGTERM or SIGHUP while cleanup waits for `mysqld` to stop leaves
-  the journal at `running` without a receipt. A resume recovers it.
-- The deploy lock is probed only before the copy. A deploy that starts during
-  the 21-second copy is caught only if `deploy-meta.json` changes before the
-  copy ends; a mid-migration schema then fails the reviewed layout pin.
-- A dress rehearsal's `data` record is not bound to the rehearsal's own
-  snapshot digest.
-- The 50 busiest endpoints, the finance step and the reverse trigger helper are
-  still unset, as listed above.
+Notes the review left open were fixed in the Codex review round below, except
+the unset busiest endpoints, finance step and reverse trigger helper, which
+are owner items listed above.
 
 ## Left to do
 
@@ -232,6 +225,59 @@ Notes left open (not defects of the stated items):
   helper, and nights cannot qualify without finance.
 - Rank the 50 busiest endpoints on a private copy, fill the workload, re-pin
   the policy (D1 follow-up).
+- Applicant files: when the snapshot has applicant files, build the
+  target-side comparison and the permitted and denied access checks on the
+  isolated target. Until then a night with files cannot qualify; an empty
+  inventory still can, as the readiness README allows.
 - Set the identity once the frozen release and target UUID exist (N7), then
   pin the manifest and summary.
 - The dress rehearsals themselves (D2, D3, D4).
+
+## Codex review round (25 Nov)
+
+Codex reviewed `5d701a74`; the reviewer's open notes were on `ad4f9981`. Each
+item was checked at `ad4f9981`, reproduced with a failing test first, then
+fixed in its own commit.
+
+- `nightly-dress#1` (P1) fixed in `7ad50d37`: a resume rechecks the clean
+  checkout, every pin and each candidate tool's captured digest, and refuses
+  before changing anything; the reverse helper pin is checked again right
+  before it runs.
+- `nightly-dress#2` (P1) fixed in `cf272024`: applicant-file parity is true
+  only for an empty inventory; the verifier's record must name this night's
+  snapshot.
+- `nightly-dress#3` (P2) fixed in `e36703bd`: retention counts only nights that
+  still hold a snapshot.
+- `nightly-dress#4` (P2) fixed in `9edda0c5`: a stopped night keeps the MySQL
+  error log, the tools' `failure-private.json` reports and failed tools'
+  stdout and stderr in `diagnostics-private/attempt-N/` before the work
+  directory is removed; credentials and data are never kept.
+- `reviewer#1` fixed in `f88573b9`: further SIGTERM or SIGHUP while a night
+  finishes is noted, not raised, so mysqld stops and the receipt is written;
+  the stage name is set before the attempt is marked running.
+- `reviewer#2` fixed in `ea7a343b`: the deploy lock is probed again after the
+  copy. The runner still never holds the lock, so deploys are not delayed.
+- `reviewer#3` fixed in `b9e6041b`: a dress rehearsal's `data` record must carry
+  the rehearsal's own `snapshot_sha256`.
+- `reviewer#4` fixed in `1c06b321`: two tests pin the post-import seal; each
+  fails when the seal is removed.
+- `reviewer#5` owner decision: `reverse_triggers`, `finance` and
+  `applicant_files_root` stay null in the committed config, and the busiest
+  endpoints and the identity (N7) stay unset (owner decisions 1 to 3 and
+  "Left to do").
+
+Tests run for this round, offline:
+
+| Command | Result |
+| --- | --- |
+| `python -B -m unittest discover -s scripts/cutover/nightly -p 'test_*.py'` (Windows) | 72 tests OK, 9 Linux-only skipped |
+| Same in `repro-mysql-rehearsal-qa:20261122`, uid 1000, network none, read-only mount | 72 tests OK. Two `ResourceWarning` lines from `test_local_host`; the same two appear on `ad4f9981` (60 OK). |
+| `python -B -m unittest discover -s scripts/cutover/readiness -p 'test_*.py'` (Windows and Linux) | 68 tests OK on both |
+| `python -B -m unittest discover -s scripts/cutover -p 'test_*.py'` | Windows: 41 OK, 4 skipped. Linux uid 1000: the known `test_final_backup_check` "unsafe path owner" error, as before. |
+| `policy.py check-drafts` with the committed drafts | `drafts-consistent` |
+
+Mutation checks: removing the resume recheck, the in-stage helper pin check,
+the post-copy lock probe, the cleanup signal hold, the diagnostics copy on a
+stop or on resume, or the post-import seal each made its new test fail. No PHP
+file changed, so no PHP or MySQL-profile tests were rerun; no SQL or `mysqld`
+flag changed.
