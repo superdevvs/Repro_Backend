@@ -30,8 +30,10 @@ $await = static function (string $name, float $seconds) use ($directory): void {
 };
 
 $db = Illuminate\Support\Facades\DB::connection('mysql');
-if (! $db instanceof App\Database\MySqlConnection || $db->getConfig('repro_writer_policy') !== true) {
-    throw new RuntimeException('The worker must use the application connection with the writer policy on.');
+// Only the explicit MYSQL_WRITER_PROOF_TOKEN=off demonstration runs a worker without the token.
+$tokenExpected = getenv('MYSQL_WRITER_PROOF_TOKEN') !== 'off';
+if (! $db instanceof App\Database\MySqlConnection || $db->getConfig('repro_writer_policy') !== $tokenExpected) {
+    throw new RuntimeException('The worker must use the application connection with the writer policy as the proof requires.');
 }
 
 $started = microtime(true);

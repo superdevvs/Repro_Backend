@@ -124,14 +124,31 @@ trait WriterFixture
         return (int) $this->admin->query('SELECT COUNT(*) FROM _writer_policy_probe')->fetchColumn();
     }
 
-    protected function worker(string $mode, array $arguments = [], int $timeout = 240): Process
+    protected function worker(string $mode, array $arguments = [], int $timeout = 240, array $environment = [],
+        string $script = 'writer-worker.php'): Process
     {
-        $process = new Process([PHP_BINARY, dirname(__DIR__).'/support/writer-worker.php', $mode, $this->markers, ...$arguments]);
+        $process = new Process([PHP_BINARY, dirname(__DIR__).'/support/'.$script, $mode, $this->markers, ...$arguments],
+            null, $this->workerEnvironment($environment));
         $process->setTimeout($timeout);
         $process->start();
         $this->workers[] = $process;
 
         return $process;
+    }
+
+    /**
+     * MYSQL_WRITER_PROOF_TOKEN=off starts every worker process without the writer
+     * token, to show which proofs fail when it is removed. This process keeps the
+     * policy on; it only prepares rows and reads results.
+     */
+    protected static function workersWithoutToken(): bool
+    {
+        return getenv('MYSQL_WRITER_PROOF_TOKEN') === 'off';
+    }
+
+    protected function workerEnvironment(array $environment = []): array
+    {
+        return $environment + (self::workersWithoutToken() ? ['REPRO_MYSQL_WRITER_POLICY' => 'false'] : []);
     }
 
     /** Generous: a worker boots the whole application, which is slow on a loaded host. */

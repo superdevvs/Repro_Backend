@@ -27,6 +27,7 @@ final class WriterBusinessPathsTest extends TestCase
     protected function tearDown(): void
     {
         if (isset($this->admin)) {
+            $this->admin->exec('DROP TRIGGER IF EXISTS _writer_policy_route_delay');
             $this->admin->exec('DROP TABLE IF EXISTS _writer_policy_effects');
             $this->admin->exec('DELETE FROM scheduling_route_usage');
         }
@@ -34,8 +35,18 @@ final class WriterBusinessPathsTest extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * The reservation is one INSERT ... SELECT that checks the rolling total. Under
+     * READ COMMITTED its check is a plain read, so two racers that both check before
+     * either commits would both reserve. That window is microseconds, so a test-only
+     * trigger holds each insert for half a second: with the token the racers still
+     * reserve once; with MYSQL_WRITER_PROOF_TOKEN=off several reserve.
+     */
     public function test_eight_processes_racing_for_the_last_route_unit_reserve_it_once(): void
     {
+        $this->admin->exec('DROP TRIGGER IF EXISTS _writer_policy_route_delay');
+        $this->admin->exec('CREATE TRIGGER _writer_policy_route_delay BEFORE INSERT ON scheduling_route_usage
+            FOR EACH ROW BEGIN DO SLEEP(0.5); END');
         $racers = [];
         foreach (range(1, 8) as $racer) {
             $racers[] = $this->worker('route-reserve', [(string) $racer], 240);
@@ -113,6 +124,12 @@ final class WriterBusinessPathsTest extends TestCase
         $this->assertFalse($this->tokenIsHeld());
     }
 
+    /**
+     * Not a serialization proof. Queue claims skip the token by design (D3) and rely
+     * on row locks with SKIP LOCKED, so this passes with MYSQL_WRITER_PROOF_TOKEN=off
+     * too. It shows that the exemption keeps each job to one run while the job
+     * bodies and enqueue take the token, and that workers do not queue behind it.
+     */
     public function test_twelve_workers_take_a_thousand_jobs_and_each_runs_exactly_once(): void
     {
         $queue = app('queue')->connection('database');
@@ -125,7 +142,8 @@ final class WriterBusinessPathsTest extends TestCase
         $workers = [];
         foreach (range(1, 12) as $ignored) {
             $worker = new Process([PHP_BINARY, base_path('artisan'), 'queue:work', 'database', '--stop-when-empty',
-                '--sleep=0', '--tries=1', '--timeout=120'], base_path(), ['QUEUE_CONNECTION' => 'database', 'LOG_CHANNEL' => 'stderr']);
+                '--sleep=0', '--tries=1', '--timeout=120'], base_path(),
+                $this->workerEnvironment(['QUEUE_CONNECTION' => 'database', 'LOG_CHANNEL' => 'stderr']));
             $worker->setTimeout(300);
             $worker->start();
             $workers[] = $worker;
