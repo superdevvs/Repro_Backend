@@ -18,6 +18,11 @@
       "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
       "argv": ["/home/maverick/.local/share/repro-studio/worker.sh"]
     },
+    "lab-tour": {
+      "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
+      "argv": ["/home/maverick/.local/share/repro-studio/lab-tour-worker.sh"]
+    },
     "voice-realtime": {
       "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
       "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,

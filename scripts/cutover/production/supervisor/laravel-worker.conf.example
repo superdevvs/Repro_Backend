@@ -9,9 +9,11 @@ numprocs=3
 user=root
 autostart=true
 ; A held admission exits 75. Do not restart it in a loop; the cutover reopen
-; starts the group again once the journal names the engine.
+; starts the group again once the journal names the engine. Exit 0 is not
+; expected: queue:restart (every deploy) and --max-time end queue:work with 0,
+; and the worker must start again through the wrapper.
 autorestart=unexpected
-exitcodes=0,75
+exitcodes=75
 startsecs=5
 stopsignal=TERM
 ; Wrapper and worker share a process group, so a group stop reaches both.

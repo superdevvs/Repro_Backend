@@ -31,13 +31,16 @@ cutover journal under the shared writer lock and runs the profile's fixed
 command as its user. The command and all its children, including detached
 background jobs from `runInBackground`, inherit the lock, so the cutover drain
 waits for them. A held admission exits 75 and runs nothing. Supervisor treats
-75 as expected and does not loop; the cutover `reopen` starts workers again.
+75 as the only expected exit, so a held worker is not restarted in a loop; the
+cutover `reopen` starts workers again. Exit 0 stays unexpected: `queue:restart`
+on every deploy and `--max-time` end `queue:work` with 0, and the worker must
+start again through the wrapper.
 
 | Writer | Fence |
 | --- | --- |
 | Both vhosts (same-origin `/api`, legacy API host, direct `.php` webhooks) | nginx server-level include; 503 with `Retry-After` unless the open marker exists |
 | System Supervisor `laravel-worker` (3) | `admit.py laravel-worker`, Supervisor as root |
-| User Supervisor: studio, voice-realtime, voice-notifications, voice-transcripts | `sudo -n ... admit.py <profile>` |
+| User Supervisor: studio, lab-tour (when installed), voice-realtime, voice-notifications, voice-transcripts | `sudo -n ... admit.py <profile>` |
 | `repro-media-archives.service` | systemd drop-in `ExecStart=+... admit.py media-archives` |
 | Laravel scheduler (cron `schedule:run`) | `admit.py scheduler`; background commands keep the lease |
 | Other application cron lines | `crontab.py` rewrites known lines; unknown ones are refused |

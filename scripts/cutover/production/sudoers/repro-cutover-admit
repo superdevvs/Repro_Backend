@@ -3,6 +3,7 @@
 # root admission wrapper, each with one fixed profile. Nothing else runs as root.
 Cmnd_Alias REPRO_ADMIT = \
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py studio, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py lab-tour, \
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py voice-realtime, \
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py voice-notifications, \
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py voice-transcripts, \

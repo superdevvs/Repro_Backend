@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -367,6 +368,28 @@ class UnitFileTests(unittest.TestCase):
         media = profiles["media-archives"]
         self.assertEqual(unit["ExecStart"][0].split(), media["argv"])
         self.assertEqual((unit["User"][0], unit["Group"][0], unit["UMask"][0]), (media["user"], media["group"], media["umask"]))
+
+    def test_supervisor_restarts_a_worker_that_exits_normally(self):
+        # Every deploy runs queue:restart, and --max-time ends a worker each hour: queue:work then
+        # exits 0 and must start again through the wrapper. Only a held admission (75) stays down.
+        program = self.entries(self.HERE / "supervisor" / "laravel-worker.conf.example")
+        self.assertEqual(["unexpected"], program["autorestart"])
+        self.assertEqual(["75"], program["exitcodes"])
+
+    def test_every_installed_user_supervisor_program_has_a_wrapper_profile(self):
+        installer = (self.HERE.parents[1] / "install-studio-runtime.sh").read_text(encoding="utf-8")
+        scripts = set(re.findall(r"^command=\$runtime/(\S+)$", installer, re.MULTILINE))
+        self.assertEqual({"worker.sh", "lab-tour-worker.sh"}, scripts)
+        profiles = json.loads((self.HERE / "wrappers.example.json").read_text(encoding="utf-8"))["profiles"]
+        by_script = {Path(profile["argv"][0]).name: name for name, profile in profiles.items()
+                     if profile["argv"][0].startswith("/home/maverick/.local/share/repro-studio/")}
+        sudoers = (self.HERE / "sudoers" / "repro-cutover-admit").read_text(encoding="utf-8")
+        allowed = set(re.findall(r"admit\.py ([a-z0-9-]+)", sudoers))
+        for script in sorted(scripts):
+            with self.subTest(script=script):
+                self.assertIn(script, by_script)
+                self.assertEqual("queue-worker", profiles[by_script[script]]["action"])
+                self.assertIn(by_script[script], allowed)
 
     @unittest.skipUnless(os.name == "posix", "The wrapper reads POSIX accounts")
     def test_every_example_profile_is_valid_and_every_cron_rule_has_a_profile(self):
