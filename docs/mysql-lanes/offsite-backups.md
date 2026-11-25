@@ -127,9 +127,11 @@ sudo python3 -I -B $B --undo --job recovery-kit                      # undo in r
 ```
 
 Optional keys and defaults: `app_root` `/var/www/backend`, `sqlite_database`
-`/var/www/backend/database/database.sqlite`, `rclone` `/usr/bin/rclone`,
+`/var/www/backend/database/database.sqlite`, `php` `/usr/bin/php8.3`,
+`python` `/usr/bin/python3`, `rclone` `/usr/bin/rclone`,
 `alert_fail_suffix` `/fail` (use `null` for a provider with no fail endpoint),
-`probe_conditions`, `access_logs` and `disks`.
+`probe_conditions` (the six SQLite conditions and `site_held`),
+`access_logs` and `disks` (`SETTING_DEFAULTS` in `install_backup_host.py`).
 
 What apply does for `base-backup`:
 
@@ -182,9 +184,14 @@ accounts, and reloads systemd. The record lives in
 to every source file in the bundle is root-owned and not group- or
 other-writable.
 
-Enable timers only after review:
-`systemctl enable --now repro-backup.timer repro-backup-watchdog.timer`, then the
-alert timers. Install `alerts` right after `base-backup`; until then the backup
+Enable timers only after review, with the commands each job prints:
+`systemctl enable --now repro-backup.timer repro-backup-watchdog.timer`
+(`base-backup`), then
+`systemctl enable --now repro-alert-heartbeat.timer repro-alert-probe.timer repro-alert-forward.timer`
+(`alerts`), then
+`systemctl enable --now repro-recovery-kit.timer repro-recovery-kit.path`
+(`recovery-kit`; the path unit republishes the kit on every `.env` change).
+Install `alerts` right after `base-backup`; until then the backup
 units' bridge targets do not exist and only the journal marker is written.
 
 The installer does not show APP_KEY. Copy the `APP_KEY=` line from `.env` into
@@ -205,7 +212,7 @@ later conditions are tried.
 | backup_stale | daytime | watchdog result (OnSuccess / OnFailure) | point the plan at a stale receipt on a test host |
 | backup_failed (extra) | daytime | nightly backup and kit result | run the backup with a missing rclone config |
 | database_down | wake | probe | rename a fixture database / stop the rehearsal MySQL |
-| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan) | set the probe plan's expected engine to the other one |
+| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan; with the writer hold, vs the engine the cutover journal makes authoritative) | on a test host without the writer hold (no journal, no ingress folder), set the probe plan's expected engine to the other one; with the writer hold the journal wins, so outside a hold set the fixture's cached config driver, or `.env` `DB_CONNECTION` when there is no cached config, to the other engine |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
 | backup_lag | wake | probe (newest archived binlog, the one before the checkpoint's `next_file`, last written over 300 s ago, two checks; needs `binlog_dir`) | pause the archive timer |
@@ -220,7 +227,8 @@ later conditions are tried.
 
 Provider setup: one check per row, period and grace from `alert-conditions.json`;
 for wake-me checks a 15-minute repeat and the second contact. The default probe
-plan enables only the six conditions that work on SQLite today. MySQL conditions
+plan enables the six conditions that work on SQLite today and, since the
+alerts lane, `site_held` (see the cutover runbook's Alerts section). MySQL conditions
 need the `mysql` monitor section pointed at the rehearsal instance (owner
 decision on round 1, below); the money check needs reviewed queries and a
 baseline from `alert_probe.py money-digest`. The MySQL monitor account needs
@@ -247,10 +255,18 @@ long-lived worker on the old engine. The plan's per-minute engine and server
 ID record, written by a scheduled command, is the real check; until it exists
 this detector is a config check only.
 
-A probe that cannot read `.env` (or a cached config it cannot read or parse)
-reports `wrong_database_engine` as failed. That is a wake alert, so a deploy
-that replaces `.env` by rename (see limits below) pages within minutes, not
-only at the next backup.
+A probe that cannot read or parse the cached config, or `.env` when there is
+no cached config, reports `wrong_database_engine` as failed. That is a wake
+alert. With a cached config, as on production, the probe never reads `.env`,
+so a deploy that replaces `.env` by rename (see limits below) does not page
+here; only the next backup and the kit fail.
+
+`cache_write_failed` would fail on production as soon as the `alerts` job
+is installed. The default plan sets `cache_group_writable: true`
+(`install_backup_host.py`), and the check fails on any cache folder
+without group write, but 142 of the 257 top-level folders under
+`storage/framework/cache/data` are 755 (measured 25 November). The owner
+decides before the install (owner decision 7 below).
 
 ## Timers and the monthly reboot
 
@@ -265,6 +281,10 @@ only at the next backup.
 | repro-binlog-archive (catch-up) | every 2 min at :30 on odd minutes | no |
 | repro-binlog-purge | hourly at :17 | no |
 
+Every `OnCalendar` line in `scripts/mysql/offsite/systemd/system/*.timer`
+names UTC, so the host's own zone (America/New_York, measured 25 November)
+does not move them. Host cron lines run on Eastern time.
+
 The backup moved from 02:30 to 03:30 UTC. That keeps 90 minutes clear of the
 monthly 02:00 reboot on the 28th whatever that reboot's time zone is (UTC, US or
 IST). The 26-hour freshness limit still covers 5 minutes of jitter and a
@@ -273,11 +293,14 @@ provider should see. A reboot longer than the 5-minute silence grace will page;
 measure the reboot once and raise the grace only if it is needed and still fits
 the 10-minute delivery limit.
 
-Cutover night: 03:30 UTC is 10:30 pm US Eastern in winter (EST), inside the
-planned Saturday 10 to 11 pm Eastern outage. 02:30 UTC (9:30 pm EST) would also
-run into it. The cutover and drill runbooks must hold `repro-backup.timer` and
-`repro-recovery-kit.timer` (and list them as "nothing due") or the owner must
-pick another time.
+Cutover night: the night falls in EST (UTC-5), so 10 pm Eastern is 03:00
+UTC. 03:30 UTC is 10:30 pm EST, inside the planned Saturday 10 to 11 pm
+Eastern outage. The old 02:30 UTC (9:30 pm EST)
+falls before the outage but would run during the 9:20 to 9:50 pm pre-hold
+steps. The cutover and drill runbooks must hold `repro-backup.timer`,
+`repro-recovery-kit.timer` and `repro-recovery-kit.path` (and list them as
+"nothing due") or the owner must pick another time. The path unit starts a
+kit run on every `.env` change, and the night edits `.env` several times.
 
 ## MySQL leg (B8)
 
@@ -329,7 +352,7 @@ Run on the recovery machine (Linux, WSL or a container) with the read-only key:
 python3 -I -B observe_backup_health.py observe --plan observer.json      # every minute
 python3 -I -B observe_backup_health.py export --plan observer.json --window-end END \
   --identity-sha256 H --destination-sha256 H --monitor-profile-sha256 H --output backup-health.jsonl
-python -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
+python3 -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
 ```
 
 Use `interval_s` 60. The summarizer credits a slot only while lag stays within
@@ -406,9 +429,9 @@ hanging with no `replay.json`.
   fail; Laravel does not set it. The backup's limit is unchanged.
 - **Limit: `.env` replaced by rename.** `Deploy-App.ps1` rewrites `.env` by rename
   when it stores a new Stripe webhook secret. That drops the ACL; the next
-  backup fails loudly, the kit fails, and the probe reports
-  `wrong_database_engine` (a wake alert) within minutes. Re-run the base-backup
-  apply to repair.
+  backup fails loudly and the kit fails (`backup_failed`). The probe reports
+  `wrong_database_engine` for it only when no cached config exists, which is
+  not the case on production. Re-run the base-backup apply to repair.
 - **Archive-aware purge** replaces unbounded binlog growth.
 - **Persistent timers and the monthly 02:00 reboot on the 28th** are handled in "Timers and the monthly reboot".
 - **Probe plan placement.** The real manager showed the probe could not read a
@@ -592,7 +615,10 @@ suites and `run-fixture.ps1` (no PHP or unit file changed).
 2. Whether the 7-day window and alert round 1 run on the native rehearsal
    instance (B1 e). The `before_installer` round needs MySQL-only cases; the
    native service is already installed.
-3. The monthly reboot: confirm its source and time zone. The backup now runs at
+3. The monthly reboot: confirm its source and time zone. It is not in the
+   deploy user's crontab, and the host runs on America/New_York (25
+   November), so a host cron line or timer with no zone would reboot at
+   02:00 Eastern. The backup now runs at
    03:30 UTC; keep it, or move it back once the reboot is known. Either time
    falls in or next to the Saturday 10 to 11 pm Eastern cutover outage, so the
    cutover and drill runbooks hold the backup and kit timers that night.
@@ -600,6 +626,10 @@ suites and `run-fixture.ps1` (no PHP or unit file changed).
 5. Whether to add an app-side WAL keeper, or accept a rare loud backup failure
    when no app connection is open. (The probe no longer pages in that case.)
 6. The SQL and baseline for `historical_money_totals_changed`.
+7. The production cache folders and `cache_write_failed`: make the cache
+   tree group-writable (for example `g+w`, and setgid on the folders)
+   before the `alerts` install, or drop or change `cache_group_writable`
+   in the probe plan. Each changes production and needs its own approval.
 
 ## Folding into the shared docs
 
