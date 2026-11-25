@@ -149,6 +149,27 @@ class CrmCalendarReconcileTest extends CrmTestCase
         $this->assertSame(1, $exit);
     }
 
+    /**
+     * A create whose response was lost leaves push_pending with no Google id.
+     * Released, the deterministic retry can find the event Google already
+     * holds and patch it with the CRM time, overwriting a change made there
+     * during the hold. So it needs a decision, without any call to Google.
+     */
+    public function test_a_create_google_never_confirmed_needs_a_decision(): void
+    {
+        $start = now()->addDay()->setTime(9, 0)->utc();
+        $unconfirmed = $this->linked('', $start, ['google_event_id' => null, 'fingerprint' => null, 'push_pending' => true]);
+        $unlinked = $this->linked('', $start, ['google_event_id' => null, 'fingerprint' => null, 'push_pending' => false]);
+
+        [$exit, $report] = $this->reconcile();
+
+        $rows = collect($report['rows'])->keyBy('event_id');
+        $this->assertSame('unconfirmed_create', $rows[$unconfirmed->id]['category'] ?? null);
+        $this->assertNull($rows[$unconfirmed->id]['remote_starts_at']);
+        $this->assertFalse($rows->has($unlinked->id), 'An unlinked follow-up with nothing pending is left alone, as the poller does.');
+        $this->assertSame(1, $exit);
+    }
+
     public function test_all_in_sync_exits_zero_and_the_command_refuses_to_run_without_dry_run(): void
     {
         $start = now()->addDay()->setTime(9, 0)->utc();

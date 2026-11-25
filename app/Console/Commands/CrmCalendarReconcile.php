@@ -13,9 +13,10 @@ use Illuminate\Support\Facades\DB;
  * Producer replay (P2-08). Before crm:calendar-sync is released after the
  * switch, compare every linked CRM follow-up with its Google event: moved or
  * deleted in Google, a local change still waiting to push (which would
- * overwrite Google), and changes outside the poll window or limit. Reads
- * only. A connection whose token needs a refresh is reported, not refreshed,
- * unless --allow-token-refresh is given (a refresh saves the new token).
+ * overwrite Google), a create Google never confirmed, and changes outside
+ * the poll window or limit. Reads only. A connection whose token needs a
+ * refresh is reported, not refreshed, unless --allow-token-refresh is given
+ * (a refresh saves the new token).
  * Done or missed follow-ups (the sync leaves them in Google on purpose) and
  * links without a Google connection are listed but never acted on by the
  * poller, so they do not block. Exit 0 when nothing else is found, 1 when
@@ -44,7 +45,7 @@ class CrmCalendarReconcile extends Command
         $windowStart = now()->subDays(CrmCalendarSync::POLL_PAST_DAYS);
         $windowEnd = now()->addDays(CrmCalendarSync::POLL_FUTURE_DAYS);
         $links = DB::table('crm_event_calendar_links as l')->join('crm_events as e', 'e.id', '=', 'l.event_id')
-            ->whereNotNull('l.google_event_id')->orderBy('l.id')
+            ->where(fn ($q) => $q->whereNotNull('l.google_event_id')->orWhere('l.push_pending', true))->orderBy('l.id')
             ->get(['l.id as link_id', 'l.user_id', 'l.calendar_id', 'l.google_event_id', 'l.push_pending',
                 'e.id as event_id', 'e.status', 'e.starts_at', 'e.duration_min']);
         $connections = [];
@@ -89,6 +90,11 @@ class CrmCalendarReconcile extends Command
         }
         if (! $connection) {
             return ['no_connection', $none];
+        }
+        if ($link->google_event_id === null) {
+            // A pending push with no Google id: an earlier create may have reached Google
+            // with its response lost, and the release would patch that event (409 path).
+            return ['unconfirmed_create', $none];
         }
         if (! $this->option('allow-token-refresh') && $connection->token_expires_at && $connection->token_expires_at->lt(now()->addMinutes(2))) {
             return ['token_refresh_needed', $none];
