@@ -17,6 +17,16 @@ use Throwable;
  */
 final class WriterPolicyCheck extends Command
 {
+    /**
+     * The tables each token-free connection may write: queue and cache bookkeeping
+     * only. Any other MySQL connection may skip the token for no table at all.
+     */
+    private const BOOKKEEPING_SCOPES = [
+        'mysql_queue_worker' => ['jobs'],
+        'mysql_scheduling_cache' => ['cache', 'cache_locks'],
+        'mysql_cache_locks' => ['cache_locks'],
+    ];
+
     protected $signature = 'db:writer-policy-check';
 
     protected $description = 'Check the MySQL writer token, its session settings and connection layout (exit 1 on any problem)';
@@ -43,10 +53,14 @@ final class WriterPolicyCheck extends Command
             if ($name === $default || ! is_array($settings) || ($settings['driver'] ?? null) !== 'mysql') {
                 continue;
             }
+            $tables = $settings['repro_writer_exempt_tables'] ?? null;
             if (($settings['repro_writer_policy'] ?? false) === true) {
                 $problems[] = "Connection {$name} also carries the writer token; exactly one may.";
-            } elseif (! is_array($settings['repro_writer_exempt_tables'] ?? null)) {
+            } elseif (! is_array($tables)) {
                 $problems[] = "Connection {$name} writes MySQL without the writer token or a table limit.";
+            } elseif (($outside = array_diff($tables, self::BOOKKEEPING_SCOPES[$name] ?? [])) !== []) {
+                $problems[] = "Connection {$name} skips the writer token for tables outside its bookkeeping scope: "
+                    .implode(', ', $outside).'.';
             }
         }
         $policy = ($target['repro_writer_policy'] ?? false) === true;

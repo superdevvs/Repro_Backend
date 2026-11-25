@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use Illuminate\Database\Connectors\ConnectionFactory;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -133,6 +134,48 @@ class WriterPolicyCheckCommandTest extends TestCase
         $this->assertSame(['url-host', 3307, 'url_database'], [
             $factory->made[0]['host'] ?? null, $factory->made[0]['port'] ?? null, $factory->made[0]['database'] ?? null,
         ]);
+    }
+
+    public function test_the_shipped_mysql_connection_layout_passes(): void
+    {
+        config(['database.default' => 'mysql', 'database.connections.mysql_reporting' => [
+            'driver' => 'mysql', 'repro_writer_policy' => false, 'repro_writer_exempt_tables' => [],
+        ]]);
+        $this->provisionedServer();
+
+        [$code, $report] = $this->check();
+
+        $this->assertSame([], $report['problems']);
+        $this->assertSame(0, $code);
+    }
+
+    public static function exemptionsOutsideTheirScope(): array
+    {
+        return [
+            'business table on the cache-lock session' => ['mysql_cache_locks', ['cache_locks', 'users'], 'users'],
+            'cache values on the cache-lock session' => ['mysql_cache_locks', ['cache_locks', 'cache'], 'cache'],
+            'business table on the queue-worker session' => ['mysql_queue_worker', ['jobs', 'shoots'], 'shoots'],
+            'business table on the scheduling-cache session' => ['mysql_scheduling_cache', ['cache', 'cache_locks', 'invoices'], 'invoices'],
+            'a token-free connection the layout does not know' => ['mysql_reporting', ['jobs'], 'jobs'],
+        ];
+    }
+
+    #[DataProvider('exemptionsOutsideTheirScope')]
+    public function test_a_token_free_connection_may_skip_the_token_only_for_its_own_bookkeeping_tables(
+        string $connection, array $tables, string $outside): void
+    {
+        config(['database.default' => 'mysql', "database.connections.{$connection}" => [
+            ...(config("database.connections.{$connection}") ?? ['driver' => 'mysql']),
+            'repro_writer_policy' => false, 'repro_writer_exempt_tables' => $tables,
+        ]]);
+        $this->provisionedServer();
+
+        [$code, $report] = $this->check();
+
+        $this->assertSame(1, $code, json_encode($report));
+        $problems = implode(' ', $report['problems']);
+        $this->assertStringContainsString($connection, $problems);
+        $this->assertStringContainsString($outside, $problems);
     }
 
     public function test_the_check_connects_to_the_database_url_target_as_the_application_does(): void
