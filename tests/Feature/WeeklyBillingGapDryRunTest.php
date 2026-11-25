@@ -261,12 +261,19 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $reshoot = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, 'scheduled_date' => '2026-10-06']);
         $reshootPay = $this->compensation($reshoot, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00');
         $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00');
+        // Never paid by the run: an inactive rep, and no rep on the shoot or its client.
+        $inactive = User::factory()->create(['role' => 'salesRep', 'account_status' => 'inactive']);
+        $this->repShoot($inactive, $service, '2026-10-06');
+        $this->repShoot(null, $service, '2026-10-06');
 
         $report = $this->dryRun();
 
         $none = ['selected_now' => 1, 'selected_date_correct' => 1, 'skipped' => 0, 'selected_only_by_text' => 0];
         $this->assertSame($none, $report['periods'][0]['selections']['sales_rep_invoices']);
         $this->assertSame($none, $report['periods'][0]['selections']['sales_rep_compensations']);
+        // The payout report adds the rep's pay on both shoots.
+        $this->assertSame(['selected_now' => 2, 'selected_date_correct' => 2, 'skipped' => 0, 'selected_only_by_text' => 0],
+            $report['periods'][0]['selections']['sales_rep_payout_report_compensations']);
         $this->assertSame([], $report['skipped']);
         $invoices = app(InvoiceService::class)->generateSalesRepInvoicesForPeriod(
             Carbon::parse('2026-10-04'),
