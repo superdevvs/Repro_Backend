@@ -126,7 +126,7 @@ class ProductionUnitTests(unittest.TestCase):
         self.assertEqual(service["StateDirectory"], "repro-alert-probe")
         self.assertEqual(service["ReadWritePaths"], "/var/lib/repro-alert-inbox")
         self.assertEqual(shlex.split(service["ExecStart"]),
-                         PYTHON + [TOOLS + "alert_probe.py", "run", "--plan", "/etc/repro-alert/probe.json"])
+                         PYTHON + [TOOLS + "alert_probe.py", "run", "--plan", "/etc/repro-backup/alert-probe.json"])
 
     def test_timers_follow_the_reviewed_cadence_and_catch_up_policy(self):
         for name, (calendar, persistent) in TIMERS.items():

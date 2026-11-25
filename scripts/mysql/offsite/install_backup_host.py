@@ -286,7 +286,7 @@ def build_job(name: str, settings: dict) -> Job:
                  "restore_receipts": None, "rehearsal_receipts": None}
         job.files = tool_files(ALERT_TOOLS) + [
             FileItem("/etc/repro-alert/bridge.json", "root", "repro-alert", 0o640, json_bytes(bridge), "rendered config"),
-            FileItem("/etc/repro-alert/probe.json", "root", ACCOUNT, 0o640, json_bytes(probe), "rendered plan"),
+            FileItem("/etc/repro-backup/alert-probe.json", "root", ACCOUNT, 0o640, json_bytes(probe), "rendered plan"),
         ] + unit_files(ALERT_UNITS)
         job.grants = [Grant(f"{app}/storage/logs", ACCOUNT, READ | EXECUTE), Grant(f"{app}/storage/logs", ACCOUNT, READ, default=True),
                       Grant(f"{app}/storage/logs/laravel.log", ACCOUNT, READ, optional=True)]
@@ -502,11 +502,18 @@ def preview(job: Job, system, settings: dict) -> int:
     for item in job.files:
         print(f"  {item.path} {item.owner}:{item.group} {item.mode:04o} {hashlib.sha256(item.data).hexdigest()} "
               f"[{file_state(system, item)}]")
-    grants = job.grants + ancestors_needing_traverse(system, job.grants)
+    try:
+        grants = job.grants + ancestors_needing_traverse(system, job.grants)
+    except PermissionError:
+        grants = job.grants
+        print("\nNote: this user cannot see every app folder; run the preview as the deploy user or root.")
     if grants:
         print("\nRead grants (POSIX ACL entries added; nothing is made writable):")
         for grant in grants:
-            exists = "present" if system.lstat(grant.path) else ("skipped if absent" if grant.optional else "MISSING")
+            try:
+                exists = "present" if system.lstat(grant.path) else ("skipped if absent" if grant.optional else "MISSING")
+            except PermissionError:
+                exists = "not visible to this user"
             kind = "default" if grant.default else "access"
             print(f"  {kind:7} user:{grant.user}:{rights(grant.perm)} {grant.path} [{exists}]")
     if job.units:
