@@ -15,7 +15,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from rehearse import PRIVATE, ContainerRehearsal, exercise, file_digest, load_pymysql, require
+from rehearse import PRIVATE, SOURCE, ContainerRehearsal, exercise, file_digest, load_pymysql, require, sqlite_rows
 from scripts.cutover.runner import UnsafeCutover
 
 
@@ -25,7 +25,17 @@ FPM_CONFIG = PRIVATE / "writer-fastcgi.conf"
 NGINX = Path("/usr/sbin/nginx")
 NGINX_SOCKET = PRIVATE / "writer-nginx.sock"
 NGINX_CONFIG = PRIVATE / "writer-nginx.conf"
+NGINX_LOCATIONS = PRIVATE / "writer-nginx-locations.conf"
 INGRESS_OPEN = PRIVATE / "authority" / "nginx-writers-open"
+VHOSTS = ("dashboard.fixture.test", "legacy-api.fixture.test")
+SMOKE_PATH = "/fixture/notification-state"
+QUOTE_PATH = "/api/public/crm/quotes/" + "A" * 48
+WEBHOOK_PATH = "/api/webhooks/resend"
+WEBHOOK_PAYLOAD = b'{"id":"synthetic-resend-event"}'
+WRITING_ROUTES = (
+    ("write_on_read", "GET", QUOTE_PATH + "?source=cutover-fixture", None),
+    ("webhook", "POST", WEBHOOK_PATH, WEBHOOK_PAYLOAD),
+)
 
 NGINX_SETTINGS = """
 daemon off;
@@ -40,38 +50,51 @@ http {
     proxy_temp_path /private/nginx-proxy;
     uwsgi_temp_path /private/nginx-uwsgi;
     scgi_temp_path /private/nginx-scgi;
-    map $request_method $require_writer_gate { GET 0; default 1; }
+    map "$request_method:$uri" $require_writer_gate {
+        "GET:/fixture/notification-state" 0;
+        default 1;
+    }
+    server { listen unix:/private/writer-nginx.sock default_server; return 404; }
     server {
         listen unix:/private/writer-nginx.sock;
-        server_name fixture.test;
-        location = /fixture/notification-state {
-            default_type application/json;
-            set $held $require_writer_gate;
-            if (-f /private/authority/nginx-writers-open) { set $held 0; }
-            if ($held) { return 503 '{"admission_held":true}'; }
-            add_header X-Fixture-Upstream $upstream_addr always;
-            fastcgi_pass unix:/private/writer-fastcgi.sock;
-            fastcgi_param SCRIPT_FILENAME /host/probe.php;
-            fastcgi_param SCRIPT_NAME /probe.php;
-            fastcgi_param DOCUMENT_ROOT /host;
-            fastcgi_param REQUEST_METHOD $request_method;
-            fastcgi_param REQUEST_URI $request_uri;
-            fastcgi_param SERVER_NAME $server_name;
-            fastcgi_param SERVER_PROTOCOL $server_protocol;
-            fastcgi_param REDIRECT_STATUS 200;
-            fastcgi_param CONTENT_TYPE $content_type;
-            fastcgi_param CONTENT_LENGTH $content_length;
-        }
-        location / { return 404; }
+        server_name dashboard.fixture.test;
+        include /private/writer-nginx-locations.conf;
+    }
+    server {
+        listen unix:/private/writer-nginx.sock;
+        server_name legacy-api.fixture.test;
+        include /private/writer-nginx-locations.conf;
     }
 }
 """
 
+NGINX_ROUTE = """
+    default_type application/json;
+    set $held $require_writer_gate;
+    if (-f /private/authority/nginx-writers-open) { set $held 0; }
+    if ($held) {
+        add_header Retry-After 30 always;
+        return 503 '{"admission_held":true}';
+    }
+    add_header X-Fixture-Upstream $upstream_addr always;
+    fastcgi_pass unix:/private/writer-fastcgi.sock;
+    fastcgi_param SCRIPT_FILENAME /host/probe.php;
+    fastcgi_param SCRIPT_NAME /probe.php;
+    fastcgi_param DOCUMENT_ROOT /host;
+    fastcgi_param REQUEST_METHOD $request_method;
+    fastcgi_param REQUEST_URI $request_uri;
+    fastcgi_param SERVER_NAME $server_name;
+    fastcgi_param SERVER_PROTOCOL $server_protocol;
+    fastcgi_param REDIRECT_STATUS 200;
+    fastcgi_param CONTENT_TYPE $content_type;
+    fastcgi_param CONTENT_LENGTH $content_length;
+"""
+
 
 class NginxConnection(http.client.HTTPConnection):
-    def __init__(self, expected_pid: int):
+    def __init__(self, expected_pid: int, host: str):
         self.expected_pid = expected_pid
-        super().__init__("fixture.test", timeout=7)
+        super().__init__(host, timeout=7)
 
     def connect(self):
         peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -92,6 +115,7 @@ class FastCgiRehearsal(ContainerRehearsal):
                 "The pinned nginx, PHP-FPM and Linux pidfd support are required")
         self.worker_cohorts_drained = 0
         self.edge_holds = 0
+        self.route_holds = {host: {kind: {"nginx": 0, "fpm": 0} for kind, *_ in WRITING_ROUTES} for host in VHOSTS}
         self.nginx = None
         super().__init__(*args)
 
@@ -150,6 +174,9 @@ class FastCgiRehearsal(ContainerRehearsal):
         else:
             raise UnsafeCutover("The owned PHP-FPM socket never became ready")
         NGINX_CONFIG.write_text(NGINX_SETTINGS, encoding="ascii")
+        locations = [f"location = {path} {{{NGINX_ROUTE}}}" for path in (SMOKE_PATH, QUOTE_PATH, WEBHOOK_PATH)]
+        locations.append("location / { return 404; }")
+        NGINX_LOCATIONS.write_text("\n".join(locations), encoding="ascii")
         self.nginx = subprocess.Popen(
             (str(NGINX), "-c", str(NGINX_CONFIG), "-e", "/dev/stderr"), cwd=PRIVATE,
             env={"PATH": "/usr/sbin:/usr/bin:/bin"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -174,19 +201,51 @@ class FastCgiRehearsal(ContainerRehearsal):
 
     def freeze(self, lease, deadline):
         super().freeze(lease, deadline)
+        self.assert_route_holds()
         # Restart both services while the ingress file is absent. The later
         # stale-gate check independently exercises the journal guard in FPM.
         self.restart_and_check_hold("sqlite")
 
-    def http(self, method="GET", code=200):
-        with closing(NginxConnection(self.nginx.pid)) as client:
-            client.request(method, "/fixture/notification-state")
+    def prepare(self, lease, deadline):
+        super().prepare(lease, deadline)
+        self.assert_route_holds()
+
+    def assert_writer_hold(self):
+        super().assert_writer_hold()
+        self.assert_route_holds()
+
+    def assert_route_holds(self):
+        layer = "fpm" if INGRESS_OPEN.is_file() else "nginx"
+        for host in VHOSTS:
+            for kind, method, path, body in WRITING_ROUTES:
+                require(self.http(method, 503, host=host, path=path, body=body) == {"admission_held": True},
+                        f"The {host} {kind} request escaped the {layer} writer hold")
+                self.route_holds[host][kind][layer] += 1
+
+    def replay_routes(self):
+        for host in VHOSTS:
+            require(self.http(host=host)["engine"] == "sqlite", "The restored host no longer reads SQLite")
+            for kind, method, path, body in WRITING_ROUTES:
+                receipt = "synthetic-quote-view" if kind == "write_on_read" else "synthetic-resend-event"
+                expected = {"receipt": receipt, "host": host}
+                require(self.http(method, host=host, path=path, body=body) == expected,
+                        f"The restored {host} {kind} replay differed")
+        expected = [("synthetic-queue-effect",), ("synthetic-quote-view",), ("synthetic-resend-event",)]
+        require(sqlite_rows(SOURCE)["fixture_effects"] == expected, "SQLite lost or duplicated an ingress effect")
+        require(self.rows_mysql() == self.imported, "Reopened route writes reached the sealed MySQL target")
+
+    def http(self, method="GET", code=200, *, host=VHOSTS[0], path=SMOKE_PATH, body=None):
+        with closing(NginxConnection(self.nginx.pid, host)) as client:
+            headers = {"Content-Type": "application/json"} if body is not None else {}
+            client.request(method, path, body, headers)
             response = client.getresponse()
             require(response.status == code, f"Unexpected private nginx status {response.status}")
             forwarded = response.getheader("X-Fixture-Upstream") == f"unix:{FPM_SOCKET}"
-            if method == "POST" and code == 503 and not INGRESS_OPEN.is_file():
+            if code == 503 and not INGRESS_OPEN.is_file():
                 require(not forwarded, "Held request reached PHP-FPM")
-                self.edge_holds += 1
+                require(response.getheader("Retry-After") == "30", "The edge 503 did not tell the producer when to retry")
+                if path == SMOKE_PATH:
+                    self.edge_holds += 1
             else:
                 require(forwarded, "The private nginx probe did not reach FastCGI")
             body = response.read(64 * 1024 + 1)
@@ -199,10 +258,16 @@ def main() -> None:
         report = exercise(adapter)
         require(adapter.worker_cohorts_drained == 7 and adapter.edge_holds == 3,
                 "Expected every replaced PHP-FPM cohort and each closed nginx edge probe to be verified")
+        route_counts = [counts for host in adapter.route_holds.values() for counts in host.values()]
+        require(all(counts == {"nginx": 3, "fpm": 5} for counts in route_counts),
+                "The host and route matrix was not exercised through every edge and FPM hold")
+        adapter.replay_routes()
         report.update({
             "scope": "synthetic journal gate on private nginx/PHP-FPM Unix sockets and one-shot Laravel queue",
             "fpm_worker_cohorts_drained_during_restarts": adapter.worker_cohorts_drained,
-            "nginx_503_without_upstream": adapter.edge_holds,
+            "nginx_503_without_upstream": adapter.edge_holds + sum(counts["nginx"] for counts in route_counts),
+            "route_503s_by_host_and_layer": adapter.route_holds,
+            "replayed_sqlite_effects": {"write_on_read": 1, "webhook": 1},
             "fastcgi_harness_sha256": file_digest(Path(__file__)),
             "php_fpm_sha256": file_digest(FPM),
             "nginx_sha256": file_digest(NGINX),

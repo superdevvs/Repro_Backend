@@ -51,14 +51,23 @@ function runProbe(): array
     requireFixture(posix_geteuid() === 1000 && in_array($engine, ['sqlite', 'mysql'], true)
         && $gate['engine'] === $engine);
     $web = in_array(PHP_SAPI, ['cli-server', 'fpm-fcgi'], true);
-    $operation = $web ? ($_SERVER['REQUEST_METHOD'] === 'GET' ? 'read' : 'write') : ($GLOBALS['argv'][1] ?? '');
-    requireFixture(in_array($operation, ['read', 'write', 'enqueue', 'work'], true));
+    if ($web) {
+        $operation = match ([$_SERVER['REQUEST_METHOD'], parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH)]) {
+            ['GET', '/fixture/notification-state'] => 'read',
+            ['POST', '/fixture/notification-state'] => 'write',
+            ['GET', '/api/public/crm/quotes/'.str_repeat('A', 48)] => 'quote-view',
+            ['POST', '/api/webhooks/resend'] => 'webhook',
+            default => null,
+        };
+        if ($operation === null || (in_array($operation, ['quote-view', 'webhook'], true)
+            && (PHP_SAPI !== 'fpm-fcgi' || ! in_array($_SERVER['SERVER_NAME'], ['dashboard.fixture.test', 'legacy-api.fixture.test'], true)))) {
+            http_response_code(404);
 
-    if ($web && (parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) !== '/fixture/notification-state'
-        || ! in_array($_SERVER['REQUEST_METHOD'], ['GET', 'POST'], true))) {
-        http_response_code(404);
-
-        return ['missing' => true];
+            return ['missing' => true];
+        }
+    } else {
+        $operation = $GLOBALS['argv'][1] ?? '';
+        requireFixture(in_array($operation, ['read', 'write', 'enqueue', 'work'], true));
     }
 
     if ($operation === 'read') {
@@ -131,6 +140,16 @@ function exerciseLaravel(string $engine, string $operation): array
         ]);
 
         return ['worker_exit' => $exit, 'effects' => $database->table('fixture_effects')->pluck('receipt')->all()];
+    }
+
+    if (in_array($operation, ['quote-view', 'webhook'], true)) {
+        if ($operation === 'webhook') {
+            requireFixture(file_get_contents('php://input') === '{"id":"synthetic-resend-event"}');
+        }
+        $receipt = $operation === 'quote-view' ? 'synthetic-quote-view' : 'synthetic-resend-event';
+        $database->table('fixture_effects')->insertOrIgnore(['receipt' => $receipt]);
+
+        return ['receipt' => $receipt, 'host' => $_SERVER['SERVER_NAME']];
     }
 
     $actor = new User;
