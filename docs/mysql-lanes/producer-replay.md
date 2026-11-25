@@ -17,7 +17,7 @@ Branch `claude/producer-replay-20261125`, based on `a6e799bb` (draft PR 46).
 | P2-04 | The careers route uses `crm.enabled:retry`: CRM off gives **503 + Retry-After**, not 404. Staff CRM routes still give 404. Website intake receipts are always registered, even with CRM off; `crm:website-intake` replays them once the CRM is back. | `tests/Feature/Crm/ProducerIngressHoldTest.php` |
 | P2-04, P2-07 | `PRODUCER_INGRESS_HOLD` answers the producer routes with 503 + Retry-After, first in the global middleware stack (before telemetry, maintenance and controllers). Resend `email.received` with CRM off now gives 503, never 200 "ignored". A reviewed nginx snippet holds the same webhooks at the edge, and all of `/api/external/` (see the edge note under owner decisions). | `ProducerIngressHoldTest.php`, `tests/Feature/Crm/ResendRedeliveryTest.php`, `scripts/cutover/fence/test_producer_hold.py` |
 | P2-06 | `scripts/cutover/website_ledger.py` turns a read-only website export into the capture ledger, a private CSV and a references file. `php artisan crm:website-ledger` reports the Dashboard side for each reference, read-only against the database it is given, and lists bookings saved without a reference. | `scripts/cutover/test_website_ledger.py`, `tests/Feature/Crm/CrmWebsiteLedgerTest.php` |
-| P2-08 | `php artisan crm:calendar-reconcile --dry-run` compares every linked follow-up with Google, inside and outside the poll window. Done or missed follow-ups (`closed_locally`) and links without a Google connection (`no_connection`) are listed but do not fail it, because the poller never acts on them. | `tests/Feature/Crm/CrmCalendarReconcileTest.php` |
+| P2-08 | `php artisan crm:calendar-reconcile --dry-run` compares every linked follow-up with Google, inside and outside the poll window, and lists a pending create Google never confirmed (`unconfirmed_create`). Done or missed follow-ups (`closed_locally`) and links without a Google connection (`no_connection`) are listed but do not fail it, because the poller never acts on them. | `tests/Feature/Crm/CrmCalendarReconcileTest.php` |
 | P2-10 | `php artisan stripe:undelivered-events` lists events with pending deliveries, using a restricted read key. Tests prove a payment event sent 5 times gives one payment. | `tests/Feature/StripeReplayAfterFreezeTest.php` |
 | P2-11 | `aryeo:connection` gains `--record-state=<file> --pause` and `--resume-processing=<file>`. The Aryeo API webhook is held with the other producers. | `tests/Feature/AryeoFreezeResumeTest.php` |
 | P2-12 | `CRM_OUTBOUND_HOLD` stops drips, campaigns, the follow-up digest and marketing sends, while replies, delivery events, opt-outs and website intake keep working. `crm:outbound-release-check` gates the release; `crm:send-disposition` records the review of an uncertain send. | `tests/Feature/Crm/CrmOutboundHoldTest.php` |
@@ -89,8 +89,11 @@ production needs its own approval.
    `not_in_dashboard` bookings through forward-booking-v2 with the frozen
    quote; `not_received` and `not_delivered` contacts through website-email
    with the same reference; `uncertain` contacts only after the provider log
-   shows the outcome; `submission_without_shoot` and every
-   `manual_reconciliation` entry by a person. Each replay POST needs
+   shows the outcome; `submission_without_shoot`, `other_source_only` (the
+   reference belongs only to another integration's booking; bookings match
+   on source `reprophotos.com` and the reference) and every
+   `manual_reconciliation` entry by a person. An unreadable `--since` exits 2.
+   Each replay POST needs
    approval per reference. Compare the capture and replay ledgers with
    `verify_website_replay`.
 8. Resend. In the Resend dashboard, replay the failed messages of the window
@@ -107,13 +110,24 @@ production needs its own approval.
    that would reach someone who replied, bounced or opted out. For each
    uncertain send, check the provider log and run
    `php artisan crm:send-disposition <send-id> delivered|not_delivered|resend_approved|abandoned --note="..."`.
+   A reply counts as forwarded only while its forward send (`reply_fwd`) has
+   status `sent`. A forward that failed, was blocked, was only logged or is
+   still queued stays blocking until you check that the rep has the reply
+   (Conversations shows it) and record a disposition on the forward send. A
+   reply with no forward send at all (no rep, or no valid address) takes the
+   disposition on the send it answered.
    When it exits 0, set `CRM_OUTBOUND_HOLD=false`.
 10. `php artisan crm:calendar-reconcile --dry-run --json`. It reads Google
     and writes nothing; connections whose token needs a refresh are listed as
     `token_refresh_needed` (add `--allow-token-refresh` only if approved, as a
     refresh saves the new token). Decide each `moved_in_google`,
     `deleted_in_google`, `push_pending` (a pending push overwrites Google),
-    `cancelled_still_in_google`, `remote_without_time` and `error` row. It
+    `unconfirmed_create`, `cancelled_still_in_google`, `remote_without_time`
+    and `error` row. `unconfirmed_create` is a pending push with no Google id:
+    an earlier create may have reached Google with its response lost, and the
+    release then patches that event with the CRM time (a planned follow-up)
+    or leaves it in Google (a cancelled one). Look in the rep's calendar at
+    `local_starts_at` and match the CRM to Google before release. It
     exits 1 until none is left. `closed_locally` (done or missed follow-ups,
     which the sync leaves in Google on purpose) and `no_connection` (the rep
     disconnected Google) are listed for information and do not fail it.
@@ -126,7 +140,10 @@ production needs its own approval.
 12. Resume Aryeo last:
     `php artisan aryeo:connection "<name>" --resume-processing=/private/aryeo-<date>.json`.
     It refuses a file for another connection or an edited file, prints what
-    it changed, and the agent should be seen again within a minute.
+    it changed, and the agent should be seen again within a minute. It
+    restores `enabled` as well, exactly as recorded: if the connection was
+    disabled on purpose during the freeze (a revoked credential, say), do not
+    resume it; re-enable it by hand once that is settled.
 
 **Provider table rows to add**
 
@@ -266,6 +283,17 @@ A read-only, service-role-only server route or SQL view that returns JSON for
   Telnyx lane's receiver also belongs before maintenance; keep both first.
 - `routes/crm-public.php`: `crm.enabled` becomes `crm.enabled:retry` on the
   careers route only.
+- Not held by this lane, in the app or at the edge: Telnyx (its own lane
+  owns the capture route), iGUIDE (`/iguide_webhook.php`), CubiCasa
+  (`/cubicasa_webhook.php`), Cakemail (`/api/webhooks/cakemail`),
+  Autoenhance (`webhooks/autoenhance`) and Vapi (`/api/webhooks/vapi`). The
+  website's Listing Studio bridge (`/api/external/listing-studio/*`) is held
+  only by the edge snippet. The writer-freeze lane should confirm each is
+  fenced or safe to drop during a freeze.
+- The edge snippet's `Retry-After` is fixed at 60 (nginx cannot read
+  `PRODUCER_INGRESS_RETRY_AFTER`); edit it if that value changes. Its
+  `add_header` lines replace any inherited server-level `add_header` (HSTS,
+  for example) on the held 503s only. Neither affects producer retries.
 - `tests/MySql/RecruitingReplayConcurrencyTest.php` truncates tables (like
   the other process tests). Run it after the feature tests, as CI's sorted
   file order already does.
@@ -318,3 +346,50 @@ The four failures in the earlier full run came from the runner: the shared
 vendor volume is mode 0700 root, so tests that drop to a non-root user could
 not read it. With the copy made readable, all four pass (4 tests, 31
 assertions).
+
+## Codex review round (25 Nov)
+
+Codex reviewed `dd506deb`; each finding was rechecked at `a60c2d86`. Fixes
+were test-first (each new test seen failing for the stated reason).
+
+- producer-replay#1 (P2), pending calendar creates skipped: fixed in
+  `ec801269`. Links with `push_pending` and no Google id are now the blocking
+  `unconfirmed_create`, with no Google call
+  (`CrmCalendarReconcileTest::test_a_create_google_never_confirmed_needs_a_decision`).
+- producer-replay#2 (P2), ledger booking lookups not scoped to the website:
+  fixed in `7a55ec84`. Both lookups require source `reprophotos.com`; a
+  reference held only by another source is the blocking `other_source_only`
+  (`CrmWebsiteLedgerTest`, both engines).
+- producer-replay#3 (P2), done or missed follow-ups block forever: already
+  fixed in `c309af4c` (`closed_locally`, not blocking), pinned by
+  `test_closed_follow_ups_and_disconnected_calendars_are_listed_without_blocking_the_release`.
+- producer-replay#4 (P2), failed, blocked or logged reply forwards counted as
+  forwarded: fixed in `18b43feb`. Only an accepted forward (`sent`) or a
+  recorded disposition settles a reply
+  (`CrmOutboundHoldTest::test_a_reply_blocks_until_its_forward_is_accepted_or_reviewed`,
+  driving the real inbound reply and forward).
+- reviewer#1, token refresh with an empty access token: not a defect. The
+  column is `text` NOT NULL and both writers (`GoogleCalendarController`
+  callback, `getValidAccessToken`) store only a token that
+  `parseTokenResponse` has checked is non-empty, so the path is unreachable.
+- reviewer#2, unreadable `--since` in `crm:website-ledger`: fixed in
+  `f78d585a`; it now exits 2 before the database is touched.
+- reviewer#3, edge `Retry-After` fixed at 60 and `add_header` inheritance:
+  documented in the snippet and under "Notes for the integrator"; no effect
+  on producer retries (`test_producer_hold` still passes with real nginx).
+- reviewer#4, `--resume-processing` restores `enabled`: by design ("restore
+  exactly"); runbook step 12 now says not to resume a connection disabled on
+  purpose during the freeze.
+- reviewer#5, webhooks outside this lane: listed under "Notes for the
+  integrator" for the writer-freeze lane to confirm.
+- reviewer#6, provider, website and owner work: unchanged owner decisions,
+  listed under "Website change spec" and "Owner decisions and provider
+  checks".
+
+| Run (code at `18b43feb`) | Result |
+| --- | --- |
+| SQLite: `CrmCalendarReconcileTest`, `CrmWebsiteLedgerTest`, `CrmOutboundHoldTest` | 6, 4 and 8 tests, OK |
+| SQLite: all eight lane PHP test files listed under Evidence | 40 tests, 286 assertions, OK |
+| MySQL 8.4.13 (`phpunit.mysql.xml`, disposable server on an internal Docker network, after `migrate:fresh`): the same three files | 18 tests, 103 assertions, OK, 1 skipped (SQLite-copy-only ledger test) |
+| `test_producer_hold` in the Linux image (real nginx) after the comment change | 2 tests OK |
+| `pint --test` on the six changed PHP files | Pass |
