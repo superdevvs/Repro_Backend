@@ -291,3 +291,30 @@ instead of 503, missing command or option), then passing.
 | `python -B -m unittest scripts.cutover.test_website_ledger scripts.cutover.test_verify_website_replay` (Windows and the Linux image) | 8 tests OK |
 | `scripts/cutover/fence/test_producer_hold.py` in the Linux image (real nginx) | 2 tests OK; fails as expected when the snippet returns 404 or drops `Retry-After`; skips on Windows |
 | Full SQLite suite (`php vendor/bin/phpunit`, code at `9cae88c6`, the tree copied into a container tmpfs) | 9623 tests, 320499 assertions, 2 errors, 2 failures, 3 skipped, 140 minutes. The four are `ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest` (`test_fpm_upload_and_separate_worker_can_share_private_files`), `WorkspacePhotoLogoPermissionsTest::test_php_can_upload_a_logo_when_worker_outputs_are_not_group_writable` and `IguideLabImportTest::test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk`. Each drops to a non-root user that cannot read the copied vendor tree in this container. All four fail the same way on the base `a6e799bb` with the same runner, so they are pre-existing here and unrelated to this lane. The later commit `59198581` only changed `CrmWebsiteLedgerTest`, rerun separately on both engines. |
+
+## Independent review (2026-11-25)
+
+A second session reviewed `a6e799bb..36e06e47` against the open items and
+reran everything offline with the same images.
+
+- Fixed in `c309af4c`: `crm:calendar-reconcile` failed forever on production
+  data. `push()` keeps done and missed follow-ups in Google on purpose and the
+  poller never reads them, yet each one was a blocking `local_not_planned`
+  row; links left by a rep who disconnected Google blocked too. They are now
+  `closed_locally` and `no_connection`, listed but not blocking. A cancelled
+  follow-up still in Google is the blocking `cancelled_still_in_google`.
+- Doc fix in `d2274365`: the edge snippet holds all of `/api/external/`.
+
+| Run (review, code at `c309af4c`) | Result |
+| --- | --- |
+| Lane PHP tests on SQLite (the eight files above) | 35 tests, 254 assertions, OK before the fix; `CrmCalendarReconcileTest` 5 tests OK after it (both new tests failed first on `local_not_planned`) |
+| MySQL 8.4.13 profile after `migrate:fresh`: `tests/Feature/Crm` plus the Aryeo, Stripe, Listing Studio, website email and external booking files | 311 tests, 2183 assertions, OK, 1 skipped (the SQLite-copy-only ledger test) |
+| MySQL process tests `RecruitingReplayConcurrencyTest`, `CrmWebsiteIntakeConcurrencyTest` | 2 tests OK |
+| `test_producer_hold`, `test_website_ledger`, `test_verify_website_replay` in the Linux image (real nginx) | 10 tests OK; on Windows 10 tests OK, 2 skipped (no nginx) |
+| `pint --test` on all 35 PHP files the branch adds or changes | Pass |
+| Full SQLite suite, worktree copied into a container tmpfs with `chmod -R a+rX` | 9626 tests, 320848 assertions, 0 failures, 3 skipped, 68 minutes |
+
+The four failures in the earlier full run came from the runner: the shared
+vendor volume is mode 0700 root, so tests that drop to a non-root user could
+not read it. With the copy made readable, all four pass (4 tests, 31
+assertions).
