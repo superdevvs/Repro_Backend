@@ -309,7 +309,8 @@ class FastCgiRehearsal(ContainerRehearsal):
         expected = sorted(["synthetic-quote-view", "synthetic-resend-event", "synthetic-cubicasa-direct",
                            "synthetic-iguide-direct", "synthetic-slow-write"] + self.queue_effects())
         require(effects == expected, f"SQLite lost or duplicated an ingress effect: {effects}")
-        require(self.rows_mysql() == self.imported, "Reopened route writes reached the sealed MySQL target")
+        # The recovery scenario never prepares, so nothing was imported there.
+        require(self.rows_mysql() == self.mysql_baseline(), "Reopened route writes reached the sealed MySQL target")
 
     def admitted_effects(self):
         return ["synthetic-slow-write"] if self.slow is not None else []

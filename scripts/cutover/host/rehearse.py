@@ -150,6 +150,10 @@ class ContainerRehearsal:
         with closing(self.fixture_mysql()) as connection:
             return mysql_rows(connection)
 
+    def mysql_baseline(self):
+        """The MySQL rows the fixture expects: the import once prepared, else the pristine target."""
+        return self.mysql_initial if self.imported is None else self.imported
+
     def environment(self, engine):
         return {
             "PATH": "/usr/local/bin:/usr/bin:/bin", "APP_ENV": "testing", "APP_KEY": self.app_key,
@@ -236,7 +240,7 @@ class ContainerRehearsal:
             cursor.execute("SELECT @@global.super_read_only, @@server_uuid")
             read_only, server_uuid = cursor.fetchone()
         require(server_uuid == self.native_uuid, "Private MySQL target changed")
-        mysql_changed = self.rows_mysql() != (self.mysql_initial if self.imported is None else self.imported)
+        mysql_changed = self.rows_mysql() != self.mysql_baseline()
         return Observation(
             gate["engine"], gate["open"], not gate["open"], bool(SOURCE.stat().st_mode & stat.S_IWUSR),
             not read_only, mysql_changed, not gate["open"],

@@ -23,6 +23,7 @@ python3 -B -m unittest discover -s "$cutover" -p test_process_contract.py -v
 for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.py; do
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
+python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
 for extra in "$@"; do
     python3 -B -m unittest discover -s "$(dirname "$cutover/$extra")" -p "$(basename "$extra")" -v
 done
