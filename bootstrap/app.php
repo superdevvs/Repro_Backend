@@ -96,6 +96,11 @@ return Application::configure(basePath: dirname(__DIR__))
             ->onOneServer();
         // Completed/failed upload replays expire after 30 days; pending attempts are never pruned.
         $schedule->command('model:prune')->dailyAt('03:45')->withoutOverlapping()->onOneServer();
+        // Failed-job rows older than 14 days. Off until the remaining rows are
+        // archived; QUEUE_PRUNE_FAILED_ENABLED turns it on.
+        $schedule->command('queue:prune-failed --hours=336')
+            ->dailyAt('03:55')->withoutOverlapping()->onOneServer()
+            ->when(fn () => (bool) config('queue.failed.prune_enabled'));
         $schedule->command('media:prune-downloads')->hourly()->withoutOverlapping()->onOneServer();
         $schedule->command('media:prune-editor-archives --apply --json')
             ->dailyAt('04:15')->withoutOverlapping()->onOneServer()
