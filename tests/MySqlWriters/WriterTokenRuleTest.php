@@ -189,6 +189,29 @@ final class WriterTokenRuleTest extends TestCase
         });
     }
 
+    public static function implicitCommits(): array
+    {
+        return [
+            'analyze' => ['ANALYZE TABLE _writer_policy_probe'],
+            'optimize' => ['OPTIMIZE TABLE _writer_policy_probe'],
+            'autocommit on' => ['SET autocommit = 1'],
+        ];
+    }
+
+    #[DataProvider('implicitCommits')]
+    public function test_other_statements_that_commit_implicitly_are_refused_inside_a_transaction(string $sql): void
+    {
+        $this->db()->beginTransaction();
+        $this->db()->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 5]);
+        $error = $this->failureOf(fn () => $this->db()->statement($sql));
+
+        $this->assertInstanceOf(LogicException::class, $error, 'It would commit the half-done transaction.');
+        $this->assertStringContainsString('implicit', $error->getMessage());
+        $this->assertTrue($this->db()->getPdo()->inTransaction());
+        $this->db()->rollBack();
+        $this->assertSame(0, $this->counter());
+    }
+
     public function test_ddl_inside_only_the_test_wrapper_commits_it_exactly_as_before(): void
     {
         // RefreshDatabase's wrapper: the only open transaction, under the testing manager.

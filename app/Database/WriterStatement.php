@@ -39,7 +39,9 @@ final class WriterStatement
 
     private const READS = ['select', 'show', 'explain', 'describe', 'desc', 'table', 'values'];
 
-    private const DDL_WORDS = ['create', 'alter', 'drop', 'truncate', 'rename', 'grant', 'revoke'];
+    // DDL and the administrative statements MySQL also commits implicitly before running.
+    private const DDL_WORDS = ['create', 'alter', 'drop', 'truncate', 'rename', 'grant', 'revoke',
+        'analyze', 'optimize', 'repair', 'check', 'flush', 'cache', 'reset', 'install', 'uninstall'];
 
     private const SESSION_WORDS = ['set', 'use', 'do'];
 
@@ -110,6 +112,9 @@ final class WriterStatement
             }
         }
 
+        if (self::commitsImplicitly($first, $words)) {
+            return self::DDL;
+        }
         if (in_array($first, self::WRITES, true)) {
             return self::WRITE;
         }
@@ -145,6 +150,18 @@ final class WriterStatement
         $kinds = array_intersect(array_slice($words, 1, 8), ['trigger', 'procedure', 'function', 'event']);
 
         return $kinds !== [] && in_array('begin', array_slice($words, array_key_first($kinds) + 2), true);
+    }
+
+    /**
+     * LOAD INDEX INTO CACHE, SET autocommit and SET PASSWORD start like a write or a
+     * session statement, but MySQL commits the open transaction before running them.
+     *
+     * @param  list<string>  $words
+     */
+    private static function commitsImplicitly(string $first, array $words): bool
+    {
+        return ($first === 'load' && ($words[1] ?? null) === 'index')
+            || ($first === 'set' && (($words[1] ?? null) === 'password' || in_array('autocommit', $words, true)));
     }
 
     /** @param  list<string>  $words */

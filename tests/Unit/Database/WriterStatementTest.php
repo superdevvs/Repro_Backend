@@ -51,6 +51,19 @@ class WriterStatementTest extends TestCase
             'rename' => ['RENAME TABLE a TO b', WriterStatement::DDL],
             'create trigger' => ['CREATE TRIGGER t AFTER INSERT ON x FOR EACH ROW BEGIN INSERT INTO y VALUES (1); END', WriterStatement::DDL],
             'grant' => ['GRANT SELECT ON t TO u', WriterStatement::DDL],
+            // Administrative statements MySQL also commits implicitly before running.
+            'analyze' => ['ANALYZE TABLE t', WriterStatement::DDL],
+            'optimize' => ['OPTIMIZE TABLE t', WriterStatement::DDL],
+            'repair' => ['REPAIR TABLE t', WriterStatement::DDL],
+            'check table' => ['CHECK TABLE t', WriterStatement::DDL],
+            'flush' => ['FLUSH TABLES', WriterStatement::DDL],
+            'cache index' => ['CACHE INDEX t IN hot', WriterStatement::DDL],
+            'load index' => ['LOAD INDEX INTO CACHE t', WriterStatement::DDL],
+            'reset' => ['RESET BINARY LOGS AND GTIDS', WriterStatement::DDL],
+            'install plugin' => ["INSTALL PLUGIN p SONAME 'p.so'", WriterStatement::DDL],
+            'autocommit on' => ['SET autocommit = 1', WriterStatement::DDL],
+            'session autocommit' => ['set @@session.autocommit = 1', WriterStatement::DDL],
+            'set password' => ["SET PASSWORD = 'x'", WriterStatement::DDL],
 
             // Temporary tables do not commit implicitly.
             'create temporary table' => ['CREATE TEMPORARY TABLE tmp (id INT)', WriterStatement::TEMPORARY],
@@ -95,7 +108,7 @@ class WriterStatementTest extends TestCase
             'execute a prepared statement' => ['EXECUTE stmt', WriterStatement::WRITE],
 
             'empty' => ['   ', WriterStatement::OTHER],
-            'analyze' => ['ANALYZE TABLE t', WriterStatement::OTHER],
+            'checksum' => ['CHECKSUM TABLE t', WriterStatement::OTHER],
         ];
     }
 

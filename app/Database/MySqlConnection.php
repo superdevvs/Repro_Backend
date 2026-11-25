@@ -248,7 +248,7 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         }
         if ($class === WriterStatement::DDL && $this->transactions > 0) {
             if (! $this->onlyTestWrapperIsOpen()) {
-                throw new LogicException('DDL and TRUNCATE cannot run inside a MySQL transaction: they would commit it implicitly.');
+                throw new LogicException('DDL, TRUNCATE and other statements that commit implicitly cannot run inside a MySQL transaction.');
             }
 
             return $this->runDdlInsideTestWrapper($query, $bindings, $callback);
