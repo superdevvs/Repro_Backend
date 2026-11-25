@@ -6,6 +6,8 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Shoot;
 use App\Models\ShootCompensation;
+use App\Models\User;
+use App\Services\Shoots\ShootMutationSupportService;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
@@ -32,6 +34,9 @@ final class WeeklyBillingGapAudit
 {
     private const CLOSED_INVOICE_STATUSES = ['cancelled', 'void'];
 
+    // InvoiceService::SALES_REP_ROLES, lower-cased.
+    private const SALES_REP_ROLES = ['salesrep', 'sales_rep'];
+
     /**
      * Sunday-to-Saturday weeks, oldest first, ending with the last completed week.
      *
@@ -56,17 +61,18 @@ final class WeeklyBillingGapAudit
         $dayBounds = [$start->toDateTimeString(), $end->toDateTimeString()];
         $salesRepLines = fn (array $shootIds) => $this->invoicedShoots($shootIds, Invoice::ROLE_SALES_REP);
         $compensationLines = fn (array $ids) => $this->invoicedCompensations($ids);
+        $activeSalesRep = $this->activeSalesRepResolver();
 
         return [
             // InvoiceService::generateSalesRepInvoicesForPeriod, shoot commission lines.
             'sales_rep_invoices' => $this->compare(
                 $this->salesRepShoots([Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT]),
-                'scheduled_date', $dayBounds, $dates, 'id', 'rep_id', $salesRepLines,
+                'scheduled_date', $dayBounds, $dates, 'id', 'rep_id', $salesRepLines, $activeSalesRep,
             ),
             // PayoutReportService::buildSalesRepSummaries (weekly payout report).
             'sales_rep_payout_report' => $this->compare(
                 $this->salesRepShoots([Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]),
-                'scheduled_date', $dayBounds, $dates, 'id', 'rep_id', $salesRepLines,
+                'scheduled_date', $dayBounds, $dates, 'id', 'rep_id', $salesRepLines, $activeSalesRep,
             ),
             // InvoiceService::generateForPeriod. Only complimentary-reshoot pay becomes a line there;
             // other photographer pay is selected with whereDate, which is already date-correct.
@@ -81,7 +87,7 @@ final class WeeklyBillingGapAudit
             'sales_rep_compensations' => $this->compare(
                 $this->compensations(ShootCompensation::RECIPIENT_SALES_REP)
                     ->whereHas('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)),
-                'earned_at', [$start, $end], $dates, 'shoot_id', 'recipient_user_id', $compensationLines,
+                'earned_at', [$start, $end], $dates, 'shoot_id', 'recipient_user_id', $compensationLines, $activeSalesRep,
             ),
             // PayoutReportService::buildComplimentaryReshootSummary, the branch without scheduled_at.
             'complimentary_reshoot_report' => $this->compare(
@@ -124,6 +130,45 @@ final class WeeklyBillingGapAudit
             ->where('amount', '!=', 0);
     }
 
+    /**
+     * The sales-rep runs pay a shoot with no rep to its client's rep
+     * (assignMissingSalesReps, resolveMissingSalesReps) and skip any recipient
+     * that is not an active sales rep (isActiveSalesRep). Returns the paid rep's
+     * id, or null when the run never pays the record whatever its date. Reads
+     * only; the client rep is not saved on the shoot.
+     *
+     * @return Closure(object): ?int
+     */
+    private function activeSalesRepResolver(): Closure
+    {
+        $support = app(ShootMutationSupportService::class);
+        $active = [];
+
+        return function (object $row) use ($support, &$active): ?int {
+            $repId = (int) ($row->recipient_id ?? 0);
+            if ($repId <= 0 && (int) ($row->client_id ?? 0) > 0) {
+                $repId = (int) $support->getClientRep((int) $row->client_id);
+            }
+            if ($repId <= 0) {
+                return null;
+            }
+            $active[$repId] ??= self::isActiveSalesRep(User::query()->find($repId));
+
+            return $active[$repId] ? $repId : null;
+        };
+    }
+
+    private static function isActiveSalesRep(?User $user): bool
+    {
+        if (! $user || ($user->account_status ?? 'active') !== 'active') {
+            return false;
+        }
+        $roles = collect([$user->role, ...(is_array($user->secondary_roles) ? $user->secondary_roles : [])])
+            ->map(fn ($role) => strtolower((string) $role));
+
+        return $roles->intersect(self::SALES_REP_ROLES)->isNotEmpty();
+    }
+
     private function compare(
         Builder $base,
         string $column,
@@ -132,6 +177,7 @@ final class WeeklyBillingGapAudit
         string $shootColumn,
         ?string $recipientColumn,
         ?Closure $invoiced,
+        ?Closure $recipient = null,
     ): array {
         $model = $base->getModel();
         $key = $model->getQualifiedKeyName();
@@ -144,18 +190,29 @@ final class WeeklyBillingGapAudit
         if ($recipientColumn !== null) {
             $columns[] = $model->qualifyColumn($recipientColumn).' as recipient_id';
         }
+        if ($model instanceof Shoot) {
+            $columns[] = $model->qualifyColumn('client_id').' as client_id';
+        }
+        // Every record today's comparison picks is a candidate too.
         $candidates = $base->clone()
             ->where(fn (Builder $query) => $query->whereBetween($stored, $textBounds)
                 ->orWhereRaw("substr({$wrapped}, 1, 10) between ? and ?", $dates))
             ->toBase()->orderBy($key)->get($columns);
 
+        $pickedNow = 0;
         $dateCorrect = 0;
         $skipped = [];
         $onlyText = [];
         foreach ($candidates as $row) {
+            $recipientId = isset($row->recipient_id) ? (int) $row->recipient_id : null;
+            if ($recipient !== null && ($recipientId = $recipient($row)) === null) {
+                // The run never pays this record, so the date comparison does not matter.
+                continue;
+            }
             $day = self::calendarDate($row->stored_value);
             $inPeriod = $day !== null && $day >= $dates[0] && $day <= $dates[1];
             $picked = $selectedNow->has((int) $row->record_id);
+            $pickedNow += $picked ? 1 : 0;
             $dateCorrect += $inPeriod ? 1 : 0;
             if ($inPeriod === $picked) {
                 continue;
@@ -165,7 +222,7 @@ final class WeeklyBillingGapAudit
                 'record_id' => (int) $row->record_id,
                 'shoot_id' => $row->shoot_id === null ? null : (int) $row->shoot_id,
                 'stored_value' => (string) $row->stored_value,
-                'recipient_id' => isset($row->recipient_id) ? (int) $row->recipient_id : null,
+                'recipient_id' => $recipientId,
                 'billed_invoice_ids' => null,
             ];
             if ($inPeriod) {
@@ -184,7 +241,7 @@ final class WeeklyBillingGapAudit
         }
 
         return [
-            'selected_now' => $selectedNow->count(),
+            'selected_now' => $pickedNow,
             'selected_date_correct' => $dateCorrect,
             'skipped' => $skipped,
             'selected_only_by_text' => $onlyText,

@@ -131,6 +131,52 @@ class WeeklyBillingGapDryRunTest extends TestCase
         );
     }
 
+    public function test_lists_only_records_the_sales_rep_run_would_pay_to_an_active_rep(): void
+    {
+        $this->requireTextDates();
+        $rep = $this->salesRep();
+        $inactive = User::factory()->create(['role' => 'salesRep', 'account_status' => 'inactive',
+            'metadata' => ['repDetails' => ['commissionPercentage' => 10]]]);
+        $client = User::factory()->create(['metadata' => ['accountRepId' => $rep->id]]);
+        $service = Service::factory()->create(['price' => 500, 'exclude_from_sales_commission' => false]);
+        $shoots = [];
+        foreach (['first' => '2026-10-04', 'mid' => '2026-10-07'] as $day => $stored) {
+            // No rep on the shoot: the run takes the client's rep, without the date gap too.
+            $shoots["client_rep_{$day}"] = $this->repShoot(null, $service, $stored, $client);
+            // The run never pays these, whatever the date comparison.
+            $shoots["inactive_rep_{$day}"] = $this->repShoot($inactive, $service, $stored);
+            $shoots["no_rep_{$day}"] = $this->repShoot(null, $service, $stored);
+        }
+        $reshoot = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, 'scheduled_date' => '2026-10-05']);
+        $this->compensation($reshoot, ShootCompensation::RECIPIENT_SALES_REP, $inactive, '2026-10-04');
+        $this->compensation($reshoot, ShootCompensation::RECIPIENT_SALES_REP, $inactive, '2026-10-06 09:15:00');
+
+        $report = $this->dryRun();
+
+        $selections = $report['periods'][0]['selections'];
+        $counts = ['selected_now' => 1, 'selected_date_correct' => 2, 'skipped' => 1, 'selected_only_by_text' => 0];
+        $this->assertSame($counts, $selections['sales_rep_invoices']);
+        $this->assertSame($counts, $selections['sales_rep_payout_report']);
+        $this->assertSame(['selected_now' => 0, 'selected_date_correct' => 0, 'skipped' => 0, 'selected_only_by_text' => 0],
+            $selections['sales_rep_compensations']);
+        $skipped = collect($report['skipped'])->where('selection', 'sales_rep_invoices')->sole();
+        $this->assertSame($shoots['client_rep_first']->id, $skipped['record_id']);
+        $this->assertSame($rep->id, $skipped['recipient_id']);
+        $this->assertNull(DB::table('shoots')->where('id', $shoots['client_rep_first']->id)->value('rep_id'),
+            'The dry run resolves the client rep without saving it.');
+
+        // The real run pays exactly the record the report calls "selected now".
+        $invoices = app(InvoiceService::class)->generateSalesRepInvoicesForPeriod(
+            Carbon::parse('2026-10-04'),
+            Carbon::parse('2026-10-10'),
+        );
+        $lines = InvoiceItem::whereIn('invoice_id', $invoices->pluck('id'))->where('type', InvoiceItem::TYPE_CHARGE)->get();
+        $this->assertSame([$shoots['client_rep_mid']->id], $lines->pluck('shoot_id')->map(fn ($id) => (int) $id)->all());
+        $this->assertSame([], $lines->whereNotNull('shoot_compensation_id')->all());
+        $this->assertSame(1, app(PayoutReportService::class)
+            ->buildSalesRepSummaries(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10'))->sole()['shoot_count']);
+    }
+
     public function test_complimentary_report_skips_last_day_shoots_stored_with_a_time(): void
     {
         $this->requireTextDates();
@@ -292,15 +338,15 @@ class WeeklyBillingGapDryRunTest extends TestCase
         return User::factory()->create(['role' => 'salesRep', 'metadata' => ['repDetails' => ['commissionPercentage' => 10]]]);
     }
 
-    private function repShoot(User $rep, Service $service, string $storedDate): Shoot
+    private function repShoot(?User $rep, Service $service, string $storedDate, ?User $client = null): Shoot
     {
         $shoot = Shoot::factory()->create([
-            'rep_id' => $rep->id, 'sales_rep_pay_enabled' => true, 'workflow_status' => Shoot::WORKFLOW_COMPLETED,
-            'total_quote' => 500, 'base_quote' => 500,
+            'rep_id' => $rep?->id, 'sales_rep_pay_enabled' => true, 'workflow_status' => Shoot::WORKFLOW_COMPLETED,
+            'total_quote' => 500, 'base_quote' => 500, ...($client ? ['client_id' => $client->id] : []),
         ]);
         $shoot->services()->attach($service->id, ['price' => 500, 'quantity' => 1]);
         // Store the exact text shape under test, bypassing the model's date cast.
-        DB::table('shoots')->where('id', $shoot->id)->update(['scheduled_date' => $storedDate]);
+        DB::table('shoots')->where('id', $shoot->id)->update(['scheduled_date' => $storedDate, 'rep_id' => $rep?->id]);
 
         return $shoot;
     }
