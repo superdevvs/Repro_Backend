@@ -201,6 +201,32 @@ preflight="/tmp/repro-stripe-preflight-$commit.php"
 webhook_setup="/tmp/repro-stripe-webhook-$commit.php"
 maintenance=0
 code_replaced=0
+scheduler_hold="$app/storage/framework/scheduler-hold.deploy.json"
+hold_set=0
+
+# Scheduler hold for this deploy, read by the app when SCHEDULER_HOLD_ENABLED
+# is on. It expires by itself after 30 minutes and never blocks the deploy.
+hold_scheduler() {
+  if printf '{"hold":["*"],"reason":"deploy %s","expires_at":%s}\n' "$commit" "$(( $(date +%s) + 1800 ))" > "$scheduler_hold.tmp" \
+    && mv -f "$scheduler_hold.tmp" "$scheduler_hold"; then
+    hold_set=1
+  else
+    rm -f "$scheduler_hold.tmp" 2>/dev/null || true
+    echo 'scheduler_hold=unavailable' >&2
+  fi
+}
+release_scheduler_hold() {
+  if [ "$hold_set" -eq 1 ]; then
+    rm -f "$scheduler_hold"
+    hold_set=0
+  fi
+}
+# Replays Telnyx texts saved during maintenance (docs/sqlite-first/telnyx-receiver.md).
+# This shell already runs with the www-data group; umask 002 keeps what the
+# replay writes usable by PHP-FPM. A replay problem never fails the deploy.
+replay_telnyx_spool() {
+  (cd "$app" && umask 0002 && php artisan telnyx:replay-spool --no-interaction) || echo 'telnyx_spool_replay=failed' >&2
+}
 
 # This lock serializes cooperating deployments. The final process and source
 # checks below also detect common tools that do not take the lock.
@@ -242,8 +268,10 @@ finish() {
     echo "backend_source_rollback_complete:$backup" >&2
   fi
   if [ "$maintenance" -eq 1 ]; then
+    replay_telnyx_spool
     (cd "$app" && php artisan up) || true
   fi
+  release_scheduler_hold
   rm -rf "$stage" "$restore_stage"
   rm -f "$archive"
   exit "$rc"
@@ -305,6 +333,9 @@ php "$preflight"
 
 cd "$app"
 python3 "$stage/scripts/deploy/backend-source-fingerprint.py" "$app" --expected "$expected_source" --check-processes
+hold_scheduler
+# Never add --render: a prerendered page answers before Laravel starts, so the
+# Telnyx capture middleware could not run.
 php artisan down --retry=60
 maintenance=1
 tar -czf "$backup/source.tar.gz" -C "$app" \
@@ -440,8 +471,13 @@ curl --fail --silent --show-error https://api.reprodashboard.com/opcache_reset_t
 rm -f "$app/public/opcache_reset_temp.php"
 bash "$app/scripts/deploy/provision-public-storage.sh" verify "$app" https://reprodashboard.com
 php artisan media:storage-health
+# Last step before up: texts saved during this maintenance window.
+replay_telnyx_spool
 php artisan up
 maintenance=0
+# Texts that arrived while the first pass ran.
+replay_telnyx_spool
+release_scheduler_hold
 
 pending="$(php artisan migrate:status --no-interaction | grep -c 'Pending' || true)"
 test "$pending" = "0"
