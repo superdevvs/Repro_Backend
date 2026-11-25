@@ -554,6 +554,63 @@ class NightlyRunnerTests(unittest.TestCase):
         self.assertEqual(receipt["reason"], "release-changed-during-capture")
         self.assertFalse((self.outputs() / "copy-receipt.json").exists())
 
+    def test_capture_refuses_a_copy_without_the_reviewed_crm_release(self):
+        cases = (("crm_migrations", [*CRM_MIGRATIONS, "2026_11_25_000000_unreviewed_crm_change"]),
+                 ("linked_clients", 0))
+        for name, value in cases:
+            with self.subTest(name=name):
+                host = FakeHost(self.root / f"crm-{name}")
+                config = copy.deepcopy(self.config)
+                if name == "crm_migrations":
+                    config["crm_migrations"] = value
+                else:
+                    with sqlite3.connect(host.live) as db:
+                        db.execute("UPDATE crm_contacts SET client_user_id = NULL")
+                    db.close()
+                receipt = self.run_night(host=host, config=config)
+                self.assertEqual((receipt["status"], receipt["reason"]), ("stopped", "crm-ledger-differs"))
+                self.assertFalse((self.outputs() / "snapshot.sqlite").exists())
+                self.assertFalse((self.outputs() / "copy-receipt.json").exists())
+                shutil.rmtree(self.outputs())
+
+    def test_a_target_that_is_not_durable_stops_before_the_import(self):
+        # Field positions in the identity probe: sync_binlog, flush at commit, doublewrite.
+        for position, weak in ((8, "0"), (9, "2"), (10, "OFF")):
+            with self.subTest(position=position):
+                host = FakeHost(self.root / f"weak-{position}")
+                answer = host.on_mysql
+
+                def weakened(argv, timeout_s, sql, answer=answer, position=position, weak=weak):
+                    result = answer(argv, timeout_s, sql)
+                    fields = result.stdout.rstrip("\n").split("\t")
+                    if len(fields) == 11:
+                        fields[position] = weak
+                    return nightly.Completed(result.returncode, "\t".join(fields) + "\n", "")
+
+                host.on_mysql = weakened
+                receipt = self.run_night(host=host)
+                self.assertEqual((receipt["status"], receipt["reason"]), ("stopped", "target-settings-differ"))
+                self.assertNotIn("migrate.py import-empty", host.events)
+                self.assertIn("mysqld-stopped", host.events)
+                shutil.rmtree(self.outputs())
+
+    def test_a_finance_receipt_that_does_not_prove_parity_is_refused(self):
+        write_receipt = self.host.on_finance
+
+        def with_external_effects(argv, timeout_s, _input):
+            result = write_receipt(argv, timeout_s, _input)
+            output = Path(option(argv, "--output"))
+            receipt = json.loads(output.read_bytes())
+            receipt["rehearsal"]["external_effects"] = 1
+            output.write_text(json.dumps(receipt), encoding="utf-8")
+            return result
+
+        self.host.on_finance = with_external_effects
+        receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"]), ("stopped", "finance"))
+        self.assertEqual(receipt["reason"], "finance-receipt-invalid: external-effects")
+        self.assertFalse((self.outputs() / "night.json").exists())
+
     def test_memory_guard_uses_the_buffer_pool_size(self):
         config = copy.deepcopy(self.config)
         config["mysql_tuning"]["innodb_buffer_pool_size"] = "8G"
@@ -669,6 +726,17 @@ class NightlyRunnerTests(unittest.TestCase):
         receipt = self.outputs() / "copy-receipt.json"
         receipt.write_bytes(receipt.read_bytes().replace(b"read-only", b"READ-only"))
         with self.assertRaisesRegex(nightly.Refused, "evidence-changed"):
+            self.run_night()
+
+    def test_resume_refuses_a_changed_config_or_candidate(self):
+        self.host.fail.add("export-sqlite.py")
+        self.run_night()
+        self.host.fail.clear()
+        changed = copy.deepcopy(self.config) | {"applicant_files_root": None}
+        with self.assertRaisesRegex(nightly.Refused, "config-changed-for-this-night"):
+            self.run_night(config=changed)
+        self.host.candidate = ("b" * 40, True)
+        with self.assertRaisesRegex(nightly.Refused, "candidate-changed-for-this-night"):
             self.run_night()
 
     def test_stale_mysqld_from_an_interrupted_run_is_stopped_on_resume(self):
