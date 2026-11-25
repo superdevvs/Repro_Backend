@@ -1773,9 +1773,11 @@ has been done. Each production step needs its own approval.
   if installed, `drain_fpm`) before `init`.
 - Cutover runbook: build the
   [MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built),
-  and decide its open choices: when the `.env` switch happens, the smoke
-  path, the Telnyx capture during the hold, and a path out of
-  `recovery_required`.
+  and decide its open choices: the MySQL write gate that `seal_mysql` opens
+  and `seal_sqlite` closes (the `.env` switch itself belongs in `prepare`,
+  its undo in `seal_sqlite`), the smoke path, the Telnyx capture during the
+  hold, a path out of `recovery_required`, and a reviewed retire step
+  before a new run's `init`.
 - Cutover runbook: the read-only production checks before the night (which
   cache store holds the queue pause flags, FPM's OPcache settings and unit
   name, the host time zone for cron).

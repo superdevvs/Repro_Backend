@@ -526,6 +526,14 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    and needs no token. Its maintenance account is scoped to the new
    database; if the same account also runs `php artisan migrate`, it needs
    this grant as well.
+
+   On the production target this is not the whole story yet. The app
+   account must stay unable to write until `seal_mysql` opens the MySQL
+   write gate, because `init` refuses while the MySQL probe reports
+   `writable`. Which grants the app account gets before the night depends
+   on the gate the adapter lane chooses (MySQL adapter lane item 3); with
+   the first candidate, the grant above goes to the maintenance account
+   only and `seal_mysql` gives it to the app account.
 5. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
@@ -1247,9 +1255,9 @@ the MySQL adapter lane exists:
 | Migrations, `complete-schema`, final schema check | none | 3-5 |
 | Final SQLite and MySQL backups off-site (both required by `Evidence`) | none | 5 |
 | Read-only smoke | none | 5 |
-| `.env` switch, config cache, FPM reload, `db:writer-policy-check` | none | 2 |
+| `cli.py prepare`: `.env` switch with the write gate closed, config cache, FPM reload, evidence | none | 2 |
 | Approval 2, accepted before 0:45 | 5 | 2-5 |
-| Promote, reopen, queues, workers, scheduler | none (not built) | 3 |
+| Promote (`seal_mysql` opens the gate, `db:writer-policy-check`), reopen, queues, workers, scheduler | none (not built) | 3 |
 
 - Expected total: about 43 to 50 minutes. The go point falls at about 0:40
   to 0:47, marginal against the 0:45 watchdog. With the stated maximums
@@ -1283,11 +1291,11 @@ Checkpoints. If one is missed, run `cli.py abort` at once:
   runner's side. Issue a new template if the owner still wants to go. If
   the owner does not answer, call the night off and run the pre-hold undo
   list below; the pre-hold holds have no deadline of their own.
-- Approval 2 (MySQL lane, not built) expires: restore the SQLite
-  configuration at once (saved `.env` in place, `php artisan
-  config:cache`, `sudo systemctl reload php8.3-fpm`), then `cli.py abort`,
-  `cli.py reopen` and the undo list. Do not leave the site held until the
-  watchdog.
+- Approval 2 (MySQL lane, not built) expires: run `cli.py abort` at once.
+  Its `seal_sqlite` restores the SQLite configuration that `prepare`
+  switched (MySQL adapter lane item 10), with the write gate still
+  closed. Then `cli.py reopen` and the undo list. Do not leave the site
+  held until the watchdog, which would do the same at 0:45.
 
 **Undo.** `cli.py abort` (or the watchdog) re-closes admissions, drains,
 unseals SQLite and publishes boot-bound SQLite authority. From that moment
@@ -1295,8 +1303,10 @@ the guard admits the cron scheduler again, before `cli.py reopen` and while
 ingress is still closed, so scheduled commands write SQLite from then on.
 `crm:calendar-sync` stays held by `CRM_CALENDAR_SYNC_HOLD` until CRM step
 10, and `crm:website-intake` completes intake receipts already saved in the
-Dashboard. Neither `abort` nor `reopen` touches `.env` or the config
-cache. `cli.py reopen` verifies that authority through the guard, checks
+Dashboard. At this candidate neither `abort` nor `reopen` touches `.env`
+or the config cache, and nothing switches them. Once the adapter lane
+exists, `abort` restores them through `seal_sqlite` (MySQL adapter lane
+item 10). `cli.py reopen` verifies that authority through the guard, checks
 the live host again
 (SQLite the only writable engine), resumes the queues, starts the workers,
 recreates the open marker, writes the activation receipt and lifts the
@@ -1322,13 +1332,19 @@ the journal; call the owner.
 
 **Undo list, after an abort or a reopen.** Every hold the night sets, in the
 order to undo it. It applies after `cli.py abort` or the watchdog on
-SQLite, and, once the adapter lane exists, after a MySQL reopen.
+SQLite. Once the adapter lane exists it also applies after a MySQL
+reopen: then step 1 expects `mysql_authoritative`, and steps 2 and 4 do
+not apply, because the MySQL reopen has already resumed the queues and
+started the workers.
 
-1. `cli.py status` shows `sqlite_authoritative`. If it shows
+1. `cli.py status` shows `sqlite_authoritative` (after an abort) or
+   `mysql_authoritative` (after a MySQL reopen). If it shows
    `recovery_required`, stop (see above).
-2. Database settings, MySQL path only: if `.env` was switched and the night
-   did not go, restore `$work/before` in place, `php artisan config:cache`,
-   `sudo systemctl reload php8.3-fpm`. Never needed at this candidate.
+2. Database settings, after an abort on the MySQL path: `seal_sqlite` has
+   restored them (MySQL adapter lane item 10). Check before `cli.py
+   reopen` that `php artisan config:show database.default` prints
+   `sqlite`. If it does not, stop and call the owner. Nothing to do at
+   this candidate, which never switches them.
 3. Studio pause file, before `cli.py reopen`, as `maverick`:
    `rm ~/.local/share/repro-studio/paused` (and `paused-lab-tour` if set),
    so the Studio program starts with the others. If it already went FATAL:
@@ -1405,36 +1421,68 @@ waits for items 1 to 3.
    `target_uuid`), measured on the host, not copied from the policy. The
    runner compares it with the pinned identity before `init`, `hold`,
    `freeze`, `abort` and every watchdog `tick`
-   (`Runner._verify_identity`). A mismatch refuses all of them, the
-   automatic rollback included. So `config_sha256` must leave out the flags
-   the night changes after `init`: `CRM_OUTBOUND_HOLD`,
-   `CRM_DEFER_REPLY_FORWARDING`, `CRM_CALENDAR_SYNC_HOLD`,
-   `PRODUCER_INGRESS_HOLD`, and the database settings if the switch happens
-   during the hold (ordering M4).
-3. The MySQL probe prints exactly `{"writable": bool, "business_activity": bool}`:
-   - `writable` means the application's MySQL route can write: the app
-     account, through the configured socket, with the writer token row in
-     place. It does not mean that the server or the importer's maintenance
-     account can write.
+   (`Runner._verify_identity`), and `refresh` reads it too. A mismatch
+   refuses all of them, the automatic rollback included. So
+   `config_sha256` must leave out the flags the night changes after
+   `init`: `CRM_OUTBOUND_HOLD`, `CRM_DEFER_REPLY_FORWARDING`,
+   `CRM_CALENDAR_SYNC_HOLD`, `PRODUCER_INGRESS_HOLD`, and the database
+   settings that `prepare` switches and `seal_sqlite` restores (item 10,
+   ordering M4).
+3. The MySQL probe prints exactly `{"writable": bool, "business_activity": bool}`.
+   The runner's contract fixes what the two values must mean
+   (`Observation` in `scripts/cutover/runner.py`): `frozen()` needs both
+   false, `prepare` must end with `engine` `mysql` and both still false,
+   and only `seal_mysql` may turn `writable` true. So `writable` cannot
+   mean "the app account can reach MySQL with the token row in place": that
+   is true from Release step 4, long before `init`.
+   - `writable` is the state of a MySQL write gate that keeps the
+     application's runtime route (FPM, workers, scheduler) from writing.
+     The gate is closed from before `init` through `prepare`, while the
+     import, `php artisan migrate` and `complete-schema.php` run as the
+     maintenance account, which is outside the gate. `seal_mysql` opens it;
+     `seal_sqlite` makes sure it is closed. The probe reads the gate itself,
+     not what the server or the maintenance account can do.
    - `business_activity` means application rows changed after the recorded
      end of the import (for example a binlog position the import records).
      Migrations and `complete-schema.php` do not count.
+
+   Open: which gate. Candidates, each to be proven in W2:
+   - The app account has no write privilege on `repro_dashboard` and no
+     `UPDATE(id)` on the token row until `seal_mysql` grants them;
+     `seal_sqlite` revokes them. Release step 4 then grants the token to
+     the maintenance account only.
+   - The app account is locked (`ALTER USER ... ACCOUNT LOCK`) until
+     `seal_mysql`. Then nothing in the app can read MySQL either, so the
+     read-only smoke (item 11) needs its own account.
+
+   Not enough on its own: withholding only the token grant, because the
+   connections with `repro_writer_exempt_tables` (`mysql_queue_worker`,
+   `mysql_scheduling_cache` and `mysql_cache_locks` in
+   `config/database.php`) write `jobs`, `cache` and `cache_locks` without
+   the token; and `super_read_only`, because it also stops the importer and
+   the migrations, which run while the run is `frozen` and the probe must
+   report `writable` false.
 
    Why it matters: `init` needs both false, and once either is true the
    runner records `recovery_required` and refuses `abort` and the 45-minute
    rollback with "MySQL writes may exist. Use separately verified recovery"
    (`Runner._rollback`, `Runner.perform`). The site then stays held. W2 must
-   prove that the import, the writer token, `php artisan migrate` and
-   `complete-schema.php` keep both false, and that a write through the app
-   route turns them true (executability 3, ordering H3).
+   prove that the token row, the import, `php artisan migrate`,
+   `complete-schema.php` and `prepare` keep both false, that `seal_mysql`
+   turns `writable` true, and that `seal_sqlite` turns it false again
+   (executability 3, ordering H3).
 4. A live configuration probe. `observe()` hard-codes `engine="sqlite"`,
    and `publish_authority` and `refresh` copy `sqlite_live_config_sha256`
-   from the policy instead of measuring it. `reopen` must refuse unless the
-   cached config's default driver (`bootstrap/cache/config.php`, else `.env`
-   `DB_CONNECTION`) matches the engine the journal makes authoritative. The
-   off-site alert probe already reads the driver this way. Without it, a
-   reopen after a no-go with `.env` already switched starts workers, the
-   scheduler and FPM on MySQL while the journal says SQLite (ordering H2).
+   from the policy instead of measuring it. `engine` must be the cached
+   config's default driver (`bootstrap/cache/config.php`, else `.env`
+   `DB_CONNECTION`); the off-site alert probe already reads the driver
+   this way. That measured value is what `Runner._prepare` and
+   `Runner._promote` require to be `mysql`, and what the rollback's
+   `sealed("sqlite")` requires to be `sqlite`. `reopen` must refuse unless
+   it matches the engine the journal makes authoritative. Without it, a
+   reopen after a no-go whose configuration was not restored starts
+   workers, the scheduler and FPM on MySQL while the journal says SQLite
+   (ordering H2).
 5. The activation receipt sets `application_verified` without any
    application check. Add the smoke command from item 11.
 
@@ -1445,11 +1493,33 @@ waits for items 1 to 3.
    (`Runner._prepare`, `Runner._promote`); `cli.py` exposes neither. A
    promote approval expires 5 minutes after it is issued and never later
    than 45 minutes after the hold (`Runner._request`).
-7. Adapter `prepare`, `evidence` and `seal_mysql`. `evidence()` returns the
-   `Evidence` record: snapshot and report digests, the starting binlog file
-   and position, and `true` for forward parity, final schema, read-only
-   smoke and both off-site backups (final SQLite and MySQL). `seal_mysql`
-   makes the app's MySQL route the only writable one.
+7. Adapter `prepare`, `evidence` and `seal_mysql`, and a wider
+   `seal_sqlite`. The reference `FixtureAdapter` in
+   `scripts/cutover/rehearse.py` shows the contract the runner checks:
+   - `prepare` makes the configuration switch of item 10 with the write
+     gate (item 3) still closed. Afterwards `observe()` must show `engine`
+     `mysql` and `frozen()` still true, or `Runner._prepare` refuses.
+   - `evidence()` returns the `Evidence` record: snapshot and report
+     digests, the starting binlog file and position, and `true` for
+     forward parity, final schema, read-only smoke and both off-site
+     backups (final SQLite and MySQL).
+   - `seal_mysql` opens the write gate. Afterwards `sealed("mysql")` must
+     hold: engine `mysql`, MySQL writable, SQLite not writable, admissions
+     closed, workers stopped.
+   - `seal_sqlite`, which today only unseals the SQLite file, must also
+     check that the write gate is closed and undo the switch of item 10.
+     Afterwards `sealed("sqlite")` must hold, engine `sqlite` included, or
+     `publish_authority("sqlite")` refuses and the rollback fails on every
+     tick.
+
+   `db:writer-policy-check` takes the writer token in an empty
+   transaction. An account with only `SELECT` on the token table cannot
+   take it (the "readonly account" case in
+   `tests/MySql/contracts/MySqlWriterTokenContract.php`), and a locked
+   account cannot connect, so with either gate candidate the check reports
+   a problem while the gate is closed. Run it after `seal_mysql` opens the
+   gate and before authority is published, or split its token step out;
+   this is open.
 8. A MySQL `reopen`: verify the `mysql_authoritative` proof through the
    guard, resume the queues, start the workers, create the open marker and
    write an activation receipt for engine `mysql`. In
@@ -1461,14 +1531,33 @@ waits for items 1 to 3.
 
 **Switch, smoke and timing.**
 
-10. The `.env` switch and its undo (ordering H2). Choose one; this is open:
-    - Switch before Approval 2 and write the undo: restore the saved `.env`
+10. The `.env` switch and its undo (ordering H2) belong in the adapter:
+    `prepare` makes the switch and `seal_sqlite` undoes it. The runner
+    leaves no other place:
+    - `prepare` keeps a copy of the SQLite `.env`, writes the MySQL keys
       in place (ACL kept, see "Editing `.env` on the night" in
-      [Freeze all writers](#freeze-all-writers)), run `php artisan
-      config:cache` and `sudo systemctl reload php8.3-fpm`, and only then
-      `cli.py abort` and `cli.py reopen`. Item 4 makes `reopen` refuse if
-      this is skipped.
-    - Or move the switch after Approval 2, into `promote`.
+      [Freeze all writers](#freeze-all-writers)), runs `php artisan
+      config:cache` and `sudo systemctl reload php8.3-fpm`. The write gate
+      stays closed, so the observed engine is `mysql` while nothing can
+      write MySQL.
+    - `seal_sqlite` copies the saved `.env` back in place, runs
+      `config:cache` and reloads FPM, so `cli.py abort` and the unattended
+      45-minute watchdog undo the switch with no operator. `cli.py reopen`
+      then needs no manual step, and item 4 makes it refuse if the restore
+      did not happen.
+
+    Ruled out: a switch made by hand before Approval 2. Once item 4
+    measures `engine`, an unattended watchdog rollback would find `mysql`,
+    fail `sealed("sqlite")` on every tick and leave the site held. Also
+    ruled out: moving the switch into `promote`. `Runner._prepare` refuses
+    unless the engine is `mysql` after `prepare`, and `Runner._promote`
+    refuses unless it is `mysql` before.
+
+    With the `database` cache store, a rollback after `prepare` runs
+    `queue_pause` (`close_admissions`) while the default connection is
+    MySQL and the gate is closed, so it fails before `seal_sqlite` can
+    restore anything. That is one more reason the cache-store check must
+    show `file`, or the rollback order must change.
 
     The keys the switch sets are in
     [Validate before reopening traffic](#validate-before-reopening-traffic).
@@ -1770,9 +1859,10 @@ the marker and allow writes only by root. A stale script or manual deployment
 also needs the host-level permission fence.
 
 Back up the verified MySQL target. Change only the database settings in the
-preserved environment through the approved cutover procedure, editing `.env`
-in place ("Editing `.env` on the night" in
-[Freeze all writers](#freeze-all-writers)). Retain the
+preserved environment, editing `.env` in place ("Editing `.env` on the
+night" in [Freeze all writers](#freeze-all-writers)). The switch is part of
+the adapter's `prepare` and its undo part of `seal_sqlite`, not a manual
+step ([MySQL adapter lane](#mysql-adapter-lane-not-built) item 10). Retain the
 APP_KEY and all unrelated settings. With `APP_ENV=production` every MySQL
 connection needs these keys, or it refuses to connect
 (`config/database.php`, `app/Database/MySqlConnector.php`):
@@ -1783,7 +1873,7 @@ connection needs these keys, or it refuses to connect
 | `DB_DATABASE` | `repro_dashboard` |
 | `DB_SOCKET` | `/run/repro-mysql84-native/mysql.sock` (must be absolute) |
 | `REPRO_MYSQL_EXPECTED_SERVER_UUID` | the target's independently observed `@@server_uuid` |
-| `DB_USERNAME`, `DB_PASSWORD` | the app account, which has the writer-token grant |
+| `DB_USERNAME`, `DB_PASSWORD` | the app account; it can write only once `seal_mysql` opens the write gate (lane item 3) |
 | `DB_COLLATION` | `utf8mb4_0900_bin`, as CI runs it (`phpunit.mysql.xml`); the code default is `utf8mb4_unicode_ci` |
 | `REPRO_MYSQL_WRITER_POLICY` | unset or `true` (on by default) |
 | `DB_EXPECTED_ENGINE` | `mysql`, only if the observability branch is merged and the key is set |
@@ -1798,9 +1888,11 @@ separately. Then apply it with `php artisan config:cache` and
 `sudo systemctl reload php8.3-fpm` (never `optimize:clear`), and verify FPM
 and both worker owners resolve the same driver, database and server UUID.
 Open: nothing shows FPM's effective config while the hold is in force (see
-the [MySQL adapter lane](#mysql-adapter-lane-not-built) item 11). Then run
-`php artisan db:writer-policy-check` as the application user. It must print
-`"problems":[]` and exit 0. Add it to every deploy once MySQL is live. Every
+the [MySQL adapter lane](#mysql-adapter-lane-not-built) item 11). Once the
+write gate is open, run `php artisan db:writer-policy-check` as the
+application user. It must print `"problems":[]` and exit 0. It takes the
+writer token, so it cannot pass while the gate is closed (lane item 7).
+Add it to every deploy once MySQL is live. Every
 process must run the same release: a process without the policy would write
 without the token. The engine check in the drill covers this for workers.
 The writer-hold controller does not promote MySQL or reopen on it; the
@@ -1816,15 +1908,17 @@ provider events before declaring done.
 settings and its configuration cache while writers remain stopped. The frozen
 SQLite database is still authoritative. Retain source/media/cache safeguards and
 verify the application before resuming writers. `cli.py abort` (or the
-watchdog at 45 minutes) and `cli.py reopen` carry out the journal side of
-this path: they close admissions again, unseal SQLite and reopen it. They do not
-touch `.env` or the config cache. If the database settings were switched,
-restore the saved `.env` in place, run `php artisan config:cache` and `sudo
-systemctl reload php8.3-fpm` before `cli.py reopen`, or `reopen` starts
-workers, the scheduler and FPM on MySQL while the journal says SQLite. The
-live config probe that would make `reopen` refuse is not built
-([MySQL adapter lane](#mysql-adapter-lane-not-built) items 4 and 10). Then
-follow the undo list in [Freeze all writers](#freeze-all-writers).
+watchdog at 45 minutes) and `cli.py reopen` carry out this path: they
+close admissions again, unseal SQLite and reopen it. At this candidate
+nothing switches the database settings, so there is nothing else to
+restore. Once the adapter lane exists, `prepare` makes the switch with the
+MySQL write gate closed, and the rollback's `seal_sqlite` restores the
+saved `.env` in place, runs `php artisan config:cache` and reloads FPM
+before SQLite authority is published, so the unattended watchdog undoes
+it too. The live config probe then makes `reopen` refuse if the restore
+did not happen ([MySQL adapter lane](#mysql-adapter-lane-not-built) items
+4 and 10). Then follow the undo list in
+[Freeze all writers](#freeze-all-writers).
 
 **After MySQL has received writes:** stop admissions and all writers again.
 `cli.py abort` refuses in `mysql_authoritative`; the commands and their time
