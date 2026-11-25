@@ -44,6 +44,13 @@ class CrmWebsiteLedger extends Command
 
             return 2;
         }
+        try {
+            $since = $this->option('since') ? Carbon::parse((string) $this->option('since'))->setTimezone(config('app.timezone')) : null;
+        } catch (\Throwable) {
+            $this->error('--since must be a time, for example 2026-11-25T14:00:00Z.');
+
+            return 2;
+        }
         $db = $this->source();
         if (! $db) {
             return 2;
@@ -53,7 +60,7 @@ class CrmWebsiteLedger extends Command
             foreach ($references as [$producer, $reference]) {
                 $rows[] = $producer === 'booking' ? $this->booking($db, $reference) : $this->contact($db, $reference);
             }
-            $manual = $this->withoutReference($db);
+            $manual = $this->withoutReference($db, $since);
         } finally {
             $this->release($db);
         }
@@ -177,9 +184,8 @@ class CrmWebsiteLedger extends Command
     }
 
     /** Website bookings saved without a reference: their CRM receipt is keyed "shoot-<id>". */
-    private function withoutReference(ConnectionInterface $db): array
+    private function withoutReference(ConnectionInterface $db, ?Carbon $since): array
     {
-        $since = $this->option('since') ? Carbon::parse((string) $this->option('since'))->setTimezone(config('app.timezone')) : null;
         $fromReceipts = $db->table('crm_website_intake_receipts')->where('kind', 'booking')->where('reference', 'like', 'shoot-%')
             ->when($since, fn ($q) => $q->where('created_at', '>=', $since))->pluck('reference')
             ->map(fn ($reference) => (int) substr((string) $reference, 6));

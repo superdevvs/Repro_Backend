@@ -168,4 +168,20 @@ class CrmWebsiteLedgerTest extends CrmTestCase
         $this->assertSame(2, Artisan::call('crm:website-ledger', ['--references' => $this->references($refs)]));
         $this->assertSame(2, Artisan::call('crm:website-ledger', ['--connection' => DB::getDefaultConnection()]));
     }
+
+    public function test_an_unreadable_since_is_bad_input_and_opens_no_read_only_session(): void
+    {
+        [$refs] = $this->seedLedger();
+        $statements = [];
+        DB::listen(function ($query) use (&$statements) {
+            $statements[] = $query->sql;
+        });
+
+        $exit = Artisan::call('crm:website-ledger', ['--connection' => DB::getDefaultConnection(),
+            '--references' => $this->references($refs), '--since' => 'not a time']);
+
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString('--since', Artisan::output());
+        $this->assertSame([], $statements, 'Bad input is refused before the database is touched.');
+    }
 }
