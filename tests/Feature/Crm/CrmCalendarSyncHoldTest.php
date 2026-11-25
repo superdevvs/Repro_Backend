@@ -12,6 +12,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Validation\ValidationException;
 use Mockery;
 
 /**
@@ -30,6 +31,9 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
     /** @var list<array{0: string, 1: string}> Every call made to Google: [method, event id]. */
     private array $calls = [];
 
+    /** How many of the next Google calls of each method fail. */
+    private array $failNext = ['deleteEvent' => 0, 'updateLinkedEvent' => 0];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -47,12 +51,14 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
             return ['id' => $id];
         });
         $google->shouldReceive('updateLinkedEvent')->andReturnUsing(function ($connection, string $calendarId, string $id, array $payload) {
+            $this->failIfAsked('updateLinkedEvent', $id);
             $this->calls[] = ['updateLinkedEvent', $id];
             $this->remote[$id] = ['id' => $id, 'status' => 'confirmed', 'start' => $payload['start'], 'end' => $payload['end']];
 
             return ['id' => $id];
         });
         $google->shouldReceive('deleteEvent')->andReturnUsing(function ($connection, string $calendarId, string $id) {
+            $this->failIfAsked('deleteEvent', $id);
             $this->calls[] = ['deleteEvent', $id];
             unset($this->remote[$id]);
         });
@@ -63,6 +69,16 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
         });
         $google->shouldNotReceive('getValidAccessToken');
         $this->app->instance(GoogleCalendarService::class, $google);
+    }
+
+    private function failIfAsked(string $method, string $id): void
+    {
+        if ($this->failNext[$method] > 0) {
+            $this->failNext[$method]--;
+            $this->calls[] = [$method.' failed', $id];
+
+            throw new \RuntimeException('Google '.$method.' failed');
+        }
     }
 
     private function scheduled(Carbon $at): CrmEvent
@@ -187,6 +203,76 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
 
         $this->assertSame([['createEvent', 'g_'.$event->id]], $this->calls);
         $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'google_event_id' => 'g_'.$event->id, 'push_pending' => false]);
+    }
+
+    /** The operator reads this on the night, so it names the one row the hold itself keeps blocking. */
+    public function test_held_sync_says_how_a_push_pending_row_clears(): void
+    {
+        config(['crm.calendar_sync_hold' => true]);
+
+        $this->assertSame(0, Artisan::call('crm:calendar-sync'));
+
+        $output = Artisan::output();
+        $this->assertStringContainsString('Calendar sync is held (CRM_CALENDAR_SYNC_HOLD).', $output);
+        $this->assertStringContainsString('A planned follow-up that shows push_pending clears when it is saved again in the CRM.', $output);
+        $this->assertStringContainsString('A cancelled one clears only when the sync runs: settle every other row, '
+            .'release CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.', $output);
+    }
+
+    /** The first half of the held-command guidance: saving the follow-up again pushes it and clears the row. */
+    public function test_a_planned_follow_up_left_push_pending_clears_when_saved_again(): void
+    {
+        $event = $this->scheduled(now()->addDays(2)->setTime(11, 0)->utc());
+        config(['crm.calendar_sync_hold' => true]);
+        $this->failNext['updateLinkedEvent'] = 1;
+        $moved = now()->addDays(3)->setTime(9, 0)->utc();
+        app(CrmEventService::class)->update($event, ['starts_at' => $moved->toIso8601String()], $this->rep);
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => true]);
+        [$exit, $report] = $this->reconcile();
+        $this->assertSame([1, ['push_pending' => 1]], [$exit, $report['counts']]);
+
+        app(CrmEventService::class)->update($event->fresh(), ['starts_at' => $moved->toIso8601String()], $this->rep);
+
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => false]);
+        $this->assertTrue(Carbon::parse($this->remote[$this->googleId($event)]['start']['dateTime'])->equalTo($moved));
+        [$exit, $report] = $this->reconcile();
+        $this->assertSame([0, ['in_sync' => 1]], [$exit, $report['counts']]);
+    }
+
+    /**
+     * The second half: a follow-up cancelled while held, whose Google delete failed once,
+     * cannot be saved again (only planned follow-ups can), so only one sync run clears it.
+     */
+    public function test_a_cancelled_follow_up_left_push_pending_clears_only_when_one_sync_runs(): void
+    {
+        $event = $this->scheduled(now()->addDays(2)->setTime(11, 0)->utc());
+        $googleId = $this->googleId($event);
+        $this->calls = [];
+        config(['crm.calendar_sync_hold' => true]);
+        $this->failNext['deleteEvent'] = 1;
+        app(CrmEventService::class)->cancelPlanned($event->contact, $this->rep, 'Lost to a competitor');
+        $this->assertSame([['deleteEvent failed', $googleId]], $this->calls);
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => true]);
+        [$exit, $report] = $this->reconcile();
+        $this->assertSame([1, ['push_pending' => 1]], [$exit, $report['counts']]);
+
+        try {
+            app(CrmEventService::class)->update($event->fresh(), ['note' => 'Saved again'], $this->rep);
+            $this->fail('A cancelled follow-up was saved again.');
+        } catch (ValidationException) {
+        }
+        Artisan::call('crm:calendar-sync');
+        [$exit, $report] = $this->reconcile();
+        $this->assertSame([1, ['push_pending' => 1]], [$exit, $report['counts']], 'The held sync cleared the row.');
+
+        config(['crm.calendar_sync_hold' => false]);
+        $this->artisan('crm:calendar-sync')->assertSuccessful();
+
+        $this->assertContains(['deleteEvent', $googleId], $this->calls);
+        $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'google_event_id' => null, 'push_pending' => false]);
+        [$exit, $report] = $this->reconcile();
+        $this->assertSame(0, $exit);
+        $this->assertSame([], $report['counts']);
     }
 
     public function test_the_scheduler_skips_calendar_sync_while_held(): void
