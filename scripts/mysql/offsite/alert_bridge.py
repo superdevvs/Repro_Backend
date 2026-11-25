@@ -9,6 +9,7 @@ errors never contain a URL, a token or provider text.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -135,6 +136,8 @@ def deliver(url: str, timeout: int, context: ssl.SSLContext | None) -> tuple[int
         return None, "TLS verification or handshake failed"
     except (urllib.error.URLError, OSError, ValueError):
         return None, "network error"
+    except http.client.HTTPException:
+        return None, "provider answer was not valid HTTP"
 
 
 def signal(config: dict, urls: dict[str, str], condition: str, state: str,

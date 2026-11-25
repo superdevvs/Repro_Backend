@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import http.server
 import io
 import json
@@ -26,9 +27,13 @@ class Recorder(http.server.BaseHTTPRequestHandler):
     status = 200
     delay = 0.0
     redirect = False
+    garbage = False
 
     def do_GET(self):  # noqa: N802 - stdlib handler name
         type(self).paths.append(self.path)
+        if type(self).garbage:
+            self.wfile.write(b"not an http status line\r\n\r\n")
+            return
         if type(self).delay:
             time.sleep(type(self).delay)
         if type(self).redirect:
@@ -79,6 +84,7 @@ class BridgeTests(unittest.TestCase):
         Recorder.status = 200
         Recorder.delay = 0.0
         Recorder.redirect = False
+        Recorder.garbage = False
         self.client = ssl.create_default_context(cafile=str(self.cert))
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -184,6 +190,17 @@ class BridgeTests(unittest.TestCase):
                          [("fail", "detector status stale"), ("fail", "detector status invalid")])
         (self.inbox / "queue_stale.json").unlink()
         self.assertEqual(self.forward()[1]["status"], "detector status missing")
+
+    def test_a_malformed_provider_answer_is_a_failed_ping_and_forwarding_goes_on(self):
+        Recorder.garbage = True
+        self.write_status("disk_nearly_full", "fail")
+        self.write_status("queue_stale", "ok")
+        try:
+            results = self.forward()
+        except http.client.HTTPException as error:
+            self.fail(f"a malformed answer stopped the relay: {type(error).__name__}")
+        self.assertEqual([item["result"] for item in results], ["alert-ping-failed", "alert-ping-failed"])
+        self.assertEqual(len(Recorder.paths), 2)
 
     def test_config_refuses_unreviewed_fields(self):
         with self.assertRaises(bridge.Refusal):
