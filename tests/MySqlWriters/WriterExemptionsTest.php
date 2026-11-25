@@ -9,9 +9,11 @@ use App\Support\LockedWrite;
 use Illuminate\Cache\RateLimiter;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use LogicException;
 use RuntimeException;
 use Tests\MySqlWriters\Concerns\WriterFixture;
@@ -96,6 +98,34 @@ final class WriterExemptionsTest extends TestCase
         $this->assertInstanceOf(LogicException::class, $error, 'Bookkeeping without the token must not reach business tables.');
         $this->assertStringContainsString('may only write jobs', $error->getMessage());
         $this->assertSame(0, $this->counter());
+    }
+
+    public function test_a_job_that_cannot_be_claimed_is_failed_and_recorded_with_the_token(): void
+    {
+        $this->admin->exec('DELETE FROM failed_jobs');
+        $queue = app('queue')->connection('database');
+        $queue->push(new ProbeJob(1));
+        // The claim's reservation update fails, as for a job Laravel cannot claim (#58978).
+        DB::connection('mysql')->beforeExecuting(function (string $query) {
+            if (str_starts_with($query, 'update `jobs` set `reserved_at`')) {
+                throw new RuntimeException('This job cannot be claimed.');
+            }
+        });
+        $failures = [];
+        Event::listen(JobFailed::class, function (JobFailed $event) use (&$failures) {
+            // What queue:work does on JobFailed: record it in failed_jobs, a business write.
+            app('queue.failer')->log($event->connectionName, $event->job->getQueue(), $event->job->getRawBody(), $event->exception);
+            $failures[] = $event->exception->getMessage();
+        });
+
+        $error = $this->failureOf(fn () => $queue->pop());
+
+        $this->assertSame('This job cannot be claimed.', $error?->getMessage());
+        $this->assertSame(0, $this->jobs(), 'Laravel deletes a job it fails.');
+        $this->assertSame(['This job cannot be claimed.'], $failures);
+        $this->assertSame(1, (int) $this->admin->query('SELECT COUNT(*) FROM failed_jobs')->fetchColumn(),
+            'The failure must be recorded, not refused as a token-free write and swallowed.');
+        $this->assertFalse($this->tokenIsHeld());
     }
 
     public function test_a_token_wait_that_runs_out_is_busy_for_callers(): void
