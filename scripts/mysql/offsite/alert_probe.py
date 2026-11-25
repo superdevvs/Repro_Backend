@@ -260,6 +260,8 @@ def sqlite_rows(plan: dict, sql: str, params: tuple = ()) -> list[tuple]:
                 return db.execute(sql, params).fetchall()
         except sqlite3.Error:
             pass
+        if any(os.path.lexists(str(path) + suffix) for suffix in ("-wal", "-journal")):
+            break  # A writer or a journal is there, so the normal open's failure stands (no busy-wait loop).
         rows = immutable_rows(path, sql, params)
         if rows is not None:
             return rows

@@ -290,7 +290,15 @@ class DetectorTests(unittest.TestCase):
         self.database.parent.chmod(0o755)
         Path(str(self.database) + "-wal").write_bytes(b"")  # A writer opened the database.
         self.database.parent.chmod(0o555)
-        self.assertEqual(self.run_probe()["database_down"]["state"], "fail")
+        opened = []
+        connect = probe.sqlite3.connect
+        probe.sqlite3.connect = lambda target, **options: opened.append(target) or connect(target, **options)
+        try:
+            self.assertEqual(self.run_probe()["database_down"]["state"], "fail")
+        finally:
+            probe.sqlite3.connect = connect
+        self.assertFalse(any("immutable" in target for target in opened))
+        self.assertEqual(len(opened), 3, "one normal open per SQLite detector; no busy-wait retries")
         self.database.parent.chmod(0o755)
         Path(str(self.database) + "-wal").unlink()
         self.database.parent.chmod(0o555)
