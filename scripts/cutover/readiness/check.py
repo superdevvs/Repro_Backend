@@ -289,7 +289,8 @@ def review_stress_and_crash(rehearsal: dict) -> None:
     if number(stress, "duration_ms") < STRESS_MIN_MS or number(stress, "parallel_clients") < STRESS_MIN_CLIENTS:
         raise Failed("Stress run was shorter than ten minutes or used fewer than 20 clients")
     start = number(stress, "backlog_start_depth")
-    if start < 1 or number(stress, "backlog_end_depth") > start:
+    # The backlog must shrink: an unchanged backlog shows workers keeping pace, not clearing it.
+    if start < 1 or number(stress, "backlog_end_depth") >= start:
         raise Failed("Workers did not clear a queue backlog during the stress run")
     for name in STRESS_ZERO_COUNTS:
         if number(stress, name) != 0:

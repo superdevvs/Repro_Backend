@@ -128,7 +128,7 @@ def readiness_fixture():
                 },
                 "stress": {
                     "duration_ms": check.STRESS_MIN_MS, "parallel_clients": check.STRESS_MIN_CLIENTS,
-                    "backlog_start_depth": 40, "backlog_end_depth": 40,
+                    "backlog_start_depth": 40, "backlog_end_depth": 0,
                     **dict.fromkeys(check.STRESS_ZERO_COUNTS, 0),
                 },
                 "mysql_kills": [
@@ -266,14 +266,21 @@ class ReadinessTests(unittest.TestCase):
         stress = self.second["stress"]
         for name, delta in (("duration_ms", -1), ("parallel_clients", -1), ("server_errors", 1),
                             ("unhandled_lock_errors", 1), ("confirmed_writes_missing", 1),
-                            ("duplicate_business_effects", 1), ("backlog_end_depth", 1)):
+                            ("duplicate_business_effects", 1)):
             with self.subTest(name=name):
                 stress[name] += delta
                 self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
                 stress[name] -= delta
+        # Workers must clear the backlog: an unchanged or growing backlog fails.
+        for end in (40, 41):
+            with self.subTest(backlog_end_depth=end):
+                stress["backlog_end_depth"] = end
+                self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
+        stress["backlog_end_depth"] = 39
+        self.assert_gate("dress_rehearsal_2.stress_and_crash", "passed")
         stress["backlog_start_depth"] = stress["backlog_end_depth"] = 0
         self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
-        stress["backlog_start_depth"] = stress["backlog_end_depth"] = 40
+        stress["backlog_start_depth"], stress["backlog_end_depth"] = 40, 0
         kills = self.second["mysql_kills"]
         for name, value in (("recovery_ms", check.CRASH_RECOVERY_MS + 1), ("killed_during_write", False),
                             ("confirmed_writes_missing", 1), ("duplicate_business_effects", 1)):
