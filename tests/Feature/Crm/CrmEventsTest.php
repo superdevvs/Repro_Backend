@@ -5,6 +5,8 @@ namespace Tests\Feature\Crm;
 use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmEvent;
 use App\Models\Crm\CrmEventType;
+use App\Services\Crm\CrmBusinessTime;
+use Illuminate\Support\Carbon;
 
 class CrmEventsTest extends CrmTestCase
 {
@@ -22,13 +24,16 @@ class CrmEventsTest extends CrmTestCase
 
     public function test_schedule_and_follow_up_groups(): void
     {
+        // UTC has rolled into the next day while the CRM's business day has not.
+        $this->travelTo(Carbon::parse('2026-11-25T03:00:00Z'));
+        $businessNow = now(CrmBusinessTime::TIMEZONE);
         $rep = $this->rep();
         $contact = $this->contactFor($rep);
         $this->actAs($rep);
 
-        $this->postJson("/api/crm/contacts/{$contact->id}/events", ['type_id' => $this->typeId('call'), 'starts_at' => now()->subDays(2)->setTime(15, 0)->toIso8601String()])->assertCreated();
-        $this->postJson("/api/crm/contacts/{$contact->id}/events", ['type_id' => $this->typeId('email'), 'starts_at' => now()->setTime(23, 30)->toIso8601String()])->assertCreated();
-        $this->postJson("/api/crm/contacts/{$contact->id}/events", ['type' => 'meeting', 'starts_at' => now()->addDays(3)->toIso8601String(), 'duration_min' => 45])->assertCreated();
+        $this->postJson("/api/crm/contacts/{$contact->id}/events", ['type_id' => $this->typeId('call'), 'starts_at' => $businessNow->copy()->subDays(2)->setTime(15, 0)->toIso8601String()])->assertCreated();
+        $this->postJson("/api/crm/contacts/{$contact->id}/events", ['type_id' => $this->typeId('email'), 'starts_at' => $businessNow->copy()->setTime(23, 30)->toIso8601String()])->assertCreated();
+        $this->postJson("/api/crm/contacts/{$contact->id}/events", ['type' => 'meeting', 'starts_at' => $businessNow->copy()->addDays(3)->toIso8601String(), 'duration_min' => 45])->assertCreated();
 
         $groups = $this->getJson('/api/crm/follow-ups')->assertOk()->json('groups');
         $this->assertCount(1, $groups['overdue']);
