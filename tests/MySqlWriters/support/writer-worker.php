@@ -60,9 +60,25 @@ $result = match ($mode) {
         config(['services.google_routes.limit_elements' => 1]);
         $budget = app(App\Services\Scheduling\GoogleRoutesBudget::class);
         $mark('ready-'.$arguments[0]);
-        $await('go', 30);
+        $await('go', 150);
 
         return $budget->reserve();
+    })(),
+    // One inbound Telnyx text from a number nobody has seen before.
+    'telnyx-inbound' => (function () use ($mark, $await, $arguments) {
+        Illuminate\Support\Facades\Queue::fake();
+        Illuminate\Support\Facades\Event::fake([App\Events\SmsMessageReceived::class, App\Events\SmsThreadUpdated::class]);
+        config(['services.telnyx.public_key' => '', 'services.telnyx.ai_sms_enabled' => false]);
+        $payload = ['data' => ['id' => 'writer-policy-event-'.$arguments[0], 'event_type' => 'message.received',
+            'payload' => ['id' => 'writer-policy-message-'.$arguments[0], 'text' => 'Hello '.$arguments[0],
+                'from' => ['phone_number' => '+12025550199'], 'to' => [['phone_number' => '+12025550102']]]]];
+        $request = Illuminate\Http\Request::create('/api/webhooks/telnyx/messaging', 'POST', server: ['CONTENT_TYPE' => 'application/json'],
+            content: json_encode($payload, JSON_THROW_ON_ERROR));
+        $controller = app(App\Http\Controllers\API\Messaging\TelnyxWebhookController::class);
+        $mark('ready-'.$arguments[0]);
+        $await('go', 150);
+
+        return $controller->messaging($request)->getData(true)['status'] ?? null;
     })(),
     default => throw new RuntimeException('Unknown worker mode.'),
 };

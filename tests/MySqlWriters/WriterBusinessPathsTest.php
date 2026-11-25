@@ -38,10 +38,10 @@ final class WriterBusinessPathsTest extends TestCase
     {
         $racers = [];
         foreach (range(1, 8) as $racer) {
-            $racers[] = $this->worker('route-reserve', [(string) $racer]);
+            $racers[] = $this->worker('route-reserve', [(string) $racer], 240);
         }
         foreach (range(1, 8) as $racer) {
-            $this->awaitMarker('ready-'.$racer);
+            $this->awaitMarker('ready-'.$racer, 120);
         }
         $this->mark('go');
 
@@ -49,6 +49,33 @@ final class WriterBusinessPathsTest extends TestCase
 
         $this->assertSame(1, count(array_filter($results)), 'Only one reservation may take the last unit.');
         $this->assertSame(1, (int) $this->admin->query('SELECT COALESCE(SUM(elements), 0) FROM scheduling_route_usage')->fetchColumn());
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
+    public function test_eight_first_texts_from_a_new_number_give_one_contact_one_thread_and_eight_messages(): void
+    {
+        $this->admin->exec("DELETE FROM messages WHERE from_address = '+12025550199'");
+        $this->admin->exec("DELETE FROM message_threads WHERE contact_id IN (SELECT id FROM contacts WHERE phone = '+12025550199')");
+        $this->admin->exec("DELETE FROM contacts WHERE phone = '+12025550199'");
+        $this->admin->exec("DELETE FROM sms_numbers WHERE phone_number IN ('+12025550101', '+12025550102')");
+        $this->admin->exec("INSERT INTO sms_numbers (phone_number, provider, is_default, sms_ai_enabled, created_at, updated_at)
+            VALUES ('+12025550101', 'TELNYX', 1, 0, NOW(), NOW()), ('+12025550102', 'TELNYX', 0, 0, NOW(), NOW())");
+        $senders = [];
+        foreach (range(1, 8) as $sender) {
+            $senders[] = $this->worker('telnyx-inbound', [(string) $sender], 240);
+        }
+        foreach (range(1, 8) as $sender) {
+            $this->awaitMarker('ready-'.$sender, 120);
+        }
+        $this->mark('go');
+
+        $statuses = array_map(fn (Process $sender) => $this->workerResult($sender)['result'], $senders);
+
+        $this->assertSame(array_fill(0, 8, 'received'), $statuses);
+        $contacts = $this->admin->query("SELECT id FROM contacts WHERE phone = '+12025550199'")->fetchAll(\PDO::FETCH_COLUMN);
+        $this->assertCount(1, $contacts);
+        $this->assertSame(1, (int) $this->admin->query('SELECT COUNT(*) FROM message_threads WHERE contact_id = '.(int) $contacts[0])->fetchColumn());
+        $this->assertSame(8, (int) $this->admin->query("SELECT COUNT(*) FROM messages WHERE from_address = '+12025550199'")->fetchColumn());
         $this->assertFalse($this->tokenIsHeld());
     }
 
