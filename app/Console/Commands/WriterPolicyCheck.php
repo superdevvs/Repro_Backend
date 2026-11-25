@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connectors\ConnectionFactory;
+use Illuminate\Support\ConfigurationUrlParser;
 use Throwable;
 
 /**
@@ -23,7 +24,11 @@ final class WriterPolicyCheck extends Command
     public function handle(Repository $config, ConnectionFactory $factory): int
     {
         $default = (string) $config->get('database.default');
-        $connections = (array) $config->get('database.connections');
+        // Resolve DB_URL as Laravel's DatabaseManager does before it connects, so the
+        // check inspects the database the application actually uses.
+        $parser = new ConfigurationUrlParser;
+        $connections = array_map(fn ($settings) => is_array($settings) || is_string($settings)
+            ? $parser->parseConfiguration($settings) : $settings, (array) $config->get('database.connections'));
         $engine = $connections[$default]['driver'] ?? null;
         if ($engine !== 'mysql') {
             return $this->report(['engine' => $engine, 'writer_policy' => 'not applicable', 'problems' => []]);

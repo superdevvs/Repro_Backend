@@ -72,4 +72,17 @@ final class WriterPolicyCheckTest extends TestCase
         $this->assertSame(1, $code);
         $this->assertStringContainsString('mysql_extra', implode(' ', $report['problems']));
     }
+
+    public function test_checks_the_database_url_target_as_the_application_does(): void
+    {
+        // DB_URL wins over the separate settings in Laravel; the check must use the same target.
+        config(['database.connections.mysql.url' => 'mysql://localhost/repro_mysql_test',
+            'database.connections.mysql.database' => 'repro_not_the_target']);
+        DB::purge('mysql');
+        [$code, $report] = $this->check();
+
+        $this->assertSame(0, $code, json_encode($report));
+        $this->assertTrue($report['token']['acquired']);
+        $this->assertSame([], $report['problems']);
+    }
 }
