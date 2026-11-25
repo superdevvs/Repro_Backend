@@ -30,6 +30,14 @@ def writable(database: Path) -> bool:
     return any(path.exists() and path.stat().st_mode & WRITE_BITS for path in companions(database)[:1])
 
 
+def _sync(path: Path, flags: int = 0) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_record(record: Path, value: dict) -> None:
     temporary = record.with_name(f".{record.name}.{os.getpid()}")
     with open(temporary, "x", encoding="utf-8") as stream:
@@ -37,6 +45,9 @@ def _write_record(record: Path, value: dict) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, record)
+    # The rename must survive a power loss before any write bit is removed;
+    # otherwise recovery finds a read-only database without its saved modes.
+    _sync(record.parent, os.O_DIRECTORY)
 
 
 def seal(database: Path, record: Path, busy_seconds: float = 2.0) -> None:
@@ -92,4 +103,9 @@ def unseal(database: Path, record: Path) -> None:
             # with the read-only mode. Give them the database's own owner and mode.
             os.chown(path, info.st_uid, info.st_gid)
             os.chmod(path, modes[str(database)])
+    # The restored modes must be durable before the record that describes them goes.
+    for path in companions(database):
+        if path.exists():
+            _sync(path)
     record.unlink()
+    _sync(record.parent, os.O_DIRECTORY)

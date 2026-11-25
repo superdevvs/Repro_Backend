@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
 import crontab
@@ -156,6 +157,50 @@ class SqliteSealTests(unittest.TestCase):
         self.assertEqual({33}, {path.stat().st_uid for path in self.files()})
         self.assertFalse(self.record.exists())
         self.assertEqual(0, self.as_owner("INSERT INTO effects VALUES ('three')").returncode)
+
+    def traced(self, action):
+        """Run action while recording fsync targets, renames, chmods and unlinks in order."""
+        events = []
+        real_fsync, real_replace, real_chmod, real_unlink = os.fsync, os.replace, os.chmod, Path.unlink
+
+        def fsync(descriptor):
+            events.append(("fsync", os.readlink(f"/proc/self/fd/{descriptor}")))
+            return real_fsync(descriptor)
+
+        def replace(source, target, *args, **kwargs):
+            real_replace(source, target, *args, **kwargs)
+            events.append(("replace", str(target)))
+
+        def chmod(path, mode, *args, **kwargs):
+            events.append(("chmod", str(path)))
+            return real_chmod(path, mode, *args, **kwargs)
+
+        def unlink(path, *args, **kwargs):
+            real_unlink(path, *args, **kwargs)
+            events.append(("unlink", str(path)))
+
+        with patch.object(os, "fsync", fsync), patch.object(os, "replace", replace), \
+                patch.object(os, "chmod", chmod), patch.object(Path, "unlink", unlink):
+            action()
+        return events
+
+    def test_seal_record_is_durable_before_write_bits_are_removed(self):
+        # A power loss after the chmod must not leave a read-only database without its saved modes.
+        events = self.traced(lambda: sqlite_seal.seal(self.database, self.record))
+        published = events.index(("replace", str(self.record)))
+        first_chmod = next(index for index, event in enumerate(events) if event[0] == "chmod")
+        self.assertLess(published, first_chmod)
+        self.assertIn(("fsync", str(self.record.parent)), events[published:first_chmod])
+
+    def test_unseal_restored_modes_are_durable_before_the_record_is_removed(self):
+        sqlite_seal.seal(self.database, self.record)
+        events = self.traced(lambda: sqlite_seal.unseal(self.database, self.record))
+        removed = events.index(("unlink", str(self.record)))
+        last_chmod = max(index for index, event in enumerate(events) if event[0] == "chmod")
+        self.assertLess(last_chmod, removed)
+        synced = {path for kind, path in events[last_chmod:removed] if kind == "fsync"}
+        self.assertTrue({str(path) for path in self.files()} <= synced, f"Restored modes not synced: {events}")
+        self.assertIn(("fsync", str(self.record.parent)), events[removed:])
 
     def test_seal_refuses_while_a_writer_holds_the_database(self):
         holder = subprocess.Popen(
