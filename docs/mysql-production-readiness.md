@@ -1830,11 +1830,11 @@ writer policy's token alert. One probe run at the very start of a hold can
 send one false `site_held` page. `site_unreachable` is paused at the
 provider for the hold, an owner step; `/up` stays held (see the runbook's
 [Alerts](mysql-production-cutover.md#alerts-b6-b7)). Evidence: off-site tests
-240 at the alerts lane head `6b29f033` (as root from `/app`: 240 OK, 4
-skipped, rerun in this docs pass; as uid 1000 from a copy: 1 skipped) and
+240 on the merged candidate `4e4a262d` (as root from `/app`: 240 OK, 4
+skipped; as uid 1000 from a copy at `6b29f033`: 240 OK, 1 skipped) and
 the installer 25 as root; real systemd 252 manager fixture 26 of 26, and 32
 units pass `systemd-analyze verify`; on MySQL 8.4.13 the token query needs
-only `PROCESS` and `SELECT` on `performance_schema.data_locks`. A held
-`writes_possible` phase in the 60-minute tests and a test that pins the
+only `PROCESS` and `SELECT` on `performance_schema.data_locks`. A
+`writes_possible` case in the 60-minute tests and a test that pins the
 token query text come with the code-fix lane. Plan on-call cover for the
 monthly reboot or schedule around it.

@@ -1069,7 +1069,7 @@ catch-up.
 | `model:prune` | 03:45 UTC | skipped | Leave it to the next night. |
 | `media:prune-editor-archives --apply` | 04:15 UTC | runs if the scheduler is admitted by then | Leave it. |
 | Hourly and every-few-minutes tasks | each slot | skipped while held | None: each runs at its next slot. |
-| `repro-backup.timer` | 03:30 UTC, up to 5 min jitter | held (step 4) | Start it in the undo list; it runs once at once. |
+| `repro-backup.timer` | 03:30 UTC, up to 5 min jitter | held (step 4) | Start it in the undo list; it runs once right away. |
 | `repro-recovery-kit.timer` and `.path` | 04:15 UTC and every `.env` change | held (step 4) | Start them in the undo list and run the kit once. |
 | Deploy-backup retention cron (`deployment-storage.py scheduled-retention`) | `47 3 * * *` host time | runs if the host clock is UTC; it is not wrapped and takes both deploy locks for its run | Leave it. A controller step that needs the deploy locks waits for them within its deadline. |
 | `telnyx:prune-webhook-events` | 02:30 UTC (9:30 pm EST) | before the hold | None. |
@@ -1260,8 +1260,9 @@ the MySQL adapter lane exists:
 - Producers stay held until CRM step 6, so they see more than 60 minutes
   of 503s.
 - A SQLite dress rehearsal at this candidate (hold, edge hold, freeze,
-  step 8, abort, reopen) should take about 12 to 15 minutes. That is an
-  estimate; it has not been measured on the host.
+  step 8, abort, reopen) should take about 11 to 14 minutes: the first
+  four rows plus the rollback and reopen figures. That is an estimate; it
+  has not been measured on the host.
 
 Checkpoints. If one is missed, run `cli.py abort` at once:
 
@@ -1293,9 +1294,9 @@ the guard admits the cron scheduler again, before `cli.py reopen` and while
 ingress is still closed, so scheduled commands write SQLite from then on.
 `crm:calendar-sync` stays held by `CRM_CALENDAR_SYNC_HOLD` until CRM step
 10, and `crm:website-intake` completes intake receipts already saved in the
-Dashboard. Neither `abort` nor `reopen` touches `.env` or the config cache.
-`cli.py reopen`
-verifies that authority through the guard, checks the live host again
+Dashboard. Neither `abort` nor `reopen` touches `.env` or the config
+cache. `cli.py reopen` verifies that authority through the guard, checks
+the live host again
 (SQLite the only writable engine), resumes the queues, starts the workers,
 recreates the open marker, writes the activation receipt and lifts the
 deploy fence. If its check after opening fails, it closes ingress, pauses
@@ -1354,7 +1355,7 @@ SQLite, and, once the adapter lane exists, after a MySQL reopen.
    outbound release (see the table above).
 10. Backup timers and the kit:
     `sudo systemctl start repro-backup.timer repro-recovery-kit.timer repro-recovery-kit.path`.
-    Each timer runs once at once if its time has passed (`Persistent=true`).
+    Each timer runs once right away if its time has passed (`Persistent=true`).
     Then `sudo systemctl start repro-recovery-kit.service` once, so the kit
     picks up the night's `.env`. After a MySQL reopen this is open: the base
     backup copies SQLite only and the MySQL leg (`mysql-recovery`) is
@@ -1462,9 +1463,10 @@ waits for items 1 to 3.
 10. The `.env` switch and its undo (ordering H2). Choose one; this is open:
     - Switch before Approval 2 and write the undo: restore the saved `.env`
       in place (ACL kept, see "Editing `.env` on the night" in
-      [Freeze all writers](#freeze-all-writers)), `php artisan config:cache`, `sudo systemctl reload
-      php8.3-fpm`, and only then `cli.py abort` and `cli.py reopen`. Item 4
-      makes `reopen` refuse if this is skipped.
+      [Freeze all writers](#freeze-all-writers)), run `php artisan
+      config:cache` and `sudo systemctl reload php8.3-fpm`, and only then
+      `cli.py abort` and `cli.py reopen`. Item 4 makes `reopen` refuse if
+      this is skipped.
     - Or move the switch after Approval 2, into `promote`.
 
     The keys the switch sets are in
@@ -1497,8 +1499,10 @@ waits for items 1 to 3.
 
     Budget: not timed end to end. The measured parts are the reverse export
     plus verification (174.6 s, 209.2 s and 790 s in local rehearsals) and
-    the forward field check (135.4 s). Reconciling external side effects has
-    no bound. Expect at least another 30 minutes of write outage.
+    the forward field check (135.4 s). On those figures the tool time alone
+    is likely 15 to 30 minutes of further write outage; that is an
+    estimate, not a measurement. Reconciling external side effects has no
+    bound.
 13. Approval expiry branches (ordering M3), written in
     [Freeze all writers](#freeze-all-writers) under "Approvals that run
     out".
