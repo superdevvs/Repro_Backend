@@ -333,15 +333,24 @@ class ProductionAdapter:
             "competing_writer_detected": bool(writers),
         }, 0o600)
 
+    def hold_deploys(self) -> None:
+        """Publish the deployment fence under both deploy locks.
+
+        The guard holds deploys for a planned cutover, but Deploy-App checks only
+        the marker file and never calls the guard. So the marker is what holds
+        them, from `init` until reopening a completed rollback lifts it.
+        """
+        deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,
+                              self.config["command_seconds"], owner=self.owner)
+
     def host_authority(self, engine: str) -> "guard.HostAuthority":
-        """Read-only probe for guard.refresh_engine_evidence, for a committed planned or terminal journal."""
+        """Read-only probe for guard.refresh_engine_evidence, for a committed planned or terminal journal.
+
+        Deploys count as fenced only when the marker that Deploy-App checks exists;
+        the journal's own deploy refusal is not enforced by any deploy script.
+        """
         observed = self.observe()
         identity = self.identity()
-        try:
-            guard.authority(self.policy, self.journal.read(), "deploy")
-            deploys_held = False
-        except guard.Refused:
-            deploys_held = True
         return guard.HostAuthority(
             engine=observed.engine, database_identity=identity.source_sha256,
             live_config_sha256=self.policy[f"{observed.engine}_live_config_sha256"],
@@ -349,17 +358,18 @@ class ProductionAdapter:
             competing_writer_detected=bool(self.processes(self.config["writer_processes"]
                                                          + self.config["scheduler_processes"])),
             admissions_open=observed.admissions_open, workers_stopped=observed.workers_stopped,
-            deployment_fenced=observed.deployment_fenced or deploys_held,
+            deployment_fenced=observed.deployment_fenced,
             sqlite_writable=observed.sqlite_writable, mysql_writable=observed.mysql_writable,
         )
 
     def refresh(self) -> None:
         """Publish current-boot authority evidence for a committed planned or terminal journal.
 
-        Reopening a completed SQLite rollback lifted the deploy fence. After a
-        later reboot the host must be sealed again before it is measured, so
-        the fence is published again first; reopen lifts it once activation is
-        verified. Publishing the fence only ever holds deploys.
+        The host is measured with the deploy fence published. A planned journal
+        keeps deploys held throughout. Reopening a completed SQLite rollback
+        lifted the fence, so after a later reboot it is published again before
+        the measurement; reopen lifts it once activation is verified.
+        Publishing the fence only ever holds deploys.
 
         The guard revokes the current proof before it measures the host. On a
         live host that would hold the scheduler and every restarted worker, so
@@ -370,9 +380,9 @@ class ProductionAdapter:
         # The guard checks the evidence directory's chain before it publishes into it.
         _runtime_directory(self.paths["evidence"].parent)
         state = self.journal.read()
-        if state is not None and state.get("phase") == "sqlite_authoritative" and state.get("pending") is None:
-            deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,
-                                  self.config["command_seconds"], owner=self.owner)
+        if (state is not None and state.get("phase") in ("planned", "sqlite_authoritative")
+                and state.get("pending") is None):
+            self.hold_deploys()
         guard.refresh_engine_evidence(self.host_authority)
 
     def reopen(self) -> None:

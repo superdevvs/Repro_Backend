@@ -364,6 +364,25 @@ class ProductionAdapterTests(unittest.TestCase):
                      action="deploy", expected_engine="sqlite", activation_raw=activation)
         self.assertEqual("sqlite_authoritative", journal.read()["phase"])
 
+    def test_planned_journal_holds_deploys_with_the_marker_deploy_app_checks(self):
+        # Deploy-App checks only /etc/repro-database-cutover/active, never the guard. The guard
+        # holds deploys for a planned cutover, so the marker must really be there.
+        marker = self.root / "etc" / "active"
+        self.assertEqual(0, self.cli("init")[0])
+        self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id), "init left deployments open")
+        # Lost marker (for example removed by hand), then a reboot.
+        marker.unlink()
+        (self.root / "ingress" / "open").unlink()
+        self.boot.write_text("6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11\n", encoding="ascii")
+        journal, adapter, _ = self.host()
+        self.assertFalse(adapter.host_authority("sqlite").deployment_fenced,
+                         "The host probe reported deploys fenced from the journal, not from the marker")
+        self.assertEqual(0, self.cli("refresh")[0])
+        self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id), "refresh measured an unfenced host")
+        self.assertEqual(0, self.cli("reopen")[0])
+        self.assertTrue((self.root / "ingress" / "open").exists())
+        self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id), "reopen in planned lifted the deploy fence")
+
     def reboot_without_runtime_directories(self):
         """A real reboot mounts a fresh /run: the runtime directories are gone, not only their files."""
         shutil.rmtree(self.root / "run")

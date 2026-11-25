@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         runner = host.runner_for(config, journal, adapter)
         if args.action == "init":
             result = runner.initialize()
+            # The guard holds deploys for a planned cutover; Deploy-App checks only this marker.
+            adapter.hold_deploys()
         elif args.action == "status":
             result = runner.status()
         elif args.action == "approval-template":

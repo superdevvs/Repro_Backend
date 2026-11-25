@@ -45,7 +45,7 @@ start again through the wrapper.
 | `repro-media-archives.service` | systemd drop-in `ExecStart=+... admit.py media-archives` |
 | Laravel scheduler (cron `schedule:run`) | `admit.py scheduler`; background commands keep the lease |
 | Other application cron lines | `crontab.py` rewrites known lines; unknown ones are refused |
-| Deployments | `/etc/repro-database-cutover/active`, published under both deploy locks |
+| Deployments | `/etc/repro-database-cutover/active`, published under both deploy locks from `init` (Deploy-App checks only this file, never the guard) until reopening a completed rollback lifts it |
 | Manual `sqlite3` or tinker as the deploy or web user | SQLite seal: no write bits on the database files during the freeze |
 
 Root bypasses file modes. Root-run tools are fenced by the runbook only.
@@ -79,7 +79,7 @@ independently of the pinned policy. The MySQL probe must report
 ## Commands
 
 ```text
-cli.py init
+cli.py init                                              # also publishes the deploy fence
 cli.py approval-template --phase hold > approval.json   # root-owned, mode 0600
 cli.py hold --approval approval.json                     # outage clock starts here
 cli.py freeze
@@ -99,10 +99,11 @@ and the controller recreates them before it writes there. The operator runs
 for a committed `planned` or `sqlite_authoritative` journal through the
 guard, then `cli.py reopen`. There is no automatic reopen at boot (owner
 decision). `refresh` refuses while the open marker exists, because the guard
-revokes the current proof before it measures the host. After a reopened
-rollback, `refresh` publishes the deploy fence again before it measures, and
-`reopen` lifts it once activation is verified. In `planned`, reopen leaves deploys held and writes no activation
-receipt. `refresh` copies the SQLite live-configuration pin from the policy;
+revokes the current proof before it measures the host. `refresh` publishes
+the deploy fence before it measures and counts deploys as fenced only when
+that marker exists. In `planned`, deploys stay held (the policy pins the
+release) and reopen writes no activation receipt. After a reopened
+rollback, `reopen` lifts the fence once activation is verified. `refresh` copies the SQLite live-configuration pin from the policy;
 an independent configuration probe is still to be added before W1.
 
 **Retrying `reopen`.** If a reopen fails after it started a worker group,
