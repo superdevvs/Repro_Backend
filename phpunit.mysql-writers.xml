@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Multi-process proofs of the MySQL one-writer rule. Run only in the
+     socket-only fixture: see tests/MySqlWriters/README.md. -->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/bootstrap-mysql-writers.php" colors="true">
+    <testsuites>
+        <testsuite name="MySQL writers">
+            <directory>tests/MySqlWriters</directory>
+        </testsuite>
+    </testsuites>
+    <source><include><directory>app</directory></include></source>
+    <php>
+        <env name="APP_ENV" value="testing" force="true"/>
+        <env name="DB_CONNECTION" value="mysql" force="true"/>
+        <env name="DB_DATABASE" value="repro_mysql_test" force="true"/>
+        <env name="DB_USERNAME" value="repro_test" force="true"/>
+        <env name="DB_COLLATION" value="utf8mb4_0900_bin" force="true"/>
+        <env name="CACHE_STORE" value="array" force="true"/>
+        <env name="SESSION_DRIVER" value="array" force="true"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <env name="MAIL_MAILER" value="array" force="true"/>
+        <env name="VOICE_LOCK_STORE" value="array" force="true"/>
+        <env name="VOICE_CACHE_STORE" value="array" force="true"/>
+        <env name="CUBICASA_API_KEY" value="" force="true"/>
+        <env name="CUBICASA_BASE_URL" value="https://cubicasa.test" force="true"/>
+        <env name="PULSE_ENABLED" value="false" force="true"/>
+        <env name="TELESCOPE_ENABLED" value="false" force="true"/>
+        <env name="BCRYPT_ROUNDS" value="4" force="true"/>
+        <env name="LOG_CHANNEL" value="stderr" force="true"/>
+    </php>
+</phpunit>

@@ -43,6 +43,12 @@ final class MySqlConnector extends \Illuminate\Database\Connectors\MySqlConnecto
         if ($schedulingCache) {
             $this->verifySchedulingCache($pdo, $config);
         }
+        if (isset($config['repro_lock_wait_timeout'])) {
+            // Row and metadata lock waits end after this many seconds, as SQLite's busy wait does.
+            // The writer token refuses a session with any other value.
+            $seconds = (int) $config['repro_lock_wait_timeout'];
+            $pdo->exec("SET SESSION innodb_lock_wait_timeout = {$seconds}, SESSION lock_wait_timeout = {$seconds}");
+        }
         if (($config['charset'] ?? 'utf8mb4') === 'utf8mb4') {
             // Table/column collations retain NO PAD binary identifier semantics.
             // JSON_TYPE/JSON_UNQUOTE return utf8mb4_bin; matching the connection
