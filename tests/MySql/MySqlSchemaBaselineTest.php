@@ -46,8 +46,8 @@ final class MySqlSchemaBaselineTest extends TestCase
     private const REVIEWED_INDEX_DIFFERENCES = [
         'automation_rules' => [
             'baseline_only' => [], 'sqlite_only' => ['automation_rules_trigger_type_is_active_index'],
-            'reason' => 'Production already had automation_rules when 2025_11_28_100000 ran, and that migration creates '
-                .'the table (with this index) only when it does not exist.',
+            'reason' => 'Absent from the production table the baseline was converted from, which also lacks the foreign keys '
+                .'2025_11_28_100000 declares: that migration creates the table (with this index) only when it does not exist.',
         ],
         'invoices' => [
             'baseline_only' => ['invoices_effective_period_sort'], 'sqlite_only' => [],
