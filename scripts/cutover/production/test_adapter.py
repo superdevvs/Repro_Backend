@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -42,6 +43,26 @@ SWITCH_KEYS = ["DB_COLLATION", "DB_CONNECTION", "DB_DATABASE", "DB_PASSWORD", "D
                "REPRO_MYSQL_EXPECTED_SERVER_UUID"]
 FENCE = "/opt/repro-cutover-fence/production"
 PYTHON = ["/usr/bin/python3", "-I", "-S"]
+APP = Path(__file__).resolve().parents[3]
+# The tables the write smoke changes, triggers included: the app smoke's CutoverSmokeFixture::SMOKE_TABLES.
+# The app has no clients table; the marked test client is a users row.
+SMOKE_TABLES = ["users", "shoots", "aryeo_changes", "jobs"]
+SMOKE_FIXTURE = APP / "app" / "Support" / "Cutover" / "CutoverSmokeFixture.php"
+# The root fixture's stand-in for /usr/bin/php (adapter.QUEUE_PHP) in design 5.1's exact queue command. It runs
+# as www-data after the script's `cd <app_root>`, reads the app root's fake-php.json, waits `seconds`, touches a
+# flag in `flags` if one is named, and records [verb, queue] in `log`.
+FAKE_PHP = """#!{python} -IS
+import json, os, sys, time
+artisan, command, queue = sys.argv[1:]
+open(artisan).close()
+with open("fake-php.json") as stream:
+    settings = json.load(stream)
+time.sleep(settings.get("seconds", 0))
+if "flags" in settings:
+    open(os.path.join(settings["flags"], command + "-" + queue), "w").close()
+with open(settings["log"], "a") as stream:
+    stream.write(json.dumps([command.split(":", 1)[1], queue]) + "\\n")
+"""
 
 
 def queue_command(verb, user="www-data", script=None):
@@ -86,7 +107,7 @@ def example_config():
             "gated_accounts": ["repro_app@localhost"],
             "lockable_accounts": ["repro_maint@localhost", "repro_migrator@localhost"],
             "activity_excluded_tables": ["repro_recovery_heartbeat"],
-            "smoke_tables": ["clients", "shoots", "aryeo_changes", "jobs", "cache", "cache_locks"],
+            "smoke_tables": list(SMOKE_TABLES),
             "switch": {"DB_CONNECTION": "mysql", "DB_DATABASE": "repro_dashboard",
                        "DB_SOCKET": "/run/repro-mysql84-native/mysql.sock", "DB_USERNAME": "repro_app",
                        "DB_COLLATION": "utf8mb4_0900_bin", "REPRO_MYSQL_EXPECTED_SERVER_UUID": TARGET_UUID},
@@ -223,7 +244,7 @@ class HostConfigContractTests(unittest.TestCase):
             (("mysql", "lockable_accounts"), ["repro_app@localhost"]),
             (("mysql", "lockable_accounts"), "repro_maint@localhost"),
             (("mysql", "activity_excluded_tables"), ["repro recovery"]), (("mysql", "smoke_tables"), []),
-            (("mysql", "smoke_tables"), ["clients", "clients"]), (("mysql", "smoke_tables"), ["Clients"]),
+            (("mysql", "smoke_tables"), ["users", "users"]), (("mysql", "smoke_tables"), ["Users"]),
             (("mysql", "switch"), []), (("mysql", "switch", "DB_COLLATION"), 5),
             (("mysql", "switch", "DB_COLLATION"), "utf8mb4_0900_bin\nAPP_KEY=base64:x"),
             (("mysql", "switch", "DB_COLLATION"), ""),
@@ -246,6 +267,33 @@ class HostConfigContractTests(unittest.TestCase):
             with self.subTest(key=".".join(keys), value=value):
                 with self.assertRaises(guard.Refused):
                     load(self.changed(example_config(), keys, value))
+
+    def test_example_smoke_tables_are_the_tables_the_write_smoke_changes(self):
+        # The short way back (design 4.3) accepts business events only inside the smoke window and only on
+        # these tables. The smoke edits the test client's users row: a list without users sends the night
+        # down the long way back.
+        self.assertEqual(SMOKE_TABLES, example_config()["mysql"]["smoke_tables"])
+        self.assertEqual(SMOKE_TABLES, load(example_config())["mysql"]["smoke_tables"])
+
+    @unittest.skipUnless(SMOKE_FIXTURE.is_file(), "The app smoke (CutoverSmokeFixture) is not on this branch")
+    def test_example_smoke_tables_match_the_app_smoke_fixture(self):
+        source = SMOKE_FIXTURE.read_text(encoding="utf-8")
+        found = re.search(r"const SMOKE_TABLES = \[([^\]]*)\];", source)
+        self.assertIsNotNone(found, "CutoverSmokeFixture::SMOKE_TABLES not found")
+        self.assertEqual(re.findall(r"'([a-z_]+)'", found.group(1)), example_config()["mysql"]["smoke_tables"])
+
+    def test_smoke_tables_must_be_a_non_empty_list_of_table_names(self):
+        # The controller names no app table itself; it only refuses a list it could not use.
+        for value in ([], "users", None, {"users": True}, [["users"]], ["users", 7], ["users", None], [""],
+                      ["users", "users"], ["Users"], ["users "], ["repro_dashboard.users"], ["users;"]):
+            with self.subTest(value=value):
+                config = example_config()
+                config["mysql"]["smoke_tables"] = value
+                with self.assertRaisesRegex(guard.Refused, "mysql tables are invalid"):
+                    load(config)
+        config = example_config()
+        config["mysql"]["smoke_tables"] = ["jobs"]
+        self.assertEqual(["jobs"], load(config)["mysql"]["smoke_tables"])
 
     def test_identity_config_shape_is_checked(self):
         config = example_config()
@@ -391,6 +439,16 @@ class HostConfigContractTests(unittest.TestCase):
                 "the queue not passed as $1": queue_command(verb) + ["extra"],
                 "the queue not used": queue_command(verb, script=f"umask 0022 && exec /usr/bin/php artisan "
                                                                  f"queue:{verb} database:default"),
+                # The reviewer's four bypasses of the text check (wave 1 review, A2).
+                "the other verb behind a comment": queue_command(
+                    verb, script=f'cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:{other} "$1" '
+                                 f'# queue:{verb} "$1"'),
+                "the other verb before a semicolon": queue_command(
+                    verb, script=f'cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:{other} "$1"; '
+                                 f'/usr/bin/php artisan queue:{verb} "$1"'),
+                "a setpriv wrapper": queue_command(
+                    verb, script=f"cd /var/www/backend && umask 0022 && exec /usr/bin/setpriv --reuid=0 {php[5:]}"),
+                "a cd to another app": queue_command(verb, script=f"cd /srv/other && umask 0022 && {php}"),
             }
             for argv in accepted:
                 config = example_config()
@@ -402,6 +460,115 @@ class HostConfigContractTests(unittest.TestCase):
                     config["commands"][f"queue_{verb}"] = argv
                     with self.assertRaisesRegex(guard.Refused, "must run as www-data through runuser with umask 0022"):
                         load(config)
+
+    def test_queue_script_is_exactly_cd_app_root_umask_and_exec_php_artisan(self):
+        # A structural match, not a text search: the steps split only on ' && ', the only cd is to app_root
+        # (identity.json names the same root), and the last step runs exactly the app's artisan.
+        message = "must run as www-data through runuser with umask 0022"
+        for verb in ("pause", "resume"):
+            cd, umask, run = "cd /var/www/backend", "umask 0022", f'exec /usr/bin/php artisan queue:{verb} "$1"'
+            refused = {
+                "no cd": f"{umask} && {run}",
+                "two cds": f"{cd} && {cd} && {umask} && {run}",
+                "a cd below the app root": f"cd /var/www/backend/public && {umask} && {run}",
+                "a cd with a trailing slash": f"cd /var/www/backend/ && {umask} && {run}",
+                "two umasks": f"{cd} && {umask} && {umask} && {run}",
+                "an extra step": f"{cd} && {umask} && /usr/bin/true && {run}",
+                "exec first": f"{run} && {cd} && {umask}",
+                "another php": f'{cd} && {umask} && exec /usr/bin/php8.3 artisan queue:{verb} "$1"',
+                "php from PATH": f'{cd} && {umask} && exec php artisan queue:{verb} "$1"',
+                "artisan by another path": f'{cd} && {umask} && exec /usr/bin/php ./artisan queue:{verb} "$1"',
+                "another artisan": f'{cd} && {umask} && exec /usr/bin/php /srv/other/artisan queue:{verb} "$1"',
+                "an option before the queue": f'{cd} && {umask} && exec /usr/bin/php artisan queue:{verb} -q "$1"',
+                "all arguments": f'{cd} && {umask} && exec /usr/bin/php artisan queue:{verb} "$@"',
+                "the queue unquoted": f"{cd} && {umask} && exec /usr/bin/php artisan queue:{verb} $1",
+                "the queue braced": f'{cd} && {umask} && exec /usr/bin/php artisan queue:{verb} "${{1}}"',
+                "a php option": f'{cd} && {umask} && exec /usr/bin/php -d auto_prepend_file=/tmp/x artisan '
+                                f'queue:{verb} "$1"',
+                "an environment prefix": f'{cd} && {umask} && exec env APP_ENV=local /usr/bin/php artisan '
+                                         f'queue:{verb} "$1"',
+                "a separator without spaces": f"{cd}&&{umask}&&{run}",
+                "a separator with two spaces": f"{cd} &&  {umask} && {run}",
+                "an or separator": f"{cd} || {umask} && {run}",
+            }
+            # Every shell metacharacter, inside each step and around the script.
+            for character in (";", "#", "|", "&", "`", "$(", "<", ">", "\n", "\r", "\t", "*", "?", "[", "~", "{",
+                              "(", ")", "!", "\\", "'", '"', "$"):
+                for where, script in (("after the cd", f"{cd}{character} && {umask} && {run}"),
+                                      ("inside the cd", f"cd /var/www{character}/backend && {umask} && {run}"),
+                                      ("after the umask", f"{cd} && {umask}{character} && {run}"),
+                                      ("after the exec", f"{cd} && {umask} && {run}{character}"),
+                                      ("inside the exec", f'{cd} && {umask} && exec /usr/bin/php artisan{character} '
+                                                          f'queue:{verb} "$1"'),
+                                      ("before the script", f"{character}{cd} && {umask} && {run}")):
+                    refused[f"{character!r} {where}"] = script
+            refused[f"{run} then a newline and a command"] = f"{cd} && {umask} && {run}\n/usr/bin/id"
+            for name, script in refused.items():
+                with self.subTest(verb=verb, case=name):
+                    config = example_config()
+                    config["commands"][f"queue_{verb}"] = queue_command(verb, script=script)
+                    with self.assertRaisesRegex(guard.Refused, message):
+                        load(config)
+
+        def rooted(root):
+            """The example host config with app_root and both queue commands' cd set to `root`."""
+            config = example_config()
+            config["app_root"] = root
+            for verb in ("pause", "resume"):
+                config["commands"][f"queue_{verb}"] = queue_command(
+                    verb, script=f'cd {root} && umask 0022 && exec /usr/bin/php artisan queue:{verb} "$1"')
+            return config
+
+        # The cd follows app_root (and identity.json, which must name the same root).
+        self.assertEqual("/srv/repro/backend", load(rooted("/srv/repro/backend"))["app_root"])
+        # The example's cd now names another app root: refused.
+        with self.assertRaisesRegex(guard.Refused, message):
+            load({**example_config(), "app_root": "/srv/repro/backend"})
+        # An app root the shell would read as more than a path is never accepted, even in its own cd.
+        for root in ("/var/www/backend;id", "/var/www/back end", "/var/www/$(id)", "/var/www/backend\n",
+                     "/var/www/backend*", "/var/www/'backend'"):
+            with self.subTest(app_root=root):
+                with self.assertRaisesRegex(guard.Refused, message):
+                    load(rooted(root))
+
+    def test_capture_fpm_is_never_a_writer_pattern_or_a_stop_target(self):
+        # The Telnyx capture is its own php-fpm master and pool (repro-telnyx-capture.service) and must keep
+        # answering through the freeze. adapter.processes() matches substrings of /proc/<pid>/cmdline: a
+        # pattern that matches the capture keeps _wait_absent waiting, and a stop by process name kills it.
+        message = "Telnyx capture"
+        patterns = ["php-fpm:", "php-fpm: master process", "php-fpm: pool", "master process", "pool repro",
+                    "repro-telnyx-capture", "pool repro-telnyx-capture", "/etc/repro-telnyx-capture/php-fpm.conf",
+                    "--fpm-config", "/usr/sbin/php-fpm8.3", "php-fpm: master process (/etc/php/8.3/fpm/php-fpm.conf)"]
+        for name in ("writer_processes", "long_job_processes", "scheduler_processes"):
+            for pattern in patterns:
+                with self.subTest(name=name, pattern=pattern):
+                    config = example_config()
+                    config[name] = [*config[name], pattern]
+                    with self.assertRaisesRegex(guard.Refused, message):
+                        load(config)
+        stops = [["/usr/bin/pkill", "php-fpm"], ["/usr/bin/pkill", "-f", "php-fpm: master process"],
+                 ["/usr/bin/pkill", "-QUIT", "-f", "php-fpm"], ["/usr/bin/killall", "php-fpm8.3"],
+                 ["/usr/bin/killall", "/usr/sbin/php-fpm8.3"],
+                 ["/usr/bin/systemctl", "stop", "repro-telnyx-capture.service"],
+                 ["/usr/bin/systemctl", "stop", "php8.3-fpm.service", "repro-telnyx-capture.service"],
+                 ["/bin/sh", "-c", "/usr/bin/pkill -f php-fpm || true"],
+                 ["/usr/bin/supervisorctl", "stop", "repro-telnyx-capture"]]
+        for name in ("stop_workers", "drain_fpm"):
+            for argv in stops:
+                with self.subTest(name=name, argv=argv):
+                    config = example_config()
+                    config["commands"][name] = [*config["commands"][name], argv]
+                    with self.assertRaisesRegex(guard.Refused, message):
+                        load(config)
+        for argv in stops:
+            with self.subTest(name="fpm_stop", argv=argv):
+                config = example_config()
+                config["commands"]["fpm_stop"] = argv
+                with self.assertRaisesRegex(guard.Refused, message):
+                    load(config)
+        # The app's FPM is drained through its status socket and stopped through its own unit.
+        drain = load(example_config())["commands"]["drain_fpm"]
+        self.assertEqual(["/usr/bin/systemctl", "stop", "php8.3-fpm.service"], drain[-1])
 
     def test_identity_config_must_describe_this_host(self):
         config = example_config()
@@ -454,10 +621,18 @@ class ProductionAdapterTests(unittest.TestCase):
         # Queue commands run as www-data (runuser); every recorder appends to the same log.
         self.log.touch(mode=0o644)
         os.chown(self.log, 33, 33)
-        self.queue_recorder = self.root / "etc" / "record-queue.py"
-        self.queue_recorder.write_text(
-            "import json, sys\nlog, name, verb, queue = sys.argv[1:]\n"
-            "with open(log, 'a') as stream:\n    stream.write(json.dumps([name, queue]) + '\\n')\n", encoding="ascii")
+        # The queue commands are design 5.1's exact form, run in this fixture's app root by the fixture php.
+        self.app = self.root / "app"
+        self.app.mkdir(mode=0o755)
+        (self.app / "artisan").write_text("<?php // The fixture php reads fake-php.json instead.\n", encoding="ascii")
+        self.php_settings()
+        self.php = self.root / "bin" / "php"
+        self.php.parent.mkdir(mode=0o755)
+        self.php.write_text(FAKE_PHP.format(python=sys.executable), encoding="ascii")
+        self.php.chmod(0o755)
+        php = patch.object(production, "QUEUE_PHP", str(self.php))
+        php.start()
+        self.addCleanup(php.stop)
         self.config_path = self.root / "etc" / "host.json"
         self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
         (self.root / "etc" / "identity.json").write_text(json.dumps(example_identity(self.config())), encoding="utf-8")
@@ -473,10 +648,15 @@ class ProductionAdapterTests(unittest.TestCase):
         return [sys.executable, "-c",
                 "import json, sys; open(sys.argv[1], 'a').write(json.dumps(sys.argv[2:]) + '\\n')", str(self.log), name]
 
-    def record_queue(self, verb, name):
-        """The configured queue prefix form: www-data through runuser, umask 0022, the queue as `$1`."""
-        return queue_command(verb, script=f'umask 0022 && exec {sys.executable} -I -S {self.queue_recorder} '
-                                          f'{self.log} {name} queue:{verb} "$1"')
+    def php_settings(self, **settings):
+        """What the fixture php does on its next runs; it always records [verb, queue] in the command log."""
+        path = self.app / "fake-php.json"
+        path.write_text(json.dumps({"log": str(self.log), **settings}), encoding="ascii")
+        path.chmod(0o644)
+
+    def record_queue(self, verb):
+        """Design 5.1's queue command for this fixture's app root: www-data, umask 0022, the queue as `$1`."""
+        return queue_command(verb, script=f'cd {self.app} && umask 0022 && exec {self.php} artisan queue:{verb} "$1"')
 
     def config(self, **overrides):
         root = self.root
@@ -495,6 +675,7 @@ class ProductionAdapterTests(unittest.TestCase):
         }
         identity_probe = [sys.executable, "-c", f"print({json.dumps(json.dumps(IDENTITY.__dict__))})"]
         config.update({
+            "app_root": str(self.app),
             "sqlite": str(self.database),
             "deploy_locks": [str(root / "home" / ".repro-backend-deploy.lock"),
                              str(root / "home" / ".repro-frontend-deploy.lock")],
@@ -511,7 +692,7 @@ class ProductionAdapterTests(unittest.TestCase):
             # The probe reads the identity config the host config names (python -c ignores the extra arguments).
             "identity": identity_probe + ["--config", config["paths"]["identity_config"]],
             "mysql": [sys.executable, "-c", "print('{\"writable\": false, \"business_activity\": false}')"],
-            "queue_pause": self.record_queue("pause", "pause"), "queue_resume": self.record_queue("resume", "resume"),
+            "queue_pause": self.record_queue("pause"), "queue_resume": self.record_queue("resume"),
             # '[f]ake' never matches this shell's own command line.
             "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
                              self.record("stop")],
@@ -564,14 +745,7 @@ class ProductionAdapterTests(unittest.TestCase):
         flags = self.root / "flags"
         flags.mkdir(mode=0o755)
         os.chown(flags, 33, 33)
-        touch = self.root / "etc" / "touch-flag.py"
-        touch.write_text("import os, sys\nflags, verb, queue = sys.argv[1:]\n"
-                         "open(os.path.join(flags, verb + '-' + queue), 'w').close()\n", encoding="ascii")
-        config = self.config()
-        for verb in ("pause", "resume"):
-            config["commands"][f"queue_{verb}"] = queue_command(
-                verb, script=f'umask 0022 && exec {sys.executable} -I -S {touch} {flags} queue:{verb} "$1"')
-        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        self.php_settings(flags=str(flags))
         previous = os.umask(0o077)
         try:
             journal, adapter, runner = self.started()
@@ -581,6 +755,43 @@ class ProductionAdapterTests(unittest.TestCase):
         for queue in QUEUES:
             info = (flags / f"queue:pause-{queue}").stat()
             self.assertEqual((33, 33, 0o644), (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)), queue)
+
+    def test_timed_out_host_command_is_stopped_with_everything_it_started(self):
+        # runuser does not pass SIGKILL on to the command it started: a timed-out queue_pause must not keep
+        # running and change a flag after the controller has reported the timeout.
+        self.config_path.write_text(json.dumps(self.config(command_seconds=1)), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        self.php_settings(seconds=3)
+        started = time.monotonic()
+        with self.assertRaisesRegex(UnsafeCutover, "Host command timed out: runuser"):
+            runner.perform("hold", runner.approval_request("hold"))
+        self.assertLess(time.monotonic() - started, 2.5)
+        # A plain command whose own child outlives it.
+        late = self.root / "log" / "late"
+        with self.assertRaisesRegex(UnsafeCutover, "Host command timed out: sh"):
+            adapter._run(["/bin/sh", "-c", f"(/bin/sleep 3; : > {late}) & wait"])
+        time.sleep(3.5)
+        self.assertEqual(([], False), (self.commands(), late.exists()),
+                         "The timed-out queue command or the plain command's child kept running")
+
+    def test_interrupted_host_command_is_stopped_with_everything_it_started(self):
+        # An interrupted controller (Ctrl-C, or any exception while it waits) leaves nothing running either.
+        journal, adapter, runner = self.host()
+        self.php_settings(seconds=2)
+
+        def interrupt(signum, frame):
+            raise KeyboardInterrupt
+
+        previous = signal.signal(signal.SIGALRM, interrupt)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        signal.setitimer(signal.ITIMER_REAL, 0.5)
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                adapter._run(adapter.config["commands"]["queue_pause"] + ["database:mail"])
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        time.sleep(2.5)
+        self.assertEqual([], self.commands(), "The interrupted queue command kept running")
 
     def test_long_job_worker_still_running_refuses_the_hold(self):
         journal, adapter, runner = self.started()
@@ -1026,6 +1237,42 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertEqual("frozen", call("tick")[1]["state"]["phase"])
         self.assertEqual("sqlite_authoritative", call("abort")[1]["state"]["phase"])
         self.assertEqual(1, call("hold", "--approval", str(approval))[0])
+
+    def test_cli_refuses_an_identity_config_that_is_not_root_only(self):
+        # cli.py reads identity.json through guard.read_protected, like host.json: the denylist that keeps the
+        # switch out of config_sha256 must not come from a file the deploy user (or its group) can change.
+        self.started()
+        identity = self.root / "etc" / "identity.json"
+        original = identity.read_bytes()
+        target = self.root / "etc" / "identity-target.json"
+
+        def restore():
+            identity.unlink()
+            identity.write_bytes(original)
+            identity.chmod(0o644)
+            os.chown(identity, 0, 0)
+
+        def symlinked():
+            target.write_bytes(original)
+            target.chmod(0o644)
+            identity.unlink()
+            identity.symlink_to(target)
+
+        self.assertEqual(0, self.cli("status")[0])
+        for name, change in (("group-writable", lambda: identity.chmod(0o664)),
+                             ("deploy-user-owned", lambda: os.chown(identity, 1000, 1000)),
+                             ("a symlink to a root-only file", symlinked)):
+            with self.subTest(name):
+                change()
+                errors = io.StringIO()
+                try:
+                    with patch("sys.stderr", errors):
+                        code, output = self.cli("status")
+                finally:
+                    restore()
+                self.assertEqual((1, None), (code, output))
+                self.assertIn("Unsafe file type, owner or permissions", errors.getvalue())
+        self.assertEqual(0, self.cli("status")[0])
 
     def test_cli_requires_a_protected_approval_file(self):
         journal, adapter, runner = self.started()

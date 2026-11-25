@@ -75,6 +75,25 @@ must observe the deployed release, artifact, source and configuration digests
 independently of the pinned policy. The MySQL probe must report
 `writable` and `business_activity` for the target.
 
+**Host commands** run in their own session and process group. `runuser`
+does not pass `SIGKILL` on to the command it started, so on a timeout
+(`command_seconds`) or an interrupt the controller kills the whole group
+before it reports "Host command timed out": no queue command keeps running
+to change a flag after the report.
+
+**The Telnyx capture** (`repro-telnyx-capture.service`, its own `php-fpm`
+master and pool, design 5.2) keeps answering through the freeze. The process
+patterns are substrings of `/proc/<pid>/cmdline`, so `load_config` refuses a
+`writer_processes`, `long_job_processes` or `scheduler_processes` pattern that
+names `php-fpm` or `repro-telnyx-capture`, or that is part of the capture's
+command lines (`php-fpm: master process (/etc/repro-telnyx-capture/php-fpm.conf)`,
+`php-fpm: pool repro-telnyx-capture`, its `ExecStart`): the freeze would wait
+for the capture until it failed. It also refuses a `stop_workers`, `drain_fpm`
+or `fpm_stop` argument that names `php-fpm` or `repro-telnyx-capture`: a stop
+by process name cannot tell the app's pool from the capture's. The app's FPM
+is drained through its status socket and stopped through its own unit
+(`systemctl stop php8.3-fpm.service`).
+
 ### Config contract for the MySQL lane (design 3.1)
 
 `adapter.load_config(raw, read=...)` checks `host.json` and the
@@ -96,7 +115,7 @@ check as `host.json`. `test_adapter.py` (`example_config`,
 | `mysql.target_uuid` | The independently observed `@@server_uuid` |
 | `mysql.datadir`, `client`, `socket`, `probe_defaults`, `gate_defaults`, `token_check_defaults` | Absolute paths; `datadir` equal to `identity.json`'s `mysql_datadir` |
 | `mysql.gated_accounts`, `lockable_accounts` | Distinct `user@localhost` names, no account in both; at least one gated |
-| `mysql.activity_excluded_tables`, `smoke_tables` | Distinct table names; at least one smoke table |
+| `mysql.activity_excluded_tables`, `smoke_tables` | Distinct table names; at least one smoke table. `smoke_tables` is exactly the tables the write smoke changes, triggers included: `["users", "shoots", "aryeo_changes", "jobs"]` (the app smoke's `CutoverSmokeFixture::SMOKE_TABLES`; the app has no `clients` table, the test client is a `users` row). The controller names no app table itself |
 | `mysql.switch` | Exactly `DB_CONNECTION` (`mysql`), `DB_DATABASE` (= `mysql.database`), `DB_SOCKET` (= `mysql.socket`), `DB_USERNAME` (a gated account's user), `DB_COLLATION` and `REPRO_MYSQL_EXPECTED_SERVER_UUID` (= `mysql.target_uuid`), plus optionally `DB_EXPECTED_ENGINE` (`mysql`) and `SCHEMA_CACHE_RELEASE` once those branches are merged. Values are written unquoted into `.env`, so only `A-Z a-z 0-9 _ . , / : @ + -` |
 | `mysql.switch_secrets` | Exactly `{"DB_PASSWORD": "<root-only file>"}`; the password never appears in `host.json` |
 | `mysql.night_flags` | Distinct `.env` key names, none of them a switch key |
@@ -126,11 +145,16 @@ checked in the very file the identity probe reads.
 `storage/framework/cache/data`, and the watchdog runs with `UMask=0077`,
 which `runuser` keeps; a 0600 flag reads as "not paused" to the deploy user's
 workers. So `queue_pause` and `queue_resume` must be exactly
-`["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", SCRIPT, NAME]`
-where `SCRIPT` is ` && `-separated steps: plain `cd /absolute/path` steps,
-exactly one `umask 0022`, and last `exec ... queue:pause "$1"` (or
-`queue:resume "$1"` for `queue_resume`) with no other umask. The adapter
-appends the `connection:queue` argument, which becomes `$1`:
+`["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", SCRIPT, NAME]`.
+`SCRIPT` is matched by structure, not searched as text: split on ` && `
+only, it is exactly three steps, `cd <app_root>` and `umask 0022` (in either
+order), then exactly `exec /usr/bin/php artisan queue:pause "$1"` (or
+`queue:resume "$1"` for `queue_resume`). The cd goes to `app_root` (which
+`identity.json` must name too) and to nothing else, `app_root` must be one
+plain shell word (`A-Z a-z 0-9 _ . / -`), and nothing else may appear: no
+`;`, `#`, `|`, `&`, backquote, `$(`, `<`, `>`, newline, other quoting or
+spacing, no other program or wrapper and no other `php`. The adapter appends
+the `connection:queue` argument, which becomes `$1`:
 
 ```json
 "queue_pause": ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c",
@@ -217,6 +241,9 @@ lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
 run in a disposable container through `../run-linux-tests.sh`. The host
 config contract tests in `test_adapter.py` (`HostConfigContractTests`,
 `HostConfigQueueTests`) need only a POSIX system and also run as an ordinary
-user. The cron and unit-file tests also run on Windows. Real systemd, Supervisor, nginx reloads
+user. The root adapter tests run the queue commands in design 5.1's exact
+form through `runuser` as `www-data`, in a fixture app root, with a fixture
+program standing in for `/usr/bin/php` (`adapter.QUEUE_PHP`, patched like the
+guard's fixed paths); the QA image has no `/usr/bin/php`. The cron and unit-file tests also run on Windows. Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).

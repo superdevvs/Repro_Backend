@@ -13,7 +13,8 @@ Every effect is idempotent and re-observable, as the runner requires:
   workers, recreates the open marker and lifts the deployment fence.
 
 It never makes MySQL writable: prepare, evidence and seal_mysql refuse.
-Host commands are fixed argument lists from the root-owned host config.
+Host commands are fixed argument lists from the root-owned host config, each
+run in its own process group, which a timeout or an interrupt kills whole.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -88,8 +90,23 @@ SWITCH_OPTIONAL = {"DB_EXPECTED_ENGINE", "SCHEMA_CACHE_RELEASE"}
 SWITCH_SECRETS = {"DB_PASSWORD"}
 # The pause flags live in www-data's 0755 cache folders (design 5.1).
 QUEUE_PREFIX = ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c"]
+# The one program a queue command may run, with the app's own `artisan` from the `cd <app_root>` step.
+QUEUE_PHP = "/usr/bin/php"
+# A path the shell reads as one plain word: no space, quote, glob, expansion or control character.
+SHELL_PATH = r"/[A-Za-z0-9_./-]*"
 # Longest single host command the config may allow (command_seconds).
 MAX_COMMAND_SECONDS = 300
+# The hold-time Telnyx capture (design 5.2) is its own php-fpm master and pool, repro-telnyx-capture.service,
+# and keeps answering while the freeze drains and stops the app's FPM. Its command lines in /proc: the unit's
+# ExecStart until FPM retitles itself, then the master and pool titles.
+CAPTURE_NAME = "repro-telnyx-capture"
+CAPTURE_COMMAND_LINES = (
+    "/usr/sbin/php-fpm8.3 --nodaemonize --fpm-config /etc/repro-telnyx-capture/php-fpm.conf",
+    "php-fpm: master process (/etc/repro-telnyx-capture/php-fpm.conf)",
+    "php-fpm: pool repro-telnyx-capture",
+)
+# Process patterns, matched as substrings of /proc/<pid>/cmdline (ProductionAdapter.processes).
+PROCESS_PATTERNS = ("writer_processes", "long_job_processes", "scheduler_processes")
 
 
 def _argv(value) -> bool:
@@ -122,21 +139,29 @@ def env_denylist(config: dict) -> list[str]:
     return sorted({*config["mysql"]["night_flags"], *switch_keys(config)})
 
 
-def _queue_command(argv, verb: str) -> bool:
-    """`runuser -u www-data -- /bin/sh -c '... && umask 0022 && exec ... queue:<verb> "$1"' <name>`.
+def _queue_command(argv, verb: str, app_root: str) -> bool:
+    """`runuser -u www-data -- /bin/sh -c 'cd <app_root> && umask 0022 && exec /usr/bin/php artisan
+    queue:<verb> "$1"' <name>`, matched by structure, not by text.
 
     The watchdog runs with UMask=0077, which runuser keeps; a 0600 flag reads as "not paused" to the
-    deploy user's workers. So the final `exec` is the only command, and before it the script holds
-    one `umask 0022` and nothing else but plain `cd /path` steps. The adapter's `connection:queue`
-    argument becomes `$1`.
+    deploy user's workers. The script is split on ' && ' only, into exactly three steps: `cd <app_root>`
+    and `umask 0022` (in either order), then exactly `exec /usr/bin/php artisan queue:<verb> "$1"`. Each
+    step must equal its form, so no other shell syntax (`;`, `#`, `|`, `&`, quotes, expansions,
+    redirections, newlines) can hide another command, and app_root must be one plain shell word.
+    The adapter's `connection:queue` argument becomes `$1`.
     """
     if not (_argv(argv) and len(argv) == len(QUEUE_PREFIX) + 2 and argv[:len(QUEUE_PREFIX)] == QUEUE_PREFIX):
         return False
     *before, command = argv[len(QUEUE_PREFIX)].split(" && ")
-    return (before.count("umask 0022") == 1
-            and all(step == "umask 0022" or re.fullmatch(r"cd /[A-Za-z0-9_./-]*", step) for step in before)
-            and command.startswith("exec ") and command.endswith(f' queue:{verb} "$1"')
-            and "umask" not in command.lower())
+    return (guard.matches(SHELL_PATH, app_root)
+            and sorted(before) == sorted([f"cd {app_root}", "umask 0022"])
+            and command == f'exec {QUEUE_PHP} artisan queue:{verb} "$1"')
+
+
+def _spares_capture(pattern: str) -> bool:
+    """A process pattern that matches neither php-fpm by name nor the Telnyx capture's master or pool."""
+    return (CAPTURE_NAME not in pattern and "php-fpm" not in pattern
+            and not any(pattern in line for line in CAPTURE_COMMAND_LINES))
 
 
 def load_identity_config(raw: bytes) -> dict:
@@ -205,8 +230,8 @@ def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
                   # An empty list would skip the read-only smoke without saying so.
                   and bool(commands["smoke_readonly"]),
                   "Host config commands must be fixed absolute argument lists")
-    guard.require(_queue_command(commands["queue_pause"], "pause")
-                  and _queue_command(commands["queue_resume"], "resume"),
+    guard.require(_queue_command(commands["queue_pause"], "pause", config["app_root"])
+                  and _queue_command(commands["queue_resume"], "resume", config["app_root"]),
                   "Queue commands must run as www-data through runuser with umask 0022")
     guard.require(isinstance(config.get("sqlite"), str) and Path(config["sqlite"]).is_absolute()
                   and isinstance(config.get("deploy_locks"), list) and len(config["deploy_locks"]) == 2
@@ -219,10 +244,17 @@ def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
                   and all(isinstance(queue, str) and re.fullmatch(r"[a-z][a-z0-9-]*:[a-z0-9-]+", queue)
                           for queue in config["queues"]),
                   "Host config queues must be connection:queue names")
-    for name in ("writer_processes", "long_job_processes", "scheduler_processes"):
+    for name in PROCESS_PATTERNS:
         guard.require(isinstance(config.get(name), list) and all(isinstance(item, str) and len(item) >= 8
                                                                 for item in config[name]),
                       f"Host config {name} must be specific command-line patterns")
+    # The freeze waits until no pattern matches and stops FPM through its own unit (design 5.4). A pattern or
+    # a stop that names php-fpm, which cannot tell the app's pool from the capture's, or the capture itself
+    # would stop the capture or wait for it until the freeze fails.
+    stops = [*commands["stop_workers"], *commands["drain_fpm"], commands["fpm_stop"]]
+    guard.require(all(_spares_capture(pattern) for name in PROCESS_PATTERNS for pattern in config[name])
+                  and all(CAPTURE_NAME not in part and "php-fpm" not in part for argv in stops for part in argv),
+                  "Host config must never wait for or stop the Telnyx capture or php-fpm by name")
     guard.require(type(config.get("command_seconds")) is int and 0 < config["command_seconds"] <= MAX_COMMAND_SECONDS
                   and isinstance(options, dict) and options.keys() == OPTIONS
                   and type(options["max_drain_seconds"]) is int and 0 < options["max_drain_seconds"] <= 45 * 60
@@ -337,19 +369,32 @@ class ProductionAdapter:
     # Host commands and process observation.
 
     def _run(self, argv: list[str], deadline: float | None = None) -> str:
+        """Run one host command and return its standard output.
+
+        The command runs in its own session and process group. runuser does not pass SIGKILL on to the
+        command it started, so a timeout, or anything else that ends the wait (an interrupt), kills the
+        whole group before it is reported: no queue command keeps running to change a flag afterwards.
+        """
         seconds = self.config["command_seconds"]
         if deadline is not None:
             seconds = max(1.0, min(seconds, deadline - self.clock()))
-        try:
-            result = subprocess.run(
-                argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=seconds,
-                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", CHILD_TAG: "1"},
-            )
-        except subprocess.TimeoutExpired:
-            raise UnsafeCutover(f"Host command timed out: {Path(argv[0]).name}") from None
-        if result.returncode != 0:
-            raise UnsafeCutover(f"Host command failed: {Path(argv[0]).name} exited {result.returncode}")
-        return result.stdout
+        environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", CHILD_TAG: "1"}
+        with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=environment, start_new_session=True) as child:
+            try:
+                output, _ = child.communicate(timeout=seconds)
+            except BaseException as stopped:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait()
+                if isinstance(stopped, subprocess.TimeoutExpired):
+                    raise UnsafeCutover(f"Host command timed out: {Path(argv[0]).name}") from None
+                raise
+        if child.returncode != 0:
+            raise UnsafeCutover(f"Host command failed: {Path(argv[0]).name} exited {child.returncode}")
+        return output
 
     def _pids(self, predicate) -> list[int]:
         found = []
