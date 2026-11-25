@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "application_markers": ["/var/www/backend", "artisan", "database.sqlite"],
+  "rules": [
+    {"match": "artisan schedule:run", "profile": "scheduler"},
+    {"match": "artisan auth:prune-security-limits", "profile": "auth-prune"},
+    {"match": "artisan cubicasa:refresh-deliveries", "profile": "cubicasa-poll"},
+    {"match": "/ensure-supervisor\\.sh", "allow": "Starts the user Supervisor, whose writer programs are wrapped"},
+    {"match": "scripts/deploy/deployment-storage\\.py", "allow": "Deploy backup retention; never opens the live database"}
+  ]
+}
