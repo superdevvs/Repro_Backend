@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "run_id": "drill-20261205",
+  "app_root": "/var/www/backend",
+  "sqlite_path": "/var/www/backend/database/database.sqlite",
+  "mysql_datadir": "/var/lib/repro-mysql84-native/data",
+  "env_denylist": [
+    "CRM_CALENDAR_SYNC_HOLD",
+    "CRM_DEFER_REPLY_FORWARDING",
+    "CRM_OUTBOUND_HOLD",
+    "DB_COLLATION",
+    "DB_CONNECTION",
+    "DB_DATABASE",
+    "DB_PASSWORD",
+    "DB_SOCKET",
+    "DB_USERNAME",
+    "PRODUCER_INGRESS_HOLD",
+    "REPRO_MYSQL_EXPECTED_SERVER_UUID",
+    "SCHEDULER_HOLD_ENABLED"
+  ]
+}
