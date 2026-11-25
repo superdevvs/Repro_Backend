@@ -17,7 +17,8 @@ volume is root-only, so copy it into a tmpfs first. For example:
        python3 -B -m unittest discover -s scripts/cutover/production -p test_capture.py -v'
 
 The class caches the application's config into bootstrap/cache/config.php
-(the capture reads that fixed path) and refuses to run if one exists already.
+(the capture reads that fixed path), refuses to run if one exists already,
+and removes its own again afterwards, also when its setup fails.
 Storage, the SQLite database and the spool live in a temporary directory
 (LARAVEL_STORAGE_PATH), so nothing else in the checkout is written.
 """
@@ -106,7 +107,9 @@ class CaptureFileTests(unittest.TestCase):
         self.assertEqual(["always"], unit["Restart"])
         self.assertEqual(["multi-user.target"], unit["WantedBy"])
         self.assertIn("systemd-tmpfiles-setup.service", " ".join(unit["After"]).split())
-        # Stopping or draining php8.3-fpm (the freeze) must never stop the capture.
+        # Stopping or draining php8.3-fpm (the freeze) must never stop the capture. The socket
+        # directory belongs to tmpfiles (and ExecStartPre), not to RuntimeDirectory=, which systemd
+        # would delete, with the socket nginx uses, whenever this unit stops.
         for key in ("PartOf", "BindsTo", "Requires", "Requisite", "Conflicts", "StopWhenUnneeded",
                     "RuntimeDirectory", "ExecStop"):
             self.assertNotIn(key, unit)
@@ -118,6 +121,32 @@ class CaptureFileTests(unittest.TestCase):
         lines = [line.split() for line in (HERE / "tmpfiles.d" / "repro-cutover-fence.conf").read_text(
             encoding="ascii").splitlines() if line.strip() and not line.startswith("#")]
         self.assertIn(["d", CAPTURE_DIR, "0755", "root", "root", "-"], lines)
+
+    def test_service_creates_its_socket_directory_without_tmpfiles(self):
+        # W1 installs and starts the unit without a reboot, so systemd-tmpfiles may not have created
+        # the directory yet; PHP-FPM can then write neither its pid file nor its socket, and
+        # Restart=always runs into the start limit. The unit makes it itself, as tmpfiles would.
+        unit = unit_entries(HERE / "systemd" / "repro-telnyx-capture.service")
+        self.assertEqual([f"/usr/bin/install -d -o root -g root -m 0755 {CAPTURE_DIR}"], unit.get("ExecStartPre"))
+        pool = self.pool()
+        self.assertEqual({CAPTURE_DIR}, {pool["global"]["pid"].rsplit("/", 1)[0],
+                                         pool["repro-telnyx-capture"]["listen"].rsplit("/", 1)[0]})
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Runs the unit's ExecStartPre as root")
+    def test_exec_start_pre_makes_the_directory_tmpfiles_would(self):
+        unit = unit_entries(HERE / "systemd" / "repro-telnyx-capture.service")
+        command = unit.get("ExecStartPre", ["(none)"])[0].split()
+        self.assertEqual(CAPTURE_DIR, command[-1])
+        with tempfile.TemporaryDirectory() as parent:
+            target = Path(parent) / "repro-telnyx-capture"
+            argv = [*command[:-1], str(target)]
+            subprocess.run(argv, check=True, capture_output=True)
+            # An existing directory (tmpfiles ran first, or a restart) is accepted and put right.
+            target.chmod(0o700)
+            subprocess.run(argv, check=True, capture_output=True)
+            info = target.lstat()
+            self.assertEqual((True, 0o755, 0, 0), (stat.S_ISDIR(info.st_mode), stat.S_IMODE(info.st_mode),
+                                                   info.st_uid, info.st_gid))
 
     def test_settings_name_the_release_and_the_marker_nginx_reads(self):
         import cli
@@ -209,6 +238,9 @@ class CaptureTests(unittest.TestCase):
         if readable.returncode != 0:
             raise AssertionError(f"www-data cannot read {APP / 'vendor' / 'autoload.php'}")
         cls.work = Path(tempfile.mkdtemp(prefix="repro-capture-"))
+        # Class cleanups also run when setUpClass fails (tearDownClass does not), so a failed
+        # migrate never leaves this production config cache, or the work folder, behind.
+        cls.addClassCleanup(shutil.rmtree, cls.work, True)
         cls.work.chmod(0o755)
         storage = cls.work / "storage"
         for folder in ("app", "framework/cache/data", "framework/sessions", "framework/views", "framework/testing", "logs"):
@@ -233,7 +265,7 @@ class CaptureTests(unittest.TestCase):
                "BROADCAST_CONNECTION": "null", "LOG_CHANNEL": "stderr", "PULSE_ENABLED": "false",
                "TELESCOPE_ENABLED": "false", "TELNYX_PUBLIC_KEY": cls.public_key,
                "TELNYX_WEBHOOK_TOLERANCE_SECONDS": "300", "TELNYX_MAINTENANCE_SPOOL_PATH": str(cls.spool)}
-        cls.created_cache = True
+        cls.addClassCleanup(CONFIG_CACHE.unlink, missing_ok=True)
         for command in (["config:cache"], ["migrate", "--force"]):
             subprocess.run([PHP, "artisan", *command], cwd=APP, env=env, check=True, capture_output=True, timeout=600)
         os.chmod(CONFIG_CACHE, 0o644)
@@ -241,12 +273,6 @@ class CaptureTests(unittest.TestCase):
             for folder, _, files in os.walk(path):
                 for name in [folder, *(os.path.join(folder, file) for file in files)]:
                     os.chown(name, cls.www.pw_uid, cls.www.pw_gid)
-
-    @classmethod
-    def tearDownClass(cls):
-        if getattr(cls, "created_cache", False):
-            CONFIG_CACHE.unlink(missing_ok=True)
-        shutil.rmtree(cls.work, ignore_errors=True)
 
     @staticmethod
     def php_run(code: str, *args: str, stdin: bytes = b"") -> str:
@@ -470,6 +496,69 @@ class CaptureTests(unittest.TestCase):
         again = replay()
         self.assertEqual(0, again.returncode, again.stdout + again.stderr)
         self.assertIn("replayed 0, duplicates 0, set aside 0, failed 0", again.stdout)
+
+
+class CaptureClassSetupTests(unittest.TestCase):
+    """CaptureTests.setUpClass never leaves its production config cache behind, even when it fails.
+
+    unittest skips tearDownClass when setUpClass raises, but runs the class cleanups. A config
+    cache left in a developer checkout would point the app at a deleted temporary database with
+    APP_ENV=production. These tests run setUpClass with its commands faked, so they run anywhere.
+    """
+
+    def setUp(self):
+        self.app = Path(tempfile.mkdtemp(prefix="repro-capture-setup-"))
+        self.addCleanup(shutil.rmtree, self.app, True)
+        self.cache = self.app / "bootstrap" / "cache" / "config.php"
+        self.cache.parent.mkdir(parents=True)
+        self.commands = []
+        account = type("Account", (), {"pw_uid": os.getuid(), "pw_gid": os.getgid(), "pw_dir": "/tmp"})()
+        for patcher in (patch.object(sys.modules[__name__], "CONFIG_CACHE", self.cache),
+                        patch.object(pwd, "getpwnam", return_value=account),
+                        patch.object(subprocess, "run", self.fake_run)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        class Probe(CaptureTests):
+            _class_cleanups = []  # TestCase shares one list between classes; keep this one apart.
+        self.probe = Probe
+
+    def fake_run(self, argv, **options):
+        self.commands.append(argv[1:3])
+        if argv[1:3] == ["artisan", "config:cache"]:
+            self.cache.write_text("<?php return ['app' => ['env' => 'production']];\n", encoding="ascii")
+        elif argv[1:3] == ["artisan", "migrate"]:
+            raise subprocess.CalledProcessError(1, argv, b"", b"migrate failed")
+        elif argv[1] == "-r" and "sodium_crypto_sign_keypair" in argv[2]:
+            return subprocess.CompletedProcess(argv, 0, b'["public", "secret"]', b"")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    def run_class_setup(self) -> BaseException:
+        # What unittest does: setUpClass raises, tearDownClass is skipped, class cleanups run.
+        try:
+            self.probe.setUpClass()
+        except BaseException as error:  # noqa: B036 - the failure is the point of the test
+            failure = error
+        else:
+            self.fail("setUpClass did not fail")
+        self.probe.doClassCleanups()
+        self.assertEqual([], self.probe.tearDown_exceptions)
+        return failure
+
+    def test_failed_setup_after_config_cache_removes_the_cache_and_its_work_folder(self):
+        failure = self.run_class_setup()
+        self.assertIsInstance(failure, subprocess.CalledProcessError)
+        self.assertEqual([["artisan", "config:cache"], ["artisan", "migrate"]], self.commands[-2:])
+        self.assertFalse(self.cache.exists(), "a failed setUpClass left the production config cache behind")
+        self.assertFalse(self.probe.work.exists(), "a failed setUpClass left its temporary folder behind")
+
+    def test_existing_config_cache_is_refused_and_left_alone(self):
+        self.cache.write_text("<?php return ['developer' => true];\n", encoding="ascii")
+        failure = self.run_class_setup()
+        self.assertIsInstance(failure, AssertionError)
+        self.assertEqual([], self.commands)
+        self.assertTrue(self.cache.exists(), "the refused setUpClass deleted a config cache it did not create")
+        self.assertEqual("<?php return ['developer' => true];\n", self.cache.read_text(encoding="ascii"))
 
 
 if __name__ == "__main__":

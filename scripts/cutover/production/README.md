@@ -23,7 +23,7 @@ approval for each action (handoff item W1).
 | `capture/capture.php` | `/opt/repro-telnyx-capture/capture.php` (root 0644) | Hold-time Telnyx capture into the app's spool (below) |
 | `capture/php-fpm.conf` | `/etc/repro-telnyx-capture/php-fpm.conf` (root 0644) | The capture's own PHP-FPM master and pool |
 | `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` (root 0644) | Release path and open marker |
-| `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times |
+| `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times; makes `/run/repro-telnyx-capture` itself (`ExecStartPre`) if tmpfiles has not yet |
 | `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | `wrappers.example.json` plus `telnyx-replay` and `cutover-smoke` (design 3.8) |
 | `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper |
 
@@ -102,11 +102,15 @@ checks the marker again and refuses once it exists.
 | Signed text, status update or shared MMS, saved and flushed to disk | 200 `{"status":"captured"}` |
 | Signed voice event, saved for the missed-call list | 503 with `Retry-After` (provider retry and failover unchanged) |
 | Unsigned, stale, without an event ID, not saved, or the marker appeared | 503 `{"captured":false}` with `Retry-After` |
-| Capture down, failed (500) or a body over 1 MiB | 503 `{"admission_held":true}` with `Retry-After` from nginx |
+| Capture down, failed (500), `capture.php` missing or unreadable (PHP-FPM 404 or 403), or a body over 1 MiB | 503 `{"admission_held":true}` with `Retry-After` from nginx |
 | Anything else, or `/__repro_telnyx_capture` called directly | 503 `{"admission_held":true}` with `Retry-After` |
 
-With the marker, Telnyx reaches the app in both server blocks and the
-internal URI answers 404. The reopens (design 3.6 and 3.7, built in later
+With the marker, Telnyx reaches the app in both server blocks. A direct
+request for `/__repro_telnyx_capture` never reaches the capture, marker or
+not: nginx refuses it as internal (404) and the capture location maps that
+to the same 503 (design 5.2 said 404; the 404 and 403 mapping is what keeps
+a missing `capture.php` from reaching Telnyx as a bare 404). The reopens
+(design 3.6 and 3.7, built in later
 slices) replay the spool through `admit.py telnyx-replay` (`www-data`, umask
 0002) before the queues resume and again after the marker; the replay waits
 for any capture still saving.
@@ -172,9 +176,12 @@ lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
 `test_admit.py`, `test_fences.py` and `test_adapter.py` need Linux root and
 run in a disposable container through `../run-linux-tests.sh`. The cron and
 unit-file tests also run on Windows. `test_nginx_hold.py` needs nginx (the QA
-image has it); its three capture tests also start the capture's PHP-FPM
+image has it); its four capture tests also start the capture's PHP-FPM
 master from `capture/php-fpm.conf` and need root, as on the host, to hand
-the socket to `www-data`. `test_capture.py`'s file tests run anywhere;
+the socket to `www-data`. Its harness server blocks allow 100 MiB bodies, so
+the capture location's own 1 MiB limit is what the tests prove.
+`test_capture.py`'s file and class-setup tests run on any Linux (one runs the
+unit's `ExecStartPre` and needs root);
 its `CaptureTests` run the real `capture.php` behind nginx and replay a
 captured text through `telnyx:replay-spool` into the app's handler, so they
 need root, nginx, PHP-FPM and an application checkout whose `vendor/` the

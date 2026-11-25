@@ -83,6 +83,8 @@ class HoldHarness:
         self.capture_socket = self.root / "capture.sock"
         self.capture_log = self.root / "capture-fpm.log"
         self.nginx_log = self.root / "nginx-error.log"
+        # One line per request: the status sent, then what the capture's PHP-FPM answered, if asked.
+        self.access_log = self.root / "nginx-access.log"
         self.settings = settings or self.root / "capture.json"
         self.nginx = None
         self.capture = None
@@ -118,13 +120,17 @@ pid {self.root}/nginx.pid;
 error_log {self.nginx_log};
 events {{ worker_connections 64; }}
 http {{
-    access_log off;
+    log_format upstream '$status $upstream_status $request_uri';
+    access_log {self.access_log} upstream;
     client_body_temp_path {temp}; fastcgi_temp_path {temp}; proxy_temp_path {temp};
     uwsgi_temp_path {temp}; scgi_temp_path {temp};
     include {gate};
+    # Both server blocks allow large uploads, as the real ones may, so only the capture
+    # location's own client_max_body_size can keep a large body away from the capture.
     server {{
         listen unix:{self.socket};
         server_name dashboard.fixture.test;
+        client_max_body_size 100m;
         include {self.root}/hold.conf;
         location ^~ /api {{ default_type text/plain; return 200 'api'; }}
         location / {{ default_type text/plain; return 200 'spa'; }}
@@ -132,6 +138,7 @@ http {{
     server {{
         listen unix:{self.socket};
         server_name legacy-api.fixture.test;
+        client_max_body_size 100m;
         include {self.root}/hold.conf;
         location / {{ rewrite ^ /index.php last; }}
         location ~ \\.php$ {{ default_type text/plain; return 200 'php'; }}
@@ -187,6 +194,17 @@ http {{
             time.sleep(0.02)
         log = self.capture_log.read_text(errors="replace") if self.capture_log.exists() else ""
         raise AssertionError(f"{name} did not start: {log[-2000:]}")
+
+    def logged_since(self, offset: int, count: int) -> list[list[str]]:
+        # nginx writes the access log line just after the response, so the last one may lag.
+        deadline = time.monotonic() + 5
+        while True:
+            with self.access_log.open(encoding="ascii") as log:
+                log.seek(offset)
+                lines = [line.split()[:2] for line in log.read().splitlines()]
+            if len(lines) >= count or time.monotonic() > deadline:
+                return lines
+            time.sleep(0.02)
 
     def request(self, host: str, method: str, path: str, body: bytes | None = None,
                 headers: dict | None = None, timeout: float = 10) -> tuple[int, str | None, str]:
@@ -334,6 +352,49 @@ class NginxHoldIncludeTests(unittest.TestCase):
             with self.subTest(host=host, capture="stopped"):
                 self.assertHeld(self.hold.request(host, "POST", SHARED_MMS), host)
 
+    @needs_capture
+    def test_missing_or_unreadable_capture_script_answers_503_with_retry_after(self):
+        # PHP-FPM answers 404 'File not found.' for a script it cannot find or reach, and 403
+        # 'Access denied.' for one it cannot open. Neither saved anything, so Telnyx must get the
+        # hold's 503 with Retry-After and retry, as for a capture that is down.
+        self.hold.start()
+        moved = self.stub.with_name("capture.php.away")
+
+        def missing():
+            self.stub.rename(moved)
+            return lambda: moved.rename(self.stub)
+
+        def root_only():
+            self.stub.chmod(0o600)  # root-owned, as installed, but unreadable to www-data
+            return lambda: self.stub.chmod(0o644)
+
+        def closed_directory():
+            self.stub_dir.chmod(0o700)
+            return lambda: self.stub_dir.chmod(0o755)
+
+        # A script behind a closed directory is 403 here and 404 in other PHP-FPM builds and layouts.
+        cases = (("missing", missing, {"404"}), ("root 0600", root_only, {"403"}),
+                 ("in a 0700 directory", closed_directory, {"403", "404"}))
+        for label, damage, fpm_statuses in cases:
+            self.assertEqual(200, self.hold.request(HOSTS[0], "POST", TELNYX_PATHS[0])[0], f"before {label}")
+            seen = self.hold.access_log.stat().st_size
+            repair = damage()
+            try:
+                for host in HOSTS:
+                    for path in TELNYX_PATHS:
+                        with self.subTest(capture_php=label, host=host, path=path):
+                            self.assertHeld(self.hold.request(host, "POST", path), f"{label} {host} {path}")
+            finally:
+                repair()
+            # PHP-FPM itself answered 404 or 403 to every one of them; the capture location's mapping
+            # is what turned that into the hold.
+            count = len(HOSTS) * len(TELNYX_PATHS)
+            with self.subTest(capture_php=label, check="sent, then PHP-FPM's answer"):
+                logged = self.hold.logged_since(seen, count)
+                self.assertEqual([("503", True)] * count, [(sent, fpm in fpm_statuses) for sent, fpm in logged],
+                                 f"{label}: {logged}")
+        self.assertEqual(200, self.hold.request(HOSTS[1], "POST", SHARED_MMS)[0])
+
     def test_missing_telnyx_map_fails_nginx_t(self):
         # The gate file as it was before the capture: only the hold map. A server block with the
         # hold include then cannot load, so the hold cannot be installed without the capture.
@@ -353,9 +414,12 @@ class NginxHoldIncludeTests(unittest.TestCase):
             for path in TELNYX_PATHS:
                 with self.subTest(host=host, path=path):
                     self.assertEqual((200, None, app), self.hold.request(host, "POST", path))
-            with self.subTest(host=host, path="internal"):
-                status, retry, _ = self.hold.request(host, "POST", "/__repro_telnyx_capture")
-                self.assertEqual((404, None), (status, retry))
+            # Called directly the internal URI never reaches the capture (which would echo the
+            # request): nginx refuses it as internal, and the capture location's 404 mapping answers
+            # it like the hold, marker or not. Without the marker it is held at server level.
+            for method in ("POST", "GET"):
+                with self.subTest(host=host, path="internal", method=method):
+                    self.assertHeld(self.hold.request(host, method, "/__repro_telnyx_capture"), f"{host} {method}")
         # Removing the marker sends Telnyx back to the capture at once, without a reload.
         self.hold.marker.unlink()
         status, _, body = self.hold.request(HOSTS[1], "POST", TELNYX_PATHS[0])

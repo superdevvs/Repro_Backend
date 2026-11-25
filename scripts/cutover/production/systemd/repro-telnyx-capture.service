@@ -10,12 +10,15 @@
 Description=RePro Telnyx capture while the cutover hold is in force (own PHP-FPM, no database)
 Documentation=file:///opt/repro-cutover-fence/production/README.md
 # The socket directory /run/repro-telnyx-capture comes from
-# /etc/tmpfiles.d/repro-cutover-fence.conf.
+# /etc/tmpfiles.d/repro-cutover-fence.conf at boot. ExecStartPre makes it the
+# same way (root, 0755), so the unit also starts when it is installed and
+# started before systemd-tmpfiles --create has run (W1 has no reboot).
 After=local-fs.target systemd-tmpfiles-setup.service
 Before=nginx.service
 
 [Service]
 Type=notify
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /run/repro-telnyx-capture
 ExecStart=/usr/sbin/php-fpm8.3 --nodaemonize --fpm-config /etc/repro-telnyx-capture/php-fpm.conf
 ExecReload=/bin/kill -USR2 $MAINPID
 Restart=always
