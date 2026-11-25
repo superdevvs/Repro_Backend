@@ -72,8 +72,11 @@ def load_config(raw: bytes) -> dict:
                   and all(isinstance(lock, str) and Path(lock).is_absolute() for lock in config["deploy_locks"])
                   and isinstance(config.get("deploy_owner"), str),
                   "Host config SQLite path or deploy locks are invalid")
+    # One `connection:queue` argument for `queue:pause`/`queue:resume`. The connection may hold hyphens
+    # (`iguide-lab-tour:iguide-lab-tour`) but starts with a letter, so it is never read as an option.
     guard.require(isinstance(config.get("queues"), list) and config["queues"]
-                  and all(isinstance(queue, str) and re.fullmatch(r"[a-z]+:[a-z0-9-]+", queue) for queue in config["queues"]),
+                  and all(isinstance(queue, str) and re.fullmatch(r"[a-z][a-z0-9-]*:[a-z0-9-]+", queue)
+                          for queue in config["queues"]),
                   "Host config queues must be connection:queue names")
     for name in ("writer_processes", "long_job_processes", "scheduler_processes"):
         guard.require(isinstance(config.get(name), list) and all(isinstance(item, str) and len(item) >= 8

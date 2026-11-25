@@ -25,7 +25,14 @@ from fence import guard
 from runner import Identity, Journal, Runner, UnsafeCutover
 
 IDENTITY = Identity("host-fixture", "a" * 40, "b" * 64, "c" * 64, "d" * 64, "ec219d68-61fd-4a9e-ba98-43ddb4008383")
-QUEUES = ["database:mail", "database:default", "studio:studio"]
+# The lab-tour connection and queue are both `iguide-lab-tour` (config/queue.php).
+QUEUES = ["database:mail", "database:default", "studio:studio", "iguide-lab-tour:iguide-lab-tour"]
+# The nine queues the hold pauses on the production host, plus the optional lab-tour queue.
+PRODUCTION_QUEUES = [
+    "database:mail", "database:integrations", "database:default", "database:watermarks", "database:voice-realtime",
+    "database:voice-notifications", "database:voice-transcripts", "studio:studio", "database:media-archives",
+    "iguide-lab-tour:iguide-lab-tour",
+]
 
 
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires Linux root, /proc and flock")
@@ -592,6 +599,42 @@ class ProductionAdapterTests(unittest.TestCase):
         approval.chmod(0o666)
         self.assertEqual(1, self.cli("hold", "--approval", str(approval))[0])
         self.assertEqual("planned", journal.read()["phase"])
+
+
+@unittest.skipUnless(os.name == "posix", "Host config paths are POSIX absolute paths")
+class HostConfigQueueTests(unittest.TestCase):
+    """Each queue is one `connection:queue` argument appended to the queue pause and resume commands."""
+
+    @staticmethod
+    def config(queues):
+        command = ["/usr/bin/true"]
+        return json.dumps({
+            "version": 1,
+            "paths": {name: f"/run/host-config-test/{name}" for name in production.PATHS},
+            "sqlite": "/var/www/backend/database/database.sqlite",
+            "deploy_locks": ["/home/deploy/.repro-backend-deploy.lock", "/home/deploy/.repro-frontend-deploy.lock"],
+            "deploy_owner": "www-data",
+            "queues": queues,
+            "commands": {"identity": command, "mysql": command, "queue_pause": command, "queue_resume": command,
+                         "stop_workers": [command], "start_workers": [command], "drain_fpm": [command]},
+            "writer_processes": ["artisan queue:work"], "long_job_processes": ["artisan queue:work studio"],
+            "scheduler_processes": ["artisan schedule:run"], "command_seconds": 20,
+            "options": {"max_drain_seconds": 600, "separate_freeze_approval": False, "adopt_external_hold": False,
+                        "require_long_job_predrain": True},
+        }).encode()
+
+    def test_every_production_queue_and_the_lab_tour_queue_are_accepted(self):
+        self.assertEqual(PRODUCTION_QUEUES, production.load_config(self.config(PRODUCTION_QUEUES))["queues"])
+
+    def test_names_that_are_not_one_connection_and_one_queue_are_refused(self):
+        # A leading hyphen would reach `queue:pause` as an option; a comma or a space would name
+        # several queues or arguments; Laravel splits only the first colon.
+        for queue in ("database", ":mail", "database:", "-database:mail", "--queue=x:mail", "1database:mail",
+                      "Database:mail", "database:Mail", "lab_tour:lab-tour", "database:mail,default",
+                      "database:mail default", "database:mail:extra", "database:mail\n", "", 7):
+            with self.subTest(queue=queue):
+                with self.assertRaisesRegex(guard.Refused, "connection:queue names"):
+                    production.load_config(self.config(["database:mail", queue]))
 
 
 class UnitFileTests(unittest.TestCase):
