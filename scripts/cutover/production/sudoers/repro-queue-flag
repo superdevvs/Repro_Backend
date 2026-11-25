@@ -1,0 +1,8 @@
+# /etc/sudoers.d/repro-queue-flag (root 0440, check with visudo -cf).
+# The deploy user pauses and resumes one host-config queue as www-data, for the
+# pre-hold pauses and the undo list's resumes (design 5.1):
+#   sudo -n /usr/local/sbin/repro-queue-flag pause|resume <connection:queue>
+# The helper (root 0755) checks its own arguments: any other verb, any queue not
+# in /etc/repro-cutover-fence/host.json, or a host config the controller would
+# refuse runs nothing. It runs only host.json's queue_pause or queue_resume.
+maverick ALL=(root) NOPASSWD: /usr/local/sbin/repro-queue-flag
