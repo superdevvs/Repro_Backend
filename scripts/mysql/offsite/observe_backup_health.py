@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import datetime as dt
 import io
 import json
@@ -114,7 +115,12 @@ class State:
         state = cls(plan)
         journal = Path(plan["journal"])
         if journal.exists():
-            for line in journal.read_bytes().splitlines():
+            raw = journal.read_bytes()
+            if raw and not raw.endswith(b"\n"):
+                # A crash cut the last row short. It never completed, so drop it and retry its slot.
+                raw = raw[:raw.rfind(b"\n") + 1]
+                os.truncate(journal, len(raw))
+            for line in raw.splitlines():
                 state.slots.add(json.loads(line)["slot_start_unix_s"])
         cache = Path(plan["journal"] + ".cache.json")
         if cache.exists():
@@ -135,6 +141,29 @@ class State:
         temporary = path.with_name(path.name + ".tmp")
         temporary.write_bytes(json.dumps(self.cache, sort_keys=True).encode())
         os.replace(temporary, path)
+
+
+@contextlib.contextmanager
+def journal_lock(plan: dict):
+    """One observe run at a time, so a slot's check, sample and journal row never interleave."""
+    try:
+        import fcntl
+    except ImportError:  # The observer runs on Linux, WSL or a container; Windows only runs its tests.
+        yield
+        return
+    with open(plan["journal"] + ".lock", "ab") as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise backup.Refusal("another observe run holds the journal") from None
+        yield
+
+
+def write_atomically(path: Path, raw: bytes) -> None:
+    temporary = path.with_name("." + path.name + ".tmp")
+    with open(temporary, "wb") as stream:
+        stream.write(raw)
+    os.replace(temporary, path)
 
 
 def refresh(bucket, state: State, now: int) -> None:
@@ -222,8 +251,8 @@ def observe(plan: dict, bucket, *, now: int, state: State) -> dict | None:
                                                      "completion_sha256": state.cache["bases"][base_id]["sha256"]},
               "chain": state.cache["chains"].get(base_id), "recoverable_through_unix_s": through}
     raw = json.dumps(sample, sort_keys=True).encode()
-    with open(Path(plan["samples_dir"]) / f"{slot}.json", "xb") as stream:
-        stream.write(raw)
+    # A sample left by an attempt that crashed before its journal row is pinned by no row; replace it.
+    write_atomically(Path(plan["samples_dir"]) / f"{slot}.json", raw)
     row = {"slot_start_unix_s": slot, "sample_sha256": backup.sha256(raw),
            "newest_verified_base_unix_s": base_time, "recoverable_through_unix_s": through}
     with open(plan["journal"], "ab") as stream:
@@ -311,9 +340,10 @@ def main() -> int:
     try:
         plan = read_plan(args.plan)
         if args.action == "observe":
-            state = State.load(plan)
-            row = observe(plan, RcloneBucket(plan), now=int(time.time()), state=state)
-            state.save()
+            with journal_lock(plan):
+                state = State.load(plan)
+                row = observe(plan, RcloneBucket(plan), now=int(time.time()), state=state)
+                state.save()
             print(json.dumps({"result": "observation-recorded" if row else "slot-already-observed"} | (row or {})))
             return 0
         raw = export(plan, window_end=args.window_end, identity_sha256=args.identity_sha256,

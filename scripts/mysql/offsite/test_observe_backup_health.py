@@ -279,6 +279,37 @@ class ObserverTests(unittest.TestCase):
         self.assertIsNone(observer.rotated_at(raw[:-44], "binlog.000007"))
         self.assertIsNone(observer.rotated_at(b"\xfebin", "binlog.000007"))
 
+    def test_a_retry_after_a_crash_between_sample_and_journal_row_records_the_slot(self):
+        # The sample is written before the journal row. A crash between the two left the
+        # sample behind, and the retry in the same slot failed on it, losing the slot.
+        self.history()
+        slot = START + 3 * 3600 + 1800
+        (self.root / "samples" / f"{slot}.json").write_bytes(b'{"from": "the crashed attempt"}')
+        row = observer.observe(self.plan, self.bucket, now=slot + 20, state=observer.State.load(self.plan))
+        self.assertIsNotNone(row)
+        raw = (self.root / "samples" / f"{slot}.json").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), row["sample_sha256"])
+
+    def test_a_journal_row_cut_short_by_a_crash_is_dropped_and_its_slot_retried(self):
+        self.history()
+        slot = START + 3 * 3600 + 1800
+        observer.observe(self.plan, self.bucket, now=slot - INTERVAL + 5, state=observer.State.load(self.plan))
+        with open(self.plan["journal"], "ab") as stream:
+            stream.write(b'{"newest_verified_base_unix_s": 1, "recoverable_')  # Power lost mid-append.
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=observer.State.load(self.plan))
+        self.assertIsNotNone(row)
+        rows = [json.loads(line) for line in Path(self.plan["journal"]).read_bytes().splitlines()]
+        self.assertEqual([item["slot_start_unix_s"] for item in rows], [slot - INTERVAL, slot])
+
+    @unittest.skipUnless(hasattr(__import__("os"), "fork"), "flock is POSIX")
+    def test_a_second_observe_run_is_refused_while_the_journal_is_locked(self):
+        with observer.journal_lock(self.plan):
+            with self.assertRaises(backup.Refusal):
+                with observer.journal_lock(self.plan):
+                    pass
+        with observer.journal_lock(self.plan):
+            pass
+
     def test_sqlite_only_source_has_no_recoverable_through(self):
         self.history()
         self.plan["binlog_identity"] = None
