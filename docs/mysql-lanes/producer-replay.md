@@ -293,7 +293,7 @@ A read-only, service-role-only server route or SQL view that returns JSON for
 - Not held by this lane, in the app or at the edge: Telnyx (its own lane
   owns the capture route), iGUIDE (`/iguide_webhook.php`), CubiCasa
   (`/cubicasa_webhook.php`), Cakemail (`/api/webhooks/cakemail`),
-  Autoenhance (`webhooks/autoenhance`) and Vapi (`/api/webhooks/vapi`). The
+  Autoenhance (`/api/webhooks/autoenhance`) and Vapi (`/api/webhooks/vapi`). The
   website's Listing Studio bridge (`/api/external/listing-studio/*`) is held
   only by the edge snippet. The writer-freeze lane should confirm each is
   fenced or safe to drop during a freeze.

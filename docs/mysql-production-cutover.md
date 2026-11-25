@@ -32,7 +32,7 @@ confirmed before cutover. Local success does not substitute for that acceptance.
 
 ## Sales CRM on SQLite before cutover
 
-The CRM release adds nine migrations dated 24 November and 37 tables with the `crm_` or `recruit_` prefix or the name `email_suppressions`. Production conversion must start with a SQLite online backup taken **after** those migrations and the client import. The MySQL schema dump is a clean-install baseline. It includes the migration ledger, eight system event types and three unpublished starter drips with their 30 steps. It contains no contacts, applicants, quotes, messages, tokens or provider credentials.
+The CRM release adds ten migrations (nine dated 24 November and `2026_11_25_140000_add_replay_identity_to_recruit_application_receipts`, which adds two nullable columns) and 37 tables with the `crm_` or `recruit_` prefix or the name `email_suppressions`. Production conversion must start with a SQLite online backup taken **after** those migrations and the client import. The MySQL schema dump is a clean-install baseline. It includes the migration ledger, eight system event types and three unpublished starter drips with their 30 steps. It contains no contacts, applicants, quotes, messages, tokens or provider credentials.
 
 1. On a rehearsal copy, identify the deployed backend commit and verify every CRM migration is applied using `artisan migrate:status`. Take a new SQLite online backup, verify integrity, preserve its SHA-256 and run the schema drift and `migrate.py plan` commands below. Include all 37 CRM tables plus the existing linked users, shoots and messaging tables in the new inventory. Count populated CRM rows and record issued IDs, opt-outs, explicit consent, live enrolments, queued sends, outstanding replies, public quotes and intake receipts.
 2. Audit application-level references before import. CRM currently indexes many relationship columns without database foreign keys. Check contact-to-client and rep IDs, quote-to-shoot links, calendar links, message receipts, applicant documents and their parent records. Record every exception by stable row identity. Reconcile or explicitly account for each exception before using the fresh plan.
@@ -71,18 +71,20 @@ for source, column, parent in [
 PY
 ```
 
-On the isolated rehearsal host, set `snapshot` to the protected copy's absolute path. Check it against the source checksum from the previous command before planning. The following uses the rehearsal branch scripts.
+On the isolated rehearsal host, set `snapshot` to the protected copy's absolute path. Set the expected checksum by hand from `frozen.sha256` on the production host, never from the copy itself. Run the block as a script (for example `bash -s < plan.sh`), so `set -e` stops the block at the first failure rather than closing your login shell. `migrate.py` checks the file against the same value again. The following uses the rehearsal branch scripts.
 
 ```bash
+set -euo pipefail
 snapshot=/protected/frozen.sqlite
-snapshot_sha=$(sha256sum "$snapshot" | cut -d' ' -f1)
-test "$snapshot_sha" = "$EXPECTED_SNAPSHOT_SHA256"
-python3 scripts/mysql/migrate.py plan --snapshot "$snapshot" --snapshot-sha256 "$snapshot_sha" --output /protected/new-crm-plan
+EXPECTED_SNAPSHOT_SHA256='<sha256 from frozen.sha256 on the production host>'
+printf '%s  %s\n' "$EXPECTED_SNAPSHOT_SHA256" "$snapshot" | sha256sum --check --strict
+python3 scripts/mysql/migrate.py plan --snapshot "$snapshot" \
+  --snapshot-sha256 "$EXPECTED_SNAPSHOT_SHA256" --output /protected/new-crm-plan
 ```
 
 Review the new exceptions and schema plan. Use the `import-empty` and `verify-fields.php` commands below with the same snapshot and their independently checked fingerprints. Keep the full private reports with the rehearsal. Production customer records never belong in the schema dump.
 
-To reproduce the small CRM conversion check, run `APP_ENV=testing php scripts/mysql/crm-rehearsal-fixture.php /tmp/crm-test.sqlite` with an unused filename. The fixture is created with mode 0600. Run the same checksum-bound plan, empty-target import and independent read as below against an isolated, socket-only MySQL 8.4.13 service. The fixture is synthetic and contains consent, a quote, Unicode JSON intake, an SMS request and the fixed campaign/event defaults. The November 24 run verified 37 tables, 48 rows and 462 fields with zero mismatches and zero MySQL warnings. Test the native Laravel migration path with `php vendor/bin/phpunit -c phpunit.mysql.xml tests/MySql/RecentFeatureMigrationCompatibilityTest.php` and `php vendor/bin/phpunit -c phpunit.mysql.xml tests/Feature/Crm` on the dedicated test database.
+To reproduce the small CRM conversion check, run `APP_ENV=testing php scripts/mysql/crm-rehearsal-fixture.php /tmp/crm-test.sqlite` with an unused filename. The fixture is created with mode 0600. Run the same checksum-bound plan, empty-target import and independent read as below against an isolated, socket-only MySQL 8.4.13 service. The fixture is synthetic and contains consent, a quote, Unicode JSON intake, an SMS request and the fixed campaign/event defaults. It applies all ten CRM migrations once the code-fix lane's fixture change is merged; before that it globbed only `2026_11_24_*` and lacked the two new columns. The November 24 run, with nine migrations, verified 37 tables, 48 rows and 462 fields with zero mismatches and zero MySQL warnings. Test the native Laravel migration path with `php vendor/bin/phpunit -c phpunit.mysql.xml tests/MySql/RecentFeatureMigrationCompatibilityTest.php` and `php vendor/bin/phpunit -c phpunit.mysql.xml tests/Feature/Crm` on the dedicated test database.
 
 The release candidate containing backend 9487965492cc9b9575a951ff9a1e415986327b21 passed both suites on the restored MySQL baseline (100 tests, 861 assertions).
 
@@ -139,18 +141,32 @@ before a timed rehearsal.
   operator path using the same reference. The website does not automatically
   replay these submissions.
 
-For resolved website replays, compare two independently pinned ledgers with
-`python -B -m scripts.cutover.verify_website_replay`. The capture and replay
-files share `site_commit` and `freeze_sha256` at the top level. Use schemas
-`repro.website-capture.v1` and `repro.website-replay.v1` respectively. Each
-`rows` entry includes `producer`, `reference_sha256`, `payload_sha256`, and
-the ordered `attachment_sha256s`. The replay entry adds the independently
-observed `verified_business_effects` count. Hash the same original request
-encoding in both files. Preserve the raw materials separately under the
-private replay controls. Compare by producer and original reference. Any
-missing row, byte difference or multiple effect requires reconciliation.
-This offline comparison assumes an independently verified producer capture
-inventory and does not close the live ingress gate.
+For resolved website replays, compare two independently pinned ledgers from
+the repository root. Every flag is required:
+
+```bash
+python3 -B -m scripts.cutover.verify_website_replay \
+  --capture /private/replay-<date>/capture.json --capture-sha256 <capture_sha256> \
+  --replay /private/replay-<date>/replay.json --replay-sha256 <sha256 of replay.json>
+```
+
+`website_ledger` (CRM step 7) prints `capture_sha256` when it writes the
+capture file. It writes its three outputs with `O_EXCL`, so each must be a
+new path. The capture and replay files share `site_commit` and
+`freeze_sha256` at the top level. Use schemas `repro.website-capture.v1` and
+`repro.website-replay.v1` respectively. Each `rows` entry includes
+`producer`, `reference_sha256`, `payload_sha256`, and the ordered
+`attachment_sha256s`. `reference_sha256` is the SHA-256 of the lowercased
+reference. The replay entry adds the independently observed
+`verified_business_effects` count, which must be exactly 1. Hash the same
+original request encoding in both files. Preserve the raw materials
+separately under the private replay controls. Compare by producer and
+original reference. Any missing row, byte difference or multiple effect
+requires reconciliation. This offline comparison assumes an independently
+verified producer capture inventory and does not close the live ingress
+gate. Open: no tool writes the `repro.website-replay.v1` ledger; only the
+tests build one. Until one is built, the operator writes it by hand from the
+replay receipts, lowercasing each reference before hashing it.
 
 During the approved reconciliation window, verify
 `CRM_DEFER_REPLY_FORWARDING=true` in the effective configuration of the
@@ -177,14 +193,36 @@ replay identity checks in the [nightly evidence](../scripts/cutover/readiness/RE
 #### Freeze and replay steps
 
 From the producer-replay lane. Every flag here is off by default. Set it only
-inside an approved window, then rebuild the config cache with
-`php artisan config:cache`. Do not clear the application cache: it holds the
-queue pause flags. Each step that changes production needs its own approval.
+inside an approved window. Edit `.env` in place, as in "Editing `.env` on
+the night" in [Freeze all writers](#freeze-all-writers), then apply it:
+
+```bash
+cd /var/www/backend
+php artisan config:cache
+sudo systemctl reload php8.3-fpm   # FPM may keep the old config in OPcache
+php artisan queue:restart          # only while workers run; they keep the config they started with
+```
+
+Never run `php artisan optimize:clear` or `cache:clear` (Deploy-App runs
+`optimize:clear`): they empty the cache store, which may hold the queue
+pause flags. Each step that changes production needs its own approval.
 The times and the hold are the ones in [Freeze all writers](#freeze-all-writers).
 
-Record the freeze start time in UTC as `FREEZE_AT` before step 1. It comes
-before the hold's `started_at`, which starts the outage clock. The checks
-below use `FREEZE_AT`, so they also cover the steps before the hold.
+Record the start of these CRM steps in UTC as `FREEZE_AT` before step 1,
+and keep it in the private ledger, because step 11 still needs it two hours
+later:
+
+```bash
+install -d -m 0700 /private/cutover-<date>
+FREEZE_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf 'FREEZE_AT=%s\n' "$FREEZE_AT" >> /private/cutover-<date>/ledger.env
+# In any later shell: . /private/cutover-<date>/ledger.env
+```
+
+`FREEZE_AT` is not `cli.py freeze`, and not the plan's "start of the
+freeze", which is the hold. It comes before the hold's `started_at`, which
+starts the outage clock. The checks below use `FREEZE_AT`, so they also
+cover the steps before the hold.
 
 **Before the hold** (after the 9:20 pm long-job pause, before the 9:50 pm
 preflight)
@@ -201,42 +239,73 @@ preflight)
    Laravel stops every HTTP write, these included. Then check that no Aryeo
    job is still leased (Tours panel).
 2. Set `CRM_OUTBOUND_HOLD=true`, `CRM_DEFER_REPLY_FORWARDING=true` and
-   `CRM_CALENDAR_SYNC_HOLD=true`, rebuild the config cache, and confirm the
-   three booleans in the effective config. Keep `CRM_CALENDAR_SYNC_HOLD` in
-   the environment that reopens; step 10 releases it.
+   `CRM_CALENDAR_SYNC_HOLD=true`, then run the three commands above, and
+   confirm the three booleans in the effective config
+   (`php artisan crm:outbound-release-check --since=$FREEZE_AT --json`
+   prints the first two; that is the CLI's view, not FPM's). Keep
+   `CRM_CALENDAR_SYNC_HOLD` in the environment that reopens; step 10
+   releases it.
 3. Hold the website recruiting scheduler with the `worker_paused` switch from
-   website change P2-05 ([spec](mysql-lanes/producer-replay.md#p2-05-a-scheduler-hold-that-keeps-capture-on);
-   not built yet). Do not turn off `recruiting_forwarding_settings.enabled`:
-   that stops capture.
+   website change P2-05 ([spec](mysql-lanes/producer-replay.md#p2-05-a-scheduler-hold-that-keeps-capture-on)).
+   Not possible at this candidate: P2-05 is not built. Until it ships, the
+   outbox keeps retrying into the 503s and uses its attempts; rows turn
+   `failed_exhausted` after about 127 minutes of 503s. Do not turn off
+   `recruiting_forwarding_settings.enabled`: that stops capture.
 
 **During the hold**
 
-4. Right after the approved hold, hold producers at the edge: copy
-   [`scripts/cutover/fence/producer-hold.nginx.conf`](../scripts/cutover/fence/producer-hold.nginx.conf)
-   into `/etc/nginx/repro-holds/`, run `nginx -t`, reload. Each Dashboard
+4. Right after the approved hold, hold producers at the edge. Each Dashboard
    server block (`frontend.conf` and `laravel.conf`) must already carry
    `include /etc/nginx/repro-holds/*.conf;` once (see
-   [Release and target preparation](#release-and-target-preparation)).
+   [Release and target preparation](#release-and-target-preparation)
+   step 10, and the `nginx -T` check before Approval 1):
+
+   ```bash
+   sudo install -o root -g root -m 0644 \
+     /var/www/backend/scripts/cutover/fence/producer-hold.nginx.conf \
+     /etc/nginx/repro-holds/producer-hold.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
    Optionally also set `PRODUCER_INGRESS_HOLD=true` as the in-app second
    layer. Never use `CRM_ENABLED=false` as the freeze control; it is now safe
    for producers but it also stops reply processing and intake processing.
 5. While the writer hold is in force, it answers every path with 503 at
    server level, so it hides the edge snippet. After reopening and before step 6,
-   check that every held path answers 503 with `Retry-After` (never 403, 404
-   or a redirect; the website treats 3xx and 4xx other than 408, 425 and 429
-   as permanent).
+   check that every held path answers 503 with `Retry-After: 60` on both
+   vhosts (never 403, 404 or a redirect; the website treats 3xx and 4xx
+   other than 408, 425 and 429 as permanent). For each Dashboard host name:
+
+   ```bash
+   for path in /api/external/website-email /api/webhooks/resend \
+       /api/webhooks/stripe /api/integrations/aryeo/webhooks/1; do
+     curl -s -o /dev/null -D - -X POST "https://<host>$path" | grep -Ei '^(HTTP|retry-after)'
+   done
+   ```
 
 **Release, after reopening, in this order**
 
-6. Remove the nginx hold file, `nginx -t`, reload; set
-   `PRODUCER_INGRESS_HOLD=false`. The website outbox, booking forwarder,
-   Resend, Stripe and Aryeo retry on their own.
-7. Website ledger. Export the website rows read-only
-   ([export spec](mysql-lanes/producer-replay.md#p2-06-website-export-for-the-operator-ledger);
-   the website side is not built yet) and run
-   `python -B -m scripts.cutover.website_ledger --export <export.json> --capture <capture.json> --private-csv <private.csv> --references <refs.json>`.
-   Then `php artisan crm:website-ledger --connection=<read-only> --references=<refs.json> --json`
-   (or `--sqlite=<copy>`). Replay only through the same reference:
+6. Release the edge hold, then set `PRODUCER_INGRESS_HOLD=false` (if it was
+   set) and apply it as above:
+
+   ```bash
+   sudo rm /etc/nginx/repro-holds/producer-hold.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+   The website outbox, booking forwarder, Resend and Stripe retry on their
+   own (see the [provider table](#providers-during-a-60-minute-hold)).
+7. Website ledger. Not possible at this candidate: the website export (P2-06,
+   [export spec](mysql-lanes/producer-replay.md#p2-06-website-export-for-the-operator-ledger))
+   is not built. Once it is, export the website rows read-only and run, from
+   the repository root:
+   `python3 -B -m scripts.cutover.website_ledger --export <export.json> --capture <capture.json> --private-csv <private.csv> --references <refs.json>`
+   (all four paths new). Then
+   `php artisan crm:website-ledger --sqlite=<copy> --references=<refs.json> --json`,
+   where `<copy>` is a fresh online backup of the live SQLite file
+   (`php scripts/deploy/backup-sqlite.php <live database> <new file>`). No
+   read-only connection is configured, so `--connection` has nothing safe to
+   name. Replay only through the same reference:
    `not_in_dashboard` bookings through forward-booking-v2 with the frozen
    quote; `not_received` and `not_delivered` contacts through website-email
    with the same reference; `uncertain` contacts only after the provider log
@@ -245,7 +314,8 @@ preflight)
    booking; bookings match on source `reprophotos.com` and the reference) and
    every `manual_reconciliation` entry. An unreadable `--since` exits 2. Each
    replay POST needs approval per reference. Compare the capture and replay
-   ledgers with `verify_website_replay`.
+   ledgers with `verify_website_replay` and all four flags (see
+   [CRM freeze and replay](#crm-freeze-and-replay)).
 8. Resend. In the Resend dashboard, replay the failed messages of the window
    (approval per batch). The webhook accepts a fresh signature with the
    original `svix-id` and applies it once; a stale signature is refused.
@@ -267,7 +337,15 @@ preflight)
    still queued stays blocking until you check that the rep has the reply
    (Conversations shows it) and record a disposition on the forward send. A
    reply with no forward send at all (no rep, or no valid address) takes the
-   disposition on the send it answered. When it exits 0, set
+   disposition on the send it answered. `due_enrolments_that_should_stop`
+   counts active drips that are due for a contact who opted out, bounced,
+   complained, is suppressed or replied since `FREEZE_AT`. Replies,
+   unsubscribes and bounces stop the drip when they arrive, so this is an
+   edge case. `crm:send-due` would stop the rest itself, but the outbound
+   hold keeps it from running. The check prints only a count: find those
+   contacts on a read-only copy with the rule in
+   `CrmOutboundReleaseCheck::shouldStop`, and stop each drip from the
+   contact in the CRM (`contacts/{contact}/drip/stop`). When it exits 0, set
    `CRM_OUTBOUND_HOLD=false`.
 10. `php artisan crm:calendar-reconcile --dry-run --json`. It reads Google
     and writes nothing. Connections whose token needs a refresh are listed as
@@ -310,11 +388,17 @@ preflight)
     the recording (a credential revoked, client or shoot scope narrowed), it
     refuses, names the settings and changes nothing. Settle those by hand.
 
-The producer hold does not cover Telnyx (its own capture route), iGUIDE
+#### Providers during a 60-minute hold
+
+The producer hold does not cover Telnyx (`/api/webhooks/telnyx/messaging`,
+`/status`, `/shared-mms/{uuid}` and `/voice`), iGUIDE
 (`/iguide_webhook.php`), CubiCasa (`/cubicasa_webhook.php`), Cakemail
-(`/api/webhooks/cakemail`), Autoenhance (`webhooks/autoenhance`) or Vapi
-(`/api/webhooks/vapi`). During the hold the writer hold answers all of them
-503 at server level, including the two direct `.php` files.
+(`/api/webhooks/cakemail`), Autoenhance (`/api/webhooks/autoenhance`) or
+Vapi (`/api/webhooks/vapi`). This candidate has no Telnyx capture route;
+only the unbound `TelnyxCutoverInbox` primitive exists
+([inbox README](../scripts/cutover/inbox/README.md)). During the hold the
+writer hold answers all of them 503 at server level, including the two
+direct `.php` files.
 Open: no lane has confirmed that these six providers retry a 503, or that
 dropping their events during the hold is safe.
 
@@ -366,6 +450,10 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    write stops. That is deliberate. Add the row to the restore and failback
    checklists, and provision it before any tool that boots the application
    against MySQL writes (rehearsal verifiers that only read are unaffected).
+   The importer (`migrate.py import-empty`) does not boot the application
+   and needs no token. Its maintenance account is scoped to the new
+   database; if the same account also runs `php artisan migrate`, it needs
+   this grant as well.
 5. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
@@ -381,8 +469,12 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    alert account never gets the app's database password, and only while the
    cutover journal makes MySQL authoritative. On MySQL 8.4.13 these two
    grants were enough: a 34 s holder was reported, and without either grant
-   the query was refused. To see which sessions hold the token, run
-   `db:writer-token-holders` as an administrator.
+   the query was refused. To see which sessions hold the token, run the
+   query in `app/Console/Commands/WriterTokenHolders.php` as a MySQL
+   administrator with the native 8.4 client by absolute path. `php artisan
+   db:writer-token-holders` reads through `--connection` (default `mysql`,
+   the app account), which has no `PROCESS` grant, and `config/database.php`
+   defines no read-only or monitor connection.
 7. Use the native bundle's matching 8.4 `mysql` and `mysqldump` by absolute path. Rehearse the candidate's
    `scripts/deploy/backup-database.php` and an independent full restore on the
    actual target. A successful dump alone is insufficient.
@@ -396,20 +488,53 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    calls, messages, payments and physical-device acceptance require a designated
    sandbox/device or explicit authorization; mocks and viewport emulation are
    labeled as such in the readiness report.
-10. Deploy the reviewed candidate, and add the producer-hold line
-    `include /etc/nginx/repro-holds/*.conf;` once to both Dashboard server
-    blocks (`frontend.conf` and `laravel.conf`), in normal reviewed deploys
-    before installing the writer hold (W1). From `cli.py init` the deploy marker
-    holds every deploy through the planned observation (C1) and the cutover,
-    and the policy pins that release. W1 installs the guard, controller,
-    wrappers, watchdog units, the `tmpfiles.d` entry, the nginx include,
-    sudoers, Supervisor and cron changes
-    ([production README](../scripts/cutover/production/README.md)). Reconcile
-    the Supervisor template with the live `laravel-worker.conf` and the user
-    `supervisord.conf` first. The nginx include holds the site until the open
-    marker exists, and `cli.py init` needs a live SQLite route: create the
-    marker by hand, run `init`, remove the marker, then `refresh` and
-    `reopen`. Then observe 24 to 48 hours in `planned` (C1).
+10. Deploy the reviewed candidate with Deploy-App before installing the
+    writer hold (W1). From `cli.py init` the deploy marker holds every
+    deploy through the planned observation (C1) and the cutover, and the
+    policy pins that release.
+
+    The producer-hold include is a root nginx change, not a Deploy-App
+    deploy: Deploy-App never touches nginx. Make it any time before the
+    night; an empty folder holds nothing.
+
+    ```bash
+    sudo install -d -o root -g root -m 0755 /etc/nginx/repro-holds
+    # As root, add this line once inside each Dashboard server block
+    # (frontend.conf and laravel.conf), before any location:
+    #     include /etc/nginx/repro-holds/*.conf;
+    sudo nginx -t && sudo systemctl reload nginx
+    sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|repro-holds|repro-cutover-hold'
+    ```
+
+    W1 installs the guard, controller, wrappers, watchdog units, the
+    `tmpfiles.d` entry, the server-level nginx hold include, sudoers,
+    Supervisor and cron changes
+    ([production README](../scripts/cutover/production/README.md)). Before
+    W1:
+
+    - Write and review the identity and MySQL probes
+      ([MySQL adapter lane](#mysql-adapter-lane-not-built) items 1 to 3).
+      Neither exists, and every `cli.py` action except
+      `approval-template` runs them.
+    - Write `host.json` completely before `init`, because `hold` refuses a
+      host config that changed after `init`. Its `queues` are the nine
+      queues plus `iguide-lab-tour:iguide-lab-tour` if the `repro-lab-tour`
+      program is installed. At `4e4a262d` the host-config check
+      (`[a-z]+:[a-z0-9-]+`) refuses that name; the code-fix lane widens it.
+    - Set all four owner options in `host.json`. The adapter has no default
+      for them and refuses a missing one. The plan's values:
+      `"separate_freeze_approval": false`, `"adopt_external_hold": false`,
+      `"require_long_job_predrain": true`, `"max_drain_seconds": 600`.
+    - Write `drain_fpm`. `cli.py reopen` runs only `queue_resume` and
+      `start_workers`, so if the drain stops the PHP-FPM pool,
+      `start_workers` must start it again. The command is not written.
+    - Reconcile the Supervisor template with the live `laravel-worker.conf`
+      and the user `supervisord.conf`.
+
+    The nginx hold include holds the site until the open marker exists, and
+    `cli.py init` needs a live SQLite route: create the marker by hand, run
+    `init`, remove the marker, then `refresh` and `reopen`. Then observe 24
+    to 48 hours in `planned` (C1).
 
 ## Off-site backups and alerts
 
@@ -514,9 +639,11 @@ sudo python3 -I -B $B --undo --job recovery-kit                      # undo in r
 ```
 
 Optional keys and defaults: `app_root` `/var/www/backend`, `sqlite_database`
-`/var/www/backend/database/database.sqlite`, `rclone` `/usr/bin/rclone`,
+`/var/www/backend/database/database.sqlite`, `php` `/usr/bin/php8.3`,
+`python` `/usr/bin/python3`, `rclone` `/usr/bin/rclone`,
 `alert_fail_suffix` `/fail` (use `null` for a provider with no fail
-endpoint), `probe_conditions`, `access_logs` and `disks`.
+endpoint), `probe_conditions` (the six SQLite conditions and `site_held`),
+`access_logs` and `disks`.
 
 What apply does for `base-backup`:
 
@@ -554,11 +681,15 @@ before, the group bits of the mode), removes only unchanged installed files,
 removes created folders and accounts, and reloads systemd. The record lives
 in `/var/lib/repro-backup-installer/`.
 
-Enable timers only after review:
-`systemctl enable --now repro-backup.timer repro-backup-watchdog.timer`, then
-the alert timers. Install `alerts` right after `base-backup`; until then the
-backup units' bridge targets do not exist and only the journal marker is
-written.
+Enable timers only after review, with the commands each job prints:
+`systemctl enable --now repro-backup.timer repro-backup-watchdog.timer`
+(`base-backup`), then
+`systemctl enable --now repro-alert-heartbeat.timer repro-alert-probe.timer repro-alert-forward.timer`
+(`alerts`), then
+`systemctl enable --now repro-recovery-kit.timer repro-recovery-kit.path`
+(`recovery-kit`; the path unit republishes the kit on every `.env` change).
+Install `alerts` right after `base-backup`; until then the backup units'
+bridge targets do not exist and only the journal marker is written.
 
 The installer does not show APP_KEY. Copy the `APP_KEY=` line from `.env`
 into the password manager yourself (checklist E.3), on the server, not
@@ -680,11 +811,15 @@ page; measure the reboot once and raise the grace only if it is needed and
 still fits the 10-minute delivery limit.
 
 Cutover night: 03:30 UTC is 10:30 pm US Eastern in winter (EST), inside the
-planned Saturday 10 to 11 pm Eastern outage. 02:30 UTC (9:30 pm EST) would
-also run into it. Hold `repro-backup.timer` and `repro-recovery-kit.timer`
-that night and during drills, and list them as "nothing due"
-([Freeze all writers](#freeze-all-writers) step 4), or the owner picks
-another time.
+planned Saturday 10 to 11 pm Eastern outage. The old 02:30 UTC (9:30 pm EST)
+falls before the outage, but it would run during the 9:20 to 9:50 pm
+pre-hold steps. Hold `repro-backup.timer`, `repro-recovery-kit.timer` and
+`repro-recovery-kit.path` that night and during drills, and list them as
+"nothing due" ([Freeze all writers](#freeze-all-writers) step 4), or the
+owner picks another time. The path unit matters most: it starts a kit run
+on every `.env` change, and the night edits `.env` several times. Both
+timers have `Persistent=true`, so each runs once as soon as it is started
+again after its time has passed.
 
 Once the writer hold is installed (W1), any reboot, the monthly one
 included, leaves the site and every writer held until an operator runs
@@ -729,9 +864,20 @@ the application scope when the files change, and again once the last
 publication is seven days old, because the kit lives under `daily/`, which
 the bucket rule deletes after 31 days. It refuses an `.env` without a usable
 APP_KEY and prints names, sizes and hashes only. On the recovery machine,
-after `restore_backup.py --scope application`:
+retrieve the kit with every flag `restore_backup.py` requires (values from
+the kit's publication receipt; see the
+[off-site README](../scripts/mysql/offsite/README.md#independent-retrieval)),
+then verify it:
 
 ```sh
+/usr/bin/python3 -I -B /opt/repro-backup-tools/restore_backup.py \
+  --backup-id APPROVED_BACKUP_ID --scope application \
+  --expected-release APPROVED_FULL_COMMIT --expected-identity APPROVED_INSTANCE_ID \
+  --manifest-bytes APPROVED_MANIFEST_SIZE --manifest-sha256 APPROVED_MANIFEST_SHA256 \
+  --completion-bytes APPROVED_COMPLETION_SIZE --completion-sha256 APPROVED_COMPLETION_SHA256 \
+  --config /var/lib/repro-recovery/credentials/rclone.conf --rclone /usr/bin/rclone \
+  --crypt-remote APPROVED_CRYPT_NAME --expected-destination APPROVED_S3_BUCKET_PREFIX \
+  --output /var/lib/repro-recovery/private/new-kit
 php scripts/mysql/offsite/verify_recovery_kit.php RESTORE_OUTPUT CIPHERTEXT_FILE EXPECTED_PLAINTEXT_SHA256
 ```
 
@@ -747,7 +893,7 @@ key:
 python3 -I -B observe_backup_health.py observe --plan observer.json      # every minute
 python3 -I -B observe_backup_health.py export --plan observer.json --window-end END \
   --identity-sha256 H --destination-sha256 H --monitor-profile-sha256 H --output backup-health.jsonl
-python -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
+python3 -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
 ```
 
 Use `interval_s` 60. The summarizer credits a slot only while lag stays
@@ -809,32 +955,117 @@ They are built and tested locally only. Installing them (W1) and a drill with
 real services and a reboot (W2) each need their own approval. Keep webhook
 failures recoverable; do not acknowledge events and drop them.
 
+**Read-only checks before the night.** Each reads production and changes
+nothing; each still needs its own approval.
+
+- Which cache store holds the queue pause flags (ordering M7):
+  `cd /var/www/backend && php artisan config:show cache.default` and
+  `grep -E '^(CACHE_STORE|CACHE_DRIVER)=' .env`. `config/cache.php` reads
+  `CACHE_STORE` and defaults to `database`; `.env.example` sets
+  `CACHE_DRIVER`, the Laravel 10 name, which this release never reads. If
+  the answer is `database`, the flags sit in the SQLite `cache` table.
+  Then a rollback from `frozen` runs `queue_pause` again (adapter
+  `close_admissions`) before it unseals SQLite, against the sealed file,
+  and fails on every watchdog tick; and a switch of `DB_CONNECTION` moves
+  the flags to MySQL. Open: confirm `file`, or change the store, or change
+  the rollback order, before W1.
+- OPcache in FPM: `grep -rhE 'opcache\.(enable|validate_timestamps|revalidate_freq)' /etc/php/8.3/fpm/`
+  and the FPM unit name: `systemctl list-units --all 'php*-fpm*'`. This
+  runbook assumes `php8.3-fpm`; with `validate_timestamps=0` FPM keeps the
+  old config until it is reloaded.
+- The host clock's time zone for cron: `timedatectl show -p Timezone`.
+
+**Scheduled tasks inside the outage.** The app time zone is UTC
+(`config/app.php`), so the Saturday 10 to 11 pm EST outage is 03:00 to
+04:00 UTC on Sunday. The scheduler is held from the freeze and there is no
+catch-up.
+
+| Task | When | During the outage | Decision |
+| --- | --- | --- | --- |
+| `crm:nightly` (client health, expired quotes, licence and insurance reminders) | 03:15 UTC | skipped | Run `php artisan crm:nightly` once by hand after CRM step 9 releases the outbound hold. |
+| `copilot:prune` | 03:35 UTC | skipped | Leave it to the next night. |
+| `model:prune` | 03:45 UTC | skipped | Leave it to the next night. |
+| `media:prune-editor-archives --apply` | 04:15 UTC | runs if the scheduler is admitted by then | Leave it. |
+| Hourly and every-few-minutes tasks | each slot | skipped while held | None: each runs at its next slot. |
+| `repro-backup.timer` | 03:30 UTC, up to 5 min jitter | held (step 4) | Start it in the undo list; it runs once at once. |
+| `repro-recovery-kit.timer` and `.path` | 04:15 UTC and every `.env` change | held (step 4) | Start them in the undo list and run the kit once. |
+| Deploy-backup retention cron (`deployment-storage.py scheduled-retention`) | `47 3 * * *` host time | runs if the host clock is UTC; it is not wrapped and takes both deploy locks for its run | Leave it. A controller step that needs the deploy locks waits for them within its deadline. |
+| `telnyx:prune-webhook-events` | 02:30 UTC (9:30 pm EST) | before the hold | None. |
+| `crm:follow-up-digest` | weekdays 07:00 Eastern | not on a Saturday night | None. |
+
+**Editing `.env` on the night.** Every edit must keep the file's inode. An
+editor or `sed -i` that saves by rename drops the `repro-backup` ACL, and
+then the backup, the kit and `wrong_database_engine` fail. Edit a private
+copy and copy it back over the file:
+
+```bash
+cd /var/www/backend
+work=$(mktemp -d "$HOME/env-edit-XXXXXXXX") && echo "$work"   # $work/before is the undo copy
+inode=$(stat -c %i .env)
+cp .env "$work/before" && cp .env "$work/next"
+set_env() { grep -v "^$1=" "$work/next" > "$work/tmp"; printf '%s=%s\n' "$1" "$2" >> "$work/tmp"; cat "$work/tmp" > "$work/next"; }
+set_env CRM_OUTBOUND_HOLD true        # one call per key
+diff "$work/before" "$work/next"      # only the intended lines change
+cp "$work/next" .env                  # writes into the existing file: same inode, ACL kept
+test "$(stat -c %i .env)" = "$inode" && echo "inode kept"
+getfacl -cp .env | grep '^user:repro-backup:'   # once the off-site units are installed
+```
+
+To undo an edit, `cp "$work/before" .env` the same way, then apply it. The
+work folder holds secrets (APP_KEY): remove it with `rm -r "$work"` once the
+undo list no longer needs it.
+
 **Before the hold, no outage.**
 
-1. 7:45 pm: pause Studio with its documented pause file; let its job finish.
-2. 9:20 pm: pause the long-job queues with `queue:pause`:
-   `studio:studio`, `database:media-archives`, `database:default`,
-   `database:integrations`, `database:watermarks`. Use the normal shared cache
-   context and confirm both Unix owners see the pause flags. Wait for their
-   running jobs, then stop those workers. The hold refuses while a long-job
-   worker still runs (`require_long_job_predrain`, on by default). Identify
-   stale reservations separately; never force-requeue an uncertain
-   payment/message/provider operation. The observed Studio worker timeout is
-   7,200 seconds and its retry interval 7,260; the database connection
-   defaults to 2,100 seconds for long media assembly. Do not interrupt a long
-   provider job to shorten the window. If the optional `repro-lab-tour`
-   program is installed, add its queue (`iguide-lab-tour`) to the host config
-   and to this pause; its jobs can run 600 s, the whole default drain limit.
+1. 7:45 pm: pause Studio with its documented pause file, as `maverick`:
+   `touch ~/.local/share/repro-studio/paused`. `worker.sh` refuses to start
+   while it exists; let the running job finish.
+2. 9:20 pm: pause the long-job queues, from `/var/www/backend`:
+
+   ```bash
+   for q in studio:studio database:media-archives database:default \
+       database:integrations database:watermarks; do
+     php artisan queue:pause "$q"
+   done
+   # Only if the repro-lab-tour program is installed. "iguide-lab-tour" alone
+   # would pause database:iguide-lab-tour, the wrong connection.
+   php artisan queue:pause iguide-lab-tour:iguide-lab-tour
+   ```
+
+   Use the normal shared cache context and confirm both Unix owners see the
+   pause flags. Wait for their running jobs, then stop the workers that the
+   `long_job_processes` patterns in `host.json` match (for example
+   `repro-studio` and `repro-lab-tour` in the user Supervisor, and
+   `repro-media-archives.service`). The hold refuses while one still runs,
+   because `host.json` sets `require_long_job_predrain: true`. Identify stale reservations
+   separately; never force-requeue an uncertain payment/message/provider
+   operation. The observed Studio worker timeout is 7,200 seconds and its
+   retry interval 7,260; the database connection defaults to 2,100 seconds
+   for long media assembly. Do not interrupt a long provider job to shorten
+   the window. Lab-tour jobs can run 600 s, the whole default drain limit.
 3. Before 9:50 pm: CRM steps 1 to 3 in
    [Freeze and replay steps](#freeze-and-replay-steps): record and pause
    Aryeo, hold CRM outbound sends, reply forwarding and calendar sync, hold
-   the website recruiting scheduler. Rebuild only the config cache; cache
-   clearing can erase the queue pause flags from step 2.
+   the website recruiting scheduler (not built). Apply the flags with
+   `config:cache`, an FPM reload and `queue:restart`; never clear the cache,
+   which can erase the queue pause flags from step 2.
 4. 9:50 pm: preflight as before (no call in progress, Aryeo recorded and
    paused, no upload in flight). Once the off-site units are installed, also
-   hold `repro-backup.timer` and `repro-recovery-kit.timer` for the night and
-   list them as "nothing due": the 03:30 UTC backup falls inside the outage
-   (see [Timers and the monthly reboot](#timers-and-the-monthly-reboot)).
+   hold the backup and kit units for the night and list them as "nothing
+   due": the 03:30 UTC backup falls inside the outage, and the kit's path
+   unit fires on every `.env` edit
+   (see [Timers and the monthly reboot](#timers-and-the-monthly-reboot)):
+
+   ```bash
+   sudo systemctl stop repro-recovery-kit.path repro-recovery-kit.timer repro-backup.timer
+   systemctl list-timers --all 'repro-backup*' 'repro-recovery-kit*'   # no next run
+   systemctl is-active repro-recovery-kit.path                         # inactive
+   ```
+
+   `stop` lasts until the next boot; after a reboot, stop them again. Start
+   them the same night (undo list), or `backup_stale` fires 26 hours after
+   the last backup.
+
    Owner, at the alert provider: give the `site_unreachable` check a
    maintenance window that starts at the hold and ends by itself after 60
    minutes, and end it early after `cli.py reopen`. Pause no other check
@@ -842,16 +1073,41 @@ failures recoverable; do not acknowledge events and drop them.
 
 **The hold: the outage clock starts here.**
 
-5. Approval 1, "start freeze". The operator writes the approval from
-   `cli.py approval-template --phase hold` to a root-owned 0600 file and runs
-   `cli.py hold --approval FILE`. The journal records phase `holding`,
-   `started_at` and the pending hold before anything changes. Then:
+5. Before Approval 1, while the site is still open, check that the nginx
+   holds are where they must be (ordering M6). `nginx -t` passes even if
+   one server block lacks an include:
+
+   ```bash
+   sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|repro-cutover-hold|repro-holds'
+   ```
+
+   Each Dashboard server block that reaches PHP (in `frontend.conf` and
+   `laravel.conf`) must show both the `repro-cutover-hold` include and
+   `include /etc/nginx/repro-holds/*.conf;`, before any location. If not,
+   stop: no approval. W2 must also rehearse the runtime 503 check of CRM
+   step 5. Owner option: apply the edge hold (CRM step 4) a few minutes
+   before Approval 1 instead, while the site is open, and run the CRM step
+   5 check at once; producers then get 503 a few minutes earlier.
+
+   Approval 1, "start freeze". The operator writes the approval from
+   `cli.py approval-template --phase hold` to a root-owned 0600 file after
+   the owner's typed approval, and runs `cli.py hold --approval FILE`
+   within 5 minutes (the approval's `expires_at`):
+
+   ```bash
+   cli=/opt/repro-cutover-fence/production/cli.py
+   sudo sh -c "umask 077; /usr/bin/python3 -I -S $cli approval-template --phase hold > /root/approval-hold.json"
+   sudo /usr/bin/python3 -I -S "$cli" hold --approval /root/approval-hold.json
+   ```
+
+   The journal records phase `holding`, `started_at` and the pending hold
+   before anything changes. Then:
    - the nginx open marker `/run/repro-cutover-ingress/open` is removed, so
      both vhosts answer 503 with `Retry-After: 30` at server level, including
      `/cubicasa_webhook.php` and `/iguide_webhook.php`;
    - `/etc/repro-database-cutover/active` is published under both deploy
      locks, so no deploy is between its check and its changes;
-   - all nine queues are paused;
+   - every queue in `host.json` is paused (nine, ten with lab-tour);
    - the guard refuses every new admission (web, queue, scheduler, deploy).
    Writers admitted earlier keep running and keep their shared lease.
 6. Right after the hold, apply the producer edge hold (CRM step 4). It is
@@ -864,15 +1120,23 @@ failures recoverable; do not acknowledge events and drop them.
    writer process remains and every admitted lease is released (at most 10
    minutes), waits for running scheduled commands, then seals SQLite:
    checkpoint, empty WAL, no write bits. If the drain does not finish, the
-   run stays `holding` with admissions closed. Use `cli.py abort`, or let the
-   watchdog roll back.
+   run stays `holding` with admissions closed. A failed freeze cannot be
+   retried: a second `cli.py freeze` refuses with "Interrupted action
+   requires a verified pre-write abort". Run `cli.py abort` at once; do not
+   wait for the watchdog (ordering L7).
 8. Record source release/configuration fingerprints, source snapshot SHA-256,
    target UUID, worker/scheduler state, queue counts/reservations, and a journal
    of received/retried provider events. Keep this protected evidence outside
    the release archive. Preserve the original environment file separately.
 9. Data steps as in [Import into the empty target](#import-into-the-empty-target).
-   The writer-hold adapter refuses `prepare` and `promote`; it covers the
-   hold, the freeze and the pre-write rollback only.
+   Not a path to MySQL at this candidate: the adapter refuses `prepare` and
+   `promote` and covers the hold, the freeze and the pre-write rollback
+   only. A SQLite dress rehearsal goes from step 8 to `cli.py abort` and the
+   undo list. Do not import into a target that the MySQL probe watches
+   while a run is held: if the probe reports the import as `writable` or
+   `business_activity`, the journal goes to `recovery_required`, and neither
+   `abort` nor the watchdog rolls back (ordering H3). Run import rehearsals
+   in the nightly runner's disposable MySQL instead.
 
 **Watchdog.** `repro-cutover-watchdog.timer` runs `cli.py tick` every minute
 from boot (`OnCalendar=minutely`). In a held phase it closes admissions again
@@ -881,10 +1145,74 @@ new boot. At 45 minutes from the hold it rolls back to SQLite. All deadlines
 count from the hold, so the drain uses the same 60-minute outage budget. The
 service allows a tick 25 minutes, enough for the controller-lock wait and a
 whole rollback; while a tick runs, an operator command is refused with
-"Another host operator holds the cutover lock" and can be retried.
+"Another host operator holds the cutover lock" and can be retried. The
+watchdog does not reopen: run `cli.py reopen` and the undo list after it.
+
+**Timing on the night.** The outage clock starts at the approved hold
+(`started_at`), not at `FREEZE_AT`. Expected minutes from the hold for a
+MySQL night, from the ordering review; every row after the freeze assumes
+the MySQL adapter lane exists:
+
+| Step | Budget in the plan | Expected |
+| --- | --- | --- |
+| Approval 1 and `cli.py hold` | approval valid 5 min | 1 |
+| Producer edge hold | none | 1-2 |
+| `cli.py freeze` | at most 10 | 3 |
+| Step 8 evidence; frozen online backup (about 21 s), SHA-256, integrity | none | 3 |
+| `schema-drift`, `migrate.py plan`, exception review | none | 3-5 |
+| `import-empty` plus `verify-fields` (measured 593 to 754 s) | 12, hard limit 20 | 12 |
+| Migrations, `complete-schema`, final schema check | none | 3-5 |
+| Final SQLite and MySQL backups off-site (both required by `Evidence`) | none | 5 |
+| Read-only smoke | none | 5 |
+| `.env` switch, config cache, FPM reload, `db:writer-policy-check` | none | 2 |
+| Approval 2, accepted before 0:45 | 5 | 2-5 |
+| Promote, reopen, queues, workers, scheduler | none (not built) | 3 |
+
+- Expected total: about 43 to 50 minutes. The go point falls at about 0:40
+  to 0:47, marginal against the 0:45 watchdog. With the stated maximums
+  (drain 10, import 20) it is past 0:55, and the watchdog rolls back first.
+  In practice the import has about 15 minutes.
+- Rollback: the watchdog fires between 45:00 and 46:50 (next minute tick
+  plus up to 50 s for the lock), the rollback takes about 2 to 3 minutes
+  and `cli.py reopen` about 1 to 2. SQLite is open by about 0:50 to 0:53.
+- Producers stay held until CRM step 6, so they see more than 60 minutes
+  of 503s.
+- A SQLite dress rehearsal at this candidate (hold, edge hold, freeze,
+  step 8, abort, reopen) should take about 12 to 15 minutes. That is an
+  estimate; it has not been measured on the host.
+
+Checkpoints. If one is missed, run `cli.py abort` at once:
+
+| Checkpoint | By (from the hold) |
+| --- | --- |
+| Freeze done (`cli.py status` shows `frozen`) | 0:12 |
+| Import started | 0:15 |
+| Import plus verification done | 0:27; abort at 0:30 at the latest |
+| Off-site backups done | 0:35 |
+| Go decision | 0:40 |
+| Approval 2 accepted | 0:44 |
+
+**Approvals that run out.** An approval is valid for 5 minutes
+(`Runner.APPROVAL_SECONDS`). The runner undoes nothing when one expires.
+
+- Approval 1 expires before `cli.py hold`: nothing has changed on the
+  runner's side. Issue a new template if the owner still wants to go. If
+  the owner does not answer, call the night off and run the pre-hold undo
+  list below; the pre-hold holds have no deadline of their own.
+- Approval 2 (MySQL lane, not built) expires: restore the SQLite
+  configuration at once (saved `.env` in place, `php artisan
+  config:cache`, `sudo systemctl reload php8.3-fpm`), then `cli.py abort`,
+  `cli.py reopen` and the undo list. Do not leave the site held until the
+  watchdog.
 
 **Undo.** `cli.py abort` (or the watchdog) re-closes admissions, drains,
-unseals SQLite and publishes boot-bound SQLite authority. `cli.py reopen`
+unseals SQLite and publishes boot-bound SQLite authority. From that moment
+the guard admits the cron scheduler again, before `cli.py reopen` and while
+ingress is still closed, so scheduled commands write SQLite from then on.
+`crm:calendar-sync` stays held by `CRM_CALENDAR_SYNC_HOLD` until CRM step
+10, and `crm:website-intake` completes intake receipts already saved in the
+Dashboard. Neither `abort` nor `reopen` touches `.env` or the config cache.
+`cli.py reopen`
 verifies that authority through the guard, checks the live host again
 (SQLite the only writable engine), resumes the queues, starts the workers,
 recreates the open marker, writes the activation receipt and lifts the
@@ -899,6 +1227,77 @@ completed rollback. The watchdog keeps the completed SQLite rollback as it
 is after such a reboot; it does not escalate to recovery. After an aborted
 and reopened cutover the policy still pins the old release, so retire the
 installed fences or start a new run before the next deploy.
+
+If `abort` or a tick prints "MySQL writes may exist. Use separately verified
+recovery", the journal is `recovery_required`. From there neither `abort`
+nor the watchdog rolls back, the site stays held, and `site_held` pages.
+Open: no runbook path covers `recovery_required`, including the case where
+the only MySQL writes came from the import (see the
+[MySQL adapter lane](#mysql-adapter-lane-not-built) item 3). Do not edit
+the journal; call the owner.
+
+**Undo list, after an abort or a reopen.** Every hold the night sets, in the
+order to undo it. It applies after `cli.py abort` or the watchdog on
+SQLite, and, once the adapter lane exists, after a MySQL reopen.
+
+1. `cli.py status` shows `sqlite_authoritative`. If it shows
+   `recovery_required`, stop (see above).
+2. Database settings, MySQL path only: if `.env` was switched and the night
+   did not go, restore `$work/before` in place, `php artisan config:cache`,
+   `sudo systemctl reload php8.3-fpm`. Never needed at this candidate.
+3. Studio pause file, before `cli.py reopen`, as `maverick`:
+   `rm ~/.local/share/repro-studio/paused` (and `paused-lab-tour` if set),
+   so the Studio program starts with the others. If it already went FATAL:
+   `supervisorctl -c ~/.local/share/repro-studio/supervisord.conf start repro-studio`.
+4. `cli.py reopen`. It resumes every queue in `host.json`, the long-job
+   queues paused at 9:20 pm included, starts the worker groups, recreates
+   the open marker and, after an abort, lifts the deploy fence. Check
+   `sudo supervisorctl status`, the user Supervisor's `status` and
+   `systemctl status repro-media-archives.service`.
+5. Alerts: the owner ends the `site_unreachable` maintenance window at the
+   provider. `queue_stale` clears once the queues drain.
+6. Producer edge hold: CRM step 5 (check), then step 6 (release, and
+   `PRODUCER_INGRESS_HOLD=false` if it was set). Do it promptly: until then
+   `/api/external/`, Resend, Stripe and Aryeo get 503, and Aryeo stops
+   retrying after about 2 minutes.
+7. Recruiting `worker_paused` back to false (website, one row update with
+   approval), after step 6 so the outbox reaches an open edge. Not built.
+8. CRM steps 7 to 12 in order: website ledger (not built), Resend and
+   `CRM_DEFER_REPLY_FORWARDING=false`, the outbound release check and
+   `CRM_OUTBOUND_HOLD=false`, the calendar reconcile and
+   `CRM_CALENDAR_SYNC_HOLD=false`, Stripe at +30 minutes and +2 hours, and
+   Aryeo last. After an abort they run against SQLite; the commands do not
+   depend on the engine.
+9. Missed scheduled tasks: `php artisan crm:nightly` once, after the
+   outbound release (see the table above).
+10. Backup timers and the kit:
+    `sudo systemctl start repro-backup.timer repro-recovery-kit.timer repro-recovery-kit.path`.
+    Each timer runs once at once if its time has passed (`Persistent=true`).
+    Then `sudo systemctl start repro-recovery-kit.service` once, so the kit
+    picks up the night's `.env`. After a MySQL reopen this is open: the base
+    backup copies SQLite only and the MySQL leg (`mysql-recovery`) is
+    preview only, so decide before the night what runs.
+11. Deploys: after a reopened rollback the policy still pins the old
+    release. Retire the installed fences or start a new run before the next
+    deploy.
+12. Remove the `.env` work folders (`rm -r "$work"`) once nothing above
+    needs them.
+
+**If the night is called off before the hold** (Approval 1 not given, or a
+no-go before 10 pm), undo the pre-hold steps:
+
+1. Cancel the `site_unreachable` maintenance window at the provider.
+2. Remove the Studio pause file and start Studio (as in step 3 above).
+3. Resume the long-job queues: `php artisan queue:resume <connection:queue>`
+   for each queue paused at 9:20 pm, then start the stopped workers through
+   their Supervisor or systemd. The guard admits them in `planned`.
+4. CRM steps 8 to 10 in order (Resend and reply forwarding, the outbound
+   release check with `--since=$FREEZE_AT`, the calendar reconcile), then
+   step 12 (Aryeo). The edge hold was never applied, so steps 5 and 6 do
+   not apply.
+5. Recruiting `worker_paused` back to false (not built).
+6. Start the backup timers and the kit path unit, and run the kit once
+   (step 10 above).
 
 ## MySQL adapter lane (not built)
 
@@ -980,8 +1379,8 @@ waits for items 1 to 3.
 
 10. The `.env` switch and its undo (ordering H2). Choose one; this is open:
     - Switch before Approval 2 and write the undo: restore the saved `.env`
-      in place (ACL kept, see [Freeze all writers](#freeze-all-writers)
-      step 4), `php artisan config:cache`, `sudo systemctl reload
+      in place (ACL kept, see "Editing `.env` on the night" in
+      [Freeze all writers](#freeze-all-writers)), `php artisan config:cache`, `sudo systemctl reload
       php8.3-fpm`, and only then `cli.py abort` and `cli.py reopen`. Item 4
       makes `reopen` refuse if this is skipped.
     - Or move the switch after Approval 2, into `promote`.
@@ -1033,7 +1432,8 @@ waits for items 1 to 3.
     503 before Laravel, and the freeze drains PHP-FPM. The maintenance-mode
     receiver on `claude/telnyx-receiver-20261125` runs inside Laravel, so it
     never sees a text during the hold. Telnyx retries a few times and then
-    stops (see the [provider table](#freeze-and-replay-steps)). Options:
+    stops (see the [provider table](#providers-during-a-60-minute-hold)).
+    Options:
     - an exempt nginx location for the Telnyx text paths, served by a
       capture that needs no database and is not drained (a reviewed gate
       exemption);
@@ -1079,13 +1479,15 @@ Use a standalone online-backup artifact, never a raw copy of a live WAL database
 The import tool opens it read-only and verifies its checksum and integrity.
 Create a private Python virtual environment and install
 `scripts/mysql/requirements.txt`. The maintenance account must be scoped to the
-new database. Its protected 0600 JSON file contains only `unix_socket`, `user`,
+new database, plus the writer-token grant if the same account runs `php
+artisan migrate` ([Release and target preparation](#release-and-target-preparation)
+step 4). Its protected 0600 JSON file contains only `unix_socket`, `user`,
 and `password`; credentials never belong in command arguments or source control.
 
 First generate a fresh plan with a new private output directory:
 
 ```bash
-python scripts/mysql/schema-drift.py \
+python3 scripts/mysql/schema-drift.py \
   --release /protected/release-schema.sqlite \
   --release-sha256 <verified-release-schema-file-sha256> \
   --release-commit <reviewed-backend-commit> \
@@ -1100,7 +1502,7 @@ data unless a separate reviewed change makes a different disposition explicit.
 The report reads metadata only and leaves both files intact.
 
 ```bash
-python scripts/mysql/migrate.py plan \
+python3 scripts/mysql/migrate.py plan \
   --snapshot /protected/frozen.sqlite \
   --snapshot-sha256 <verified-snapshot-sha256> \
   --output /protected/new-plan
@@ -1113,7 +1515,7 @@ binds the conversion layout, while the census checks the actual values fit.
 Only after confirming writer freeze, the empty target and independent UUID:
 
 ```bash
-python scripts/mysql/migrate.py import-empty \
+python3 scripts/mysql/migrate.py import-empty \
   --snapshot /protected/frozen.sqlite \
   --snapshot-sha256 <verified-snapshot-sha256> \
   --credentials /protected/maintenance.json \
@@ -1161,9 +1563,17 @@ already recorded these migration names while skipping their MySQL-specific
 work. The tool reapplies only the reviewed idempotent repairs and does not
 delete or rewrite migration-ledger rows.
 
-With explicit MySQL process configuration and a separate staging cache:
+With explicit MySQL process configuration and a separate staging cache, from
+the staged release:
 
 ```bash
+cd /protected/staged-backend
+DB_CONNECTION=mysql DB_DATABASE=repro_dashboard \
+  APP_CONFIG_CACHE=/protected/staging-cache/config.php \
+  php artisan migrate --force
+DB_CONNECTION=mysql DB_DATABASE=repro_dashboard \
+  APP_CONFIG_CACHE=/protected/staging-cache/config.php \
+  php artisan migrate:status --pending   # must report no pending migration
 DB_CONNECTION=mysql DB_DATABASE=repro_dashboard \
   APP_CONFIG_CACHE=/protected/staging-cache/config.php \
   php scripts/mysql/complete-schema.php --app=/protected/staged-backend \
@@ -1172,7 +1582,11 @@ DB_CONNECTION=mysql DB_DATABASE=repro_dashboard \
 ```
 
 The staged application's protected environment supplies its target socket and
-credentials. Require the `verified` result, validate the final schema, and restore
+credentials. With `APP_ENV=production` it needs the MySQL keys listed under
+[Validate before reopening traffic](#validate-before-reopening-traffic);
+without `REPRO_MYSQL_EXPECTED_SERVER_UUID` and an absolute `DB_SOCKET`, every
+MySQL connection fails with "The approved MySQL UUID and an explicit local
+socket are required". Require the `verified` result, validate the final schema, and restore
 any temporary trigger-installation privilege setting after all DDL completes.
 Do not reuse the active SQLite configuration cache or boot a scheduler/worker while doing this.
 Verify the final schema, supporting indexes, next IDs and migration ledger.
@@ -1195,7 +1609,8 @@ and use the same import path. The
 4. Read `run-receipt.json`. A stopped night does not count. A budget stop
    names the stage and its time.
 5. Review `night.json`, `crm-review.json` and their evidence, then add
-   `manifest-entry.json` with `policy.py add-night`.
+   the entry to a new manifest file:
+   `python3 -B -m scripts.cutover.nightly.policy add-night --manifest reviewed-nights.json --entry <night>/manifest-entry.json --output reviewed-nights.next.json`.
 6. After five consecutive reviewed nights, the last two on the frozen
    release, pin the manifest, build the summary with
    `--producer-receipts`, pin the summary, and run the readiness check.
@@ -1203,13 +1618,31 @@ and use the same import path. The
 Each approved night reads the live SQLite file through the online backup API
 (about 21 s), keeps about 4.5 GB under the state directory, and runs a
 disposable socket-only MySQL 8.4.13 for about 10 to 16 minutes. It needs
-45 GB free and 12 GiB available memory. No night can qualify until the owner
-pins the finance step and the reverse trigger helper in the config; both are
-unset. If the pinned finance command writes through the application on a
-MySQL copy, provision the writer token there first
-([Release and target preparation](#release-and-target-preparation) step 4).
+45 GB free and 12 GiB available memory. No night can qualify yet. In
+`scripts/cutover/nightly/nightly-config.json`, `finance`,
+`reverse_triggers` (the reviewed trigger helper, which is not committed) and
+`applicant_files_root` are `null`. Without an applicant files root,
+`crm_applicant_file_parity_verified` is false, and with any applicant file
+present the runner never sets it true, because it has no target-side
+comparison or access check. `busiest_endpoints` in
+`review-policy.draft.json` is also `null`, so the readiness check cannot
+pass. The committed `crm_migrations` list names the nine migrations of 24
+November; the code-fix lane adds the tenth. `reviewed_schema_sha256` was
+pinned before that migration added two columns, so the first night after it
+is deployed will most likely stop at `plan` until the new layout is reviewed
+and pinned (not proven without a snapshot). If the pinned finance command
+writes through the application on a MySQL copy, provision the writer token
+there first ([Release and target preparation](#release-and-target-preparation)
+step 4).
 
 ## Validate before reopening traffic
+
+Not executable at this candidate. Every check below that needs an HTTP
+request through nginx, a worker on MySQL or a MySQL reopen waits for the
+[MySQL adapter lane](#mysql-adapter-lane-not-built): the server-level hold
+has no smoke bypass, workers start only through `admit.py`, which refuses
+MySQL without guard authority, and only `cli.py reopen` creates the open
+marker, on SQLite only.
 
 Keep public writes and all workers stopped while checking:
 
@@ -1250,29 +1683,66 @@ the marker and allow writes only by root. A stale script or manual deployment
 also needs the host-level permission fence.
 
 Back up the verified MySQL target. Change only the database settings in the
-preserved environment through the approved cutover procedure. Retain the APP_KEY
-and all unrelated settings. Rebuild configuration/OPcache and verify FPM and both
-worker owners resolve the same driver/database/server UUID. Then run
+preserved environment through the approved cutover procedure, editing `.env`
+in place ("Editing `.env` on the night" in
+[Freeze all writers](#freeze-all-writers)). Retain the
+APP_KEY and all unrelated settings. With `APP_ENV=production` every MySQL
+connection needs these keys, or it refuses to connect
+(`config/database.php`, `app/Database/MySqlConnector.php`):
+
+| Key | Value |
+| --- | --- |
+| `DB_CONNECTION` | `mysql` |
+| `DB_DATABASE` | `repro_dashboard` |
+| `DB_SOCKET` | `/run/repro-mysql84-native/mysql.sock` (must be absolute) |
+| `REPRO_MYSQL_EXPECTED_SERVER_UUID` | the target's independently observed `@@server_uuid` |
+| `DB_USERNAME`, `DB_PASSWORD` | the app account, which has the writer-token grant |
+| `DB_COLLATION` | `utf8mb4_0900_bin`, as CI runs it (`phpunit.mysql.xml`); the code default is `utf8mb4_unicode_ci` |
+| `REPRO_MYSQL_WRITER_POLICY` | unset or `true` (on by default) |
+| `DB_EXPECTED_ENGINE` | `mysql`, only if the observability branch is merged and the key is set |
+
+The server must report `@@skip_networking=1` and an 8.4 version, or the
+connection fails with "The configured MySQL connection did not reach the
+approved socket-only server". Keep the optional MySQL pilots
+(`REPRO_MYSQL_QUEUE_WORKER`, `REPRO_MYSQL_STUDIO_QUEUE_WORKER`,
+`REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER`, `REPRO_MYSQL_SCHEDULING_CACHE`,
+`REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN`) off unless they are approved
+separately. Then apply it with `php artisan config:cache` and
+`sudo systemctl reload php8.3-fpm` (never `optimize:clear`), and verify FPM
+and both worker owners resolve the same driver, database and server UUID.
+Open: nothing shows FPM's effective config while the hold is in force (see
+the [MySQL adapter lane](#mysql-adapter-lane-not-built) item 11). Then run
 `php artisan db:writer-policy-check` as the application user. It must print
 `"problems":[]` and exit 0. Add it to every deploy once MySQL is live. Every
 process must run the same release: a process without the policy would write
 without the token. The engine check in the drill covers this for workers.
-The writer-hold controller does not promote MySQL or reopen on it yet; that
-needs a MySQL adapter. Use a controlled
-smoke period before reopening public writes, then resume the exact paused queues
-with `queue:resume`, restart their owning groups/service and the scheduler, and
-verify they use MySQL. Reconcile incoming provider events before declaring done.
+The writer-hold controller does not promote MySQL or reopen on it; the
+controlled smoke period, Approval 2, `promote`, the MySQL reopen that resumes
+the queues and starts the groups and the scheduler, and the undo of the
+switch are all requirements of the
+[MySQL adapter lane](#mysql-adapter-lane-not-built). Reconcile incoming
+provider events before declaring done.
 
 ## Rollback has two different paths
 
 **Before any MySQL business write:** restore the saved SQLite connection
 settings and its configuration cache while writers remain stopped. The frozen
 SQLite database is still authoritative. Retain source/media/cache safeguards and
-verify the application before resuming writers. The writer-hold `cli.py abort`
-(or the watchdog at 45 minutes) and `cli.py reopen` carry out this path; see
-[Freeze all writers](#freeze-all-writers).
+verify the application before resuming writers. `cli.py abort` (or the
+watchdog at 45 minutes) and `cli.py reopen` carry out the journal side of
+this path: they close admissions again, unseal SQLite and reopen it. They do not
+touch `.env` or the config cache. If the database settings were switched,
+restore the saved `.env` in place, run `php artisan config:cache` and `sudo
+systemctl reload php8.3-fpm` before `cli.py reopen`, or `reopen` starts
+workers, the scheduler and FPM on MySQL while the journal says SQLite. The
+live config probe that would make `reopen` refuse is not built
+([MySQL adapter lane](#mysql-adapter-lane-not-built) items 4 and 10). Then
+follow the undo list in [Freeze all writers](#freeze-all-writers).
 
 **After MySQL has received writes:** stop admissions and all writers again.
+`cli.py abort` refuses in `mysql_authoritative`; the commands and their time
+budget are requirements of the
+[MySQL adapter lane](#mysql-adapter-lane-not-built) item 12, not rehearsed.
 Returning to the old frozen SQLite file would lose activity. Reconcile any
 external side effects, export current MySQL data into a **new** SQLite file,
 preserve IDs/sequences/nullable repairs/indexes/triggers, and verify every field
@@ -1297,9 +1767,11 @@ the candidate's SQLite-compatible migrations. Record its checksum. Before the
 outage, use `export-sqlite.py --check-inputs-only` with the four template and
 exception-file flags below to validate the local recovery packet. This checks
 the pinned template, exceptions and bundled cascade-trigger manifest without
-connecting to MySQL. Also check the trigger installer against the exact
-tool digests, snapshot and reviewed trigger names before starting the
-timed import. Verify the durable profile on a disposable instance. Use
+connecting to MySQL. Open: the reviewed reverse-trigger helper that
+installs the MySQL triggers before the export is not committed
+(`reverse_triggers` is `null` in the nightly config), so its check against
+the exact tool digests, snapshot and reviewed trigger names cannot run until
+it is committed and pinned. Verify the durable profile on a disposable instance. Use
 `SHOW GLOBAL VARIABLES` for the binary log format check because reading
 `@@binlog_format` directly emits a deprecation warning on MySQL 8.4.13.
 Keep the warning check enabled for every trigger statement.
@@ -1308,7 +1780,7 @@ After stopping writers and reconciling external effects, run the reviewed
 reverse tool.
 
 ```bash
-python scripts/mysql/export-sqlite.py \
+python3 scripts/mysql/export-sqlite.py \
   --credentials /protected/maintenance.json \
   --database repro_dashboard \
   --expected-server-uuid <independently-observed-source-uuid> \

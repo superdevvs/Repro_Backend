@@ -1755,6 +1755,17 @@ has been done. Each production step needs its own approval.
   restarts and a reboot.
 - Writer hold: after an aborted and reopened cutover, retire the installed
   fences or start a new run before the next deploy.
+- Writer hold: write and review the host identity and MySQL probes before
+  W1, and complete `host.json` (all four owner options, the lab-tour queue
+  if installed, `drain_fpm`) before `init`.
+- Cutover runbook: build the
+  [MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built),
+  and decide its open choices: when the `.env` switch happens, the smoke
+  path, the Telnyx capture during the hold, and a path out of
+  `recovery_required`.
+- Cutover runbook: the read-only production checks before the night (which
+  cache store holds the queue pause flags, FPM's OPcache settings and unit
+  name, the host time zone for cron).
 - Producer replay: publish the website changes P2-02, P2-05 and the P2-06
   export, with their Supabase migration.
 - Producer replay: add the `repro-holds` include line to both Dashboard

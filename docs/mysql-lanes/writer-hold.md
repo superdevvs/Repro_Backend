@@ -235,9 +235,13 @@ The code implements the safe default and makes each a config value.
 - Install order for W1: the nginx include holds the site until the open
   marker exists, and `cli.py init` needs a live SQLite route. Create the
   marker by hand, run `init`, remove the marker, then `refresh` and `reopen`.
-- If the optional `repro-lab-tour` program is installed, add its queue
-  (`iguide-lab-tour`) to the host config and to the 9:20 pm pre-hold pause;
-  its jobs can run 600 s, the whole default drain limit.
+- If the optional `repro-lab-tour` program is installed, add its queue as
+  `iguide-lab-tour:iguide-lab-tour` (connection `iguide-lab-tour`, queue
+  `iguide-lab-tour`) to the host config before `init` and to the 9:20 pm
+  pre-hold pause (`php artisan queue:pause iguide-lab-tour:iguide-lab-tour`;
+  the bare name would pause `database:iguide-lab-tour`). Its jobs can run
+  600 s, the whole default drain limit. The host-config check at `4e4a262d`
+  (`[a-z]+:[a-z0-9-]+`) refuses that name; the code-fix lane widens it.
 
 ## Risks
 

@@ -274,10 +274,12 @@ measure the reboot once and raise the grace only if it is needed and still fits
 the 10-minute delivery limit.
 
 Cutover night: 03:30 UTC is 10:30 pm US Eastern in winter (EST), inside the
-planned Saturday 10 to 11 pm Eastern outage. 02:30 UTC (9:30 pm EST) would also
-run into it. The cutover and drill runbooks must hold `repro-backup.timer` and
-`repro-recovery-kit.timer` (and list them as "nothing due") or the owner must
-pick another time.
+planned Saturday 10 to 11 pm Eastern outage. The old 02:30 UTC (9:30 pm EST)
+falls before the outage but would run during the 9:20 to 9:50 pm pre-hold
+steps. The cutover and drill runbooks must hold `repro-backup.timer`,
+`repro-recovery-kit.timer` and `repro-recovery-kit.path` (and list them as
+"nothing due") or the owner must pick another time. The path unit starts a
+kit run on every `.env` change, and the night edits `.env` several times.
 
 ## MySQL leg (B8)
 
