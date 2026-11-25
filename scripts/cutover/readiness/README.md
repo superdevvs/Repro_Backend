@@ -172,6 +172,13 @@ python -B -m scripts.cutover.readiness.summarize_nightly_parity \
 
 The adapter verifies the supplied file digests and the exact scope, date,
 release and snapshot bindings, then applies the nightly and CRM parity gates.
+To verify the five dated captures during the same run, add
+`--producer-receipts capture1.json capture2.json capture3.json capture4.json capture5.json`.
+Pin each capture's `producer_receipt_sha256` in its manifest entry. A dated
+private copy receipt also needs `source_release_sha` in that entry for the
+independently verified live backend commit. Keep the private producer
+receipts in protected storage. The manifest digest binds these inputs to
+the summary, and each capture must match its own UTC date and snapshot.
 Only the CRM-aware summary schema can satisfy the nightly gate. Put the emitted
 `nightly_data_parity` object in the readiness receipt. After review, pin its
 `summary_sha256` as `operations.nightly_data_parity_summary_sha256` and update

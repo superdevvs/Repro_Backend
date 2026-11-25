@@ -68,6 +68,9 @@ NIGHTLY_PROOFS = (
     "historical_exceptions_match", "target_settings_verified", "target_engine_verified",
     "sqlite_reverse_parity_verified", "invoice_and_payout_parity_verified",
 )
+NIGHTLY_REPORT_FIELDS = {
+    "import_and_verify_ms", *NIGHTLY_IDENTITY_FIELDS, *NIGHTLY_COUNTERS, *NIGHTLY_PROOFS,
+}
 NIGHTLY_CRM_PROOFS = (
     "crm_field_and_identity_parity_verified", "crm_relationship_and_exception_parity_verified",
     "crm_replay_state_parity_verified", "crm_client_import_dry_run_verified",

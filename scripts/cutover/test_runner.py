@@ -141,6 +141,23 @@ class CutoverTest(unittest.TestCase):
         self.assertTrue(self.adapter.observe().sqlite_live())
         self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
 
+    def test_an_external_ingress_hold_does_not_start_a_recoverable_freeze(self):
+        approval = self.runner.approval_request("freeze")
+        observed = replace(self.adapter.observe(), admissions_open=False)
+        self.journal.write_record("fixture.json", asdict(observed))
+        original = self.journal.read()
+
+        with self.assertRaisesRegex(UnsafeCutover, "SQLite preflight changed"):
+            self.runner.perform("freeze", approval)
+        self.now += Runner.WINDOW_SECONDS + 1
+        self.assertEqual(original, self.runner.perform("tick"))
+        with self.assertRaisesRegex(UnsafeCutover, "No freeze is active"):
+            self.runner.perform("abort")
+
+        self.assertEqual(original, self.journal.read())
+        self.assertIsNone(original["started_at"])
+        self.assertEqual(observed, self.adapter.observe())
+
     def test_scheduler_drain_blocks_snapshot_while_background_permit_remains(self):
         self.freeze()
         path = "fixture-scheduler-drain.json"

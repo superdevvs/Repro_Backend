@@ -1,5 +1,49 @@
 # MySQL production readiness
 
+## November 25 writer admission follow-up
+
+**Hold.** A fresh read-only inventory identified two enabled Dashboard
+ingress paths. The same-origin `/api` location pins the backend front
+controller. The legacy API host uses a front-controller rewrite and its
+PHP location. Both resolve to the PHP 8.3 `www` pool and the same active
+Unix socket. The inventory records the on-disk enabled configurations and
+socket identities. It does not prove a production fence or a config reload.
+The redacted vhost and upstream receipt SHA-256 digests are
+`cba52d12fb981a3f89b87fe7e0558570e934cabf9ed30c7f0d80e0fb924c0b2e` and
+`253b4dba0f5f7930389423a05f0f4090a34990cca39a545a323cb11cf2d34c2e`.
+
+The private nginx/PHP-FPM fixture ran quote-view GET and Resend webhook
+POST hold and replay probes through both hostnames. nginx returned 15
+retryable 503 responses before FastCGI, and the PHP journal gate denied
+20 additional matrix requests behind a stale, open ingress marker.
+Seven PHP-FPM cohorts drained across restarts. The fixture reported one
+SQLite effect per replay identity and zero MySQL business writes. The
+redacted isolated report SHA-256 is
+`cd35006037b000d5d6ff7af0230b37952875c9ea862aaffc318b4da8c0da9545`.
+
+The root-side authority refresh helper now verifies the current boot and
+committed journal under the exclusive operator lease. It revokes old proof,
+requires the trusted adapter to observe a sealed single-engine route, and
+publishes the new evidence atomically. All 27 isolated Linux fence tests
+passed. The live adapter probes and publication for a pending service
+transition remain staging integration work.
+
+The Runner currently takes the exclusive operator lease before applying
+its freeze. Closing ingress separately causes its SQLite preflight to
+refuse. The regression fixture leaves the planned journal unchanged,
+including its unset outage clock. A later watchdog tick and pre-write
+abort cannot clear this external hold. A complete staging drill needs an
+authenticated, durable initial hold that stops new writer admissions while
+old leases drain, counts that elapsed time in the single outage clock,
+and supports watchdog recovery before and after journal handoff. Exercise
+this with an already-admitted writer and actual worker restarts. Keep
+production on SQLite until the integrated drill passes.
+
+Nightly evidence assembly can verify all five pinned SQLite producer
+receipts alongside the report and CRM review for each UTC day. The fixture
+rejected reusing a receipt on another date even when the snapshot bytes
+were identical. Real nightly runs and backup observation remain open.
+
 ## November 25 post-cleanup rehearsal
 
 **Hold.** The fresh online copy came from the live SQLite release

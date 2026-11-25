@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 from scripts.cutover import final_backup_check
-from scripts.cutover.readiness import check, summarize_nightly_parity
+from scripts.cutover.readiness import check
 
 
 PRODUCER_LIMIT = 64 * 1024
@@ -78,7 +78,7 @@ def read_capture(path: Path, producer_sha256: str, *, expected_source_release: s
 def verify(night_path: Path, night_sha256: str, producer_path: Path, producer_sha256: str,
            *, now: datetime, expected_source_release: str | None = None) -> dict:
     night = check.load(night_path, expected_sha256=night_sha256)
-    if set(night) != summarize_nightly_parity.NIGHT_FIELDS:
+    if set(night) != check.NIGHTLY_REPORT_FIELDS:
         raise check.Failed("Expected an original nightly parity report")
     day = check.utc_day(night, "scheduled_day_utc")
     snapshot = check.sha_field(night, "snapshot_sha256")

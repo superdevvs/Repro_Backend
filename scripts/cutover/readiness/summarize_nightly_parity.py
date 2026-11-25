@@ -2,20 +2,17 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Sequence
 
-from scripts.cutover.readiness import check
+from scripts.cutover.readiness import check, verify_nightly_capture
 from scripts.cutover.runner import digest
 
 
 SCHEMA = "repro.nightly-data-parity.manifest.v2"
 MANIFEST_FIELDS = {"schema", "identity_sha256", "nightly_scope_sha256", "nights"}
-NIGHT_FIELDS = {
-    "import_and_verify_ms", *check.NIGHTLY_IDENTITY_FIELDS,
-    *check.NIGHTLY_COUNTERS, *check.NIGHTLY_PROOFS,
-}
 SCOPE_SCHEMA = "repro.mysql-migration-scope.v1"
 SHARED_CRM_TABLES = (
     "users", "shoots", "messages", "website_email_deliveries", "external_booking_submissions",
@@ -37,7 +34,8 @@ def crm_scope_table_count(path: Path, scope_sha: str) -> int:
 
 
 def summarize(policy: dict, manifest_path: Path, scope_path: Path,
-              nightly_paths: Sequence[Path], crm_paths: Sequence[Path]) -> dict:
+              nightly_paths: Sequence[Path], crm_paths: Sequence[Path], *,
+              producer_paths: Sequence[Path] | None = None) -> dict:
     check.version(policy)
     identity_sha = digest(check.load_identity(policy))
     operations = check.object_field(policy, "operations")
@@ -53,19 +51,33 @@ def summarize(policy: dict, manifest_path: Path, scope_path: Path,
         raise check.Failed("Nightly manifest must list the reviewed reports in date order")
     if any(len(items) != check.NIGHTLY_RUN_COUNT for items in (selected, nightly_paths, crm_paths)):
         raise check.Failed("Supply exactly five nightly reports and five CRM reviews")
+    if producer_paths is not None and len(producer_paths) != check.NIGHTLY_RUN_COUNT:
+        raise check.Failed("Supply exactly five SQLite producer receipts in the same date order")
 
     scope_table_count = crm_scope_table_count(scope_path, scope_sha)
+    now = datetime.now(timezone.utc)
     nights = []
-    for entry, path, crm_path in zip(selected, nightly_paths, crm_paths, strict=True):
-        if not isinstance(entry, dict) or set(entry) != {"scheduled_day_utc", "report_sha256", "crm_report_sha256"}:
+    producers = producer_paths if producer_paths is not None else (None,) * check.NIGHTLY_RUN_COUNT
+    for entry, path, crm_path, producer_path in zip(selected, nightly_paths, crm_paths, producers, strict=True):
+        entry_fields = {"scheduled_day_utc", "report_sha256", "crm_report_sha256"}
+        if producer_path is not None:
+            entry_fields.add("producer_receipt_sha256")
+            if isinstance(entry, dict) and "source_release_sha" in entry:
+                entry_fields.add("source_release_sha")
+        if not isinstance(entry, dict) or set(entry) != entry_fields:
             raise check.Failed("Malformed nightly report binding")
         day = check.utc_day(entry, "scheduled_day_utc")
         report_sha = check.sha_field(entry, "report_sha256")
         night = check.load(path, expected_sha256=report_sha)
-        if (set(night) != NIGHT_FIELDS
+        if (set(night) != check.NIGHTLY_REPORT_FIELDS
                 or check.sha_field(night, "nightly_scope_sha256") != scope_sha
                 or check.utc_day(night, "scheduled_day_utc") != day):
             raise check.Failed("Nightly report differs from the reviewed date or scope")
+        if producer_path is not None:
+            source_release = check.field(entry, "source_release_sha") if "source_release_sha" in entry else None
+            verify_nightly_capture.verify(path, report_sha, producer_path,
+                                         check.sha_field(entry, "producer_receipt_sha256"), now=now,
+                                         expected_source_release=source_release)
         del night["nightly_scope_sha256"]
         crm_sha = check.sha_field(entry, "crm_report_sha256")
         crm = check.load(crm_path, expected_sha256=crm_sha)
@@ -87,9 +99,12 @@ def main() -> int:
                         metavar="REPORT", help="reviewed nightly JSON files in date order")
     parser.add_argument("--crm-reports", nargs=check.NIGHTLY_RUN_COUNT, type=Path, required=True,
                         metavar="CRM_REVIEW", help="reviewed CRM JSON files in the same date order")
+    parser.add_argument("--producer-receipts", nargs=check.NIGHTLY_RUN_COUNT, type=Path,
+                        metavar="CAPTURE", help="pinned SQLite backup receipts in the same date order")
     args = parser.parse_args()
     try:
-        summary = summarize(check.load(args.policy), args.manifest, args.scope, args.nights, args.crm_reports)
+        summary = summarize(check.load(args.policy), args.manifest, args.scope, args.nights, args.crm_reports,
+                            producer_paths=args.producer_receipts)
     except (check.Missing, check.Failed) as error:
         print(json.dumps({"result": "nightly-parity-summary-refused", "detail": str(error)}))
         return 1
