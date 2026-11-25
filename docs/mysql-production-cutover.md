@@ -99,9 +99,9 @@ secret and application encryption key in protected storage.
 | --- | --- | --- |
 | Staff, FPM and queued jobs | Close admission before Laravel. Include CRM staff routes, shoot observer writes, public quote views and opt-out actions. Hold and drain scheduler, the named `crm:website-intake` task, the four scheduled CRM Artisan commands, all workers and manual imports. | Reconcile the captured work against the authoritative engine. Keep campaign and drip claims held until replies, bounces and opt-outs are applied and uncertain sends have a reviewed disposition. |
 | Website inquiries, bookings and careers | Preserve the producer's original reference and its durable retry or outbox record. Hold the recruiting outbox runner. Require a durable receipt before acknowledging any submission that cannot be retried. | Reapply the same reference, payload and recruiting attachments. Confirm one business effect per reference and reconcile any partial attachment replay. |
-| Shared Resend webhook | Hold at ingress and return a retryable failure until an approved retry or capture path is proven. The edge snippet and `PRODUCER_INGRESS_HOLD` answer 503 with `Retry-After`. Turning off CRM leaves delivery events and public opt-outs able to write, so it is not a freeze control. Before the producer-replay lane it also acknowledged an inbound reply without processing it; `email.received` now gets 503. | Use fresh provider-signed redelivery under the original provider event identity (`svix-id`). The webhook applies it once and refuses a stale signature. Verify required received email content is recoverable. Check forwarding effects before retrying any ambiguous send. Not verified on Resend yet: that a dashboard replay keeps the `svix-id`, re-signs with a fresh timestamp, and retries long enough to cover a 60-minute hold. |
+| Shared Resend webhook | Hold at ingress and return a retryable failure until an approved retry or capture path is proven. The edge snippet and `PRODUCER_INGRESS_HOLD` answer 503 with `Retry-After`. Turning off CRM leaves delivery events and public opt-outs able to write, so it is not a freeze control. Before the producer-replay lane it also acknowledged an inbound reply without processing it; `email.received` now gets 503. | Use fresh provider-signed redelivery under the original provider event identity (`svix-id`). The webhook applies it once and refuses a stale signature. Verify required received email content is recoverable. Check forwarding effects before retrying any ambiguous send. Resend's docs give retries for about 27.5 hours (derived), so a 60-minute hold loses nothing ([provider table](#providers-during-a-60-minute-hold)). Not verified on Resend yet: that a dashboard replay keeps the `svix-id` and re-signs with a fresh timestamp. |
 | Google Calendar | Hold the OAuth callback and the poller (`CRM_CALENDAR_SYNC_HOLD`, step 2 below). Preserve existing mappings and pending pushes. | Reconcile changes made directly in Calendar before releasing sync. Restart an expired OAuth flow from the application. |
-| Aryeo API webhook (`/api/integrations/aryeo/webhooks/{installation}`) | Held with 503 and `Retry-After` at the edge and in the app. Signatures expire after 300 s, so only a fresh delivery from Aryeo can be accepted. Deduplicated by `event_id` with a body hash. | Aryeo retries or redelivers. The same event gives one `aryeo_api_webhooks` row and one `ReconcileAryeoWebhook` job (tested). Aryeo's retry window is not confirmed: ask Aryeo or read their docs before a real freeze. If Aryeo does not retry, held deliveries need a manual redelivery request. |
+| Aryeo API webhook (`/api/integrations/aryeo/webhooks/{installation}`) | Held with 503 and `Retry-After` at the edge and in the app. Signatures expire after 300 s, so only a fresh delivery from Aryeo can be accepted. Deduplicated by `event_id` with a body hash. | A retried or redelivered event gives one `aryeo_api_webhooks` row and one `ReconcileAryeoWebhook` job (tested). Aryeo's docs give one retry after 10 s and a final attempt after 100 s, so deliveries during the hold are lost except the last 2 minutes or so ([provider table](#providers-during-a-60-minute-hold)). No replay is documented: reconcile through the Aryeo orders API after the hold. Not confirmed with Aryeo. |
 
 Maintain a private ledger of each original identity, payload or attachment
 checksum, acknowledgement, replay disposition and verified effect. Include
@@ -399,8 +399,69 @@ only the unbound `TelnyxCutoverInbox` primitive exists
 ([inbox README](../scripts/cutover/inbox/README.md)). During the hold the
 writer hold answers all of them 503 at server level, including the two
 direct `.php` files.
-Open: no lane has confirmed that these six providers retry a 503, or that
-dropping their events during the hold is safe.
+
+What each provider does with a 503 or no answer during a 60-minute hold,
+from the provider docs only (read on 25 November; no provider was asked,
+nothing was tested against a provider). "Unknown" means the docs do not
+say. "Derived" marks arithmetic from documented numbers, not a figure the
+provider publishes.
+
+| Provider | Retries on 503 | Window | Lost in a 60-minute hold | After the hold |
+| --- | --- | --- | --- | --- |
+| Telnyx messaging (`/api/webhooks/telnyx/messaging`, `/status`, `/shared-mms/{uuid}`) | Yes, any non-2xx (2 s timeout). Up to 3 attempts per URL with exponential backoff, then the failover URL; another Telnyx page says 2 retries per URL. Intervals not published. | Unknown | Assume every text and delivery report of the hold is lost, unless a failover URL on a separate, healthy host is set. | List failed deliveries for the window (`GET /v2/webhook_deliveries?filter[status][eq]=failed&filter[started_at][gte]=...`; each record has the payload; check in the portal that messaging webhooks appear there). Cross-check inbound texts with `GET /v2/detail_records?filter[record_type]=messaging`, and outbound ones still sent or queued with `GET /v2/messages/{id}`. Open: no reviewed path re-injects them; the public endpoint refuses signatures older than 300 s. |
+| Telnyx voice (`/api/webhooks/telnyx/voice`) | Yes for 5xx, 408 and 429; other 4xx are not retried. 2 attempts on the primary URL, then the failover URL; immediate unless a custom retry delay is set. | Seconds by default (derived) | Lost. A call during the hold cannot be controlled, and a replay later is pointless. What the caller hears is not documented beyond the optional hang-up on timeout. | Owner decision before the night: point `webhook_event_failover_url` at an independent host, or route the numbers elsewhere. After: list failed `call.initiated` deliveries and the call records for the window, and call missed callers back. |
+| Vapi (`/api/webhooks/vapi`) | No by default. Opt-in `server.backoffPlan` (API only). `assistant-request` and `campaign.predial` are never retried. | 0 by default; about 85 minutes at the maximum exponential setting (derived; no delay cap documented) | Lost. End-of-call reports and status updates are sent once; inbound calls on `assistant-request` numbers end with `assistant-request-returned-error`; tool calls fail mid-call. | List calls for the window, re-ingest each with Get call, and download recordings before their links expire. Check the Webhook logs (not available under Zero Data Retention). |
+| iGUIDE (`/iguide_webhook.php`) | Only 5xx; 3xx and 4xx are dropped silently. Every 10 to 15 minutes, stops after the 5th failed attempt. | About 40 to 60 minutes after the first attempt (derived) | Partly. An event first sent in about the first 20 minutes of the hold can use all five attempts inside it (derived). The docs say there is no way to know which events were sent. | For every iGUIDE or work order that could have become ready in the window (from our records), call `POST /api/v1/iguides/{iguideId}/events/{eventType}/dispatch?taskId=` (scope `iguide.events`), or GET `/events/ready/object`. The handler must accept duplicates. The scheduled `iguide:resync-pending` (:15 and :45) also retries recent shoots without a tour URL. |
+| CubiCasa (`/cubicasa_webhook.php`) | Unknown. The docs say it tries 3 times and then gives up; intervals not stated. | Unknown | Assume lost. | Poll "Get order by ID" for every order not yet final. The scheduled `cubicasa:resync-pending` (every 30 minutes) reconciles unfinished orders once the scheduler runs. |
+| Cakemail (`/api/webhooks/cakemail`) | Unknown | Unknown | Assume lost. | Pull the email activity logs for the window (`GET /v2/logs/emails`, and campaign logs). Apply bounces, unsubscribes and spam complaints to the suppression state first; that is a compliance matter. |
+| Autoenhance (`/api/webhooks/autoenhance`) | Unknown | Unknown | Assume lost. | Poll orders and images sent before or during the hold (`GET /v3/orders/{id}`, `GET /v3/images/{id}`) and finish any that are now processed; staff can also poll from the Dashboard (`POST /api/autoenhance/jobs/poll`). |
+| Resend (`/api/webhooks/resend`, edge hold) | Yes, anything but 200: at once, 5 s, 5 min, 30 min, 2 h, 5 h, 10 h, 10 h, each after the previous failure. | About 27.5 hours (derived) | Nothing. Attempts at about 0 s, 5 s, 5 min and 35 min fall inside the hold; the next comes about 2 h 35 min after the first. | Optional: replay failed events from the dashboard or API (CRM step 8), deduplicated on `svix-id`. Resend disables an endpoint after "sustained failures" (not quantified; the generic Svix rule is 5 days). |
+| Aryeo (`/api/integrations/aryeo/webhooks/{installation}`, edge hold) | Yes, any non-2xx: again after 10 s, a final attempt after 100 s, then it stops. | About 2 minutes (derived) | Lost, except events from the last 2 minutes or so before the edge hold is released (CRM step 6). | No replay is documented. List orders (`GET /orders`) and re-fetch those touched in the window (`GET /orders/{order_id}`). Open: no Dashboard command does this for a window. |
+| Stripe (`/api/webhooks/stripe`, edge hold) | Yes, any non-2xx, a timeout or a redirect. Exponential backoff; intervals not published. | Up to 3 days in live mode (3 tries over a few hours in a sandbox) | Nothing. | CRM step 11 (`stripe:undelivered-events`). Resend from the dashboard (up to 15 days) with approval, and keep answering 200 for events already handled. |
+
+Answer 503, never 3xx or 4xx: iGUIDE drops anything that is not 5xx,
+Telnyx voice does not retry 4xx other than 408 and 429, and Stripe counts a
+redirect as a failure. No redirect to a maintenance page. iGUIDE does not
+document a refused connection or a timeout, so a 503 is safer than closing
+the port. The server-level hold and the edge snippet both answer 503.
+
+Sources, all provider docs: Telnyx messaging
+([receiving webhooks](https://developers.telnyx.com/docs/messaging/messages/receiving-webhooks),
+[receive a message](https://developers.telnyx.com/docs/messaging/messages/receive-message),
+[support: webhooks](https://support.telnyx.com/en/articles/4334722-how-to-leverage-webhooks),
+[detail record search](https://telnyx.com/release-notes/detail-record-search-api));
+Telnyx voice ([voice API webhooks](https://developers.telnyx.com/docs/voice/programmable-voice/voice-api-webhooks),
+[support: Call Control applications](https://support.telnyx.com/en/articles/4374050-configuring-call-control-texml-applications-voice-api),
+[Dial](https://developers.telnyx.com/api-reference/call-commands/dial),
+[list webhook deliveries](https://telnyx.mintlify.app/api-reference/webhooks/list-webhook-deliveries),
+[debugging tools](https://support.telnyx.com/en/articles/4304872-telnyx-debugging-tools),
+[receiving webhooks](https://developers.telnyx.com/development/api-fundamentals/webhooks/receiving-webhooks));
+Vapi ([server events](https://docs.vapi.ai/server-url/events),
+[end-of-call report](https://github.com/VapiAI/docs/blob/main/fern/server-url/end-of-call-report.mdx),
+[server URLs](https://docs.vapi.ai/server-url/setting-server-urls),
+[campaign webhooks](https://docs.vapi.ai/outbound-campaigns/webhooks),
+[reliability](https://docs.vapi.ai/tools/api-request/reliability));
+[iGUIDE webhooks](https://docs.youriguide.com/docs/integrations/webhooks/);
+CubiCasa ([about webhooks](https://integrate.docs.cubi.casa/about-webhooks-1362318m0),
+[get started](https://integrate.docs.cubi.casa/get-started-1362307m0));
+Cakemail ([webhook](https://cakemail.dev/en/api/webhook),
+[email API](https://cakemail.dev/en/api/email-api));
+Autoenhance ([webhooks](https://docs.autoenhance.ai/webhooks),
+[retrieving orders](https://docs.autoenhance.ai/orders/managing-orders/retrieving),
+[listing orders](https://docs.autoenhance.ai/orders/managing-orders/listing-and-pagination),
+[retrieving images](https://docs.autoenhance.ai/images/managing-images/retrieveing));
+Resend ([retries and replays](https://resend.com/docs/webhooks/retries-and-replays),
+[create webhook](https://resend.com/docs/webhooks/create-webhook),
+[list event attempts](https://www.resend.com/docs/api-reference/webhooks/list-event-attempts),
+[list events](https://www.resend.com/docs/api-reference/webhooks/list-events),
+[Svix retries](https://docs.svix.com/retries));
+Aryeo ([setting up webhooks](https://docs.aryeo.com/docs/4-setting-up-webhooks),
+[orders API](https://docs.aryeo.com/api/aryeo/orders));
+Stripe ([webhooks](https://docs.stripe.com/webhooks),
+[managing endpoints](https://docs.stripe.com/events/manage-webhook-endpoints)).
+A lower-authority Telnyx guide on GitHub lists a different schedule
+(immediately, 1, 5 and 15 minutes, 1 hour); it contradicts the developer
+docs and is not used here.
 
 The edge snippet answers 503 for everything under `/api/external/`, which is
 wider than `PRODUCER_INGRESS_HOLD`: the catalog read, `check-client` and the
