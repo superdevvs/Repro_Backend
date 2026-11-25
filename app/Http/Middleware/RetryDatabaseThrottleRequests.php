@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Database\WriterTokenTimeout;
 use App\Services\ApiErrorResponder;
 use App\Support\LockedWrite;
 use Closure;
@@ -10,7 +11,11 @@ use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
-/** Keep transient SQLite limiter failures outside the application callback. */
+/**
+ * Keep transient limiter failures outside the application callback: SQLite lock
+ * contention, and on MySQL a WriterTokenTimeout, which is raised only while
+ * taking the writer token, before the limiter's statement ran.
+ */
 class RetryDatabaseThrottleRequests extends ThrottleRequests
 {
     protected function handleRequest($request, Closure $next, array $limits)
@@ -71,8 +76,8 @@ class RetryDatabaseThrottleRequests extends ThrottleRequests
         for ($attempt = 1; ; $attempt++) {
             try {
                 return $callback();
-            } catch (QueryException $exception) {
-                $transient = $this->isSqliteContention($exception);
+            } catch (QueryException|WriterTokenTimeout $exception) {
+                $transient = $exception instanceof WriterTokenTimeout || $this->isSqliteContention($exception);
                 if (! $transient || $attempt >= LockedWrite::DEFAULT_ATTEMPTS) {
                     try {
                         Log::error('Rate limiter database operation failed.', ApiErrorResponder::diagnosticContext($exception) + [

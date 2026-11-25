@@ -2,6 +2,9 @@
 
 namespace App\Support;
 
+use App\Database\WriterTokenConnection;
+use App\Database\WriterTokenTimeout;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -23,6 +26,12 @@ use Throwable;
  * This is deliberately a short bounded retry, not a way to make the error go
  * away. If the contention does not clear the original exception is rethrown so
  * the caller still fails visibly.
+ *
+ * On MySQL with the writer policy there is no stale-snapshot refusal to retry.
+ * The write takes the writer token first, retrying only that wait, and then
+ * runs exactly once inside the token's transaction. A failure after the token
+ * is held, including a lock timeout, is never retried and the callback is
+ * never replayed.
  */
 final class LockedWrite
 {
@@ -39,18 +48,23 @@ final class LockedWrite
      * Run $write, retrying only while the failure is a SQLite lock contention.
      *
      * @template TReturn
+     *
      * @param  callable(): TReturn  $write
      * @return TReturn
      */
     public static function run(callable $write, ?string $context = null, int $attempts = self::DEFAULT_ATTEMPTS)
     {
         $attempts = max(1, $attempts);
+        $connection = DB::connection();
+        if ($connection instanceof WriterTokenConnection && $connection->writerPolicyEnabled()) {
+            return self::runWithWriterToken($connection, $write, $context, $attempts);
+        }
 
         for ($attempt = 1; ; $attempt++) {
             try {
                 return $write();
             } catch (Throwable $e) {
-                if ($attempt >= $attempts || !self::isLockContention($e)) {
+                if ($attempt >= $attempts || ! self::isLockContention($e)) {
                     if (self::isLockContention($e)) {
                         Log::error('Write still blocked by another database writer after retrying; giving up.', [
                             'context' => $context,
@@ -74,6 +88,33 @@ final class LockedWrite
 
                 usleep($delay);
             }
+        }
+    }
+
+    /**
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $write
+     * @return TReturn
+     */
+    private static function runWithWriterToken(WriterTokenConnection $connection, callable $write, ?string $context, int $attempts)
+    {
+        if ($connection->transactionLevel() > 0) {
+            // The token is already held by the enclosing transaction.
+            return $write();
+        }
+
+        try {
+            return $connection->transaction(static fn () => $write(), $attempts);
+        } catch (WriterTokenTimeout $e) {
+            if ($connection->isAcquisitionTimeout($e)) {
+                Log::error('Write still blocked by another database writer after retrying; giving up.', [
+                    'context' => $context,
+                    'attempts' => $attempts,
+                ]);
+            }
+
+            throw $e;
         }
     }
 
