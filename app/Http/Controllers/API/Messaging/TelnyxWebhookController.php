@@ -32,7 +32,7 @@ class TelnyxWebhookController extends Controller
             return response()->json(['message' => 'Invalid Telnyx signature.'], 403);
         }
 
-        return $this->routeMessaging($request->json()->all(), now());
+        return $this->routeMessaging($request->json()->all(), null);
     }
 
     /**
@@ -44,7 +44,7 @@ class TelnyxWebhookController extends Controller
             return response()->json(['message' => 'Invalid Telnyx signature.'], 403);
         }
 
-        return $this->routeStatus($request->json()->all(), now());
+        return $this->routeStatus($request->json()->all(), null);
     }
 
     /**
@@ -66,8 +66,9 @@ class TelnyxWebhookController extends Controller
 
     /**
      * @param  array<string, mixed>  $payload
+     * @param  CarbonInterface|null  $receivedAt  The arrival time of a replayed event; null when live.
      */
-    private function routeMessaging(array $payload, CarbonInterface $receivedAt): JsonResponse
+    private function routeMessaging(array $payload, ?CarbonInterface $receivedAt): JsonResponse
     {
         $eventType = (string) data_get($payload, 'data.event_type', '');
 
@@ -85,7 +86,7 @@ class TelnyxWebhookController extends Controller
     /**
      * @param  array<string, mixed>  $payload
      */
-    private function routeStatus(array $payload, CarbonInterface $receivedAt): JsonResponse
+    private function routeStatus(array $payload, ?CarbonInterface $receivedAt): JsonResponse
     {
         $eventType = (string) data_get($payload, 'data.event_type', '');
 
@@ -132,7 +133,7 @@ class TelnyxWebhookController extends Controller
 
         $knownThread = app(\App\Services\Messaging\SmsInboxPolicy::class)->threadForPair($from, $to);
         $knownContact = $knownThread?->contact ?? $this->findContactByPhone($this->normalizePhoneNumber($from));
-        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, $at): int {
+        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, $at, $receivedAt): int {
             $contactPhone = $this->normalizePhoneNumber($from);
             $thread = $knownThread?->fresh();
             $contact = $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
@@ -167,11 +168,15 @@ class TelnyxWebhookController extends Controller
             ]);
 
             app(\App\Services\Messaging\MessageMediaService::class)->incoming('sms', (string) $message->id, (array) data_get($payload, 'data.payload.media', []));
-            $thread->update([
-                'last_message_at' => $at,
-                'last_direction' => 'INBOUND',
-                'last_snippet' => Str::limit($text, 200),
-            ]);
+            // A replayed text keeps its arrival time, so it must not move the
+            // thread's latest-message summary back past a newer message.
+            if ($receivedAt === null || $thread->last_message_at === null || $thread->last_message_at->lte($at)) {
+                $thread->update([
+                    'last_message_at' => $at,
+                    'last_direction' => 'INBOUND',
+                    'last_snippet' => Str::limit($text, 200),
+                ]);
+            }
 
             if (app(\App\Services\Messaging\SmsInboxPolicy::class)->kind($message) === 'incoming') {
                 $thread->markUnreadForStaff();

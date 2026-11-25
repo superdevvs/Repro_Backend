@@ -31,7 +31,8 @@ behaves exactly as today.
 
 **Replay.** `php artisan telnyx:replay-spool` sends the saved texts through the
 normal handlers, oldest first, with the saved arrival time (used for
-`sent_at`, `delivered_at`, `failed_at` and the thread's last message time). It
+`sent_at`, `delivered_at`, `failed_at` and the thread's last message time). A
+replayed text never moves a thread's last message back past a newer one. It
 checks each saved signature again. Each Telnyx event id, and each inbound
 message id, is handled once, including messages that already reached the app
 live. Forged or damaged files go to `rejected/`. A file that fails stays for
