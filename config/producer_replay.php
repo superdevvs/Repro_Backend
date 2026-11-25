@@ -5,8 +5,9 @@
  *
  * While ingress_hold is on, the listed producer routes answer 503 with
  * Retry-After before any middleware or controller can write, so the website
- * outbox, the booking forwarder, the contact form, Resend, Stripe and Aryeo keep their own
- * copy and retry later. Off by default. See docs/mysql-lanes/producer-replay.md.
+ * outbox, the booking forwarder, the contact form, Resend, Stripe and Aryeo
+ * keep their own copy and retry later. Off by default.
+ * See docs/mysql-lanes/producer-replay.md.
  */
 
 return [
@@ -24,5 +25,14 @@ return [
         'api/webhooks/stripe',
         'api/webhooks/stripe/listing-studio',
         'api/integrations/aryeo/webhooks/*',
+    ],
+
+    /*
+     * Restricted Stripe keys with read access to Events only, used by
+     * stripe:undelivered-events after the freeze. Never the secret key.
+     */
+    'stripe_events_read_keys' => [
+        'dashboard' => env('STRIPE_EVENTS_READ_KEY'),
+        'listing-studio' => env('LISTING_STUDIO_STRIPE_EVENTS_READ_KEY'),
     ],
 ];
