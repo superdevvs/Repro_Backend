@@ -329,11 +329,41 @@ def compress_sqlite_copy(bundle, reserve):
         os.close(directory)
 
 
+def remove_stale_partials(directory):
+    """Remove partial gzip files that a killed compression left behind.
+
+    The caller holds the backend deploy lock, so no compression is running and
+    any partial file is stale. Left in place, it would make retention treat the
+    bundle as unrecognized and keep its raw copy forever. Only that exact name,
+    as a plain file owned by this user, is removed.
+    """
+    for path in sorted(directory.iterdir()):
+        if not STAMP.fullmatch(path.name):
+            continue
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            continue
+        try:
+            folder = os.fstat(descriptor)
+            partial = os.stat(PARTIAL_GZIP, dir_fd=descriptor, follow_symlinks=False)
+            if (folder.st_uid == os.getuid() and stat.S_ISREG(partial.st_mode)
+                    and partial.st_nlink == 1 and partial.st_uid == os.getuid()):
+                os.unlink(PARTIAL_GZIP, dir_fd=descriptor)
+                os.fsync(descriptor)
+                print(f'sqlite_backup_compression=removed-stale-partial bundle={path.name}')
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(descriptor)
+
+
 def compress_latest_sqlite_backup(base=None, reserve=None):
     """Compress the newest backend bundle only. Older bundles age out unchanged."""
     base = BASE if base is None else base
     reserve = RESERVE if reserve is None else reserve
     directory = safe_directory(base / 'backend')
+    remove_stale_partials(directory)
     stamps = sorted(path for path in directory.iterdir() if STAMP.fullmatch(path.name))
     if not stamps:
         print('sqlite_backup_compression=skipped reason=no-backup')

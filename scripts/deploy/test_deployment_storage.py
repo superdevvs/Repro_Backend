@@ -354,6 +354,34 @@ class CompressionTest(unittest.TestCase):
         self.assertEqual((newest / 'database.sqlite').read_bytes(), original)
         self.assertEqual(sorted(path.name for path in newest.iterdir()), ['database.sqlite', 'source.tar.gz'])
 
+    def test_a_partial_file_left_by_a_killed_run_is_cleared_and_the_copy_is_compressed(self):
+        # A run killed before its own cleanup (reboot, OOM) leaves the partial
+        # file. Retention would then call the bundle unrecognized and keep its
+        # raw copy forever. The next run holds the lock, so the file is stale.
+        older = self.bundle('20261020-100000')
+        (older / guard.PARTIAL_GZIP).write_bytes(b'')
+        newest = self.bundle('20261021-100000')
+        (newest / guard.PARTIAL_GZIP).write_bytes(b'\x1f\x8b truncated')
+        original = (newest / 'database.sqlite').read_bytes()
+        output = self.compress()
+        self.assertFalse((older / guard.PARTIAL_GZIP).exists())
+        self.assertIsNotNone(guard.inspect_backup(older, 'backend'))
+        self.assertEqual(sorted(path.name for path in newest.iterdir()), ['database.sqlite.gz', 'source.tar.gz'])
+        with gzip.open(newest / 'database.sqlite.gz', 'rb') as stream:
+            self.assertEqual(stream.read(), original)
+        self.assertIn('removed-stale-partial', output)
+
+    def test_only_a_plain_owned_partial_file_is_cleared(self):
+        newest = self.bundle('20261021-100000')
+        outside = Path(self.temporary.name) / 'outside.gz'
+        outside.write_bytes(b'not ours to delete')
+        (newest / guard.PARTIAL_GZIP).symlink_to(outside)
+        output = self.compress()
+        self.assertTrue((newest / guard.PARTIAL_GZIP).is_symlink())
+        self.assertEqual(outside.read_bytes(), b'not ours to delete')
+        self.assertTrue((newest / 'database.sqlite').exists())
+        self.assertIn('sqlite_backup_compression=skipped', output)
+
     def test_insufficient_space_skips_without_changes(self):
         newest = self.bundle('20261021-100000')
         with patch.object(guard.os, 'statvfs', return_value=SimpleNamespace(f_bavail=1, f_frsize=1)):
