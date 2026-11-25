@@ -430,6 +430,35 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertTrue((self.root / "ingress" / "open").exists())
         self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id), "reopen in planned lifted the deploy fence")
 
+    def test_init_refused_by_a_busy_deploy_lock_is_retried_until_deploys_are_fenced(self):
+        # A deploy that keeps its lock past command_seconds makes the fence publication fail.
+        # Ingress is open (refresh refuses) and a planned tick changes nothing, so init itself
+        # must stay retryable and fence deploys once the deploy ends.
+        import fcntl
+
+        self.config_path.write_text(json.dumps(self.config(command_seconds=1)), encoding="utf-8")
+        marker = self.root / "etc" / "active"
+        errors = io.StringIO()
+        with open(self.root / "home" / ".repro-backend-deploy.lock", "a+b") as deploying, patch("sys.stderr", errors):
+            os.fchown(deploying.fileno(), 33, 33)
+            fcntl.flock(deploying, fcntl.LOCK_EX)
+            self.assertEqual(1, self.cli("init")[0])
+        self.assertIn("deployment holds its lock", errors.getvalue())
+        self.assertFalse(deploy_marker.published(marker, IDENTITY.run_id))
+
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            code, initialized = self.cli("init")
+        self.assertEqual(0, code, errors.getvalue())
+        self.assertEqual("planned", initialized["state"]["phase"])
+        self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id), "init left deployments open")
+        # A committed run is never initialized again.
+        journal = Journal(self.root / "state")
+        committed = journal.path.read_bytes()
+        with patch("sys.stderr", io.StringIO()):
+            self.assertEqual(1, self.cli("init")[0])
+        self.assertEqual(committed, journal.path.read_bytes())
+
     def reboot_without_runtime_directories(self):
         """A real reboot mounts a fresh /run: the runtime directories are gone, not only their files."""
         shutil.rmtree(self.root / "run")

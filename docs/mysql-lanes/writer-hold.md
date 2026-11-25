@@ -346,3 +346,23 @@ error before the lock is settled under the lock as before.
 0 ms drain) pass. The two publication-crash tests now expect the
 unfinished-action refusal and check directly that the publishing controller
 still holds the writer lock. `run-linux-tests.sh` passes in full.
+
+### Round 3
+
+Codex reviewed `68f90752..273aa827`; the finding was rechecked at `66b8b88f`.
+
+- r3#1 (P2, initial deploy fence not recoverable): real. `init` committed the
+  `planned` journal and released the controller lock before publishing the
+  fence. A deploy holding its lock past `command_seconds` then left an unfenced
+  planned run: a retried `init` refused ("A run already exists"), a planned
+  tick does nothing, and `refresh` refuses while ingress is open. Fixed in the
+  commit that adds this entry: `Runner.initialize` publishes the fence under
+  the controller lock before the journal commit, so a failed publication leaves
+  no run and `init` can be retried. A committed run is still never
+  initialized again. If the journal write itself fails after the fence is
+  published, deploys stay held with no run until `init` is retried (fail
+  closed). r2#4 and r2#5 are unchanged.
+  `test_init_refused_by_a_busy_deploy_lock_is_retried_until_deploys_are_fenced`
+  (red: "Cutover controller refused: A run already exists in this directory").
+  `run-linux-tests.sh` passes in full (adapter and CLI 31); CI discovery of
+  `scripts/cutover`, `fence` and `readiness` passes.
