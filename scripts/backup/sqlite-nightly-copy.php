@@ -76,6 +76,10 @@ try {
     if (! class_exists(SQLite3::class)) {
         nightlyFail('The SQLite3 extension is required.');
     }
+    // Without posix the group and owner checks below cannot run; fail closed.
+    if (! function_exists('posix_getegid') || ! function_exists('posix_geteuid')) {
+        nightlyFail('The posix extension is required to check the process group and file owners.');
+    }
     if (! str_starts_with($destination, '/') || is_link($destination) || ! is_dir($destination)) {
         nightlyFail('The destination must be an existing absolute directory, not a link.');
     }
@@ -97,7 +101,7 @@ try {
     }
     // SQLite gives new -wal/-shm files the creator's group. A copy run under the
     // wrong group could leave files the web server cannot write.
-    if (function_exists('posix_getegid') && posix_getegid() !== $sourceInfo['gid']) {
+    if (posix_getegid() !== $sourceInfo['gid']) {
         nightlyFail('Run with the database file\'s group (for example through sg www-data).');
     }
 

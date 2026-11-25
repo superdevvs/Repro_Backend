@@ -207,6 +207,18 @@ class SqliteNightlyCopyTest extends TestCase
         $this->assertSame([], glob($this->destination.'/database-*'));
     }
 
+    public function test_the_copy_refuses_to_run_when_it_cannot_check_the_group(): void
+    {
+        $this->createSource(rows: 10);
+
+        // Without posix the group and owner checks cannot run, so fail closed.
+        $process = $this->runCopy(ini: ['disable_functions=posix_getegid,posix_geteuid']);
+
+        $this->assertNotSame(0, $process->getExitCode());
+        $this->assertStringContainsString('posix', $process->getErrorOutput());
+        $this->assertSame([], glob($this->destination.'/database-*'));
+    }
+
     public function test_restore_proof_verifies_checksum_and_opens_a_scratch_copy(): void
     {
         $this->createSource(rows: 25);
@@ -296,10 +308,11 @@ class SqliteNightlyCopyTest extends TestCase
         $db->close();
     }
 
-    private function runCopy(array $options = [], bool $allowSameDevice = true): Process
+    private function runCopy(array $options = [], bool $allowSameDevice = true, array $ini = []): Process
     {
         $process = new Process([
-            PHP_BINARY, dirname(__DIR__, 2).'/scripts/backup/sqlite-nightly-copy.php',
+            PHP_BINARY, ...array_map(static fn (string $setting): string => '-d'.$setting, $ini),
+            dirname(__DIR__, 2).'/scripts/backup/sqlite-nightly-copy.php',
             $this->source, $this->destination, '--reserve-bytes=0',
             ...($allowSameDevice ? ['--allow-same-device'] : []), ...$options,
         ]);

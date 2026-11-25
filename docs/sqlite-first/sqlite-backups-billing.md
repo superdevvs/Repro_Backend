@@ -15,8 +15,9 @@ How it works:
   never block writers, so the app keeps writing during the copy.
 - It refuses a database that is not in WAL mode, because then the copy would
   block writers for its whole run.
-- Each copy passes `PRAGMA quick_check` and gets a `.sha256` file that
-  `sha256sum -c` understands. Only then is it named `database-YYYYMMDD-HHMMSS.sqlite`.
+- Each copy passes `PRAGMA quick_check` before it gets its final name,
+  `database-YYYYMMDD-HHMMSS.sqlite`, and then a `.sha256` file that
+  `sha256sum -c` understands.
 - It keeps the newest 7 copies (`--keep=N`). Old copies are removed only after
   a good new copy, so a failing night never lowers the number of good copies.
 - Every run writes `last-run.json` in the copy folder (`status`, `finished_at`,
@@ -29,6 +30,7 @@ It refuses to run when:
 - the process group differs from the database file's group (new `-wal`/`-shm`
   files must stay writable by PHP-FPM, so run it as `www-data` group);
 - another copy is still running (exit code 75);
+- PHP has no `posix` extension, so the group check cannot run;
 - there is not enough free space (live file + WAL + 2 GiB).
 
 While a copy runs, the WAL file can grow, because the copy holds one snapshot.
