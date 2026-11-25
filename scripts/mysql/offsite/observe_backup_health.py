@@ -4,7 +4,10 @@
 Run `observe` every minute on the independent recovery machine with the
 READ-ONLY restore key. Each run records, as of the start of the current slot:
 the newest base backup with a completion marker, and how far a contiguous
-binlog chain from that base is published (the chain's last batch seal time).
+binlog chain from that base is published. Recovery reaches the time of the
+Rotate event that closed the newest batch's last log, read from the log itself
+(verified against the batch manifest), never the batch's seal time: a catch-up
+batch cut by the collector's limits is sealed now but holds only old logs.
 The raw sample is kept beside the journal and pinned by its SHA-256.
 A publication counts for a slot only if its completion marker's verified_at is
 at or before the slot start, not merely if this run (a few seconds later) can
@@ -16,18 +19,21 @@ scripts/cutover/readiness/summarize_backup_health.py reads.
 
 A slot is credited only while lag stays within 300 s, using the value seen at
 the slot start, so sample every 60 s: a two-minute rotation then keeps full
-credit. Seal time can be up to one rotation newer than the last transaction.
+credit. Every transaction committed before the rotation time is in the chain.
 """
 from __future__ import annotations
 
 import argparse
 import bisect
 import datetime as dt
+import io
 import json
 import os
 from pathlib import Path
+import struct
 import sys
 import time
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import publish_backup as backup
@@ -36,7 +42,8 @@ import verify_mysql_binlog_chain as chain
 SAMPLE_SCHEMA = "repro.backup-health.sample.v1"
 REPORT_SCHEMA = "repro.backup-health.observations.v1"
 WINDOW = 7 * 24 * 3600
-CACHE_VERSION = 2
+CACHE_VERSION = 3
+COVERAGE_READ_LIMIT = 64 * 1024**2  # Larger last logs are not read; recovery then does not advance past them.
 PLAN_FIELDS = {"version", "interval_s", "journal", "samples_dir", "database_identity", "binlog_identity", "rclone",
                "crypt_remote", "database_config", "database_destination", "binlog_config", "binlog_destination",
                "timeout_seconds"}
@@ -52,10 +59,39 @@ def parse_completion(raw: bytes, identity: str) -> dict:
                 and record.get("status") == "artifact-readback-verified" and isinstance(record.get("input"), dict)
                 and record["input"].get("identity") == identity, "completion marker is not a verified publication")
     names = [item["path"] for item in record["input"]["artifacts"]]
-    logs = sorted(int(name.rsplit(".", 1)[1]) for name in names if chain.BINLOG.fullmatch(name))
+    logs = {int(item["path"].rsplit(".", 1)[1]): item for item in record["input"]["artifacts"]
+            if chain.BINLOG.fullmatch(item["path"])}
+    tail = logs[max(logs)] if logs else None
     return {"created": epoch(record["input"]["created_at"]), "available": epoch(record["verified_at"]),
-            "names": names, "first": logs[0] if logs else None, "last": logs[-1] if logs else None,
+            "names": names, "first": min(logs) if logs else None, "last": max(logs) if logs else None,
+            "tail": None if tail is None else {key: tail[key] for key in ("path", "bytes", "sha256")},
             "sha256": backup.sha256(raw)}
+
+
+def rotated_at(raw: bytes, name: str) -> int | None:
+    """Server time of the Rotate event that closed this binary log, or None if it does not end in one.
+
+    MySQL stamps that event with the rotation time (checked on 8.4.13), and every
+    transaction committed before the rotation is in this file or an earlier one."""
+    header = chain.EVENT_HEADER
+    if raw[:len(chain.MAGIC)] != chain.MAGIC:
+        return None
+    position, last = len(chain.MAGIC), None
+    while position < len(raw):
+        if len(raw) - position < header.size:
+            return None
+        moment, kind, _, size, end, _ = header.unpack_from(raw, position)
+        if size < header.size + 4 or end != position + size or end > len(raw) or (
+                (kind == chain.FORMAT_DESCRIPTION) != (position == len(chain.MAGIC))):
+            return None
+        last, position = (moment, kind, raw[position:end]), end
+    if last is None:
+        return None
+    moment, kind, event = last
+    body = struct.pack("<Q", 4) + chain.next_log(name).encode("ascii")
+    if kind != chain.ROTATE or event[header.size:-4] != body or event[-4:] != struct.pack("<I", zlib.crc32(event[:-4])):
+        return None
+    return moment
 
 
 def ready(item: dict, slot: int) -> bool:
@@ -126,10 +162,27 @@ def refresh(bucket, state: State, now: int) -> None:
             state.index(backup_id, item)
 
 
-def chain_through(state: State, base_id: str, base: dict, slot: int) -> int | None:
-    """Extend the contiguous published chain from a base, counting only batches published by the slot start."""
+def covered(bucket, state: State, backup_id: str) -> int | None:
+    """Rotation time of a batch's last log (read once, then cached), capped at the batch's seal time."""
+    item = state.cache["binlogs"][backup_id]
+    if "covered" not in item:
+        tail, moment = item["tail"], None
+        if tail is not None and tail["bytes"] <= COVERAGE_READ_LIMIT:
+            raw = bucket.verified_artifact(state.plan["binlog_identity"], backup_id, tail["path"], tail["bytes"],
+                                           tail["sha256"])
+            moment = rotated_at(raw, tail["path"])
+        item["covered"] = None if moment is None else min(moment, item["created"])
+    return item["covered"]
+
+
+def chain_through(state: State, base_id: str, base: dict, slot: int, coverage) -> int | None:
+    """Extend the contiguous published chain from a base over batches published by the slot start.
+
+    Returns the newest rotation time the chain is known to reach. Only the chain's newest
+    batch is read; a batch whose last log cannot be read leaves the previous value."""
     binlogs = state.cache["binlogs"]
     current = state.cache["chains"].get(base_id)
+    advanced = False
     if current is None:
         position = bisect.bisect_right(state.ranges, (base["start"], float("inf"), "")) - 1
         if position < 0:
@@ -137,11 +190,16 @@ def chain_through(state: State, base_id: str, base: dict, slot: int) -> int | No
         first, last, backup_id = state.ranges[position]
         if not first <= base["start"] <= last or not ready(binlogs[backup_id], slot):
             return None
-        current = {"next": last + 1, "through": binlogs[backup_id]["created"], "batches": 1}
+        current, advanced = {"next": last + 1, "through": None, "batches": 1, "tip": backup_id}, True
     while current["next"] in state.first and ready(binlogs[state.first[current["next"]]], slot):
-        item = binlogs[state.first[current["next"]]]
-        current = {"next": item["last"] + 1, "through": max(current["through"], item["created"]),
-                   "batches": current["batches"] + 1}
+        backup_id = state.first[current["next"]]
+        current = {"next": binlogs[backup_id]["last"] + 1, "through": current["through"],
+                   "batches": current["batches"] + 1, "tip": backup_id}
+        advanced = True
+    if advanced:
+        moment = coverage(current["tip"])
+        if moment is not None and (current["through"] is None or moment > current["through"]):
+            current["through"] = moment
     state.cache["chains"][base_id] = current
     return current["through"]
 
@@ -156,7 +214,8 @@ def observe(plan: dict, bucket, *, now: int, state: State) -> dict | None:
     base_time, base_id = max(eligible) if eligible else (0, None)
     through = None
     if base_id is not None and plan["binlog_identity"] and state.cache["bases"][base_id]["start"] is not None:
-        value = chain_through(state, base_id, state.cache["bases"][base_id], slot)
+        value = chain_through(state, base_id, state.cache["bases"][base_id], slot,
+                              lambda backup_id: covered(bucket, state, backup_id))
         through = value if value is not None and base_time <= value <= slot else None
     sample = {"schema": SAMPLE_SCHEMA, "slot_start_unix_s": slot, "observed_unix_s": now,
               "base": None if base_id is None else {"backup_id": base_id, "created_unix_s": base_time,
@@ -222,6 +281,13 @@ class RcloneBucket:
 
     def artifact(self, identity: str, backup_id: str, path: str) -> bytes:
         return self.remotes[identity].run("cat", f"{self.crypt}:database/{identity}/{backup_id}/artifacts/{path}")
+
+    def verified_artifact(self, identity: str, backup_id: str, path: str, size: int, sha256: str) -> bytes:
+        """The artifact's bytes, checked against the size and digest its published manifest lists."""
+        sink = io.BytesIO()
+        self.remotes[identity].readback(f"{self.crypt}:database/{identity}/{backup_id}/artifacts/{path}", size, sha256,
+                                        sink)
+        return sink.getvalue()
 
 
 def read_plan(path: Path) -> dict:

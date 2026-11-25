@@ -43,6 +43,7 @@ class FakeBucket:
         self.objects = {}
         self.ids = {}
         self.reads = 0
+        self.downloads = []
         self.uploading = {}  # identity -> backup IDs whose folder is listed before completion.json exists
 
     def publish(self, identity: str, created: int, artifacts: dict, *, delay: int = 30) -> None:
@@ -71,6 +72,13 @@ class FakeBucket:
 
     def artifact(self, identity: str, backup_id: str, path: str) -> bytes:
         return self.objects[(identity, backup_id)][1][path]
+
+    def verified_artifact(self, identity: str, backup_id: str, path: str, size: int, sha256: str) -> bytes:
+        self.downloads.append((backup_id, path))
+        data = self.objects[(identity, backup_id)][1][path]
+        if len(data) != size or backup.sha256(data) != sha256:
+            raise backup.Refusal("readback size or digest mismatch")
+        return data
 
 
 def receipt(number: int) -> bytes:
@@ -116,12 +124,11 @@ class ObserverTests(unittest.TestCase):
         for moment in range(START - 86400, STOP + ROTATION, ROTATION):
             if (moment - START) % 86400 == 3 * 3600 + 1800 - ROTATION * 0:
                 self.bucket.publish(SOURCE, moment, {"database-backup.json": receipt(number), "database.sql.gz": b"x"})
-            pending.append(f"binlog.{number:06d}")
+            pending.append((number, moment))  # Rotated now, so it holds everything committed until now.
             number += 1
             if outage and outage[0] <= moment < outage[1]:
                 continue  # The archive is down; closed files wait for the catch-up batch.
-            artifacts = {name: b"log" for name in pending} | {"closed-binlogs.json": b"{}"}
-            self.bucket.publish(ARCHIVE, moment, artifacts)
+            self.bucket.publish(ARCHIVE, moment, logs(*pending))
             pending = []
 
     def observe_window(self, *, skip=()):
@@ -236,6 +243,41 @@ class ObserverTests(unittest.TestCase):
         later = observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state)
         self.assertEqual(later["newest_verified_base_unix_s"], slot - 20)
         self.assertEqual(later["recoverable_through_unix_s"], slot - 10)
+
+    def test_recoverable_through_is_the_last_logs_rotation_not_the_batch_seal_time(self):
+        # After an archive outage the collector's file and byte limits can cut the catch-up
+        # batch to the oldest closed logs, sealed now. Newer logs are still unarchived, so
+        # recovery reaches only the rotation that closed the batch's last log.
+        slot = START + 86400
+        self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+        self.bucket.publish(ARCHIVE, slot - 60, logs((1, slot - 3600), (2, slot - 3480)))
+        state = observer.State.load(self.plan)
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        self.assertEqual(row["recoverable_through_unix_s"], slot - 3480)
+        self.assertEqual(self.bucket.downloads, [(self.bucket.ids[ARCHIVE][0], "binlog.000002")])
+        observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state)
+        self.assertEqual(len(self.bucket.downloads), 1, "the last log of a batch is read once")
+
+    def test_a_batch_without_a_terminal_rotation_does_not_advance_recovery(self):
+        slot = START + 86400
+        self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+        self.bucket.publish(ARCHIVE, slot - 3000, logs((1, slot - 3000)))
+        cut = logs((2, slot - 600))
+        cut["binlog.000002"] = cut["binlog.000002"][:-44]  # No Rotate event: not a closed log.
+        self.bucket.publish(ARCHIVE, slot - 600, cut)
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=observer.State.load(self.plan))
+        self.assertEqual(row["recoverable_through_unix_s"], None)
+        self.bucket.publish(ARCHIVE, slot - 120, logs((3, slot - 120)))
+        row = observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=observer.State.load(self.plan))
+        self.assertEqual(row["recoverable_through_unix_s"], slot - 120)
+
+    def test_rotation_time_comes_from_the_terminal_rotate_event(self):
+        raw = binlog("binlog.000007", 1_800_000_000)
+        self.assertEqual(observer.rotated_at(raw, "binlog.000007"), 1_800_000_000)
+        self.assertIsNone(observer.rotated_at(raw, "binlog.000008"), "rotation must name the next file")
+        self.assertIsNone(observer.rotated_at(raw[:-1] + bytes([raw[-1] ^ 1]), "binlog.000007"), "checksum")
+        self.assertIsNone(observer.rotated_at(raw[:-44], "binlog.000007"))
+        self.assertIsNone(observer.rotated_at(b"\xfebin", "binlog.000007"))
 
     def test_sqlite_only_source_has_no_recoverable_through(self):
         self.history()
