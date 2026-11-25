@@ -327,6 +327,16 @@ Commands (Windows Python 3.12 unless noted; Linux runs use the pinned QA image
 | `vendor/bin/phpunit tests/Unit/RecoveryKitVerifierTest.php` (SQLite profile) | 4 tests, 14 assertions OK |
 | MySQL 8.4.13 profile (`-c phpunit.mysql.xml`): `tests/MySql/DatabaseBackupTest.php tests/MySql/PointInTimeBackupTest.php tests/Feature/DeploymentDatabaseBackupTest.php` | 7 tests, 97 assertions OK |
 | MySQL 8.4.13 profile: `tests/Unit/RecoveryKitVerifierTest.php` | 4 tests, 14 assertions OK |
+| Full SQLite suite, `php -d memory_limit=1792M vendor/bin/phpunit` (container-local copy, no `.env`) | 9,593 tests, 320,770 assertions; 2 errors and 2 failures, all four also failing on base `a6e799bb` in the same setup |
+
+The four pre-existing failures need a non-root PHP or a different filesystem
+in this container setup: `ListingStudioPaidStorageTest` and
+`ListingStudioPrivateStorageTest` (`test_fpm_upload_and_separate_worker_can_share_private_files`),
+`WorkspacePhotoLogoPermissionsTest::test_php_can_upload_a_logo_when_worker_outputs_are_not_group_writable`
+and `IguideLabImportTest::test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk`.
+The first full run, straight over the Windows bind mount with the default
+512 MB limit, was too slow under shared load and an image test exhausted the
+limit in a later copy run; CI uses `memory_limit=2G` and shards.
 
 The MySQL profile ran from a container-local copy of the tree with its own
 `APP_ENV=testing` `.env` (as CI writes one); the worktree has no `.env` and the
