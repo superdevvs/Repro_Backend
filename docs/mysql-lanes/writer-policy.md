@@ -15,12 +15,17 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   takes `repro_mysql_control.writer_token` by raw PDO through
   `MySqlWriterToken`. A missing or mismatched row fails closed. BEGIN never
   reconnects.
-- **Autocommit writes.** INSERT, UPDATE, DELETE, REPLACE, CALL and LOAD at
-  level 0 run as BEGIN, token, statement, COMMIT (`App\Database\WriterStatement`
-  classifies the SQL). DDL, SET and SELECT are never wrapped.
-- **Refusals.** DDL or TRUNCATE inside a transaction; raw BEGIN, COMMIT,
-  ROLLBACK, SAVEPOINT, LOCK TABLES on the writer connection; a row lock outside
-  a transaction (error in tests, warning log elsewhere). One test-only
+- **Autocommit writes.** INSERT, UPDATE, DELETE, REPLACE, CALL, LOAD and
+  EXECUTE at level 0 run as BEGIN, token, statement, COMMIT
+  (`App\Database\WriterStatement` classifies the SQL, reading MySQL executable
+  comments `/*! ... */` as SQL). DDL, SET and SELECT are never wrapped.
+- **Refusals.** DDL, TRUNCATE and the other statements MySQL commits
+  implicitly (ANALYZE, OPTIMIZE, REPAIR, CHECK, FLUSH, SET autocommit and
+  similar) inside a transaction; raw BEGIN, COMMIT, ROLLBACK, SAVEPOINT, LOCK
+  TABLES on the writer connection; more than one statement in one call (the
+  writer and table-limited sessions also connect without multi-statement
+  support, so the server refuses a batch too); a row lock outside a
+  transaction (error in tests, warning log elsewhere). One test-only
   exception: DDL when the only open transaction is a test's RefreshDatabase
   wrapper commits that wrapper, as MySQL always did, and the test carries on
   exactly as before the policy.
@@ -34,8 +39,9 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   retried.
 - **Poison guard.** After a lock error or a lost session inside a
   transaction, the connection refuses every statement until rollback reaches
-  level 0. An unacknowledged COMMIT discards the session; no callback runs and
-  nothing is replayed.
+  level 0 or the session is replaced (`DB::disconnect()`, `DB::reconnect()`).
+  Rollback callbacks run after the guard is cleared. An unacknowledged COMMIT
+  discards the session; no callback runs and nothing is replayed.
 - **Session settings.** READ COMMITTED and five-second row and metadata lock
   waits on every application MySQL session (`config/database.php`,
   `App\Database\MySqlConnector`).
@@ -48,14 +54,16 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   - Listing Studio counters (unchanged raw session).
 - **Workers.** After each job and in-process scheduled task, a transaction it
   left open is rolled back and logged (`App\Database\LeftoverTransactions`).
-  The worker loop starts every job at depth 0.
+  The worker loop starts every job at depth 0. A failed database job whose
+  delete that rollback undid is deleted again, so it is failed once.
 - **Long holders.** Holds over one second are logged.
   `php artisan db:writer-token-holders --connection=<monitor> --older-than=N`
   lists holders from `performance_schema.data_locks` and exits 1 if any.
 - **Deploy check.** `php artisan db:writer-policy-check` exits 1 unless only
   the default connection carries the token, every other MySQL connection has a
   table limit, a fresh session is READ COMMITTED with 5/5 lock waits, and the
-  token can be taken. On SQLite it reports "not applicable" and exits 0.
+  token can be taken. It resolves `DB_URL` as Laravel does. On SQLite it
+  reports "not applicable" and exits 0.
 
 Design choices that differ from the plan, and every behaviour change, are in
 [`docs/mysql-known-differences.md`](../mysql-known-differences.md) for owner
@@ -226,14 +234,49 @@ Notes for the integrator, not fixed here:
   atomic statement) and the twelve-worker queue run (row locks with SKIP LOCKED)
   also pass without it. They show the policy does not break those paths; they
   are not proof of serialization.
-- A job that leaves a transaction open and also fails on its last try is
-  recorded in `failed_jobs` twice: the cleanup at JobFailed undoes Laravel's
-  delete, so the worker fails the job again after `retry_after`.
-- `ANALYZE`, `OPTIMIZE`, `REPAIR`, `CHECK` and `FLUSH` are not classed as DDL.
-  Inside a transaction MySQL commits implicitly before them; the next statement
-  is then refused. The application runs none of them today.
+- ~~A job that leaves a transaction open and also fails on its last try is
+  recorded in `failed_jobs` twice.~~ Fixed in the Codex review round below.
+- ~~`ANALYZE`, `OPTIMIZE`, `REPAIR`, `CHECK` and `FLUSH` are not classed as
+  DDL.~~ Fixed in the Codex review round below.
 - Each request that takes a database cache lock opens a second MySQL session
   (`mysql_cache_locks`). Size `max_connections` for that.
+
+## Codex review round (25 Nov)
+
+Codex reviewed `bebf0144`; the reviewer's open items came from the independent
+review above. Fixes are on top of `3fb34030`, one commit each, test first: each
+new test failed on the unfixed code for the reason given, then passed.
+
+- `writer-policy#1` (P2) **fixed** in `abf943b4`: `SELECT 1; UPDATE ...` and `INSERT INTO cache_locks ...; UPDATE ...` ran in full (RED: no error); a second statement is now MULTIPLE and refused, and writer and table-limited sessions connect without multi-statement support so the server refuses a batch too. Tests: `WriterTokenRuleTest::test_a_batch_of_statements_is_refused_before_any_of_it_runs`, `..._the_server_runs_one_statement_per_call_on_every_writer_session`, `WriterExemptionsTest::test_the_cache_lock_session_may_write_only_cache_locks`, `WriterStatementTest`.
+- `writer-policy#2` (P2) **fixed** in `f18c0da5`: `/*!80000 UPDATE ... */` and `EXECUTE` wrote while another session held the token and `/*!80000 COMMIT */` was not refused (RED); executable comments are now read as SQL and `EXECUTE` is a write. Tests: `WriterTokenRuleTest` data sets "executable comment", "prepared statement" and `/*!80000 COMMIT */`, `WriterStatementTest`.
+- `writer-policy#3` (P2) **fixed** in `9620b468`: an `afterRollBack` callback that queried after a lock error got the poisoned-connection error and left the connection poisoned (RED); the guard and depth are now cleared before callbacks run. Test: `WriterTokenRuleTest::test_rollback_callbacks_after_a_lock_error_run_on_a_clean_connection`.
+- `writer-policy#4` (P2) **fixed** in `8a8f7c83`: with `DB_URL` set the check connected to the fallback host and database (RED: `repro_not_the_target`); it now parses `DB_URL` as Laravel does. Tests: `WriterPolicyCheckCommandTest::test_the_check_connects_to_the_database_url_target_as_the_application_does` (any engine), `WriterPolicyCheckTest::test_checks_the_database_url_target_as_the_application_does`.
+- Reviewer 1 (policy on by default for MySQL): **owner decision**, unchanged; see the integrator notes above and `REPRO_MYSQL_WRITER_POLICY`.
+- Reviewer 2 (WP-7 business proofs): **deferred** to this lane's second stage; still listed under "Still open".
+- Reviewer 3 (CI not run on GitHub, shard-0 time unmeasured): **documented**; needs a push, which the owner approves. Nothing pushed.
+- Reviewer 4 (a leaking job that fails for good gets two `failed_jobs` rows): **fixed** in `277d59cf`; after the rollback the cleanup deletes the failed job again. Tests: `LeftoverTransactionCleanupTest::test_a_job_that_leaks_a_transaction_and_fails_for_good_stays_deleted`, `WorkerHygieneTest::test_a_job_that_leaks_a_transaction_and_fails_on_its_last_try_is_failed_once`.
+- Reviewer 5 (Google Routes race and twelve-worker proofs also pass without the token): **documented**; a limit of those proofs, not a code defect. The second stage's business proofs carry the serialization evidence.
+- Reviewer 6 (ANALYZE, OPTIMIZE, REPAIR, CHECK, FLUSH classed OTHER): **fixed** in `c991d365`, with the rest of MySQL's implicit-commit list (CACHE INDEX, LOAD INDEX, RESET, INSTALL, UNINSTALL, SET autocommit, SET PASSWORD). Test: `WriterTokenRuleTest::test_other_statements_that_commit_implicitly_are_refused_inside_a_transaction`.
+- Reviewer 7 (deploy check not called by the deploy pipeline): **documented**; wiring it in is a production deploy change for the owner at cutover (runbook step 3).
+- Reviewer 8 (guard survives `DB::reconnect()`/`disconnect()`; Windows caller paths): **fixed** in `bb57bf1e` (replacing the session clears the guard and drops the failed transaction's records; test `WriterTokenRuleTest::test_a_new_session_after_a_failed_transaction_is_usable_without_a_purge`) and `17fbabd7` (test `MySqlConnectionCallerTest`).
+
+Runs for this round, local and offline (`--network none`), MySQL 8.4.13 with
+durable flushing on a socket-only fixture, PHP 8.3.33:
+
+- SQLite: `tests/Unit/Database`, `WriterTokenRetryLayersTest`,
+  `LeftoverTransactionCleanupTest`, `WriterPolicyCheckCommandTest`,
+  `ThrottleDatabaseResilienceTest` with `--fail-on-warning --fail-on-risky
+  --fail-on-phpunit-deprecation`: OK (142 tests, 579 assertions).
+- `migrate:fresh` with the final code passes; the iGUIDE trigger migration
+  still runs through the writer connection without multi-statement support.
+- Writer suite on a fresh schema, same flags: OK (82 tests, 1,045 assertions).
+- Contracts in CI order: primitive 23, Laravel fixture 22, Google Routes pilot
+  9, queue-worker pilot 9, scheduling-cache pilot 3, all passing.
+- MySQL profile, the four Feature files above: OK (42 tests, 458 assertions).
+  All of `tests/MySql` except the contracts: 67 tests, 4 failures, all in
+  `DatabaseBackupTest` (2) and `PointInTimeBackupTest` (2) stopping at their
+  configuration stage, the known fixture failures listed above.
+- `vendor/bin/pint --test` on every changed PHP file: pass.
 
 ## How to rerun locally
 
@@ -274,5 +317,5 @@ several times slower over a Windows bind mount.
   grants; set `REPRO_MYSQL_*` in the rehearsal environment; run representative
   load and the dress rehearsals with the policy on (WP-11, WP-12); the
   read-only writer re-inventory on the server (WP-10).
-- **Owner decisions:** D1 to D6 and B1 to B15 in the known-differences
+- **Owner decisions:** D1 to D6 and B1 to B16 in the known-differences
   register.
