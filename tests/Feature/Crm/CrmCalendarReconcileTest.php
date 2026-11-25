@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * Producer replay (P2-08): before crm:calendar-sync is released after the
@@ -31,7 +32,9 @@ class CrmCalendarReconcileTest extends CrmTestCase
         GoogleCalendarConnection::create(['user_id' => $this->rep->id, 'provider_email' => 'rep@example.test', 'calendar_id' => 'primary',
             'access_token' => 'test-access', 'refresh_token' => 'test-refresh', 'token_expires_at' => now()->addHour(), 'sync_enabled' => true]);
         $google = Mockery::mock(GoogleCalendarService::class);
-        $google->shouldReceive('getEvent')->andReturnUsing(fn ($connection, string $id) => $this->remote[$id] ?? null);
+        // A Throwable in $this->remote is what Google's read throws for that event.
+        $google->shouldReceive('getEvent')->andReturnUsing(fn ($connection, string $id) => ($this->remote[$id] ?? null) instanceof \Throwable
+            ? throw $this->remote[$id] : $this->remote[$id] ?? null);
         $google->shouldNotReceive('getValidAccessToken', 'createEvent', 'updateLinkedEvent', 'deleteEvent');
         $this->app->instance(GoogleCalendarService::class, $google);
     }
@@ -170,13 +173,90 @@ class CrmCalendarReconcileTest extends CrmTestCase
         $this->assertSame(1, $exit);
     }
 
+    /**
+     * CRM step 10. A cancelled follow-up whose Google delete failed stays push_pending, and the
+     * CRM refuses to save it again, so only one sync run clears it. When nothing else blocks,
+     * the report says so. The exit code is unchanged.
+     */
+    public function test_when_only_cancelled_push_pending_rows_block_the_report_says_to_release_the_sync(): void
+    {
+        $start = now()->addDay()->setTime(9, 0)->utc();
+        $this->linked('g_ok', $start);
+        $this->remote['g_ok'] = $this->remoteAt($start);
+        $this->linked('g_cancelled', $start, ['push_pending' => true], ['status' => 'cancelled']);
+        $this->remote['g_cancelled'] = $this->remoteAt($start);
+        $hint = 'Only cancelled follow-ups with push_pending are left. Only the sync clears them: release '
+            .'CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0. '
+            .'To release the hold, set CRM_CALENDAR_SYNC_HOLD=false and rebuild the config cache: a cached config does not read .env.';
+
+        [$exit, $report] = $this->reconcile();
+
+        $this->assertSame([1, ['in_sync' => 1, 'push_pending' => 1]], [$exit, $report['counts']]);
+        $this->assertSame($hint, $report['hint'] ?? null);
+        $this->assertSame(1, Artisan::call('crm:calendar-reconcile', ['--dry-run' => true]));
+        $this->assertStringContainsString($hint, Artisan::output());
+    }
+
+    public function test_no_release_hint_while_another_row_needs_a_decision(): void
+    {
+        $start = now()->addDay()->setTime(9, 0)->utc();
+        $this->linked('g_cancelled', $start, ['push_pending' => true], ['status' => 'cancelled']);
+        $this->remote['g_cancelled'] = $this->remoteAt($start);
+        $this->linked('g_planned', $start, ['push_pending' => true]);
+        $this->remote['g_planned'] = $this->remoteAt($start->copy()->addHour());
+
+        [$exit, $report] = $this->reconcile();
+
+        $this->assertSame([1, ['push_pending' => 2]], [$exit, $report['counts']]);
+        $this->assertArrayNotHasKey('hint', $report, 'A planned push_pending row clears when it is saved again; releasing first would push it over Google.');
+        $this->assertSame(1, Artisan::call('crm:calendar-reconcile', ['--dry-run' => true]));
+        $this->assertStringNotContainsString('release CRM_CALENDAR_SYNC_HOLD', Artisan::output());
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function otherBlockingCategories(): array
+    {
+        return ['still in Google' => ['cancelled_still_in_google'], 'create never confirmed' => ['unconfirmed_create'],
+            'token needs a refresh' => ['token_refresh_needed'], 'Google read failed' => ['error']];
+    }
+
+    /**
+     * The hint is for cancelled push_pending rows only. One sync run does not settle a cancelled row in
+     * another blocking category: the poll retries only pending pushes and pulls only planned follow-ups,
+     * so a cancelled event still in Google stays there, and a cancelled create Google never confirmed is
+     * marked clean without deleting an event Google may hold. Each needs a decision before the release.
+     */
+    #[DataProvider('otherBlockingCategories')]
+    public function test_no_release_hint_for_a_cancelled_row_in_another_blocking_category(string $category): void
+    {
+        $start = now()->addDay()->setTime(9, 0)->utc();
+        $link = $category === 'unconfirmed_create' ? ['google_event_id' => null, 'fingerprint' => null, 'push_pending' => true]
+            : ['push_pending' => $category !== 'cancelled_still_in_google'];
+        $cancelled = $this->linked('g_cancelled', $start, $link, ['status' => 'cancelled']);
+        $this->remote['g_cancelled'] = $category === 'error' ? new \RuntimeException('Google read failed') : $this->remoteAt($start);
+        if ($category === 'token_refresh_needed') {
+            GoogleCalendarConnection::query()->update(['token_expires_at' => now()->subMinute()]);
+        }
+
+        [$exit, $report] = $this->reconcile();
+
+        $row = collect($report['rows'])->keyBy('event_id')[$cancelled->id];
+        $this->assertSame([$category, 'cancelled'], [$row['category'], $row['local_status']]);
+        $this->assertSame([1, [$category => 1]], [$exit, $report['counts']]);
+        $this->assertArrayNotHasKey('hint', $report, 'Releasing the sync does not clear '.$category.'.');
+        $this->assertSame(1, Artisan::call('crm:calendar-reconcile', ['--dry-run' => true]));
+        $this->assertStringNotContainsString('release CRM_CALENDAR_SYNC_HOLD', Artisan::output());
+    }
+
     public function test_all_in_sync_exits_zero_and_the_command_refuses_to_run_without_dry_run(): void
     {
         $start = now()->addDay()->setTime(9, 0)->utc();
         $this->linked('g_ok', $start);
         $this->remote['g_ok'] = $this->remoteAt($start);
 
-        $this->assertSame(0, $this->reconcile()[0]);
+        [$exit, $report] = $this->reconcile();
+        $this->assertSame(0, $exit);
+        $this->assertArrayNotHasKey('hint', $report);
         $this->assertSame(2, Artisan::call('crm:calendar-reconcile'));
     }
 }

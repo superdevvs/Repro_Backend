@@ -23,8 +23,9 @@ return [
     /*
      * Producer replay: hold crm:calendar-sync, the five-minute job that
      * retries pending pushes to Google and pulls moves and deletions back
-     * into the CRM. Release only after `crm:calendar-reconcile --dry-run`
-     * exits 0. A follow-up saved in the CRM is still pushed at once.
+     * into the CRM. Release it once `crm:calendar-reconcile --dry-run` exits
+     * 0, or once only cancelled push_pending rows are left: only a sync run
+     * clears those. A follow-up saved in the CRM is still pushed at once.
      * Off by default.
      */
     'calendar_sync_hold' => (bool) env('CRM_CALENDAR_SYNC_HOLD', false),

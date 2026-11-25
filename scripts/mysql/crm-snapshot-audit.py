@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
 
@@ -29,7 +30,8 @@ need = schema_drift.need
 q = schema_drift.q
 
 REPORT_SCHEMA = "repro.mysql-crm-snapshot.audit.v1"
-MIGRATION_PREFIX = "2026_11_24_1"
+# Every migration that creates or changes a CRM table, as in crm_migrations of
+# scripts/cutover/nightly/nightly-config.json (a test keeps the two equal).
 MIGRATIONS = (
     "2026_11_24_100000_create_crm_core_tables",
     "2026_11_24_110000_create_crm_event_tables",
@@ -40,7 +42,11 @@ MIGRATIONS = (
     "2026_11_24_160000_create_crm_intake_receipts",
     "2026_11_24_161000_add_booking_details_to_crm_quotes",
     "2026_11_24_180000_add_crm_communication_receipts",
+    "2026_11_25_140000_add_replay_identity_to_recruit_application_receipts",
 )
+# A ledger row with a CRM table's name in it is a CRM migration. One not in MIGRATIONS is refused:
+# the reviewed layout pin catches one that changes a table, but not a data-only one.
+CRM_MIGRATION_NAME = re.compile(r"(?:^|_)(?:crm|recruit)_|email_suppressions")
 CRM_TABLES = frozenset({
     "crm_activities", "crm_ai_proposals", "crm_assignment_changes", "crm_campaign_recipients", "crm_campaigns",
     "crm_companies", "crm_contacts", "crm_drip_campaign_versions", "crm_drip_campaigns", "crm_drip_enrollments",
@@ -121,11 +127,14 @@ def add_digest(digest, values):
 
 
 def ledger(db, key):
+    marks = ",".join("?" * len(MIGRATIONS))
     rows = list(db.execute(
-        "SELECT migration, id, batch FROM migrations WHERE instr(migration, ?) = 1 ORDER BY migration COLLATE BINARY",
-        (MIGRATION_PREFIX,),
+        f"SELECT migration, id, batch FROM migrations WHERE migration IN ({marks}) ORDER BY migration COLLATE BINARY",
+        MIGRATIONS,
     ))
     need(tuple(row[0] for row in rows) == MIGRATIONS, "crm-migration-ledger-differs")
+    need(not any(isinstance(name, str) and CRM_MIGRATION_NAME.search(name) and name not in MIGRATIONS
+                 for name, in db.execute("SELECT migration FROM migrations")), "crm-migration-ledger-differs")
     need(all(type(row[1]) is int and type(row[2]) is int for row in rows), "crm-migration-ledger-types-differ")
     digest = hmac.new(key, b"repro.crm.migration-ledger.v1\n", hashlib.sha256)
     for row in rows:

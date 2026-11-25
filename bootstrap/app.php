@@ -30,7 +30,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('crm:follow-up-digest')->weekdays()->at('07:00')->timezone(\App\Services\Crm\CrmBusinessTime::TIMEZONE)->withoutOverlapping()->onOneServer();
         $schedule->call(fn () => app(\App\Services\Crm\CrmWebsiteIntakeReceipt::class)->retryPending())
             ->name('crm:website-intake')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
-        // Held after a freeze until crm:calendar-reconcile passes (CRM_CALENDAR_SYNC_HOLD).
+        // Held after a freeze (CRM_CALENDAR_SYNC_HOLD) until crm:calendar-reconcile --dry-run exits 0,
+        // or until only cancelled push_pending rows are left, which only a sync run clears.
         $schedule->command('crm:calendar-sync')->everyFiveMinutes()->withoutOverlapping()->onOneServer()
             ->skip(fn () => (bool) config('crm.calendar_sync_hold'));
         $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();

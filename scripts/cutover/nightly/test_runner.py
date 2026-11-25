@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -35,6 +36,22 @@ BASE_NOW = datetime(2026, 11, 26, 5, 0, 0, tzinfo=timezone.utc)
 
 def sha_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def crm_migrations(folder: Path) -> list[str]:
+    """Every migration that names a CRM table anywhere, by the capture's rule for CRM tables (is_crm_table).
+
+    Not only Schema::create/table calls: a DB::statement, DB::table or foreign key that names a CRM
+    table changes or depends on it too. The rule also matches a column name such as crm_contact_id
+    in a migration that changes only a non-CRM table. Do not list such a migration in crm_migrations:
+    scripts/mysql/crm-rehearsal-fixture.php runs every migration its own copy of this rule matches,
+    against a database that has only the CRM tables, so it would fail. Give both rules the same
+    reviewed exception, with its reason, instead. CrmRehearsalFixtureTest checks that the fixture runs
+    exactly crm_migrations.
+    """
+    names = re.compile(r"\b[a-z][a-z0-9_]*\b")
+    return sorted(path.stem for path in folder.glob("*.php")
+                  if any(nightly.is_crm_table(name) for name in names.findall(path.read_text(encoding="utf-8"))))
 
 
 def option(argv, name):
@@ -1033,6 +1050,23 @@ class ExitCodeTests(unittest.TestCase):
         self.assertEqual(nightly.exit_code({"status": "stopped", "qualifying_draft": False}), 1)
 
 
+class CrmMigrationRuleTests(unittest.TestCase):
+    def test_a_migration_that_names_a_crm_table_anywhere_is_a_crm_migration(self):
+        files = {
+            "a_create": "Schema::create('crm_widgets', function (Blueprint $table) {});",
+            "b_statement": "DB::statement('ALTER TABLE crm_contacts ADD COLUMN source text');",
+            "c_foreign_key": "Schema::table('shoots', fn ($t) => $t->foreign('quote_id')->references('id')->on('crm_quotes'));",
+            "d_drop": "Schema::dropIfExists('recruit_legacy_notes');",
+            "e_rows": "DB::table('email_suppressions')->update(['reason' => 'bounce']);",
+            "f_other": "Schema::table('shoots', fn ($t) => $t->string('add_crm_note')->nullable());",
+            "g_config": "config('crm.enabled'); // App\\Models\\Crm\\CrmContact",
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            for name, body in files.items():
+                (Path(folder) / f"{name}.php").write_text(f"<?php\n{body}\n", encoding="utf-8")
+            self.assertEqual(["a_create", "b_statement", "c_foreign_key", "d_drop", "e_rows"], crm_migrations(Path(folder)))
+
+
 class CommittedConfigTests(unittest.TestCase):
     def test_committed_config_is_valid_and_pins_the_reviewed_scope(self):
         path = HERE / "nightly-config.json"
@@ -1044,6 +1078,13 @@ class CommittedConfigTests(unittest.TestCase):
         self.assertTrue(config.data["budget"]["fail_fast"])
         self.assertIsNone(config.data["retain_snapshots"])
         self.assertIsNone(config.data["finance"])
+
+    def test_committed_config_lists_every_crm_migration(self):
+        # The capture requires every listed migration in the live ledger.
+        crm = crm_migrations(HERE.parents[2] / "database" / "migrations")
+        self.assertIn("2026_11_24_100000_create_crm_core_tables", crm)
+        config = nightly.Config.load(HERE / "nightly-config.json").data
+        self.assertEqual(crm, config["crm_migrations"])
 
     def test_cli_checks_config_and_defaults_to_dry_run(self):
         path = HERE / "nightly-config.json"
