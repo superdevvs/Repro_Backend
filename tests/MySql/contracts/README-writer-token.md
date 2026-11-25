@@ -1,9 +1,13 @@
 # Isolated cross-schema writer-token contract
 
-The primitive owns the cross-schema lock and transaction admission. Its only
-application caller is the disabled-by-default route budget pilot. The explicit
-contract filename is outside normal `*Test.php` discovery and requires the
-fixture to be provisioned before running it by path.
+The primitive owns the cross-schema lock and transaction admission. The
+application's `mysql` connection calls it at every BEGIN when the writer
+policy is on, which is the default for MySQL; see
+[the writer suite](../../MySqlWriters/README.md) and
+`docs/mysql-known-differences.md`. The route budget pilot below calls it only
+when that policy is off. The explicit contract filename is outside normal
+`*Test.php` discovery and requires the fixture to be provisioned before
+running it by path. CI runs every contract in this folder in shard 0.
 
 ## Runtime and invocation
 

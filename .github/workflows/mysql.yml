@@ -55,7 +55,7 @@ jobs:
           echo "$RUNNER_TEMP/mysql84" >> "$GITHUB_PATH"
           echo "REPRO_MYSQL_CLIENT=$RUNNER_TEMP/mysql84/mysql" >> "$GITHUB_ENV"
           echo "REPRO_MYSQLDUMP=$RUNNER_TEMP/mysql84/mysqldump" >> "$GITHUB_ENV"
-      - name: Verify socket-only write recovery, queue and cache routing
+      - name: Verify the writer token, socket-only write recovery, queue and cache routing
         if: matrix.shard == 0
         env:
           MYSQL_CONTAINER: ${{ job.services.mysql.id }}
@@ -75,6 +75,9 @@ jobs:
           echo "APP_KEY=$key" >> "$GITHUB_ENV"
           printf 'APP_ENV=testing\n' > .env
           printf "SET GLOBAL log_bin_trust_function_creators=1; CREATE DATABASE repro_mysql_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin; CREATE USER 'repro_test'@'%%' IDENTIFIED BY '%s'; GRANT ALL ON repro_mysql_test.* TO 'repro_test'@'%%';\n" "$password" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
+          # The writer policy is on by default for MySQL: provision its token row
+          # outside the application schema, bound to the test database.
+          printf "CREATE DATABASE repro_mysql_control CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin; CREATE TABLE repro_mysql_control.writer_token (id TINYINT UNSIGNED NOT NULL PRIMARY KEY CHECK (id=1), application_database VARBINARY(64) NOT NULL, contract_version INT UNSIGNED NOT NULL) ENGINE=InnoDB; INSERT INTO repro_mysql_control.writer_token VALUES (1,'repro_mysql_test',1); GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO 'repro_test'@'%%';\n" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
           printf "CREATE USER 'repro_pitr_fixture'@'%%' IDENTIFIED BY '%s'; GRANT SELECT, SHOW VIEW, TRIGGER, EVENT ON repro_mysql_test.* TO 'repro_pitr_fixture'@'%%'; GRANT RELOAD, REPLICATION CLIENT ON *.* TO 'repro_pitr_fixture'@'%%';\n" "$backup_password" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
           umask 077
           printf '[client]\nuser=repro_pitr_fixture\npassword=%s\n' "$backup_password" > "$RUNNER_TEMP/repro-pitr.cnf"
