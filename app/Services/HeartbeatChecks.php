@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -107,25 +108,73 @@ final class HeartbeatChecks
             return ['skipped', 'the default queue does not use the database'];
         }
 
-        $now = time();
-        $query = DB::connection($connection['connection'] ?? null)
-            ->table($connection['table'] ?? 'jobs')
-            ->whereNull('reserved_at')
-            ->where('available_at', '<=', $now);
-        if (($queues = self::list(config('heartbeat.queue.queues', ''))) !== []) {
-            $query->whereIn('queue', $queues);
+        // The queue's own clock (Carbon), so the check agrees with what a worker may claim.
+        $now = Carbon::now()->getTimestamp();
+        $queues = self::list(config('heartbeat.queue.queues', ''));
+        $jobs = function () use ($connection, $queues) {
+            $query = DB::connection($connection['connection'] ?? null)->table($connection['table'] ?? 'jobs');
+
+            return $queues === [] ? $query : $query->whereIn('queue', $queues);
+        };
+
+        // [waiting since, queue, expired reservation]
+        $oldest = null;
+        $free = $jobs()->whereNull('reserved_at')->where('available_at', '<=', $now)
+            ->orderBy('available_at')->orderBy('id')->first(['queue', 'available_at']);
+        if ($free !== null) {
+            $oldest = [(int) $free->available_at, (string) $free->queue, false];
         }
-        $oldest = $query->orderBy('available_at')->orderBy('id')->first(['queue', 'available_at']);
+
+        // A job whose worker died stays reserved. Once retry_after has run out
+        // any worker may claim it again, so from then on it is waiting too.
+        $retryAfter = self::retryAfterByQueue($connection);
+        $reserved = $jobs()->whereNotNull('reserved_at')->groupBy('queue')
+            ->select('queue')->selectRaw('MIN(reserved_at) AS oldest_reserved_at')->get();
+        foreach ($reserved as $row) {
+            $since = (int) $row->oldest_reserved_at + ($retryAfter[(string) $row->queue] ?? $retryAfter['']);
+            if ($since <= $now && ($oldest === null || $since < $oldest[0])) {
+                $oldest = [$since, (string) $row->queue, true];
+            }
+        }
+
         if ($oldest === null) {
             return ['ok', 'waiting=0'];
         }
 
-        $age = max(0, $now - (int) $oldest->available_at);
+        $age = max(0, $now - $oldest[0]);
         $maxSeconds = (int) config('heartbeat.queue.max_age_minutes', 10) * 60;
-        $queue = preg_replace('/[^A-Za-z0-9_.:-]/', '?', (string) $oldest->queue);
+        $queue = preg_replace('/[^A-Za-z0-9_.:-]/', '?', $oldest[1]);
 
         return [$age <= $maxSeconds ? 'ok' : 'fail',
-            sprintf('oldest_waiting_seconds=%d queue=%s max_seconds=%d', $age, $queue, $maxSeconds)];
+            sprintf('oldest_waiting_seconds=%d queue=%s max_seconds=%d', $age, $queue, $maxSeconds)
+            .($oldest[2] ? ' expired_reservation=1' : '')];
+    }
+
+    /**
+     * retry_after per queue name, from every database queue connection on the
+     * same jobs table; '' holds the default connection's value for queues no
+     * connection names (those are worked through the default connection).
+     *
+     * @return array<string, int>
+     */
+    private static function retryAfterByQueue(array $default): array
+    {
+        $place = fn (array $connection) => [
+            $connection['connection'] ?? config('database.default'),
+            $connection['table'] ?? 'jobs',
+        ];
+        $map = ['' => (int) ($default['retry_after'] ?? 60)];
+        foreach ((array) config('queue.connections', []) as $connection) {
+            if (! is_array($connection) || ($connection['driver'] ?? null) !== 'database'
+                || ! isset($connection['queue']) || $place($connection) !== $place($default)) {
+                continue;
+            }
+            // Two connections on one queue: the longer one, so a running job never counts.
+            $queue = (string) $connection['queue'];
+            $map[$queue] = max($map[$queue] ?? 0, (int) ($connection['retry_after'] ?? 60));
+        }
+
+        return $map;
     }
 
     /** @return list<string> */

@@ -46,6 +46,8 @@ class OpsHeartbeatCommandTest extends TestCase
             'heartbeat.queue.max_age_minutes' => 10,
             'heartbeat.queue.queues' => '',
             'queue.default' => 'database',
+            'queue.connections.database.retry_after' => 2100,
+            'queue.connections.studio.retry_after' => 7260,
         ]);
 
         $this->createTables();
@@ -140,6 +142,46 @@ class OpsHeartbeatCommandTest extends TestCase
         $this->artisan('ops:heartbeat')->assertSuccessful();
 
         Http::assertSent(fn (Request $request) => $request->url() === self::PING);
+    }
+
+    public function test_a_job_whose_worker_died_waits_again_once_its_reservation_expires(): void
+    {
+        $this->freezeTime();
+        // The worker died 60 minutes after reserving; any worker could have
+        // claimed the job again 25 minutes ago, when retry_after ran out.
+        $this->insertJob('default', now()->subHours(2)->getTimestamp(), reservedAt: now()->subSeconds(2100 + 25 * 60)->getTimestamp());
+
+        $this->artisan('ops:heartbeat')->assertFailed();
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING.'/fail'
+            && str_contains($request->body(), 'queue: FAIL oldest_waiting_seconds=1500 queue=default')
+            && str_contains($request->body(), 'expired_reservation=1'));
+    }
+
+    public function test_a_reservation_that_expired_only_recently_is_within_the_age_limit(): void
+    {
+        $this->insertJob('default', now()->subHours(2)->getTimestamp(), reservedAt: now()->subSeconds(2100 + 5 * 60)->getTimestamp());
+
+        $this->artisan('ops:heartbeat')->assertSuccessful();
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING);
+    }
+
+    public function test_a_reservation_expires_after_the_retry_after_of_the_connection_that_serves_its_queue(): void
+    {
+        $this->freezeTime();
+        // The studio worker's connection keeps a reservation for 7260 s, so a
+        // studio job reserved an hour ago is still running.
+        $this->insertJob('studio', now()->subHours(2)->getTimestamp(), reservedAt: now()->subHour()->getTimestamp());
+        $this->artisan('ops:heartbeat')->assertSuccessful();
+
+        // Two and a half hours on, that reservation has expired too.
+        DB::table('jobs')->update(['reserved_at' => now()->subSeconds(7260 + 20 * 60)->getTimestamp()]);
+        $this->artisan('ops:heartbeat')->assertFailed();
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING);
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING.'/fail'
+            && str_contains($request->body(), 'oldest_waiting_seconds=1200 queue=studio'));
     }
 
     public function test_the_queue_check_can_watch_only_named_queues(): void

@@ -31,7 +31,7 @@ All go in `/var/www/backend/.env`. Each production change needs the owner's appr
 | `HEARTBEAT_BACKUP_MAX_AGE_HOURS` | `26` | Newest backup must be younger than this, and not empty. |
 | `HEARTBEAT_DISK_PATHS` | empty (the app's disk) | Comma-separated paths to watch, for example `/var/www/backend,/mnt/16tb`. |
 | `HEARTBEAT_DISK_MIN_FREE_GB` | `20` | Minimum free space on each path. |
-| `HEARTBEAT_QUEUE_MAX_AGE_MINUTES` | `10` | The oldest waiting job must be younger than this. Delayed and running jobs do not count. |
+| `HEARTBEAT_QUEUE_MAX_AGE_MINUTES` | `10` | The oldest waiting job must be younger than this. Delayed and running jobs do not count. A job whose worker died counts again from the moment its `retry_after` runs out (the value of the queue connection that serves that queue). |
 | `HEARTBEAT_QUEUES` | empty (all queues) | Comma-separated queues to watch. Use it if a queue has no worker on purpose. |
 | `HEARTBEAT_TIMEOUT_SECONDS` | `10` | Time limit for the ping. |
 
