@@ -13,7 +13,8 @@ Even that needs W1, which waits for the host identity and MySQL probes and
 the `drain_fpm` command (none written), the code-fix lane's host-config
 change if the lab-tour worker is installed (`4e4a262d` refuses
 `iguide-lab-tour:iguide-lab-tour`), `queue_pause` and `queue_resume`
-in `host.json` that run as `www-data` and set `umask 0002` themselves (the
+in `host.json` that run as `www-data` and set `umask 0022` themselves, in
+the exact form the adapter lane's `load_config` accepts (the
 watchdog's `UMask=0077` would otherwise make flags the `maverick` workers
 cannot read), and a `crontab.py` that keeps the storage guard: W1's cron
 rewrite drops anything before the matched command, and on production all
@@ -1826,8 +1827,11 @@ has been done. Each production step needs its own approval.
   (`REPRO_MYSQL_WRITER_POLICY`), and sign off D1 to D6 and B1 to B18 in the
   [known-differences register](mysql-known-differences.md), including B18's
   30-minute window. It must exceed the longest weekly run on production.
-- Writer policy: provision the token schema, row and grants on the native
-  8.4.13 target, and give the monitor account its grants.
+- Writer policy: provision the token schema and row on the native 8.4.13
+  target, then the adapter lane's `accounts.sql` (the token's `UPDATE(id)`
+  goes to `repro_migrator` and `repro_token_check` only, never to the app
+  account), and give the monitor account its table grants in the separate
+  step after it (runbook, Release and target preparation steps 4 and 6).
 - Writer policy: set `REPRO_MYSQL_*` in the rehearsal environment and run
   representative load and the dress rehearsals with the policy on (WP-11,
   WP-12).
@@ -1849,7 +1853,10 @@ has been done. Each production step needs its own approval.
 - Writer hold: write and review the host identity and MySQL probes before
   W1, and complete `host.json` (all four owner options, the lab-tour queue
   if installed, `drain_fpm`, and `queue_pause` and `queue_resume` run as
-  `www-data` through `runuser` with their own `umask 0002`) before `init`.
+  `www-data` through `runuser` with their own `umask 0022`, in the adapter
+  lane's exact form) before `init`. W1 also installs the adapter lane's
+  `repro-queue-flag` and its sudoers line (`visudo -cf` at install) for
+  the deploy user's own pauses and resumes.
 - Writer hold: before W1, change `crontab.py` to refuse or carry over a
   command prefix such as `/usr/local/sbin/repro-storage-guard --live &&`,
   and make the `scheduler` and `auth-prune` profiles run the storage

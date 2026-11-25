@@ -33,9 +33,11 @@ old order (drain, then pause, then stop, with no journal).
 
 1. 7:45 pm: pause Studio with its documented pause file; let its job finish.
 2. 9:20 pm: pause the long-job queues with `queue:pause`, run as
-   `www-data` with its own umask (`sudo /usr/sbin/runuser -u www-data --
-   /bin/sh -c 'umask 0002 && exec /usr/bin/php /var/www/backend/artisan
-   queue:pause "$1"' pause <connection:queue>`):
+   `www-data` with `umask 0022` through the queue flag helper that the
+   adapter lane adds and W1 installs
+   (`sudo -n /usr/local/sbin/repro-queue-flag pause <connection:queue>`;
+   updated 26 November to the adapter lane's contract, the runbook is
+   authoritative):
    `studio:studio`, `database:media-archives`, `database:default`,
    `database:integrations`, `database:watermarks`. The flags are files in
    the `file` cache under `www-data` 755 folders (measured 25 November),
@@ -251,7 +253,8 @@ The code implements the safe default and makes each a config value.
   refuses that name; the code-fix lane (`71f7db04`) accepts it.
 - `queue_pause` and `queue_resume` in the host config must run as
   `www-data` through `/usr/sbin/runuser -u www-data --` and set `umask
-  0002` themselves (runbook, Release and target preparation step 10, and
+  0022` themselves, in the exact form the adapter lane's `load_config`
+  accepts (runbook, Release and target preparation step 10, and
   MySQL adapter lane item 17). `runuser` keeps the caller's umask, and the
   watchdog sets `UMask=0077`, so a flag it creates would be 0600 and the
   workers that run as `maverick` would not see the pause.

@@ -33,7 +33,9 @@ approval gate. The previous Docker-based rehearsal is historical evidence.
 >   change before `cli.py init`.
 > - Queue commands as `www-data`, with an explicit umask. `queue_pause`
 >   and `queue_resume` in `host.json` must run through `runuser -u
->   www-data` and set `umask 0002` themselves. The pause flags' cache
+>   www-data` and set `umask 0022` themselves, in exactly the form the
+>   adapter lane's `load_config` accepts (Release step 10); it refuses
+>   any other umask. The pause flags' cache
 >   folders on production are `www-data` 755, so the deploy user cannot
 >   write them: the hold, every abort and every watchdog rollback would
 >   fail at `close_admissions` and leave the site held. Run as root, they
@@ -41,7 +43,10 @@ approval gate. The previous Docker-based rehearsal is historical evidence.
 >   into those fail. `runuser` keeps the caller's umask, and the watchdog
 >   runs with `UMask=0077`, so without its own umask a flag the watchdog
 >   creates is 0600 and the workers that run as `maverick` cannot read it:
->   for them the queue is not paused.
+>   for them the queue is not paused. The deploy user's own pauses and
+>   resumes (the 9:20 pm step and the called-off undo list) go through
+>   `sudo -n /usr/local/sbin/repro-queue-flag`, which the adapter lane
+>   adds and W1 installs.
 > - The storage guard on cron lines. W1's cron rewrite (`crontab.py`)
 >   keeps only the schedule, the wrapper call and the output redirection,
 >   so anything before the matched command is dropped. On production all
@@ -567,6 +572,8 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    target, before any application process connects. The writer policy is on
    by default for MySQL (`REPRO_MYSQL_WRITER_POLICY`). The token is outside
    the application schema, so import, verify and reverse export do not see it.
+   On the production target, as MySQL root and before the cutover accounts
+   exist (their table grants need the table):
 
    ```sql
    CREATE DATABASE repro_mysql_control CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin;
@@ -576,21 +583,38 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
      contract_version INT UNSIGNED NOT NULL
    ) ENGINE=InnoDB;
    INSERT INTO repro_mysql_control.writer_token VALUES (1, '<application database>', 1);
-   GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO '<app account>'@'localhost';
    ```
 
-   Grant it to every account that writes through the application's `mysql`
-   connection, including the one `php artisan migrate` uses: the migrations
-   ledger is an ordinary write and waits for the token. Without the row every
-   write stops. That is deliberate. Add the row to the restore and failback
-   checklists, and provision it before any tool that boots the application
-   against MySQL writes (rehearsal verifiers that only read are unaffected).
-   The importer (`migrate.py import-empty`) does not boot the application
-   and needs no token. Its maintenance account is scoped to the new
-   database; if the same account also runs `php artisan migrate`, it needs
-   this grant as well.
+   This SQL grants nothing. Then, as MySQL root, run the adapter lane's
+   `scripts/cutover/production/mysql/accounts.sql` (not in this candidate),
+   with each password filled from a root-only file by its `fixture.sh
+   render`. It creates the eight cutover accounts and is the closed state
+   of the lane's MySQL write gate. Only two accounts get `SELECT,
+   UPDATE(id)` on the token: `repro_migrator`, which runs `php artisan
+   migrate` (the migrations ledger is an ordinary write and waits for the
+   token), and `repro_token_check`, which runs the token check before
+   Approval 2. The app account `repro_app` gets `SELECT` on the app schema
+   and on the token, nothing more. Its `INSERT, UPDATE, DELETE` on the app
+   schema and `UPDATE(id)` on the token come only from the cutover
+   controller's `seal_mysql`, and `seal_sqlite` revokes them (MySQL
+   adapter lane item 3). Never grant the token to `repro_app` by hand:
+   with `accounts.sql`'s grants that is part of the open gate, which the
+   lane's MySQL probe reads as `partial` and refuses with exit 4, so
+   `init`, every watchdog tick and every other action that runs the probe
+   refuse until the grant is revoked.
 
-   On the production target this is not the whole story yet. The app
+   Without the row every write stops. That is deliberate. Add the row to
+   the restore and failback checklists, and provision it before any tool
+   that boots the application against MySQL writes (rehearsal verifiers
+   that only read are unaffected). The importer (`migrate.py
+   import-empty`) does not boot the application and needs no token; its
+   maintenance account `repro_maint` has no token grant, so `php artisan
+   migrate` runs as `repro_migrator`. On a rehearsal or CI target without
+   the cutover's write gate (for example the `mysql` workflow's fixture),
+   the account the application writes with needs `SELECT, UPDATE(id)` on
+   the token itself, and so does the one `php artisan migrate` uses.
+
+   On the production target the app
    account must stay unable to write until `seal_mysql` opens the MySQL
    write gate. From `cli.py init` until `promote` after Approval 2, and
    again after a reopened SQLite rollback, the MySQL probe must never
@@ -601,19 +625,18 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    all writers, step 9). Only the MySQL path changes this: `seal_mysql`
    opens the gate, and MySQL traffic then counts as business activity
    (MySQL adapter lane items 3, 7 and 18). So make the token row and
-   grants on the probed target before `init`, and run no import and change
-   no grant on it after `init` outside the night's frozen window. Which
-   grants the app account gets before the night depends on the gate the
-   adapter lane chooses (MySQL adapter lane item 3); with the first
-   candidate, the grant above goes to the maintenance account only and
-   `seal_mysql` gives it to the app account.
+   `accounts.sql` on the probed target before `init`, and run no import and
+   change no grant on it after `init` outside the night's frozen window;
+   inside that window only the controller changes grants.
 5. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
    Each request that takes a database cache lock opens a second MySQL session
    (`mysql_cache_locks`); size `max_connections` for that.
-6. Give the off-site alert probe's monitor account `PROCESS` and `SELECT ON
-   performance_schema.data_locks` (see [Alerts](#alerts-b6-b7)), and add
+6. Give the off-site alert probe's monitor account its grants (see
+   [Alerts](#alerts-b6-b7)). `accounts.sql` (step 4) creates it as
+   `repro_monitor` with `PROCESS` and `SELECT ON
+   performance_schema.data_locks`. Add
    `writer_token_held_too_long` to the probe plan's conditions with its
    `mysql` monitor section. This daytime alert fails when a session has held
    the writer token for 30 s or more (`max_hold_seconds` in
@@ -628,6 +651,42 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    db:writer-token-holders` reads through `--connection` (default `mysql`,
    the app account), which has no `PROCESS` grant, and `config/database.php`
    defines no read-only or monitor connection.
+
+   **Alert monitor grants** (a separate step after `accounts.sql`, not part
+   of it). Two MySQL conditions read the app schema: `queue_stale` reads
+   `jobs`, and `historical_money_totals_changed` runs the reviewed money
+   queries. `accounts.sql` gives `repro_monitor` neither. As MySQL root,
+   grant one table-level `SELECT` per table, and set `"database":
+   "repro_dashboard"` in the probe plan's `mysql` section, because those
+   queries name their tables without the schema:
+
+   ```sql
+   GRANT SELECT ON `repro_dashboard`.`jobs` TO 'repro_monitor'@'localhost';
+   -- One line for each table the reviewed money queries read:
+   GRANT SELECT ON `repro_dashboard`.`<money query table>` TO 'repro_monitor'@'localhost';
+   ```
+
+   These grants leave the write gate alone. The lane's MySQL probe reads
+   only the grant rows and sessions of the gated account (`repro_app`), so
+   rows for `repro_monitor` never change its reading: on a fixture built
+   from `accounts.sql` it still read `closed` (exit 0) in every journal
+   phase after them. Grant to `repro_monitor` only and table by table:
+   never to `repro_app`, never through a role (a role edge that names
+   `repro_app` is a gate problem, exit 4), and never on the whole schema.
+
+   When: MySQL refuses a table grant while the table does not exist
+   (`ERROR 1146`) and keeps it when the table or the schema is dropped and
+   created again (both checked on 8.4.13). So run it once the tables exist
+   and while no cutover journal exists. After `init` nobody changes grants
+   by hand (step 4), and after `prepare` the lane's binary log scan takes
+   any account statement as its boundary. On the lane's calendar that is
+   the session that retires the drill run: after `retire`, before the
+   drill copy is dropped. The grants then apply to the tables the cutover
+   night imports. Check them with `SHOW GRANTS FOR
+   'repro_monitor'@'localhost'` before the cutover run's `init`, and redo
+   this step in such a window whenever the reviewed money queries change.
+   Without them `queue_stale` and the money check fail once MySQL is
+   authoritative.
 7. Use the native bundle's matching 8.4 `mysql` and `mysqldump` by absolute path. Rehearse the candidate's
    `scripts/deploy/backup-database.php` and an independent full restore on the
    actual target. A successful dump alone is insufficient.
@@ -679,13 +738,20 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
       (`71f7db04`) accepts it (`[a-z][a-z0-9-]*:[a-z0-9-]+`). On a host
       with the program, W1 must install an adapter that has that change.
     - Make `queue_pause` and `queue_resume` run as `www-data` with their
-      own umask. The CLI runs as root and appends one `connection:queue`
-      to each, which the shell receives as `$1`:
+      own umask, in exactly this form. The CLI runs as root and appends
+      one `connection:queue` to each, which the shell receives as `$1`:
 
       ```json
-      "queue_pause": ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "umask 0002 && exec /usr/bin/php /var/www/backend/artisan queue:pause \"$1\"", "repro-queue-pause"],
-      "queue_resume": ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "umask 0002 && exec /usr/bin/php /var/www/backend/artisan queue:resume \"$1\"", "repro-queue-resume"]
+      "queue_pause": ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:pause \"$1\"", "repro-queue"],
+      "queue_resume": ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:resume \"$1\"", "repro-queue"]
       ```
+
+      The adapter lane's `load_config` accepts only this shape: the
+      script's steps joined by ` && `, a `cd` to the app root only, exactly
+      one `umask 0022`, and last `exec /usr/bin/php artisan queue:pause
+      "$1"` (`queue:resume "$1"` for `queue_resume`). It refuses any other
+      umask, and so do the lane's MySQL probe and `repro-queue-flag`, which
+      load `host.json` the same way, so a different form stops W1.
 
       Production keeps the pause flags in the `file` cache, under
       `storage/framework/cache/data`. The folders the pause keys hash to
@@ -696,10 +762,31 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
       caller's, and the watchdog service sets `UMask=0077`. In the QA
       image, a pause run from a 0077 parent without its own umask made a
       0700 folder and a 0600 flag, which a `maverick` process in group
-      `www-data` read as "not paused". The form above made 775 and 664,
-      which it read as paused. `0002` matches the umask of the workers
-      that run as `maverick` (`wrappers.example.json`). Host commands run
-      as root, so they need no `sudo`.
+      `www-data` read as "not paused". `umask 0022` matches the measured
+      755 folders: the adapter lane's queue flag tests ran this form from
+      a 0077 parent in the QA image and got a `www-data` 0644 flag, which
+      a member of group `www-data` read as paused. A folder the pause has
+      to create is 755, like the 142 existing ones (pass rule under
+      "Read-only checks before the night"). Host commands run as root, so
+      they need no `sudo`; the deploy user's own pauses use the helper in
+      the next item.
+    - Install the deploy user's queue flag helper at W1. It comes with the
+      adapter lane (`scripts/cutover/production/sbin/repro-queue-flag` and
+      `sudoers/repro-queue-flag`, not in this candidate):
+      `/usr/local/sbin/repro-queue-flag` (root 0755) and
+      `/etc/sudoers.d/repro-queue-flag` (root 0440, one line:
+      `maverick ALL=(root) NOPASSWD: /usr/local/sbin/repro-queue-flag`).
+      As part of the W1 install, check the sudoers file with
+      `visudo -cf /etc/sudoers.d/repro-queue-flag`; it has been checked
+      as text only. The helper takes `pause|resume
+      <connection:queue>`, refuses a queue that `host.json` does not list,
+      loads `host.json` with the controller's own `load_config` and runs
+      its `queue_pause` or `queue_resume` as `www-data`. The 9:20 pm
+      pauses and the called-off undo list's resumes use it (Freeze all
+      writers): the deploy user has no sudo rule for `runuser`, and
+      `sudo -n` fails at once instead of asking for a password if the
+      rule is missing. The helper takes no lock, so only that undo list
+      uses `resume`.
     - Carry the storage guard through the cron rewrite. On production all
       but one of the deploy user's cron lines run through
       `/usr/local/sbin/repro-storage-guard`. `crontab.py` drops anything
@@ -944,7 +1031,11 @@ money check needs reviewed queries and a baseline from
 account needs `PROCESS` (MySQL 8.4.13 refuses `INNODB_METRICS` without it) and
 `SELECT` on the app's `jobs` table and the money query tables, plus `SELECT`
 on `performance_schema.data_locks` for `writer_token_held_too_long`. Without
-`PROCESS`, `database_contention` fails every minute.
+`PROCESS`, `database_contention` fails every minute. On the production target
+it is `repro_monitor`: the adapter lane's `accounts.sql` gives it `PROCESS` and
+the `data_locks` grant only, and the table grants come from the separate
+**Alert monitor grants** step after it
+([Release and target preparation](#release-and-target-preparation) step 6).
 
 `backup_lag` measures the recovery point: the checkpoint's `next_file` says
 every earlier log is published, and the newest of those was last written by
@@ -1235,11 +1326,13 @@ night.
   until the owner fixes it, including a folder owned by `maverick` with
   mode 755 (a deploy or cron run under umask 0022 makes those) and a
   root-owned folder. A missing folder is then created at the first pause
-  by `www-data` with the command's umask: 775 with the runbook's
-  `umask 0002`. Without that umask it would be 755 under `sudo` (umask
-  0022), which adds to the folders below that trip `cache_write_failed`,
-  and 0700 with a 0600 flag under the watchdog's `UMask=0077`, which the
-  workers that run as `maverick` cannot read.
+  by `www-data` with the command's `umask 0022`: 755 with a 0644 flag.
+  The workers that run as `maverick` can read the flag but not write
+  other cache keys into that folder, so like the 755 folders below it
+  trips `cache_write_failed` until the owner's cache-folder decision (a
+  default ACL replaces the umask for new entries). Without its own umask
+  the folder would be 0700 with a 0600 flag under the watchdog's
+  `UMask=0077`, which those workers cannot read.
 - Queue restart key. `queue:restart` writes `illuminate:queue:restart`
   under `data/ee/2f`, not measured. Every deploy writes it as the deploy
   user, so expect a `maverick` file with mode 0644:
@@ -1344,21 +1437,25 @@ undo list no longer needs it.
 1. 7:45 pm: pause Studio with its documented pause file, as `maverick`:
    `touch ~/.local/share/repro-studio/paused`. `worker.sh` refuses to start
    while it exists; let the running job finish.
-2. 9:20 pm: pause the long-job queues as `www-data` with `umask 0002`,
-   the same command as `queue_pause` in `host.json`. As the deploy user
-   `queue:pause` fails on the `www-data` 755 cache folders. As root it
-   creates root-owned folders where none existed, and later cache writes
-   into them fail (see "Read-only checks before the night" above):
+2. 9:20 pm: pause the long-job queues as `www-data`, as the deploy user,
+   through the queue flag helper that W1 installs (Release and target
+   preparation step 10). The helper runs the `queue_pause` command from
+   `host.json` (`umask 0022`) for one queue that `host.json` lists. As the
+   deploy user `queue:pause` itself fails on the `www-data` 755 cache
+   folders. As root it creates root-owned folders where none existed, and
+   later cache writes into them fail (see "Read-only checks before the
+   night" above). The deploy user has no sudo rule for `runuser`; the
+   helper's sudoers line is its only way in:
 
    ```bash
-   www_artisan() { sudo /usr/sbin/runuser -u www-data -- /bin/sh -c 'umask 0002 && exec /usr/bin/php /var/www/backend/artisan "$@"' www-artisan "$@"; }
    for q in studio:studio database:media-archives database:default \
        database:integrations database:watermarks; do
-     www_artisan queue:pause "$q"
+     sudo -n /usr/local/sbin/repro-queue-flag pause "$q"
    done
    # Only if the repro-lab-tour program is installed. "iguide-lab-tour" alone
-   # would pause database:iguide-lab-tour, the wrong connection.
-   www_artisan queue:pause iguide-lab-tour:iguide-lab-tour
+   # would pause database:iguide-lab-tour, the wrong connection, and the
+   # helper refuses any queue that host.json does not list.
+   sudo -n /usr/local/sbin/repro-queue-flag pause iguide-lab-tour:iguide-lab-tour
    # Each flag is a www-data file; workers of both owners read it.
    for q in studio:studio database:media-archives database:default \
        database:integrations database:watermarks; do
@@ -1367,8 +1464,12 @@ undo list no longer needs it.
    done
    ```
 
-   Every line must show `www-data 664` (add the lab-tour queue to the
-   check if you paused it). Wait for their running jobs, then stop the
+   Every line must show `www-data 644` (add the lab-tour queue to the
+   check if you paused it). If the helper exits non-zero, stop and check
+   before going on: 1 is a refusal (not root, a host config the
+   controller refuses, or a queue `host.json` does not list), 2 a bad
+   argument, 3 a failed or timed-out command, after which the flag may or
+   may not have changed. Wait for their running jobs, then stop the
    workers that the `long_job_processes` patterns in `host.json` match (for example
    `repro-studio` and `repro-lab-tour` in the user Supervisor, and
    `repro-media-archives.service`). The hold refuses while one still runs,
@@ -1664,9 +1765,9 @@ no-go before 10 pm), undo the pre-hold steps:
 
 1. Cancel the `site_unreachable` maintenance window at the provider.
 2. Remove the Studio pause file and start Studio (as in step 3 above).
-3. Resume the long-job queues as `www-data` with `umask 0002`, like the
-   pause: `www_artisan queue:resume <connection:queue>` (the function in
-   the 9:20 pm step) for each queue paused at 9:20 pm, then start the
+3. Resume the long-job queues as `www-data` through the same helper as
+   the pause: `sudo -n /usr/local/sbin/repro-queue-flag resume
+   <connection:queue>` for each queue paused at 9:20 pm, then start the
    stopped workers through their Supervisor or systemd. The guard admits them in `planned`.
 4. CRM steps 8 to 10 in order (Resend and reply forwarding, the outbound
    release check with `--since=$FREEZE_AT`, the calendar reconcile), then
@@ -1721,9 +1822,10 @@ waits for items 1 to 3.
      application's runtime route (FPM, workers, scheduler) from writing.
      The gate is closed from before `init` through `prepare`, while the
      import, `php artisan migrate` and `complete-schema.php` run as the
-     maintenance account, which is outside the gate. `seal_mysql` opens it;
+     maintenance and migrator accounts (`repro_maint`, `repro_migrator`),
+     which are outside the gate. `seal_mysql` opens it;
      `seal_sqlite` makes sure it is closed. The probe reads the gate itself,
-     not what the server or the maintenance account can do.
+     not what the server or those accounts can do.
    - `business_activity` means application rows changed after the recorded
      end of the import (for example a binlog position the import records).
      Migrations and `complete-schema.php` do not count.
@@ -1731,8 +1833,10 @@ waits for items 1 to 3.
    Open: which gate. Candidates, each to be proven in W2:
    - The app account has no write privilege on `repro_dashboard` and no
      `UPDATE(id)` on the token row until `seal_mysql` grants them;
-     `seal_sqlite` revokes them. Release step 4 then grants the token to
-     the maintenance account only.
+     `seal_sqlite` revokes them. Release step 4 then grants the token
+     only to the migrator and token check accounts, never to the app
+     account, through the adapter lane's `accounts.sql`. The lane builds
+     this option.
    - The app account is locked (`ALTER USER ... ACCOUNT LOCK`) until
      `seal_mysql`. Then nothing in the app can read MySQL either, so the
      read-only smoke (item 11) needs its own account.
@@ -1811,7 +1915,8 @@ waits for items 1 to 3.
    `_promote` sets `writes_possible` before it calls `seal_mysql`, so any
    failure from there records `recovery_required`, and no rollback runs.
    Prefer running its token step during `prepare`, as part of the evidence
-   before Approval 2, under a separately granted check account (for
+   before Approval 2, under a separately granted check account
+   (`repro_token_check` in `accounts.sql`, Release step 4; for
    example through a staged config cache, as for `php artisan migrate` in
    [Import into the empty target](#import-into-the-empty-target)). A
    failure there stops before the point of no return. This is open.
@@ -1961,14 +2066,17 @@ waits for items 1 to 3.
 
 17. Queue commands as `www-data`, with an explicit umask. The adapter
     must refuse a `host.json` whose `queue_pause` or `queue_resume` does
-    not run as `www-data` and set its own umask (for example, anything but
-    the `runuser -u www-data -- /bin/sh -c 'umask 0002 && exec ...'` form
-    in [Release and target preparation](#release-and-target-preparation)
-    step 10). Today `load_config` checks only that each is an absolute
+    not run as `www-data` and set its own umask: anything but the
+    `runuser -u www-data -- /bin/sh -c 'cd /var/www/backend && umask 0022
+    && exec /usr/bin/php artisan queue:pause "$1"'` form (and
+    `queue:resume`) in [Release and target preparation](#release-and-target-preparation)
+    step 10. The adapter lane's config contract does this. In this
+    candidate `load_config` still checks only that each is an absolute
     argument list, and `_run` passes no umask, so a command inherits the
     watchdog's `UMask=0077`. The pause flags live in the `file` cache in
     `www-data` 755 folders, so the deploy user's pause fails and the hold,
-    abort and rollback fail with it. Root's pause creates root-owned
+    abort and rollback fail with it (the deploy user's own pauses go
+    through `repro-queue-flag`, step 10). Root's pause creates root-owned
     folders where none existed, and later cache writes into them fail. A
     flag made under 0077 is 0600, so the workers that run as `maverick`
     do not see the pause. The same rule covers every artisan command the
@@ -2037,8 +2145,10 @@ Use a standalone online-backup artifact, never a raw copy of a live WAL database
 The import tool opens it read-only and verifies its checksum and integrity.
 Create a private Python virtual environment and install
 `scripts/mysql/requirements.txt`. The maintenance account must be scoped to the
-new database, plus the writer-token grant if the same account runs `php
-artisan migrate` ([Release and target preparation](#release-and-target-preparation)
+new database. On the production target it is `repro_maint` from the adapter
+lane's `accounts.sql`, which has no writer-token grant, so `php artisan
+migrate` there runs as `repro_migrator`, the account with the token grant
+([Release and target preparation](#release-and-target-preparation)
 step 4). Its protected 0600 JSON file contains only `unix_socket`, `user`,
 and `password`; credentials never belong in command arguments or source control.
 
@@ -2297,7 +2407,7 @@ the [MySQL adapter lane](#mysql-adapter-lane-not-built) item 11).
 `php artisan db:writer-policy-check` must print `"problems":[]` and exit
 0. It takes the writer token, so with the app account it cannot pass while
 the gate is closed. Run it before Approval 2 under a separately granted
-check account, not after `seal_mysql`, where a failure ends in
+check account (`repro_token_check`), not after `seal_mysql`, where a failure ends in
 `recovery_required` (lane item 7). Add it to every deploy once MySQL is live. Every
 process must run the same release: a process without the policy would write
 without the token. The engine check in the drill covers this for workers.

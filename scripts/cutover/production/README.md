@@ -79,11 +79,18 @@ On production the queue pause flags live in the file cache
 the deploy user, `queue:pause` cannot write there; run as root, it leaves
 root-owned files and folders that `www-data` cannot write later. So the
 `queue_pause` and `queue_resume` prefixes run as `www-data` and set their
-own umask, because the watchdog runs with `UMask=0077`:
-`["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "umask 0002 && exec /usr/bin/php /var/www/backend/artisan queue:pause \"$1\"", "repro-queue-pause"]`.
+own umask, because the watchdog runs with `UMask=0077`. The adapter lane's
+`load_config` accepts exactly this form (with `queue:resume` for
+`queue_resume`) and refuses any other umask:
+`["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:pause \"$1\"", "repro-queue"]`.
 The adapter appends the `connection:queue` argument, which becomes `$1`.
 The runbook (`docs/mysql-production-cutover.md`) has the full `host.json`
-entry.
+entry. The deploy user's own pauses and resumes (the runbook's 9:20 pm
+step and its called-off undo list) run
+`sudo -n /usr/local/sbin/repro-queue-flag pause|resume <connection:queue>`.
+That helper and its one-line `/etc/sudoers.d/repro-queue-flag` come with
+the adapter lane and are installed at W1, where
+`visudo -cf /etc/sudoers.d/repro-queue-flag` checks the sudoers file.
 
 ## Owner options (defaults are the safe choice)
 

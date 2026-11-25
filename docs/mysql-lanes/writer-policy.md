@@ -119,12 +119,17 @@ traffic":
      contract_version INT UNSIGNED NOT NULL
    ) ENGINE=InnoDB;
    INSERT INTO repro_mysql_control.writer_token VALUES (1, '<application database>', 1);
-   GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO '<app account>'@'localhost';
+   GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO '<writing account>'@'localhost';
    ```
 
-   Grant it to every account that writes through the application's `mysql`
+   On a target without the cutover's MySQL write gate (rehearsal, CI),
+   grant it to every account that writes through the application's `mysql`
    connection, including the one `php artisan migrate` uses: the migrations
-   ledger is an ordinary write and waits for the token. Without the row every
+   ledger is an ordinary write and waits for the token. On the production
+   target the adapter lane's `accounts.sql` grants it to `repro_migrator`
+   and `repro_token_check` only, never to the app account, which gets
+   `UPDATE(id)` only from `seal_mysql` (runbook, Release and target
+   preparation step 4; updated 26 November). Without the row every
    write stops. That is deliberate. Add the row to the restore and failback
    checklists, and provision it before any tool that boots the application
    against MySQL writes (rehearsal verifiers that only read are unaffected).
