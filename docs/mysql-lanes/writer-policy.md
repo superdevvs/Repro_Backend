@@ -59,6 +59,11 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
 - **Long holders.** Holds over one second are logged.
   `php artisan db:writer-token-holders --connection=<monitor> --older-than=N`
   lists holders from `performance_schema.data_locks` and exits 1 if any.
+- **Fixes found by the WP-7 proofs** (both engines, B17 and B18 in the
+  register): the Stripe checkout webhook asks Stripe for the payment intent
+  and charge before its payment transaction opens, never inside it; a weekly
+  automation run claims its rule's period in one transaction and skips a
+  period another run started less than 30 minutes ago.
 - **Deploy check.** `php artisan db:writer-policy-check` exits 1 unless only
   the default connection carries the token, every other MySQL connection has a
   table limit, a fresh session is READ COMMITTED with 5/5 lock waits, and the
@@ -164,7 +169,8 @@ the durable defaults.
   timeout type, a job rolled back with its transaction, the cache lock
   progressing, twelve workers each running once, and the Google Routes race
   (it also reserved the last unit once without the token in this fixture; the
-  reason was not investigated). Afterwards two retry proofs were changed to
+  reason was not investigated; later explained: its race window is
+  microseconds, see "WP-7 business proofs"). Afterwards two retry proofs were changed to
   write a row the holder never touches, and the table-limit proofs now check
   the refusal message, so each fails on the base code for the right reason.
 - The status-webhook proof also fails on the base code: a stale "sent"
@@ -230,10 +236,10 @@ Notes for the integrator, not fixed here:
   turned it on by default for MySQL (no effect on SQLite). That keeps the
   readiness gate honest but makes every MySQL target need the token row before
   the application writes. Owner decision; the flag is `REPRO_MYSQL_WRITER_POLICY`.
-- Two business proofs do not depend on the token: the Google Routes race (one
-  atomic statement) and the twelve-worker queue run (row locks with SKIP LOCKED)
-  also pass without it. They show the policy does not break those paths; they
-  are not proof of serialization.
+- ~~Two business proofs do not depend on the token.~~ The Google Routes race
+  now fails without it (see the WP-7 section). The twelve-worker queue run is
+  relabelled: queue claims skip the token by design, so it passes either way
+  and is not proof of serialization.
 - ~~A job that leaves a transaction open and also fails on its last try is
   recorded in `failed_jobs` twice.~~ Fixed in the Codex review round below.
 - ~~`ANALYZE`, `OPTIMIZE`, `REPAIR`, `CHECK` and `FLUSH` are not classed as
@@ -252,10 +258,17 @@ new test failed on the unfixed code for the reason given, then passed.
 - `writer-policy#3` (P2) **fixed** in `9620b468`: an `afterRollBack` callback that queried after a lock error got the poisoned-connection error and left the connection poisoned (RED); the guard and depth are now cleared before callbacks run. Test: `WriterTokenRuleTest::test_rollback_callbacks_after_a_lock_error_run_on_a_clean_connection`.
 - `writer-policy#4` (P2) **fixed** in `8a8f7c83`: with `DB_URL` set the check connected to the fallback host and database (RED: `repro_not_the_target`); it now parses `DB_URL` as Laravel does. Tests: `WriterPolicyCheckCommandTest::test_the_check_connects_to_the_database_url_target_as_the_application_does` (any engine), `WriterPolicyCheckTest::test_checks_the_database_url_target_as_the_application_does`.
 - Reviewer 1 (policy on by default for MySQL): **owner decision**, unchanged; see the integrator notes above and `REPRO_MYSQL_WRITER_POLICY`.
-- Reviewer 2 (WP-7 business proofs): **deferred** to this lane's second stage; still listed under "Still open".
+- Reviewer 2 (WP-7 business proofs): **fixed** in the second stage (`74e3cfee`, `53469637`, `673a065c`); one line per proof below and the table in "WP-7 business proofs".
 - Reviewer 3 (CI not run on GitHub, shard-0 time unmeasured): **documented**; needs a push, which the owner approves. Nothing pushed.
 - Reviewer 4 (a leaking job that fails for good gets two `failed_jobs` rows): **fixed** in `277d59cf`; after the rollback the cleanup deletes the failed job again. Tests: `LeftoverTransactionCleanupTest::test_a_job_that_leaks_a_transaction_and_fails_for_good_stays_deleted`, `WorkerHygieneTest::test_a_job_that_leaks_a_transaction_and_fails_on_its_last_try_is_failed_once`.
-- Reviewer 5 (Google Routes race and twelve-worker proofs also pass without the token): **documented**; a limit of those proofs, not a code defect. The second stage's business proofs carry the serialization evidence.
+- Reviewer 5 (Google Routes race and twelve-worker proofs also pass without the token): **fixed** in `827d445d`. A test-only trigger holds each route insert 0.5 s, so the race now reserves 8 units without the token and 1 with it. The twelve-worker run is relabelled as not a serialization check (queue claims skip the token by design, D3).
+- `wp7:editing-dispatch` **proved** (`74e3cfee`): with the token 8 × 202, one dispatch, one job; without it 7 × 500 on the unique `request_id`.
+- `wp7:booking-slot` **proved** (`74e3cfee`): one success in all four cases with the token; without it the empty day gives 2 to 3 bookings and the guard without its photographer lock 5 to 8. The booked day and the full guard hold through their own locks.
+- `wp7:payout-runs` **proved** (`74e3cfee`): with the token one invoice per photographer, rep and client and no reused number; without it two period invoices per client and a reused number. Payout invoices also hold through `payout_generation_locks`.
+- `wp7:payment-event` **proved** (`74e3cfee`): one payment with the token; also without it, through the shoot row lock, the duplicate check and the unique session index. With those removed in a scratch copy it failed without the token in 2 of 3 runs and passed with it.
+- `wp7:slow-stripe` **fixed** in `53469637`: RED before (500 after 8.0 s with the token, 1205 after 5.1 s without); Stripe is now asked before the transaction and the proof passes with and without the token.
+- `wp7:automation-overlap` **fixed** in `673a065c`: RED before with the token (two dispatches, two deliveries); the period is now claimed in one transaction. Passes with the token, still fails without it.
+- `wp7:aryeo-cursor` **proved** (`74e3cfee`): with the token every committed row is read; without it the delayed writer's row is skipped for good. The rolled-back writer case passes either way (gap check).
 - Reviewer 6 (ANALYZE, OPTIMIZE, REPAIR, CHECK, FLUSH classed OTHER): **fixed** in `c991d365`, with the rest of MySQL's implicit-commit list (CACHE INDEX, LOAD INDEX, RESET, INSTALL, UNINSTALL, SET autocommit, SET PASSWORD). Test: `WriterTokenRuleTest::test_other_statements_that_commit_implicitly_are_refused_inside_a_transaction`.
 - Reviewer 7 (deploy check not called by the deploy pipeline): **documented**; wiring it in is a production deploy change for the owner at cutover (runbook step 3).
 - Reviewer 8 (guard survives `DB::reconnect()`/`disconnect()`; Windows caller paths): **fixed** in `bb57bf1e` (replacing the session clears the guard and drops the failed transaction's records; test `WriterTokenRuleTest::test_a_new_session_after_a_failed_transaction_is_usable_without_a_purge`) and `17fbabd7` (test `MySqlConnectionCallerTest`).
@@ -277,6 +290,87 @@ durable flushing on a socket-only fixture, PHP 8.3.33:
   `DatabaseBackupTest` (2) and `PointInTimeBackupTest` (2) stopping at their
   configuration stage, the known fixture failures listed above.
 - `vendor/bin/pint --test` on every changed PHP file: pass.
+
+## WP-7 business proofs (second stage, 25 Nov)
+
+`tests/MySqlWriters/WriterBusinessRacesTest.php`, workers in
+`tests/MySqlWriters/support/business-worker.php`. Every racer is a separate
+PHP process that boots the application and enters through the real entry
+point: the HTTP kernel (routing, middleware, validation, controller), the
+invoice service, or `artisan automations:run-system`. So that racers really
+overlap, each worker sleeps 0.3 s (0.5 s for the automation run) right after
+the read its path decides on, inside whatever transaction is open: with the
+token the others wait their turn, without it they run in the gap. Providers
+are faked inside the worker (Stripe's HTTP client, Google Routes, travel
+locations, the sales report); every container runs with `--network none`, so
+nothing leaves the machine. No path needed a live provider.
+
+"Without the token" means `MYSQL_WRITER_PROOF_TOKEN=off`: every worker runs
+with `REPRO_MYSQL_WRITER_POLICY=false`, the test process keeps it on.
+
+| Proof | With the token | Workers without the token | Other guard on the path |
+| --- | --- | --- | --- |
+| `wp7:editing-dispatch`: 8 sends of one AI editing request (`POST /api/shoots/{id}/editing-dispatch`) | 8 × 202 with one dispatch id; 1 dispatch; 1 `PrepareEditingDispatch` job | **Fails**: 7 × 500 (`UniqueConstraintViolationException` 1062 on `request_id`), 1 × 202; still 1 job | The unique `request_id` index keeps one job; only the token turns the losers into the same answer |
+| `wp7:booking-slot`, guard off, empty day (`POST /api/shoots`, 8 staff bookings of one 10 am slot) | 1 × 201, 7 × 422 | **Fails**: 2 or 3 bookings (two runs) | None: the day lock finds no row to lock |
+| guard off, the photographer's day already has a 2 pm booking | 1 × 201, 7 × 422 | Passes | The day lock locks that booking's row |
+| guard on (`ScheduleCommitGuard`), empty day | 1 × 201, 7 × 422 | Passes | The per-photographer scheduling lock (database cache lock) |
+| guard on, its photographer lock made process-local (`availability.scheduling_lock_store` = `array`) | 1 × 201, 7 × 409 (the recheck inside the transaction) | **Fails**: 5 or 8 bookings (two runs) | None left but that recheck, which the token serializes |
+| `wp7:payout-runs`: 2 photographer payout runs, 2 sales-rep payout runs, 2 period-invoice runs for each of 2 clients, all at once | One payout invoice per photographer and for the rep, one period invoice per client, no invoice number used twice | **Fails**: 2 period invoices per client and one invoice number issued twice (`Invoice 00016`, then `Invoice 00013` on a fresh schema) | Payout invoices stay single: the `payout_generation_locks` row lock and the `payout_work_allocations` unique key. Payout invoices carry no invoice number; the numbered ones are the client invoices |
+| `wp7:payment-event`: one signed `checkout.session.completed` delivered 5 times (`POST /api/webhooks/stripe`) | 1 payment; 1 × `200 processed`, 4 × `500 failed` (Stripe retries); the later redelivery gets `200 already_processed` | Passes | The shoot row lock, the duplicate check inside the transaction and the unique `stripe_session_id` index. With the row lock and the index removed (a scratch copy, see below), it fails without the token and passes with it |
+| `wp7:slow-stripe`: the fake Stripe API answers the payment-intent lookup after 8 s while the shoot's client saves its notes (`PATCH /api/shoots/{id}/notes`) | Before the fix **failed**: the edit got a 500 (`WriterTokenTimeout`) after 8.0 s. After: 200 | Before the fix **failed**: 500 (`QueryException` 1205, the shoot row lock) after 5.1 s. After: 200 | The protection is the fix itself (B17): no Stripe call inside the transaction |
+| `wp7:automation-overlap`: the scheduler's run and an admin's "Run now" of one weekly rule, at once | Before the fix **failed**: 2 dispatch rows, both runs delivered the report. After: 1 dispatch, 1 run, 1 message | After the fix still **fails**: 2 dispatch rows (a first run's read has no row to lock) | None: on MySQL the token serializes the claim; on SQLite the reserved writer does (B18) |
+| `wp7:aryeo-cursor`, delayed writer: a writer holds a shoot change open while a second writer commits and a reader pages `AryeoWorkerController::changes` in between | Every committed row read | **Fails**: the delayed writer's row skipped for good (row 11 in one run, 155 in another) | None |
+| rolled-back writer, same setup | Every committed row read; the rolled-back change never appears | Passes | Not a serialization check: it shows the cursor moves past the gap a rollback leaves |
+| Google Routes race (`WriterBusinessPathsTest`), now with a test-only trigger that holds each insert 0.5 s | 1 reservation | **Fails**: 8 reservations | None |
+| Twelve workers, 1,000 jobs (`WriterBusinessPathsTest`) | Each job once | Passes | Queue claims skip the token by design (D3); relabelled as not a serialization check |
+
+Two proofs exposed real defects with the token on; each was fixed test
+first, in its own commit (B17, B18 in the register):
+
+- **A slow Stripe call failed other writers** (fixed in `53469637`).
+  `processSingleShootPayment` and
+  `processMultipleShootPayment` called Stripe (`hydratePaymentRecord`) inside
+  the payment transaction, holding the shoot's row lock and the token (on
+  SQLite, the write lock). `StripePaymentMetadataService::prefetchStripeObjects()`
+  now asks Stripe before the transaction opens and the transaction records the
+  same details without another call. The stored details are unchanged; a
+  failed lookup is logged once, as before. The production change that makes
+  the proof fail again is passing no prefetched objects to
+  `hydratePaymentRecord()` inside the transaction.
+- **Two overlapping weekly automation runs delivered twice** (fixed in
+  `673a065c`). The command read
+  its period with `firstOrNew` and saved it outside a transaction, and a
+  second run treated a period another run had started as free. It now claims
+  the period in one transaction and skips a period another run started less
+  than 30 minutes ago; a run that stopped without finishing releases it after
+  that. Removing the transaction, or the "running" check, makes the proof fail.
+
+Demonstration only (scratch copy of the source in the test container, never
+committed): with `Shoot::query()->lockForUpdate()` removed from
+`processSingleShootPayment` and the `payments_stripe_session_id_unique` index
+dropped, the payment-event proof failed without the token in two of three
+runs (2 payments; the losers died on 1213 deadlocks, which sometimes caught all
+of them) and passed with the token in both runs (1 payment; the losers found it
+in their duplicate check). So the token alone keeps one payment; today the
+path does not depend on it.
+
+Runs for this stage, local and offline, MySQL 8.4.13 with durable flushing on a
+socket-only fixture, PHP 8.3.33, `--fail-on-warning --fail-on-risky
+--fail-on-phpunit-deprecation`:
+
+- Whole writer suite on a fresh schema with the token: OK (93 tests, 1,321
+  assertions, 3 min 38 s). `WriterBusinessRacesTest` alone: OK (11 tests,
+  276 assertions, about 35 s), so shard 0 grows by under a minute.
+- Both business files with `MYSQL_WRITER_PROOF_TOKEN=off`: the races file
+  6 of 11 failing as the table says, the paths file 3 of 4 (Routes race,
+  first texts, status webhooks; the queue run passes).
+- SQLite: the Stripe webhook, checkout, confirmation, refund, receipt and
+  payment-intent files, `StripePaymentPrefetchTest`, `ScheduledAutomationCommandsTest`,
+  the automation history and privacy files and the dispatcher dedupe unit test:
+  OK (106 tests, 687 assertions).
+- `vendor/bin/pint --test`: the new and changed test files pass. The three
+  changed app files and `ScheduledAutomationCommandsTest` already failed Pint
+  at `72ce6f50`; the changes add no new rule.
 
 ## How to rerun locally
 
@@ -301,13 +395,12 @@ several times slower over a Windows bind mount.
 
 ## Still open
 
-- **WP-7 business proofs not written:** 8 editing dispatches for one shoot;
-  8 bookings for one slot (empty day, guard on and off); 2 payout runs per
-  role; one payment event sent 5 times; a slow
-  Stripe call during a concurrent edit; two overlapping automation runs; the
-  Aryeo cursor. Code reading (not tested): `RunSystemAutomations` reads its
-  dispatch row with `firstOrNew` and saves it outside a transaction, so two
-  overlapping runs can both start the same period even with the token.
+- **WP-7 proofs not covered offline:** none. Live provider behaviour (real
+  Stripe latency and retries, real Google Routes answers) is faked; the fakes
+  answer the same shapes the code reads.
+- **B18's 30 minutes** is a choice for the owner, not measured: it must
+  exceed the longest weekly run on production, and a run that crashed waits
+  that long before the next one retries its period.
 - **Long transactions.** With the token taken at BEGIN, a long transaction
   holds every writer back from its start. The plan's week of transaction-length
   logging on production is still the gate (Checkpoint 2). The long-hold log
@@ -317,5 +410,5 @@ several times slower over a Windows bind mount.
   grants; set `REPRO_MYSQL_*` in the rehearsal environment; run representative
   load and the dress rehearsals with the policy on (WP-11, WP-12); the
   read-only writer re-inventory on the server (WP-10).
-- **Owner decisions:** D1 to D6 and B1 to B16 in the known-differences
+- **Owner decisions:** D1 to D6 and B1 to B18 in the known-differences
   register.

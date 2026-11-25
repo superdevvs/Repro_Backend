@@ -52,6 +52,16 @@ with `phpunit.mysql-writers.xml`.
 | B15 | Under READ COMMITTED each statement sees the latest commits. Code that reads several tables inside `DB::transaction()` to get one consistent view (for example the iGUIDE Lab tour loader) relies on the token for that: its transaction takes the token, so no business writer can commit between its queries. Token-free sessions (queue bookkeeping on `jobs`, cache locks, Listing Studio counters) can still change their own tables meanwhile. SQLite and MySQL's old REPEATABLE READ default gave a snapshot instead. Such read transactions now also wait for, and hold, the token. | Same answers for business tables; reads that need a snapshot of `jobs` or `cache_locks` would need review. | `tests/Feature/IguideLabTourEndToEndTest.php`, `tests/Feature/IguideLabTourHttpTest.php` (their second, token-free test connection uses a snapshot read to stand in for the token) |
 | B16 | The writer connection and every table-limited MySQL session run one statement per call. A batch such as `SELECT 1; UPDATE ...` is refused by the application and, because these sessions connect without multi-statement support, by the server even from raw PDO. Stored-program bodies (`BEGIN ... END`) count as one statement and still work. MySQL executable comments (`/*! ... */`) are read as SQL, and `EXECUTE` of a prepared statement takes the token. With the policy off, batches run as before. | MySQL with the guard: otherwise a batch or an executable comment would write without the token. The application sends no batches today. | `WriterTokenRuleTest::test_a_batch_of_statements_is_refused_before_any_of_it_runs`, `..._the_server_runs_one_statement_per_call_on_every_writer_session`, `..._each_autocommit_write_waits_for_the_token_and_commits_once_after_release` (executable comment, prepared statement); `WriterExemptionsTest::test_the_cache_lock_session_may_write_only_cache_locks`; `tests/Unit/Database/WriterStatementTest.php` |
 
+### Fixes found by the business proofs (both engines)
+
+These change behaviour on SQLite too. Each was found by a WP-7 proof in
+`tests/MySqlWriters/WriterBusinessRacesTest.php` that failed with the token on.
+
+| # | What may be noticed | Which is right | Proof |
+| --- | --- | --- | --- |
+| B17 | The Stripe checkout webhook (single and grouped shoots) asks Stripe for the payment intent and charge before it opens the payment transaction, then records them inside it without calling Stripe again. Before, it called Stripe inside the transaction while it held the shoot's row lock (and SQLite's write lock or the MySQL token), so a slow Stripe answer made every other writer wait and fail after five seconds. Stored payment details are unchanged. A duplicate delivery that loses the race may now cost one extra Stripe read. | The new order: no provider call inside a transaction. | `WriterBusinessRacesTest::test_a_slow_stripe_call_does_not_fail_a_client_editing_the_same_shoot`; `tests/Feature/StripePaymentPrefetchTest.php` |
+| B18 | A weekly automation run claims its rule's period in one transaction. A period another run started less than 30 minutes ago is skipped with the line "skipped; another run started this period at ..." (an admin's "Run now" during the scheduler's run, for example), instead of being run and delivered twice. A run that stopped without finishing keeps the period for those 30 minutes; before, the next minute's run restarted it at once. | One delivery per period. The 30 minutes is a choice for the owner. | `WriterBusinessRacesTest::test_two_overlapping_automation_runs_give_one_dispatch`; `tests/Feature/ScheduledAutomationCommandsTest.php::test_a_period_another_run_is_working_on_is_skipped_until_its_claim_lapses` |
+
 ## Answers that can differ (from the plan)
 
 These come from the original plan. This lane did not write or verify their
@@ -69,5 +79,5 @@ tests. Each needs a proving test that passes on both engines before signing.
 ## Sign-off
 
 - [ ] D1 to D6 accepted, or the plan's design chosen instead.
-- [ ] B1 to B16 accepted.
+- [ ] B1 to B18 accepted.
 - [ ] A1 to A6 each have a proving test, then accepted.
