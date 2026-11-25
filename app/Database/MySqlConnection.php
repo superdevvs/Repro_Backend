@@ -231,7 +231,11 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
             throw new LogicException('Use Laravel transactions, not raw transaction or table-lock statements, on the MySQL writer connection.');
         }
         if ($class === WriterStatement::DDL && $this->transactions > 0) {
-            throw new LogicException('DDL and TRUNCATE cannot run inside a MySQL transaction: they would commit it implicitly.');
+            if (! $this->onlyTestWrapperIsOpen()) {
+                throw new LogicException('DDL and TRUNCATE cannot run inside a MySQL transaction: they would commit it implicitly.');
+            }
+
+            return $this->runDdlInsideTestWrapper($query, $bindings, $callback);
         }
         if ($this->transactions === 0 && $this->exemptTables === null) {
             if ($class === WriterStatement::WRITE) {
@@ -352,6 +356,30 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         $this->tokenReleased();
 
         // Laravel dispatches QueryExecuted after this returns, once the row is committed.
+        return $result;
+    }
+
+    /**
+     * Laravel's RefreshDatabase wraps each test in one transaction under its own
+     * testing manager; production never installs that manager. Migration tests
+     * run DDL there, which MySQL always committed implicitly.
+     */
+    private function onlyTestWrapperIsOpen(): bool
+    {
+        return $this->transactions === 1
+            && $this->transactionsManager instanceof \Illuminate\Foundation\Testing\DatabaseTransactionsManager;
+    }
+
+    /** Let MySQL commit the test wrapper as before, then wrap the rest of the test again with the token. */
+    private function runDdlInsideTestWrapper(string $query, array $bindings, Closure $callback): mixed
+    {
+        $result = parent::runQueryCallback($query, $bindings, $callback);
+        $pdo = $this->getPdo();
+        if (! $pdo->inTransaction()) {
+            $this->tokenReleased();
+            $this->acquireWriterToken();
+        }
+
         return $result;
     }
 
