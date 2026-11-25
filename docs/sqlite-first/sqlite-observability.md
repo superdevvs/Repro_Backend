@@ -50,6 +50,11 @@ Each record has:
 
 No SQL text or values are logged. A failed log write never breaks the request or job; it leaves one line in the PHP error log.
 
+Limits of the measurement (they do not change what the application does):
+
+- A transaction whose COMMIT itself fails fires no event, so it is never logged.
+- A rollback's `duration_ms` also covers the ROLLBACK and any after-rollback hooks, because Laravel fires no event when a rollback starts.
+
 **File permissions.** New day files are 0660 and are moved to the group of `storage/logs`. So a file the deploy user creates first stays writable by the web workers. Check with `ls -l storage/logs/transactions-*.log`: the group should be `www-data`. This works because the deploy user and `www-data` are both in the `www-data` group.
 
 Summary after a week (read-only):
@@ -96,4 +101,18 @@ Remove the setting (or set it back to its default), then `php artisan config:cac
 ## Not in this change
 
 - The nightly backup itself (item 1). The heartbeat only reads its age.
-- An engine pin file. `DB_EXPECTED_ENGINE` is read when a process starts, so a long-running worker keeps its old setting until `queue:restart`.
+- An engine pin file (`storage/framework/db-engine.pin` in the plan). `DB_EXPECTED_ENGINE` is read when a process starts, so a long-running worker keeps its old setting until `queue:restart`. Whether to build the pin file is for the owner or the cutover lane to decide; until then the cutover steps must run `queue:restart` after changing the engine.
+
+## Codex review round (25 Nov)
+
+Codex reviewed 50329a84; findings checked again at eeaa0601.
+
+- sqlite-observability#1 (queue check skips expired reservations): fixed in 19619dec. A reserved job waits again from `reserved_at` plus the `retry_after` of the connection that serves its queue. Tests: `test_a_job_whose_worker_died_waits_again_once_its_reservation_expires`, `test_a_reservation_expires_after_the_retry_after_of_the_connection_that_serves_its_queue`.
+- sqlite-observability#2 (after-commit transaction hides the slow one): already fixed in df793b3f (per-connection stack). `test_a_transaction_opened_by_an_after_commit_hook_does_not_hide_the_slow_one` fails on the 50329a84 code (0 records) and passes now.
+- sqlite-observability#3 (next day file not regrouped): not a defect. Monolog 3.10.0's StreamHandler calls `write()` again when the file's inode changes, so the new day file is opened inside a fresh `write()` that applies the group. `test_the_next_day_file_of_a_long_running_process_joins_the_log_directory_group` (9df28c22) pins it; it fails when files opened by a re-entered `write()` are ignored.
+- reviewer#1 (no engine pin file): owner decision, stated under "Not in this change".
+- reviewer#2 (unmounted mount reads as the root disk): fixed in e80cdc12 with `HEARTBEAT_DISK_MOUNTS` (empty, so off). Tests: `test_a_watched_mount_that_is_not_mounted_fails`, `test_a_mounted_watched_mount_passes`, `test_a_missing_watched_mount_fails`.
+- reviewer#3 (expired reservations not counted): fixed in 19619dec, the same change as sqlite-observability#1.
+- reviewer#4 (failed COMMIT and rollback timing): documented under "Limits of the measurement". Laravel fires no event for either, so they cannot be measured from events.
+- reviewer#5 (`/up` is public and reads the database): not a defect. One `exists()` read on `migrations` per request (plus `@@server_uuid` on MySQL when that check is on), with no session and no write. A rate limit, if wanted, belongs in nginx.
+- reviewer#6 (uid-33 fork tests fail locally): not a branch defect. The local read-only vendor volume causes it, identically on base 8bb478e6. CI runs as a non-root user and does not hit it.
