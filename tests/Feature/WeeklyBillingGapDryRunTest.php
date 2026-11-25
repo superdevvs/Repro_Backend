@@ -131,6 +131,35 @@ class WeeklyBillingGapDryRunTest extends TestCase
         );
     }
 
+    public function test_lists_sales_rep_pay_on_any_shoot_the_payout_report_skipped(): void
+    {
+        $this->requireTextDates();
+        $rep = $this->salesRep();
+        $standard = Shoot::factory()->create(['scheduled_date' => '2026-10-05']);
+        $internal = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_INTERNAL_TEST, 'scheduled_date' => '2026-10-05']);
+        $firstDay = $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-04');
+        $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00');
+        $this->compensation($internal, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-04');
+
+        $report = $this->dryRun();
+
+        // The invoice run never bills pay on a standard shoot, but the weekly
+        // payout report adds it to the rep's total.
+        $selections = $report['periods'][0]['selections'];
+        $this->assertSame(0, $selections['sales_rep_compensations']['selected_date_correct']);
+        $this->assertSame(['selected_now' => 1, 'selected_date_correct' => 2, 'skipped' => 1, 'selected_only_by_text' => 0],
+            $selections['sales_rep_payout_report_compensations']);
+        $skipped = collect($report['skipped'])->where('selection', 'sales_rep_payout_report_compensations')->sole();
+        $this->assertSame($firstDay->id, $skipped['record_id']);
+        $this->assertSame($standard->id, $skipped['shoot_id']);
+        $this->assertSame($rep->id, $skipped['recipient_id']);
+        $this->assertSame([], $skipped['billed_invoice_ids']);
+        // The real report counts only the mid-week pay.
+        $summary = app(PayoutReportService::class)
+            ->buildSalesRepSummaries(Carbon::parse('2026-10-04')->startOfDay(), Carbon::parse('2026-10-10')->endOfDay())->sole();
+        $this->assertSame(40.0, $summary['compensation_total']);
+    }
+
     public function test_lists_only_records_the_sales_rep_run_would_pay_to_an_active_rep(): void
     {
         $this->requireTextDates();
@@ -157,8 +186,9 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $counts = ['selected_now' => 1, 'selected_date_correct' => 2, 'skipped' => 1, 'selected_only_by_text' => 0];
         $this->assertSame($counts, $selections['sales_rep_invoices']);
         $this->assertSame($counts, $selections['sales_rep_payout_report']);
-        $this->assertSame(['selected_now' => 0, 'selected_date_correct' => 0, 'skipped' => 0, 'selected_only_by_text' => 0],
-            $selections['sales_rep_compensations']);
+        $none = ['selected_now' => 0, 'selected_date_correct' => 0, 'skipped' => 0, 'selected_only_by_text' => 0];
+        $this->assertSame($none, $selections['sales_rep_compensations']);
+        $this->assertSame($none, $selections['sales_rep_payout_report_compensations'] ?? null);
         $skipped = collect($report['skipped'])->where('selection', 'sales_rep_invoices')->sole();
         $this->assertSame($shoots['client_rep_first']->id, $skipped['record_id']);
         $this->assertSame($rep->id, $skipped['recipient_id']);

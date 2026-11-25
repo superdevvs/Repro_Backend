@@ -168,10 +168,15 @@ Selections checked:
 | `sales_rep_payout_report` | Weekly sales-rep payout report | Same |
 | `photographer_compensations` | Weekly photographer payouts, complimentary-reshoot pay | First-day lines whose `earned_at` is a bare date (the app normally stores a time) |
 | `sales_rep_compensations` | Weekly sales-rep invoices, complimentary-reshoot compensation lines | Same |
+| `sales_rep_payout_report_compensations` | Weekly sales-rep payout report, compensation total (pay on any shoot except internal tests) | Same |
 | `complimentary_reshoot_report` | Complimentary-reshoot summary in the payout report | Last-day shoots stored with a time |
 
 Photographer pay for normal shoots is selected with `whereDate`, which is
 already date-correct on SQLite, so it is not listed.
+
+The sales-rep selections count only records the run would pay: a shoot with
+no rep goes to its client's rep (read, not saved), and a recipient who is not
+an active sales rep is left out, as the runs do.
 
 Reading the output: "Picked now" is what the run selects today; "Date-correct"
 is what it should select. Each skipped record lists the stored value, the

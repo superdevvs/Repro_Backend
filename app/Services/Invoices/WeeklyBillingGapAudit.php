@@ -89,6 +89,13 @@ final class WeeklyBillingGapAudit
                     ->whereHas('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)),
                 'earned_at', [$start, $end], $dates, 'shoot_id', 'recipient_user_id', $compensationLines, $activeSalesRep,
             ),
+            // PayoutReportService::buildSalesRepSummaries, compensation total. The report adds
+            // sales-rep pay on any shoot except internal tests, not only complimentary reshoots.
+            'sales_rep_payout_report_compensations' => $this->compare(
+                $this->compensations(ShootCompensation::RECIPIENT_SALES_REP)
+                    ->whereDoesntHave('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST)),
+                'earned_at', [$start, $end], $dates, 'shoot_id', 'recipient_user_id', $compensationLines, $activeSalesRep,
+            ),
             // PayoutReportService::buildComplimentaryReshootSummary, the branch without scheduled_at.
             'complimentary_reshoot_report' => $this->compare(
                 Shoot::query()->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)
