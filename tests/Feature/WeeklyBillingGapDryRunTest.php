@@ -27,6 +27,7 @@ class WeeklyBillingGapDryRunTest extends TestCase
 
     public function test_lists_first_day_shoots_the_text_comparison_skipped_for_both_stored_date_shapes(): void
     {
+        $this->requireTextDates();
         $rep = $this->salesRep();
         $service = Service::factory()->create(['price' => 500, 'exclude_from_sales_commission' => false]);
         $shoots = [];
@@ -83,6 +84,7 @@ class WeeklyBillingGapDryRunTest extends TestCase
 
     public function test_lists_compensations_whose_stored_earned_date_the_text_comparison_skipped(): void
     {
+        $this->requireTextDates();
         $photographer = User::factory()->create(['role' => 'photographer']);
         $rep = $this->salesRep();
         $reshoot = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, 'scheduled_date' => '2026-10-05']);
@@ -131,6 +133,7 @@ class WeeklyBillingGapDryRunTest extends TestCase
 
     public function test_complimentary_report_skips_last_day_shoots_stored_with_a_time(): void
     {
+        $this->requireTextDates();
         $lastDay = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, 'scheduled_at' => null]);
         $bareLastDay = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, 'scheduled_at' => null]);
         DB::table('shoots')->where('id', $lastDay->id)->update(['scheduled_date' => '2026-10-10 00:00:00', 'scheduled_at' => null]);
@@ -155,6 +158,7 @@ class WeeklyBillingGapDryRunTest extends TestCase
 
     public function test_marks_a_skipped_shoot_that_was_billed_on_another_invoice(): void
     {
+        $this->requireTextDates();
         $rep = $this->salesRep();
         $service = Service::factory()->create(['price' => 500, 'exclude_from_sales_commission' => false]);
         $shoot = $this->repShoot($rep, $service, '2026-10-04');
@@ -169,6 +173,32 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $skipped = collect($report['skipped'])->firstWhere('selection', 'sales_rep_invoices');
         $this->assertSame([$manual->id], $skipped['billed_invoice_ids']);
         $this->assertSame(['skipped' => 2, 'unbilled' => 0, 'distinct_skipped' => 1, 'distinct_unbilled' => 0], $report['totals']);
+    }
+
+    public function test_mid_week_selections_match_the_real_sales_rep_run_on_every_engine(): void
+    {
+        // No first- or last-day values, so neither engine has a text-date gap.
+        // This runs on MySQL too, where the text-shape fixtures above skip.
+        $rep = $this->salesRep();
+        $service = Service::factory()->create(['price' => 500, 'exclude_from_sales_commission' => false]);
+        $standard = $this->repShoot($rep, $service, '2026-10-06');
+        $reshoot = Shoot::factory()->create(['shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, 'scheduled_date' => '2026-10-06']);
+        $reshootPay = $this->compensation($reshoot, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00');
+        $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00');
+
+        $report = $this->dryRun();
+
+        $none = ['selected_now' => 1, 'selected_date_correct' => 1, 'skipped' => 0, 'selected_only_by_text' => 0];
+        $this->assertSame($none, $report['periods'][0]['selections']['sales_rep_invoices']);
+        $this->assertSame($none, $report['periods'][0]['selections']['sales_rep_compensations']);
+        $this->assertSame([], $report['skipped']);
+        $invoices = app(InvoiceService::class)->generateSalesRepInvoicesForPeriod(
+            Carbon::parse('2026-10-04'),
+            Carbon::parse('2026-10-10'),
+        );
+        $lines = InvoiceItem::whereIn('invoice_id', $invoices->pluck('id'))->where('type', InvoiceItem::TYPE_CHARGE)->get();
+        $this->assertSame([$standard->id], $lines->whereNull('shoot_compensation_id')->pluck('shoot_id')->map(fn ($id) => (int) $id)->all());
+        $this->assertSame([$reshootPay->id], $lines->whereNotNull('shoot_compensation_id')->pluck('shoot_compensation_id')->map(fn ($id) => (int) $id)->values()->all());
     }
 
     public function test_covers_the_last_eight_completed_weeks_by_default(): void
@@ -224,6 +254,7 @@ class WeeklyBillingGapDryRunTest extends TestCase
 
     public function test_table_output_lists_each_skipped_record(): void
     {
+        $this->requireTextDates();
         $rep = $this->salesRep();
         $service = Service::factory()->create(['price' => 500]);
         $shoot = $this->repShoot($rep, $service, '2026-10-04');
@@ -236,6 +267,14 @@ class WeeklyBillingGapDryRunTest extends TestCase
             ->expectsOutputToContain('2 skipped record(s) across selections, 1 distinct; 1 distinct with no invoice line.')
             ->expectsOutputToContain('shoot '.$shoot->id.' ')
             ->assertSuccessful();
+    }
+
+    private function requireTextDates(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Only SQLite keeps both stored date shapes; MySQL DATE and DATETIME columns store one, '
+                .'so these fixtures cannot be built there. The mid-week test runs on every engine.');
+        }
     }
 
     private function dryRun(array $options = []): array
