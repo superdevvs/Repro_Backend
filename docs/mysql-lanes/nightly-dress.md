@@ -281,3 +281,18 @@ the post-copy lock probe, the cleanup signal hold, the diagnostics copy on a
 stop or on resume, or the post-import seal each made its new test fail. No PHP
 file changed, so no PHP or MySQL-profile tests were rerun; no SQL or `mysqld`
 flag changed.
+
+Second round, on `a4273a4b`:
+
+- Codex round 2 reviewed the whole branch against `a6e799bb` and reported no
+  findings.
+- `reviewer#2` residual rechecked: the README said a deploy that takes and
+  releases the lock within the copy always leaves a layout change for the pin.
+  Not so: one that fails at its preflights changes nothing, and one that fails
+  after a data-only migration is not seen. Neither makes the night's evidence
+  false. The README wording is corrected in `559c636a`; no code change.
+- `reviewer#4` rechecked: the seal was already in `runner.py` at `ad4f9981`,
+  and deleting it from a copy of `a4273a4b` makes both seal tests fail.
+- `reviewer#5` rechecked: `reverse_triggers`, `finance`,
+  `applicant_files_root` and `busiest_endpoints` are still null. It stays an
+  owner decision.
