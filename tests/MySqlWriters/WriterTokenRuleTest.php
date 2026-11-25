@@ -254,6 +254,38 @@ final class WriterTokenRuleTest extends TestCase
         $this->db()->unprepared($sql);
     }
 
+    public static function statementBatches(): array
+    {
+        return [
+            'read then write' => ['SELECT 1; UPDATE _writer_policy_probe SET counter = 9 WHERE id = 1'],
+            'write then write' => ['UPDATE _writer_policy_probe SET counter = 9 WHERE id = 2; UPDATE _writer_policy_probe SET counter = 9 WHERE id = 1'],
+            'hidden behind two dashes' => ['SELECT --1; UPDATE _writer_policy_probe SET counter = 9 WHERE id = 1'],
+        ];
+    }
+
+    #[DataProvider('statementBatches')]
+    public function test_a_batch_of_statements_is_refused_before_any_of_it_runs(string $sql): void
+    {
+        $error = $this->failureOf(fn () => $this->db()->unprepared($sql));
+
+        $this->assertInstanceOf(LogicException::class, $error, 'A batch must be refused, not classified by its first statement.');
+        $this->assertStringContainsString('one statement at a time', $error->getMessage());
+        $this->assertSame([0, 0], [$this->counter(1), $this->counter(2)]);
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
+    public function test_the_server_runs_one_statement_per_call_on_every_writer_session(): void
+    {
+        foreach (['mysql', 'mysql_cache_locks'] as $name) {
+            // Raw PDO skips the classifier: the session itself must refuse a second statement.
+            $error = $this->failureOf(fn () => DB::connection($name)->getPdo()
+                ->exec('DO 0; UPDATE _writer_policy_probe SET counter = 9 WHERE id = 1'));
+            $this->assertInstanceOf(\PDOException::class, $error, "The {$name} session must refuse a second statement.");
+            $this->assertSame(1064, (int) $error->errorInfo[1], $error->getMessage());
+        }
+        $this->assertSame(0, $this->counter());
+    }
+
     public function test_changed_session_isolation_fails_closed_at_the_next_write(): void
     {
         $this->db()->statement("SET SESSION transaction_isolation = 'REPEATABLE-READ'");

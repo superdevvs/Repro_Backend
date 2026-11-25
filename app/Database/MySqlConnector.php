@@ -31,6 +31,11 @@ final class MySqlConnector extends \Illuminate\Database\Connectors\MySqlConnecto
         // SQLite reports matched rows for a no-op UPDATE. Heartbeats and guarded
         // writes rely on that contract, including repeated writes in one second.
         $config['options'] = [PDO::MYSQL_ATTR_FOUND_ROWS => true] + ($config['options'] ?? []);
+        if (($config['repro_writer_policy'] ?? false) === true || is_array($config['repro_writer_exempt_tables'] ?? null)) {
+            // One statement per call: the writer token and the table limit are decided
+            // for the statement the classifier sees, so the server must not run a second one.
+            $config['options'] = [PDO::MYSQL_ATTR_MULTI_STATEMENTS => false] + $config['options'];
+        }
         $pdo = parent::connect($config);
         if ($expectedUuid !== null) {
             $target = $pdo->query('SELECT @@server_uuid AS uuid, VERSION() AS version, @@skip_networking AS local_only')

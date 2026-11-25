@@ -72,6 +72,17 @@ class WriterStatementTest extends TestCase
             'unlock tables' => ['UNLOCK TABLES', WriterStatement::TRANSACTION_CONTROL],
             'xa' => ["XA START 'x'", WriterStatement::TRANSACTION_CONTROL],
 
+            // A batch is refused: the server would run every statement, the token check sees only one.
+            'read then write' => ['SELECT 1; UPDATE users SET name = 1', WriterStatement::MULTIPLE],
+            'exempt write then business write' => ['insert into `cache_locks` (`key`) values (?); update `users` set `name` = ?', WriterStatement::MULTIPLE],
+            'two dashes without a space are not a comment' => ['SELECT --1; UPDATE t SET a = 1', WriterStatement::MULTIPLE],
+            'two tables then a write' => ['CREATE TABLE a (id INT); UPDATE users SET name = 1', WriterStatement::MULTIPLE],
+            'trailing semicolon' => ['UPDATE t SET a = 1;', WriterStatement::WRITE],
+            'trailing semicolon and comment' => ["select 1; -- done\n", WriterStatement::READ],
+            'semicolon inside a string' => ["update t set a = 'x; delete from users'", WriterStatement::WRITE],
+            'procedure body' => ['CREATE PROCEDURE p() BEGIN UPDATE t SET a = 1; SELECT 1; END', WriterStatement::DDL],
+            'trigger body with definer' => ["CREATE DEFINER=`a`@`localhost` TRIGGER t BEFORE DELETE ON x FOR EACH ROW BEGIN\n DELETE FROM y WHERE id = OLD.id;\nEND", WriterStatement::DDL],
+
             'empty' => ['   ', WriterStatement::OTHER],
             'analyze' => ['ANALYZE TABLE t', WriterStatement::OTHER],
         ];
@@ -95,6 +106,9 @@ class WriterStatementTest extends TestCase
             ['delete `jobs` from `jobs` where 1', null],
             ['replace into cache values (1)', 'cache'],
             ['WITH x AS (SELECT 1) DELETE FROM jobs', null],
+            ['delete from `cache_locks` where `key` = ?;', 'cache_locks'],
+            ['insert into `cache_locks` (`key`) values (?); update `users` set `name` = ?', null],
+            ['delete from cache_locks; delete from users', null],
         ];
     }
 

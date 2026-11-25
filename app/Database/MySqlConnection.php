@@ -239,6 +239,10 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         }
 
         $this->assertUsable();
+        if ($class === WriterStatement::MULTIPLE) {
+            // The token decision covers one statement; the session refuses batches too.
+            throw new LogicException('Run one statement at a time on the MySQL writer connection.');
+        }
         if ($class === WriterStatement::TRANSACTION_CONTROL) {
             throw new LogicException('Use Laravel transactions, not raw transaction or table-lock statements, on the MySQL writer connection.');
         }

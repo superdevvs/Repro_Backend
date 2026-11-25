@@ -177,6 +177,9 @@ final class WriterExemptionsTest extends TestCase
         foreach ([
             'business tables' => fn () => DB::connection('mysql_cache_locks')->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 9]),
             'cache values' => fn () => DB::connection('mysql_cache_locks')->table('cache')->insert(['key' => 'x', 'value' => 'y', 'expiration' => 1]),
+            // A lock row first must not carry a business write past the table check.
+            'a second statement' => fn () => DB::connection('mysql_cache_locks')->unprepared(
+                "insert into cache_locks (`key`, owner, expiration) values ('writer-policy-batch', 'o', 1); update _writer_policy_probe set counter = 9 where id = 1"),
         ] as $what => $write) {
             $error = $this->failureOf($write);
             $this->assertInstanceOf(LogicException::class, $error, "The token-free lock session must not write {$what}.");
@@ -184,6 +187,7 @@ final class WriterExemptionsTest extends TestCase
         }
         $this->assertSame(0, $this->counter());
         $this->assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM cache')->fetchColumn());
+        $this->assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM cache_locks')->fetchColumn());
     }
 
     public function test_cache_values_are_writes_and_wait_for_the_token(): void

@@ -7,7 +7,9 @@ namespace App\Database;
  *
  * Writes at transaction level 0 run as BEGIN, token, statement, COMMIT. DDL,
  * session statements and reads are never wrapped. The scan ignores quoted text
- * and comments; anything it cannot place is OTHER and runs unchanged.
+ * and comments; anything it cannot place is OTHER and runs unchanged. Text after
+ * a statement's semicolon is a second statement (MULTIPLE), except inside a
+ * stored-program body, which MySQL parses as one statement.
  */
 final class WriterStatement
 {
@@ -26,6 +28,9 @@ final class WriterStatement
     public const TRANSACTION_CONTROL = 'transaction_control';
 
     public const OTHER = 'other';
+
+    /** More than one statement in one call. The writer connection refuses it. */
+    public const MULTIPLE = 'multiple';
 
     private const WRITES = ['insert', 'update', 'delete', 'replace', 'call', 'load'];
 
@@ -56,7 +61,10 @@ final class WriterStatement
     /** The one plain, unqualified table an INSERT, UPDATE, DELETE or REPLACE targets. */
     public static function singleTargetTable(string $sql): ?string
     {
-        $words = self::topLevelWords($sql);
+        $words = self::topLevelWords($sql, $more);
+        if ($more) {
+            return null;
+        }
         $first = $words[0] ?? null;
         $pattern = match ($first) {
             'insert' => '/^\s*insert\s+(?:ignore\s+)?into\s+(`?)([A-Za-z0-9_]+)\1(?=[\s(]|$)/i',
@@ -78,10 +86,13 @@ final class WriterStatement
 
     private static function scan(string $sql): string
     {
-        $words = self::topLevelWords($sql);
+        $words = self::topLevelWords($sql, $more);
         $first = $words[0] ?? null;
         if ($first === null) {
             return self::OTHER;
+        }
+        if ($more && ! self::isStoredProgram($words)) {
+            return self::MULTIPLE;
         }
         if ($first === 'with') {
             $first = null;
@@ -116,6 +127,23 @@ final class WriterStatement
         return self::OTHER;
     }
 
+    /**
+     * CREATE TRIGGER, PROCEDURE, FUNCTION or EVENT with a BEGIN ... END body: its
+     * semicolons belong to the body. The writer sessions run without multi-statement
+     * support, so the server still refuses anything after the body.
+     *
+     * @param  list<string>  $words
+     */
+    private static function isStoredProgram(array $words): bool
+    {
+        if ($words[0] !== 'create') {
+            return false;
+        }
+        $kinds = array_intersect(array_slice($words, 1, 8), ['trigger', 'procedure', 'function', 'event']);
+
+        return $kinds !== [] && in_array('begin', array_slice($words, array_key_first($kinds) + 2), true);
+    }
+
     /** @param  list<string>  $words */
     private static function isLocking(array $words): bool
     {
@@ -134,19 +162,22 @@ final class WriterStatement
 
     /**
      * Lower-case bare words outside quotes and comments, at every parenthesis
-     * depth for the first word and at depth 0 afterwards.
+     * depth for the first word and at depth 0 afterwards. $more is set when
+     * anything other than whitespace or a comment follows a semicolon.
      *
      * @return list<string>
      */
-    private static function topLevelWords(string $sql): array
+    private static function topLevelWords(string $sql, ?bool &$more = null): array
     {
         $words = [];
         $depth = 0;
         $length = strlen($sql);
         $leading = true;
+        $ended = false;
+        $more = false;
         for ($i = 0; $i < $length;) {
             $char = $sql[$i];
-            if ($char === '-' && ($sql[$i + 1] ?? '') === '-' || $char === '#') {
+            if ($char === '-' && ($sql[$i + 1] ?? '') === '-' && self::startsDashComment($sql, $i) || $char === '#') {
                 $end = strpos($sql, "\n", $i);
                 $i = $end === false ? $length : $end + 1;
 
@@ -158,6 +189,18 @@ final class WriterStatement
 
                 continue;
             }
+            if (ctype_space($char)) {
+                $i++;
+
+                continue;
+            }
+            if ($char === ';') {
+                $ended = true;
+                $i++;
+
+                continue;
+            }
+            $more = $more || $ended;
             if ($char === "'" || $char === '"' || $char === '`') {
                 $i = self::skipQuoted($sql, $i, $char);
                 $leading = false;
@@ -196,6 +239,14 @@ final class WriterStatement
         return $words;
     }
 
+    /** MySQL's "--" comment needs whitespace or a control character after the dashes: "--1" is minus minus one. */
+    private static function startsDashComment(string $sql, int $at): bool
+    {
+        $next = $sql[$at + 2] ?? '';
+
+        return $next === '' || ctype_space($next) || ctype_cntrl($next);
+    }
+
     private static function skipQuoted(string $sql, int $start, string $quote): int
     {
         $length = strlen($sql);
@@ -221,6 +272,6 @@ final class WriterStatement
 
     private static function stripLeadingComments(string $sql): string
     {
-        return (string) preg_replace('~\A(?:\s+|--[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z)|/\*.*?\*/)*~s', '', $sql);
+        return (string) preg_replace('~\A(?:\s+|--(?=[\s\x00-\x1f]|\z)[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z)|/\*.*?\*/)*~s', '', $sql);
     }
 }
