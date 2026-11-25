@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import subprocess
@@ -44,6 +44,7 @@ class NightlyParitySummaryTests(unittest.TestCase):
         ]
         self.paths = [self.folder / f"night-{index}.json" for index in range(check.NIGHTLY_RUN_COUNT)]
         self.crm_paths = [self.folder / f"crm-{index}.json" for index in range(check.NIGHTLY_RUN_COUNT)]
+        self.capture_paths = [self.folder / f"capture-{index}.json" for index in range(check.NIGHTLY_RUN_COUNT)]
         self.manifest_path = self.folder / "manifest.json"
 
     @staticmethod
@@ -52,7 +53,18 @@ class NightlyParitySummaryTests(unittest.TestCase):
         path.write_bytes(raw)
         return hashlib.sha256(raw).hexdigest()
 
+    def write_captures(self):
+        for path, report in zip(self.capture_paths, self.reports, strict=True):
+            self.write(path, {
+                "format_version": 1, "driver": "sqlite", "created_utc": report["scheduled_day_utc"] + "T00:00:01Z",
+                "application_booted": False, "tables": 328, "file": "database.sqlite", "bytes": 4096,
+                "sha256": report["snapshot_sha256"],
+            })
+
     def write_reviewed_input(self, manifest_overrides=None, *, captures=None):
+        if captures is None:
+            self.write_captures()
+            captures = self.capture_paths
         manifest = {
             "schema": nightly.SCHEMA,
             "identity_sha256": digest(self.policy["identity"]),
@@ -68,38 +80,47 @@ class NightlyParitySummaryTests(unittest.TestCase):
                 entry["producer_receipt_sha256"] = hashlib.sha256(capture_path.read_bytes()).hexdigest()
         self.operations["nightly_data_parity_report_sha256"] = self.write(self.manifest_path, manifest)
 
-    def summarize(self):
-        return nightly.summarize(self.policy, self.manifest_path, self.scope_path, self.paths, self.crm_paths)
+    def at_last_night(self):
+        clock = patch.object(nightly, "datetime", wraps=datetime)
+        mocked = clock.start()
+        self.addCleanup(clock.stop)
+        last = max(report["scheduled_day_utc"] for report in self.reports)
+        mocked.now.return_value = datetime.fromisoformat(last + "T12:00:00+00:00")
+
+    def summarize(self, **overrides):
+        self.at_last_night()
+        return nightly.summarize(self.policy, self.manifest_path, self.scope_path, self.paths, self.crm_paths,
+                                 **({"producer_paths": self.capture_paths} | overrides))
+
+    def test_summary_requires_the_dated_producer_receipts(self):
+        self.write_reviewed_input()
+        self.assertEqual(len(self.summarize()["nights"]), check.NIGHTLY_RUN_COUNT)
+        with self.assertRaisesRegex(check.Failed, "five SQLite producer receipts"):
+            self.summarize(producer_paths=None)
+        with self.assertRaisesRegex(check.Failed, "five SQLite producer receipts"):
+            self.summarize(producer_paths=self.capture_paths[:-1])
+
+    def test_manifest_entries_must_pin_each_producer_receipt(self):
+        self.write_reviewed_input()
+        manifest = json.loads(self.manifest_path.read_bytes())
+        del manifest["nights"][2]["producer_receipt_sha256"]
+        self.operations["nightly_data_parity_report_sha256"] = self.write(self.manifest_path, manifest)
+        with self.assertRaisesRegex(check.Failed, "Malformed nightly report binding"):
+            self.summarize()
 
     def test_pinned_dated_receipts_are_checked_with_the_five_nightly_reports(self):
-        paths = [self.folder / f"capture-{index}.json" for index in range(check.NIGHTLY_RUN_COUNT)]
+        paths = self.capture_paths
         # The database bytes can be unchanged while two independently dated captures are valid.
         self.reports[1]["snapshot_sha256"] = self.reports[0]["snapshot_sha256"]
         self.crm_reports[1]["snapshot_sha256"] = self.reports[0]["snapshot_sha256"]
-        for path, report in zip(paths, self.reports, strict=True):
-            self.write(path, {
-                "format_version": 1, "driver": "sqlite", "created_utc": report["scheduled_day_utc"] + "T00:00:01Z",
-                "application_booted": False, "tables": 328, "file": "database.sqlite", "bytes": 4096,
-                "sha256": report["snapshot_sha256"],
-            })
-
-        def summarize_captures():
-            now = datetime.fromisoformat(self.reports[-1]["scheduled_day_utc"] + "T12:00:00+00:00")
-            with patch.object(nightly, "datetime", wraps=datetime) as clock:
-                clock.now.return_value = now
-                return nightly.summarize(self.policy, self.manifest_path, self.scope_path, self.paths, self.crm_paths,
-                                         producer_paths=paths)
-
-        self.write_reviewed_input(captures=paths)
-        self.assertEqual(len(summarize_captures()["nights"]), check.NIGHTLY_RUN_COUNT)
-        with self.assertRaisesRegex(check.Failed, "Malformed nightly report binding"):
-            self.summarize()
+        self.write_reviewed_input()
+        self.assertEqual(len(self.summarize()["nights"]), check.NIGHTLY_RUN_COUNT)
         paths[1].write_bytes(paths[0].read_bytes())
         with self.assertRaisesRegex(check.Failed, "reviewed SHA-256"):
-            summarize_captures()
+            self.summarize()
         self.write_reviewed_input(captures=paths)
         with self.assertRaisesRegex(check.Failed, "capture date differs"):
-            summarize_captures()
+            self.summarize()
 
     def test_summary_uses_exact_digests_and_passes_existing_gate(self):
         # An unchanged snapshot digest can be recorded on consecutive nights.
@@ -190,6 +211,12 @@ class NightlyParitySummaryTests(unittest.TestCase):
             self.summarize()
 
     def test_cli_emits_summary_and_refuses_a_missing_crm_review(self):
+        # The CLI reads the real clock, so date the fixture nights in the past.
+        today = datetime.now(timezone.utc).date()
+        for offset, (report, crm) in enumerate(zip(self.reports, self.crm_reports, strict=True)):
+            day = (today - timedelta(days=check.NIGHTLY_RUN_COUNT - offset)).isoformat()
+            report["scheduled_day_utc"] = crm["scheduled_day_utc"] = day
+        self.operations["last_nightly_day_utc"] = self.reports[-1]["scheduled_day_utc"]
         self.write_reviewed_input()
         policy_path = self.folder / "policy.json"
         self.write(policy_path, self.policy)
@@ -199,6 +226,11 @@ class NightlyParitySummaryTests(unittest.TestCase):
             "--nights", *(str(path) for path in self.paths),
             "--crm-reports", *(str(path) for path in self.crm_paths),
         ]
+        without_receipts = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(without_receipts.returncode, 2)
+        self.assertIn("--producer-receipts", without_receipts.stderr)
+        self.assertEqual(without_receipts.stdout, "")
+        command += ["--producer-receipts", *(str(path) for path in self.capture_paths)]
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stdout)
         output = json.loads(result.stdout)

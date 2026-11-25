@@ -167,14 +167,16 @@ digest as `operations.nightly_data_parity_report_sha256`.
 python -B -m scripts.cutover.readiness.summarize_nightly_parity \
   --policy review-policy.json --manifest reviewed-nights.json --scope migration-scope.json \
   --nights night1.json night2.json night3.json night4.json night5.json \
-  --crm-reports crm1.json crm2.json crm3.json crm4.json crm5.json
+  --crm-reports crm1.json crm2.json crm3.json crm4.json crm5.json \
+  --producer-receipts capture1.json capture2.json capture3.json capture4.json capture5.json
 ```
 
 The adapter verifies the supplied file digests and the exact scope, date,
 release and snapshot bindings, then applies the nightly and CRM parity gates.
-To verify the five dated captures during the same run, add
-`--producer-receipts capture1.json capture2.json capture3.json capture4.json capture5.json`.
-Pin each capture's `producer_receipt_sha256` in its manifest entry. A dated
+`--producer-receipts` is required. Without the five dated captures a summary
+cannot show that each night used its own fresh snapshot, so the command
+refuses to run. Pin each capture's `producer_receipt_sha256` in its manifest
+entry. A dated
 private copy receipt also needs `source_release_sha` in that entry for the
 independently verified live backend commit. Keep the private producer
 receipts in protected storage. The manifest digest binds these inputs to
