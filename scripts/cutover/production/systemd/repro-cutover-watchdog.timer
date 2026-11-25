@@ -3,7 +3,10 @@ Description=Run the RePro cutover watchdog every minute from boot
 
 [Timer]
 OnBootSec=30s
-OnUnitActiveSec=1min
+# Wall-clock schedule: it keeps firing whether or not the service ran last time.
+# OnUnitActiveSec counts from the service's last activation, which never happens
+# while ConditionPathExists skips the service (no journal yet).
+OnCalendar=minutely
 AccuracySec=5s
 
 [Install]

@@ -383,6 +383,14 @@ class UnitFileTests(unittest.TestCase):
                 values.setdefault(key.strip(), []).append(value.strip())
         return values
 
+    @staticmethod
+    def seconds(span):
+        units = {"": 1, "s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600}
+        parts = re.findall(r"(\d+)\s*([a-z]*)", span)
+        if not parts or "".join(number + unit for number, unit in parts) != span.replace(" ", ""):
+            raise ValueError(f"Unsupported systemd time span: {span}")
+        return sum(int(number) * units[unit] for number, unit in parts)
+
     def test_watchdog_timer_ticks_every_minute_from_boot_as_root(self):
         service = self.entries(self.HERE / "systemd" / "repro-cutover-watchdog.service")
         timer = self.entries(self.HERE / "systemd" / "repro-cutover-watchdog.timer")
@@ -390,10 +398,22 @@ class UnitFileTests(unittest.TestCase):
         self.assertEqual(["/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py tick"], service["ExecStart"])
         self.assertNotIn("User", service)
         self.assertEqual(["/var/lib/repro-cutover-fence/state.json"], service["ConditionPathExists"])
-        self.assertLess(int(service["TimeoutStartSec"][0]), 60)
-        self.assertEqual(["1min"], timer["OnUnitActiveSec"])
+        # A wall-clock schedule keeps ticking even when the service's condition skipped an
+        # earlier tick (no journal yet); OnUnitActiveSec counts from the unit's last activation.
+        self.assertEqual(["minutely"], timer["OnCalendar"])
+        self.assertNotIn("OnUnitActiveSec", timer)
         self.assertEqual(["30s"], timer["OnBootSec"])
         self.assertEqual(["timers.target"], timer["WantedBy"])
+
+    def test_watchdog_service_outlasts_the_controller_wait_and_a_full_rollback(self):
+        # A deadline tick runs the whole rollback (close, drain, unseal, publish). systemd must not
+        # kill it inside the runner's own bounds: the controller-lock wait, the longest rollback
+        # budget the runner grants, and one more maximal host command after that budget.
+        service = self.entries(self.HERE / "systemd" / "repro-cutover-watchdog.service")
+        budget = max(Runner.WINDOW_SECONDS - Runner.DECISION_SECONDS, Runner.ROLLBACK_SECONDS)
+        required = Runner.CONTROLLER_WAIT_SECONDS + budget + production.MAX_COMMAND_SECONDS
+        self.assertEqual(1, len(service["TimeoutStartSec"]))
+        self.assertGreaterEqual(self.seconds(service["TimeoutStartSec"][0]), required)
 
     def test_media_archive_drop_in_starts_the_worker_through_the_wrapper(self):
         drop_in = self.entries(self.HERE / "systemd" / "repro-media-archives.service.d" / "cutover-fence.conf")

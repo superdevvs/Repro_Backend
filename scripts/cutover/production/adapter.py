@@ -47,6 +47,8 @@ PATHS = {"state", "policy", "evidence", "activation", "machine_id", "boot_id", "
          "scheduler_hold", "sqlite_seal_record"}
 COMMANDS = {"identity", "mysql", "queue_pause", "queue_resume", "stop_workers", "start_workers", "drain_fpm"}
 OPTIONS = {"max_drain_seconds", "separate_freeze_approval", "adopt_external_hold", "require_long_job_predrain"}
+# Longest single host command the config may allow (command_seconds).
+MAX_COMMAND_SECONDS = 300
 
 
 def _argv(value) -> bool:
@@ -77,7 +79,7 @@ def load_config(raw: bytes) -> dict:
         guard.require(isinstance(config.get(name), list) and all(isinstance(item, str) and len(item) >= 8
                                                                 for item in config[name]),
                       f"Host config {name} must be specific command-line patterns")
-    guard.require(type(config.get("command_seconds")) is int and 0 < config["command_seconds"] <= 300
+    guard.require(type(config.get("command_seconds")) is int and 0 < config["command_seconds"] <= MAX_COMMAND_SECONDS
                   and isinstance(options, dict) and options.keys() == OPTIONS
                   and type(options["max_drain_seconds"]) is int and 0 < options["max_drain_seconds"] <= 45 * 60
                   and all(type(options[name]) is bool for name in OPTIONS - {"max_drain_seconds"}),

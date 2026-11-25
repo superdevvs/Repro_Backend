@@ -375,6 +375,8 @@ class Runner:
     CONTROLLER_WAIT_SECONDS = 50
     # Longest wait for admitted writers to finish once admissions are closed (plan: ten minutes).
     MAX_DRAIN_SECONDS = 10 * 60
+    # Even a late watchdog gets at least this long to finish a rollback.
+    ROLLBACK_SECONDS = 10 * 60
     ACTIONS = frozenset({"hold", "freeze", "prepare", "promote", "tick", "abort"})
     # Admissions are held and the outage clock runs; MySQL has not been opened for writes.
     HELD_PHASES = frozenset({"holding", "frozen", "ready"})
@@ -589,7 +591,7 @@ class Runner:
             state["history"].append({**state["pending"], "phase": "interrupted"})
         self._intent(state, "abort", before, now)
         # Even a late watchdog must attempt recovery with a bounded fresh budget.
-        rollback_deadline = max(state["started_at"] + self.WINDOW_SECONDS, now + 10 * 60)
+        rollback_deadline = max(state["started_at"] + self.WINDOW_SECONDS, now + self.ROLLBACK_SECONDS)
         # From any held phase: keep admissions closed, stop workers and wait for
         # every admitted writer before SQLite authority is published again.
         self.adapter.close_admissions(lease, rollback_deadline)
