@@ -108,6 +108,12 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('queue:prune-failed --hours=336')
             ->dailyAt('03:55')->withoutOverlapping()->onOneServer()
             ->when(fn () => (bool) config('queue.failed.prune_enabled'));
+        // Outside alerting: database, backup age, free disk and the oldest
+        // waiting job, pinged to the alert service. Off while
+        // HEARTBEAT_PING_URL is empty.
+        $schedule->command('ops:heartbeat')
+            ->everyMinute()->withoutOverlapping(5)->runInBackground()
+            ->when(fn () => trim((string) config('heartbeat.url')) !== '');
         $schedule->command('media:prune-downloads')->hourly()->withoutOverlapping()->onOneServer();
         $schedule->command('media:prune-editor-archives --apply --json')
             ->dailyAt('04:15')->withoutOverlapping()->onOneServer()
