@@ -8,10 +8,23 @@
 #
 # Never run this on a real host: it installs a copy of the guard at its fixed
 # production path inside the container.
+#
+# The MySQL probe's gate-state tests need the three fixtures that
+# production/mysql/fixture.sh serves (REPRO_MYSQL_PROBE_FIXTURE and its
+# _NETWORKING and _SKIP_GRANTS variants). Without them those tests skip and a
+# WARNING line names them, first and last; with REPRO_REQUIRE_PROBE_FIXTURE=1
+# the run stops before any suite instead. production/run-probe-fixture-tests.sh
+# --linux-suite builds the fixtures and runs this with the requirement set.
 set -eu
 test "$(id -u)" -eq 0
 test -f /.dockerenv || { echo 'Run only inside a disposable container' >&2; exit 2; }
 cutover=/src/scripts/cutover
+
+probe_warning=$(python3 -B "$cutover/production/test_mysql_probe.py" --fixture-check)
+if [ -n "$probe_warning" ]; then
+    printf '%s\n' "$probe_warning" >&2
+    trap 'printf "%s\n" "$probe_warning" >&2' EXIT
+fi
 
 install -d -o root -g root -m 0755 /opt/repro-cutover-fence
 install -o root -g root -m 0644 "$cutover/fence/guard.py" /opt/repro-cutover-fence/guard.py
@@ -23,8 +36,7 @@ python3 -B -m unittest discover -s "$cutover" -p test_process_contract.py -v
 for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.py; do
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
-# The MySQL probe's fixture tests run when REPRO_MYSQL_PROBE_FIXTURE names a fixture built by
-# production/mysql/fixture.sh (recipe in test_mysql_probe.py); otherwise they are skipped.
+# The MySQL probe's fixture tests skip without their fixtures (see the check at the top).
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_mysql_probe.py
 python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
 for extra in "$@"; do

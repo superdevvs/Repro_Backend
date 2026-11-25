@@ -176,14 +176,15 @@ either direction, `procs_priv`, `db`, `tables_priv`, `columns_priv`),
 | closed | Every global privilege `N`, not locked; one `db` row `repro\_dashboard` with `SELECT` only; one `tables_priv` row `writer_token` with `Select` and no column privilege; no other rows | 0 |
 | open | As closed, plus `INSERT`, `UPDATE`, `DELETE` on the schema and `UPDATE (id)` on the token (`tables_priv.Column_priv = 'Update'` and its `columns_priv` row) | 0 in measured mode, 4 in strict mode |
 | partial | Any other subset of those four, everything else exactly closed. `open_privileges` names them (`INSERT`, `UPDATE`, `DELETE`, `UPDATE(id)`) for `gate.py` | 4 |
-| unrecognised | Anything else: a role or default role (either direction), a mandatory role, a routine or proxy grant, a global static or dynamic privilege, a lock, another schema or table row, an unescaped schema grant, a missing account, `CURRENT_USER()` other than the probe (another account in the defaults file, or `--skip-grant-tables`), or a probe without `PROCESS` (it could not see app sessions) | 4 |
+| unrecognised | Anything else: a role or default role (either direction), a mandatory role, a routine or proxy grant, a global static or dynamic privilege, a lock, another schema or table row, the token's `tables_priv.Column_priv` without its `columns_priv` row or that row without it, an unescaped schema grant, a missing account, `CURRENT_USER()` other than the probe (another account in the defaults file, or `--skip-grant-tables`), or a probe without `PROCESS` (it could not see app sessions) | 4 |
 
 Other exits: 3 when nothing listens at the socket (the client's error 2002
 with `ENOENT` or `ECONNREFUSED`, or, while the client or the defaults file is
 not installed yet, a socket connect that finds nothing), stdout
 `{"version": 2, "reachable": false}`; 6 for a wrong server (UUID other than
 `mysql.target_uuid`, version not `8.4.x`, `skip_networking` off); 4 when the
-state is not readable (login refused, a missing grant-table read, a server
+state is not readable (login refused: a wrong password, error 1045, or a
+locked probe account, error 3118; a missing grant-table read, a server
 that accepts but does not answer within the timeouts, or a listening server
 with no client or defaults file); 1 for a probe failure (config, unsafe
 files, a malformed or unknown-phase journal). A
@@ -285,7 +286,14 @@ config contract tests in `test_adapter.py` (`HostConfigContractTests`,
 user. The cron and unit-file tests also run on Windows.
 `test_mysql_probe.py` needs Linux root and a disposable MySQL 8.4.13 built by
 `mysql/fixture.sh serve` from `accounts.sql` itself (plus a networking and a
-`--skip-grant-tables` variant); its docstring has the container recipe. Its
-accounts and renderer tests run anywhere with bash. Real systemd, Supervisor, nginx reloads
+`--skip-grant-tables` variant). `run-probe-fixture-tests.sh` builds all three
+in disposable `--network none` containers, runs the file as root with
+`REPRO_REQUIRE_PROBE_FIXTURE=1` (a fixture test that would skip fails the run)
+and removes the containers and volumes again; `--linux-suite` runs
+`../run-linux-tests.sh` that way instead. Without the fixtures
+`../run-linux-tests.sh` prints a `WARNING` line naming the skipped probe tests,
+first and last, and still exits 0; with `REPRO_REQUIRE_PROBE_FIXTURE=1` it
+stops before any suite. The probe file's docstring has the same recipe by
+hand. Its accounts and renderer tests run anywhere with bash. Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).
