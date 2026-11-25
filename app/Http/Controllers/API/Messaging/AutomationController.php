@@ -20,6 +20,22 @@ use Illuminate\Validation\ValidationException;
 
 class AutomationController extends Controller
 {
+    private const RUN_HISTORY_COLUMNS = [
+        'id',
+        'automation_rule_id',
+        'trigger_type',
+        'status',
+        'related_shoot_id',
+        'related_account_id',
+        'related_invoice_id',
+        'scheduled_for',
+        'started_at',
+        'completed_at',
+        'error_message',
+        'created_at',
+        'updated_at',
+    ];
+
     private const REQUIRED_SYSTEM_TRIGGER_TYPES = [
         'WEEKLY_SALES_REPORT',
         'WEEKLY_AUTOMATED_INVOICING',
@@ -130,7 +146,7 @@ class AutomationController extends Controller
             'data' => app(\App\Services\Messaging\AutomationSmsDeliverySummary::class)->annotate($automation->recentRuns()
                 ->with('steps')
                 ->limit(20)
-                ->get())
+                ->get(self::RUN_HISTORY_COLUMNS))
                 ->toArray(),
         ]);
     }
@@ -387,7 +403,7 @@ class AutomationController extends Controller
         $recentRuns = $canViewDiagnostics ? $automation->recentRuns()
             ->with('steps')
             ->limit($includeRuns ? 20 : 3)
-            ->get() : new \Illuminate\Database\Eloquent\Collection;
+            ->get(self::RUN_HISTORY_COLUMNS) : new \Illuminate\Database\Eloquent\Collection;
         if ($canViewDiagnostics) {
             app(\App\Services\Messaging\AutomationSmsDeliverySummary::class)->annotate($recentRuns);
         }

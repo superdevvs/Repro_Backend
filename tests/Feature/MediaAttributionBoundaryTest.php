@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\{IngestIguideAssetsJob, ProcessAutoenhanceEditingJob, ProcessFalEditingJob, UploadShootAlbumMediaJob};
 use App\Models\{AiEditingJob, Service, Shoot, ShootFile, ShootMediaAlbum, ShootService, User};
+use App\Services\FalService;
 use App\Services\ShootActivityLogger;
 use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\{LegacyAiOutputPublisher, ShootAuthorizationSupport};
@@ -205,6 +206,34 @@ class MediaAttributionBoundaryTest extends TestCase
             $this->assertSame(1, $shoot->files()->where('ai_editing_job_id', $job->id)->count());
 
         }
+    }
+
+    public function test_legacy_fal_job_keeps_response_and_result_without_retaining_source_image_bytes(): void
+    {
+        $job = AiEditingJob::create([
+            'user_id' => User::factory()->create(['role' => 'admin'])->id,
+            'original_image_url' => 'https://source.test/photo.jpg',
+            'provider' => 'fal',
+            'status' => AiEditingJob::STATUS_PENDING,
+            'editing_type' => AiEditingJob::TYPE_ENHANCE,
+        ]);
+        $response = ['request_id' => 'request-1', 'status' => 'processing', 'data' => ['progress' => 45]];
+        $editedUrl = 'https://result.test/edited.jpg';
+        $fal = $this->mock(FalService::class);
+        $fal->shouldReceive('submitImageEdit')->once()->andReturn($response + [
+            'payload' => ['image_url' => 'data:image/jpeg;base64,'.base64_encode('source image bytes')],
+        ]);
+        $fal->shouldReceive('imageEditStatus')->once()->with('request-1')->andReturn(['status' => 'COMPLETED']);
+        $fal->shouldReceive('imageEditResult')->once()->with('request-1')->andReturn(['edited_image_url' => $editedUrl]);
+
+        app()->call([new ProcessFalEditingJob($job), 'handle']);
+
+        $job->refresh();
+        $this->assertSame(AiEditingJob::STATUS_COMPLETED, $job->status);
+        $this->assertSame('request-1', $job->provider_job_id);
+        $this->assertSame($response, $job->provider_payload);
+        $this->assertSame($editedUrl, $job->edited_image_url);
+        $this->assertSame($editedUrl, $job->provider_result['result']['edited_image_url']);
     }
 
     public function test_iguide_adopts_existing_unscoped_assets_and_resync_does_not_redownload_or_duplicate(): void

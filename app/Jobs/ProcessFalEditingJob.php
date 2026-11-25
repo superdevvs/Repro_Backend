@@ -107,6 +107,8 @@ class ProcessFalEditingJob implements ShouldQueue
 
         $this->editingJob->provider = 'fal';
         $this->editingJob->provider_job_id = (string) $requestId;
+        // The outgoing request can include the full base64 source image. Keep the provider response.
+        unset($result['payload']);
         $this->editingJob->provider_payload = $result;
         $this->editingJob->status = AiEditingJob::STATUS_PROCESSING;
         $this->editingJob->started_at = now();

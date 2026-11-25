@@ -10,6 +10,7 @@ use App\Services\IguideService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -92,6 +93,39 @@ class IguideAutomaticSyncTest extends TestCase
         });
         Queue::assertPushed(IngestIguideAssetsJob::class, 1);
         Http::assertSentCount(2);
+    }
+
+    public function test_scheduled_sync_and_recovery_share_the_durable_ingestion_schedule(): void
+    {
+        $start = now()->startOfMinute();
+        $this->travelTo($start);
+        $shoot = $this->shootWithFloorplan(['iguide_property_id' => self::PROPERTY_ID]);
+        Queue::fake();
+        Http::fake([
+            $this->propertyUrl() => Http::response($this->metadata()),
+            $this->propertyUrl().'/asset-urls' => Http::response($this->assets()),
+        ]);
+
+        $this->artisan('iguide:resync-pending')->assertSuccessful();
+        $scheduled = Queue::pushed(SyncShootIguideJob::class, fn ($job) => $job->shootId === $shoot->id)->sole();
+        $this->assertTrue($scheduled->scheduledRecovery);
+        $scheduled->handle(app(IguideService::class));
+        Queue::assertPushed(IngestIguideAssetsJob::class, 1);
+        $this->assertDatabaseHas('provider_asset_recovery_attempts', ['shoot_id' => $shoot->id, 'attempts' => 1]);
+
+        $this->travelTo($start->copy()->addMinutes(30));
+        Cache::flush();
+        $scheduled->handle(app(IguideService::class));
+        $this->artisan('iguide:resync-pending')->assertSuccessful();
+        Queue::assertPushed(IngestIguideAssetsJob::class, 1);
+
+        (new SyncShootIguideJob($shoot->id))->handle(app(IguideService::class));
+        Queue::assertPushed(IngestIguideAssetsJob::class, 2);
+
+        $this->travelTo($start->copy()->addHour());
+        $scheduled->handle(app(IguideService::class));
+        Queue::assertPushed(IngestIguideAssetsJob::class, 3);
+        $this->assertDatabaseHas('provider_asset_recovery_attempts', ['shoot_id' => $shoot->id, 'attempts' => 2]);
     }
 
     public function test_rich_ready_metadata_keeps_provider_urls_and_does_not_refetch_assets(): void

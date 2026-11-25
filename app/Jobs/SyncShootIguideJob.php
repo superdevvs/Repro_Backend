@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Shoot;
 use App\Services\IguideService;
+use App\Services\Shoots\ProviderFloorplanRecovery;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -31,10 +32,12 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
     public int $uniqueFor = 600;
 
     public ?int $shootServiceId = null;
+    public bool $scheduledRecovery = false;
 
-    public function __construct(public int $shootId, ?int $shootServiceId = null)
+    public function __construct(public int $shootId, ?int $shootServiceId = null, bool $scheduledRecovery = false)
     {
         $this->shootServiceId = $shootServiceId;
+        $this->scheduledRecovery = $scheduledRecovery;
     }
 
     public function uniqueId(): string
@@ -88,7 +91,12 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
 
             $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
             if (!empty($floorplans)) {
-                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $this->shootServiceId);
+                if ($this->scheduledRecovery) {
+                    // The sweep may have already queued these assets before metadata was refreshed.
+                    app(ProviderFloorplanRecovery::class)->recover('iguide', 1, $shoot->id);
+                } else {
+                    IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $this->shootServiceId);
+                }
             }
 
             Log::info('Auto iGUIDE sync completed', [

@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\AiEditingJob;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Route as IlluminateRoute;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -79,5 +81,39 @@ class StudioExistingEndpointContractIntegrationTest extends TestCase
         $this->postJson('/api/reels/generate', [])
             ->assertUnprocessable()
             ->assertJsonStructure(['message', 'errors']);
+    }
+
+    public function test_photo_job_history_keeps_the_public_fields_without_hydrating_provider_bodies(): void
+    {
+        $editor = User::factory()->create(['role' => 'editor']);
+        $job = AiEditingJob::create([
+            'user_id' => $editor->id,
+            'provider' => 'autoenhance',
+            'provider_job_id' => 'external-job',
+            'status' => AiEditingJob::STATUS_COMPLETED,
+            'editing_type' => AiEditingJob::TYPE_HDR_MERGE,
+            'editing_params' => ['profile' => 'standard'],
+            'original_image_url' => '/original.jpg',
+            'edited_image_url' => '/edited.jpg',
+            'provider_payload' => ['data' => 'raw-provider-body'],
+            'provider_result' => ['image' => 'raw-provider-result'],
+        ]);
+        $retrieved = [];
+        Event::listen('eloquent.retrieved: '.AiEditingJob::class, function (AiEditingJob $row) use (&$retrieved): void {
+            $retrieved[$row->id] = $row->getAttributes();
+        });
+
+        Sanctum::actingAs($editor);
+        $this->getJson('/api/autoenhance/jobs?per_page=1')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $job->id)
+            ->assertJsonPath('data.0.provider_job_id', 'external-job')
+            ->assertJsonPath('data.0.editing_params.profile', 'standard')
+            ->assertJsonPath('data.0.original_image_url', '/original.jpg')
+            ->assertJsonPath('data.0.edited_image_url', '/edited.jpg');
+
+        $this->assertArrayNotHasKey('provider_payload', $retrieved[$job->id]);
+        $this->assertArrayNotHasKey('provider_result', $retrieved[$job->id]);
     }
 }

@@ -96,7 +96,10 @@ class AutomationRunHistoryTest extends IsolatedSecurityTestCase
         Queue::fake();
         Sanctum::actingAs(User::factory()->superAdmin()->create());
         $rule = AutomationRule::create(['name' => 'SMS history', 'trigger_type' => 'CUSTOM_EVENT', 'scope' => 'SYSTEM', 'is_active' => true]);
-        $run = AutomationRun::create(['automation_rule_id' => $rule->id, 'status' => 'completed', 'completed_at' => now()]);
+        $run = AutomationRun::create([
+            'automation_rule_id' => $rule->id, 'status' => 'completed', 'completed_at' => now(),
+            'context_json' => ['private_history_context' => str_repeat('fixture', 4096)],
+        ]);
         $failed = \App\Models\Message::create(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'FAILED',
             'to_address' => '+12025550123', 'body_text' => 'Fixture',
             'error_message' => \App\Services\Messaging\SmsDeliveryFailure::message(['40010'])]);
@@ -109,7 +112,20 @@ class AutomationRunHistoryTest extends IsolatedSecurityTestCase
         foreach ([['/api/messaging/automations?trigger_type=CUSTOM_EVENT', '0.recent_runs.0'],
             ['/api/messaging/automations/'.$rule->id, 'recent_runs.0'],
             ['/api/messaging/automations/'.$rule->id.'/runs', 'data.0']] as [$url, $path]) {
-            $this->getJson($url)->assertOk()->assertJsonPath($path.'.status', 'completed')
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $response = $this->getJson($url);
+            $runReads = array_filter(
+                array_column(DB::getQueryLog(), 'query'),
+                fn (string $sql) => preg_match('/\bfrom\s+["\x60]?automation_runs["\x60]?(?:\s|$)/i', $sql) === 1,
+            );
+            DB::disableQueryLog();
+            $this->assertCount(1, $runReads);
+            $this->assertStringNotContainsString('*', reset($runReads));
+            $this->assertStringNotContainsString('context_json', reset($runReads));
+
+            $response->assertOk()->assertJsonPath($path.'.status', 'completed')
+                ->assertJsonMissingPath($path.'.context_json')
                 ->assertJsonPath($path.'.sms_delivery.status', 'failed')
                 ->assertJsonPath($path.'.sms_delivery.total', 3)
                 ->assertJsonPath($path.'.sms_delivery.failed', 1)
