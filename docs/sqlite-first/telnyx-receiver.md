@@ -61,8 +61,16 @@ was written. A broken file holds nothing.
 4. `php artisan up`, a second replay for texts that arrived meanwhile, then
    removes the `deploy` hold.
 
-If the deploy fails, the cleanup step replays, runs `up`, and removes the
-hold. A hold or replay problem prints `scheduler_hold=unavailable` or
+Every replay first waits (up to 30 seconds) for any capture that is still
+saving. Each capture holds a shared lock on `.capture.lock` in the spool
+folder while it saves, and checks maintenance mode again once it has the
+lock. So the replay after `up` sees every text that was answered 200, and a
+text that reaches the receiver after that finds the app up and is handled
+live. If a capture is still saving after 30 seconds, the replay still runs
+but reports failure (`telnyx_spool_replay=failed` in a deploy); run it again.
+
+If the deploy fails, the cleanup step replays, runs `up`, replays again, and
+removes the hold. A hold or replay problem prints `scheduler_hold=unavailable` or
 `telnyx_spool_replay=failed` and never fails the deploy.
 
 Never use `php artisan down --render`. A prerendered page answers before

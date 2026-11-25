@@ -219,6 +219,8 @@ return [
             'enabled' => (bool) env('TELNYX_MAINTENANCE_CAPTURE_ENABLED', false),
             'spool_path' => env('TELNYX_MAINTENANCE_SPOOL_PATH', storage_path('app/telnyx-spool')),
             'max_body_bytes' => 1048576,
+            // How long a replay waits for a capture that is still saving.
+            'drain_wait_seconds' => 30,
             // The replay refuses to run under another group, so files it
             // creates stay writable by PHP-FPM. Empty turns the check off.
             'replay_group' => env('TELNYX_SPOOL_REPLAY_GROUP', 'www-data'),

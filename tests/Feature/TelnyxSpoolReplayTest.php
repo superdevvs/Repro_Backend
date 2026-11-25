@@ -10,12 +10,14 @@ use App\Models\VoiceCall;
 use App\Services\Messaging\SharedMmsService;
 use App\Support\TelnyxMaintenanceSpool;
 use Carbon\CarbonImmutable;
+use Illuminate\Encryption\Encrypter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Mockery;
 use RuntimeException;
 use Tests\TestCase;
@@ -89,6 +91,67 @@ class TelnyxSpoolReplayTest extends TestCase
             ->expectsOutputToContain('replayed 0, duplicates 0, set aside 0, failed 0')
             ->assertSuccessful();
         $this->assertSame(1, Message::where('provider_message_id', 'msg_e2e')->count());
+    }
+
+    public function test_a_replay_after_up_waits_for_a_capture_that_was_still_saving(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('Needs pcntl and posix to run a second PHP process.');
+        }
+        $this->app->maintenanceMode()->activate(['retry' => 60]);
+        $this->save('messaging', $this->inbound('evt_waiting', 'msg_waiting', 'saved earlier'), $this->t0->subSeconds(30));
+        $body = $this->inbound('evt_in_flight', 'msg_in_flight', 'sent just before up');
+        $saving = $this->spoolPath.'.saving';
+        $answer = $this->spoolPath.'.answer';
+
+        $pid = pcntl_fork();
+        $this->assertNotSame(-1, $pid);
+        if ($pid === 0) {
+            // PHP-FPM: this text saw maintenance mode and is part-way
+            // through saving when the deploy runs `php artisan up`.
+            $this->app->instance('encrypter', $this->slowEncrypter($saving, 1_500_000));
+            $response = $this->call('POST', '/api/webhooks/telnyx/messaging', [], [], [], $this->signedServer($body, $this->t0), $body);
+            file_put_contents($answer, $response->getStatusCode().' '.$response->getContent());
+            posix_kill(posix_getpid(), SIGKILL);
+        }
+
+        try {
+            $this->waitForFile($saving);
+            $this->app->maintenanceMode()->deactivate();
+            $this->artisan('telnyx:replay-spool')
+                ->expectsOutputToContain('replayed 2, duplicates 0, set aside 0, failed 0')
+                ->assertSuccessful();
+        } finally {
+            pcntl_waitpid($pid, $status);
+        }
+
+        // Telnyx got a 200 for it, so it must not wait for the next deploy.
+        $this->assertSame('200 {"status":"captured"}', file_get_contents($answer));
+        $this->assertSame($this->t0->getTimestamp(), Message::where('provider_message_id', 'msg_in_flight')->sole()->sent_at->getTimestamp());
+        $this->assertSame([], $this->spool()->entries(TelnyxMaintenanceSpool::TEXTS));
+        @unlink($saving);
+        @unlink($answer);
+    }
+
+    public function test_a_replay_reports_a_capture_that_never_finishes_instead_of_hanging(): void
+    {
+        config(['services.telnyx.maintenance_capture.drain_wait_seconds' => 1]);
+        $this->save('messaging', $this->inbound('evt_ready', 'msg_ready', 'saved'), $this->t0);
+        // A capture stuck part-way through saving (for example on a slow disk).
+        $stuck = fopen($this->spoolPath.'/.capture.lock', 'c');
+        $this->assertTrue(flock($stuck, LOCK_SH));
+
+        try {
+            $started = microtime(true);
+            $this->artisan('telnyx:replay-spool')
+                ->expectsOutputToContain('A text was still being saved')
+                ->expectsOutputToContain('replayed 1, duplicates 0, set aside 0, failed 0')
+                ->assertFailed();
+            $this->assertLessThan(10, microtime(true) - $started);
+        } finally {
+            flock($stuck, LOCK_UN);
+            fclose($stuck);
+        }
     }
 
     public function test_texts_are_replayed_in_arrival_order_whatever_order_they_were_saved_in(): void
@@ -395,6 +458,36 @@ class TelnyxSpoolReplayTest extends TestCase
 
         return ['CONTENT_TYPE' => 'application/json', 'HTTP_TELNYX_SIGNATURE_ED25519' => $this->sign($timestamp, $body),
             'HTTP_TELNYX_TIMESTAMP' => $timestamp];
+    }
+
+    /** The app's encrypter, except that sealing an entry pauses after touching $signal. */
+    private function slowEncrypter(string $signal, int $microseconds): Encrypter
+    {
+        $key = base64_decode(Str::after((string) config('app.key'), 'base64:'), true);
+
+        return new class($key, (string) config('app.cipher'), $signal, $microseconds) extends Encrypter
+        {
+            public function __construct(string $key, string $cipher, private readonly string $signal, private readonly int $microseconds)
+            {
+                parent::__construct($key, $cipher);
+            }
+
+            public function encryptString(#[\SensitiveParameter] $value)
+            {
+                touch($this->signal);
+                usleep($this->microseconds);
+
+                return parent::encryptString($value);
+            }
+        };
+    }
+
+    private function waitForFile(string $path): void
+    {
+        for ($tries = 0; $tries < 300 && ! file_exists($path); $tries++) {
+            usleep(50_000);
+        }
+        $this->assertFileExists($path);
     }
 
     private function postLive(string $body): void

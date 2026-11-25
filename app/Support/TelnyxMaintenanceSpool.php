@@ -32,6 +32,10 @@ final class TelnyxMaintenanceSpool
 
     private const ENTRY = '/\A\d{8}T\d{12}Z-[a-f0-9]{16}\.spool\z/';
 
+    // Held shared by each capture while it saves, and briefly exclusive by
+    // each replay before it lists texts/.
+    private const CAPTURE_LOCK = '.capture.lock';
+
     public function __construct(
         private readonly string $root,
         private readonly Encrypter $encrypter,
@@ -101,6 +105,64 @@ final class TelnyxMaintenanceSpool
         $this->syncDirectory($directory);
 
         return $id;
+    }
+
+    /**
+     * Runs $capture while holding the capture lock shared. A replay calls
+     * waitForCaptures() first, so it sees every entry whose capture got the
+     * lock before it. $capture must check maintenance mode again: one that
+     * gets the lock after a replay began may find the app already up.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $capture
+     * @return T
+     */
+    public function whileCapturing(callable $capture): mixed
+    {
+        $this->prepare();
+        $lock = $this->openCaptureLock();
+        if ($lock === false) {
+            throw new RuntimeException('Cannot open the spool capture lock.');
+        }
+        try {
+            if (! flock($lock, LOCK_SH)) {
+                throw new RuntimeException('Cannot take the spool capture lock.');
+            }
+
+            return $capture();
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    /**
+     * Waits until every capture that took the lock before this call has
+     * finished saving. False when one is still saving after $seconds, or
+     * the lock cannot be opened.
+     */
+    public function waitForCaptures(float $seconds): bool
+    {
+        $lock = $this->openCaptureLock();
+        if ($lock === false) {
+            return false;
+        }
+        try {
+            $deadline = microtime(true) + $seconds;
+            while (! flock($lock, LOCK_EX | LOCK_NB)) {
+                if (microtime(true) >= $deadline) {
+                    return false;
+                }
+                usleep(20_000);
+            }
+            // Released at once: captures only ever wait for an instant.
+            flock($lock, LOCK_UN);
+
+            return true;
+        } finally {
+            fclose($lock);
+        }
     }
 
     public function exists(): bool
@@ -213,6 +275,25 @@ final class TelnyxMaintenanceSpool
             }
             @chmod($directory, 02770);
         }
+    }
+
+    /**
+     * PHP-FPM and the deploy user share the lock through the www-data group.
+     * flock() works on a read-only handle when the file is not writable.
+     *
+     * @return resource|false
+     */
+    private function openCaptureLock()
+    {
+        $path = $this->root.'/'.self::CAPTURE_LOCK;
+        $lock = @fopen($path, 'c');
+        if ($lock !== false) {
+            @chmod($path, 0660);
+
+            return $lock;
+        }
+
+        return @fopen($path, 'r');
     }
 
     private function syncDirectory(string $directory): void

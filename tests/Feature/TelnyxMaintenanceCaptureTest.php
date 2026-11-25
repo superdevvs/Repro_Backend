@@ -73,6 +73,47 @@ class TelnyxMaintenanceCaptureTest extends TestCase
         $this->assertSame(0, Message::count());
     }
 
+    public function test_a_text_still_waiting_to_save_when_the_app_comes_up_is_handled_live_not_stranded(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('Needs pcntl and posix to run a second PHP process.');
+        }
+        $this->down();
+        File::ensureDirectoryExists($this->spool);
+        $locked = $this->spool.'.locked';
+
+        $pid = pcntl_fork();
+        $this->assertNotSame(-1, $pid);
+        if ($pid === 0) {
+            // The deploy's replay after `php artisan up`, checking that no
+            // capture is still saving. The app comes up while it waits.
+            $lock = fopen($this->spool.'/.capture.lock', 'c');
+            flock($lock, LOCK_EX);
+            touch($locked);
+            usleep(1_000_000);
+            $this->app->maintenanceMode()->deactivate();
+            flock($lock, LOCK_UN);
+            posix_kill(posix_getpid(), SIGKILL);
+        }
+
+        try {
+            for ($tries = 0; $tries < 300 && ! file_exists($locked); $tries++) {
+                usleep(50_000);
+            }
+            $this->assertFileExists($locked);
+            // This text saw maintenance mode, but the replay has already
+            // listed the spool by the time it could be saved there.
+            $response = $this->postSigned('/api/webhooks/telnyx/messaging', $this->textBody('evt_after_up', 'msg_after_up'));
+        } finally {
+            pcntl_waitpid($pid, $status);
+            @unlink($locked);
+        }
+
+        $response->assertOk()->assertJson(['status' => 'received']);
+        $this->assertTrue(Message::where('provider_message_id', 'msg_after_up')->exists());
+        $this->assertSame([], $this->spool()->entries(TelnyxMaintenanceSpool::TEXTS));
+    }
+
     public function test_capture_answers_before_any_database_work(): void
     {
         $this->down();

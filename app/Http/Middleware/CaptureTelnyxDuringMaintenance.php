@@ -67,10 +67,26 @@ class CaptureTelnyxDuringMaintenance
         }
 
         try {
-            TelnyxMaintenanceSpool::fromConfig()->save($folder, $route, $routeKey, $body, $headers, $arrivedAt);
+            $spool = TelnyxMaintenanceSpool::fromConfig();
+            $saved = $spool->whileCapturing(function () use ($spool, $folder, $route, $routeKey, $body, $headers, $arrivedAt): bool {
+                // Checked again under the capture lock. The deploy's replay
+                // after `php artisan up` waits for every capture holding the
+                // lock, so this one either finishes before that replay lists
+                // the spool, or finds the app up and is handled live.
+                clearstatcache();
+                if (! $this->app->isDownForMaintenance()) {
+                    return false;
+                }
+                $spool->save($folder, $route, $routeKey, $body, $headers, $arrivedAt);
+
+                return true;
+            });
         } catch (Throwable $error) {
             Log::warning('Telnyx maintenance capture could not save a webhook.', ['route' => $route, 'error' => $error::class]);
 
+            return $next($request);
+        }
+        if (! $saved) {
             return $next($request);
         }
 

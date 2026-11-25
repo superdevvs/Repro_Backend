@@ -138,7 +138,11 @@ class DeployMaintenanceWindowTest(unittest.TestCase):
         self.assertIn('backend_source_rollback_complete', result.stderr)
         replay = self.index(log, 'php artisan telnyx:replay-spool', self.index(log, 'php artisan down'))
         self.assertTrue(log[replay].endswith('| down=1 hold=1 umask=0002'), log[replay])
-        self.index(log, 'php artisan up', replay)
+        up = self.index(log, 'php artisan up', replay)
+        # Texts saved while the first pass ran are replayed too, not left
+        # for the next deploy.
+        after_up = self.index(log, 'php artisan telnyx:replay-spool', up)
+        self.assertTrue(log[after_up].endswith('| down=0 hold=1 umask=0002'), log[after_up])
         self.assertFalse((self.app / 'storage/framework/down').exists())
         self.assertFalse((self.app / 'storage/framework/scheduler-hold.deploy.json').exists())
 

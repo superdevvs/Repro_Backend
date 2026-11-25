@@ -277,6 +277,8 @@ finish() {
   if [ "$maintenance" -eq 1 ]; then
     replay_telnyx_spool
     (cd "$app" && php artisan up) || true
+    # Texts saved while the first pass ran.
+    replay_telnyx_spool
   fi
   release_scheduler_hold
   rm -rf "$stage" "$restore_stage"

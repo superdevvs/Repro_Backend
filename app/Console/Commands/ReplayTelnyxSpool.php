@@ -60,6 +60,14 @@ class ReplayTelnyxSpool extends Command
             return self::SUCCESS;
         }
         try {
+            // A capture that saw maintenance mode may still be saving. Run
+            // after `php artisan up`, this pass then sees every text that was
+            // answered 200: later captures find the app up and go live.
+            $wait = max(1, (int) config('services.telnyx.maintenance_capture.drain_wait_seconds', 30));
+            $settled = $spool->waitForCaptures($wait);
+            if (! $settled) {
+                $this->error("A text was still being saved after {$wait} s; run telnyx:replay-spool again.");
+            }
             $counts = $this->replay($spool);
         } finally {
             flock($lock, LOCK_UN);
@@ -77,7 +85,7 @@ class ReplayTelnyxSpool extends Command
             count($spool->entries(TelnyxMaintenanceSpool::CALLS)),
         ));
 
-        return $counts['set_aside'] + $counts['failed'] === 0 ? self::SUCCESS : self::FAILURE;
+        return $settled && $counts['set_aside'] + $counts['failed'] === 0 ? self::SUCCESS : self::FAILURE;
     }
 
     /** @return array{replayed: int, duplicates: int, set_aside: int, failed: int} */
