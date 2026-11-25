@@ -507,7 +507,7 @@ production or a provider.
 | offsite-backups#8 (P2) engine from `.env` only | Fixed `4ef789e4`: cached config wins, as in Laravel; long-lived workers on the old engine remain a documented limit. |
 | offsite-backups#9 (P2) cache root not checked | Missing or unreadable root already fixed `9b31fc1b`; the root's own group-write bit fixed `ca4fad98`. |
 | offsite-backups#10 (P2) forward budget | Fixed `440112dd`: pings go out together, each run tries every condition within about one timeout. |
-| reviewer#1 probe pages with no WAL connection | Fixed `56b57866`: guarded `immutable=1` read; the backup's own limit stays owner decision 5. |
+| reviewer#1 probe pages with no WAL connection | Fixed `56b57866`: guarded `immutable=1` read (`58d43b41` keeps one normal open when a writer is present); the backup's own limit stays owner decision 5. |
 | reviewer#2 observer loses slots | Crash between sample and row, and a cut row, fixed `67c842fe`; other failed runs documented with a 20 s retry schedule. |
 | reviewer#3 engine check misses cached config | Fixed with #8 (`4ef789e4`); the per-minute engine record is still to come. |
 | reviewer#4 backup timer in the cutover outage | Owner decision 3 (unchanged). |
@@ -524,7 +524,7 @@ uid 1000 with a private `HOME` on a tmpfs, unless noted):
 | Linux uid 1000: `discover -s scripts/mysql/offsite -p 'test_*.py'` | 195 tests OK, 2 skipped |
 | Linux root: `test_install_backup_host` | 21 tests OK, 1 skipped (non-root only) |
 | `test_rotation_attempt` (Linux); `systemd/test_units.py`; `test_production_units`; readiness discover | 6, 8, 12 and 59 tests OK |
-| `manager-fixture/run.py` (real systemd 252) | passed: 23 of 23 checks, container removed |
+| `manager-fixture/run.py` (real systemd 252, at `cf595598`; `58d43b41` changes only a failure path) | passed: 23 of 23 checks, container removed |
 | MySQL 8.4.13, two containers (server plus QA image, sockets on a tmpfs volume, no network; scratch scripts outside the repo) | drill `load_base` on a dump made with the producer's mysqldump argv: refused before the fix (the bare client says ERROR 1046), loads rows after; `rotated_at` on a real closed binlog equals the FLUSH second and the chain verifier accepts the same file; `queue_stale` through the real client: ok, ok, fail, fail for empty, reserved within 7,260 s, reserved 601 s past it, waiting 601 s |
 
 Not re-run in this round: `native-fixture/run.py` needs three containers at
