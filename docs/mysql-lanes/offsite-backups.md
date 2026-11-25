@@ -205,7 +205,7 @@ later conditions are tried.
 | backup_stale | daytime | watchdog result (OnSuccess / OnFailure) | point the plan at a stale receipt on a test host |
 | backup_failed (extra) | daytime | nightly backup and kit result | run the backup with a missing rclone config |
 | database_down | wake | probe | rename a fixture database / stop the rehearsal MySQL |
-| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan) | set the probe plan's expected engine to the other one |
+| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan; with the writer hold, vs the engine the cutover journal makes authoritative) | without the writer hold, set the probe plan's expected engine to the other one; with it the journal wins, so set the fixture's `DB_CONNECTION` to the other engine outside a hold |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
 | backup_lag | wake | probe (newest archived binlog, the one before the checkpoint's `next_file`, last written over 300 s ago, two checks; needs `binlog_dir`) | pause the archive timer |
@@ -220,7 +220,8 @@ later conditions are tried.
 
 Provider setup: one check per row, period and grace from `alert-conditions.json`;
 for wake-me checks a 15-minute repeat and the second contact. The default probe
-plan enables only the six conditions that work on SQLite today. MySQL conditions
+plan enables the six conditions that work on SQLite today and, since the
+alerts lane, `site_held` (see the cutover runbook's Alerts section). MySQL conditions
 need the `mysql` monitor section pointed at the rehearsal instance (owner
 decision on round 1, below); the money check needs reviewed queries and a
 baseline from `alert_probe.py money-digest`. The MySQL monitor account needs

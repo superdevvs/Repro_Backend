@@ -32,6 +32,7 @@ rebuild the config cache.
 | `PRODUCER_INGRESS_HOLD` | `false` | 503 + `Retry-After` for `api/external/recruiting/application`, `api/external/website-email`, `api/external/book-shoot`, `api/webhooks/resend`, `api/webhooks/stripe`, `api/webhooks/stripe/listing-studio`, `api/integrations/aryeo/webhooks/*`. Reads such as `/api/external/services` stay open. Telnyx is not held here (its own lane owns the capture route). |
 | `PRODUCER_INGRESS_RETRY_AFTER` | `60` | Seconds in the `Retry-After` header. |
 | `CRM_OUTBOUND_HOLD` | `false` | `crm:send-due` claims nothing, `crm:follow-up-digest` sends nothing, and any marketing send throws `CrmSendBlocked('outbound_hold')`. Transactional sends (reply forwards, quotes, one-off non-marketing) are not blocked. |
+| `CRM_CALENDAR_SYNC_HOLD` | `false` | Added after this lane (calendar fix). The scheduler skips `crm:calendar-sync`, and a manual run exits 0 before it touches Google or the database. A save in the CRM still pushes that one follow-up at once. |
 | `STRIPE_EVENTS_READ_KEY` | empty | Restricted Stripe key with Events read only, for `stripe:undelivered-events`. Never the secret key. |
 | `LISTING_STUDIO_STRIPE_EVENTS_READ_KEY` | empty | The same for the Listing Studio account (`--account=listing-studio`). |
 
@@ -64,8 +65,10 @@ production needs its own approval.
    (admission closed before Laravel) stops every HTTP write, these included.
    Then check that no Aryeo job is still leased (Tours panel) before the
    freeze.
-2. Set `CRM_OUTBOUND_HOLD=true` and `CRM_DEFER_REPLY_FORWARDING=true`, rebuild
-   the config cache, and confirm both booleans in the effective config.
+2. Set `CRM_OUTBOUND_HOLD=true`, `CRM_DEFER_REPLY_FORWARDING=true` and
+   `CRM_CALENDAR_SYNC_HOLD=true`, rebuild the config cache, and confirm the
+   three booleans in the effective config. Keep `CRM_CALENDAR_SYNC_HOLD` in
+   the environment that reopens; step 10 releases it.
 3. Hold the website recruiting scheduler (website change P2-05 below). Do not
    turn off `recruiting_forwarding_settings.enabled`: that stops capture.
 
@@ -138,7 +141,12 @@ production needs its own approval.
     exits 1 until none is left. `closed_locally` (done or missed follow-ups,
     which the sync leaves in Google on purpose) and `no_connection` (the rep
     disconnected Google) are listed for information and do not fail it.
-    Then release `crm:calendar-sync`.
+    When it exits 0, set `CRM_CALENDAR_SYNC_HOLD=false` and rebuild the
+    config cache. A planned follow-up that shows `push_pending` clears when
+    it is saved again in the CRM. A cancelled one clears only when the sync
+    runs (the CRM refuses to edit a follow-up that is not planned): settle
+    every other row, release `CRM_CALENDAR_SYNC_HOLD`, let one sync run,
+    then rerun `crm:calendar-reconcile --dry-run`, which must exit 0.
 11. Stripe at +30 minutes and +2 hours:
     `php artisan stripe:undelivered-events --since=$FREEZE_AT --json` and the
     same with `--account=listing-studio`. Exit 1 means something is still
@@ -283,7 +291,8 @@ A read-only, service-role-only server route or SQL view that returns JSON for
 
 - New migration `2026_11_25_140000_add_replay_identity_to_recruit_application_receipts`.
   Regenerate `database/schema/mysql-schema.sql` once all lanes have landed
-  their migrations. The table stays in the 328-table scope.
+  their migrations (done after the merge by the schema lane, `5e0cf502`).
+  The table stays in the 328-table scope.
 - New config file `config/producer_replay.php`; new keys in `config/crm.php`
   (`outbound_hold`).
 - `bootstrap/app.php` gains one `prepend(HoldProducerIngress)` line. The

@@ -20,7 +20,7 @@ its own branch; the lane notes record no test run of the merged head.
 | --- | --- | --- | --- | --- | --- |
 | Writer policy (WP-1 to WP-9) | `claude/writer-policy-20261125` at `8b34c805` | One-writer token taken at BEGIN on the main `mysql` connection, on by default for MySQL, no effect on SQLite. Autocommit writes wrapped; implicit-commit, batch and raw transaction statements refused; poison guard; READ COMMITTED with 5 s lock waits; exempt writers limited to their own tables; worker cleanup of leftover transactions; `db:writer-policy-check` and `db:writer-token-holders`. Fixes for Telnyx first texts, B17 and B18. | Writer suite on MySQL 8.4.13: 95 tests, 1,344 assertions. WP-7 races with and without the token. Writer-token contracts in CI order. SQLite and MySQL profiles: only known fixture failures. Not run on GitHub. | Independent: 2 defects fixed. Codex 1: 4 findings fixed; 8 open review items: 5 fixed, 2 documented, 1 owner decision. Codex 2: 3 findings fixed; 3 rechecks hold or stay documented. | Owner: policy on by default, D1 to D6 and B1 to B18, B18's 30 minutes. CI run on GitHub (needs a push). Deploy check not in the deploy pipeline. Token, grants and monitor on the target. Week of transaction-length logging (Checkpoint 2). |
 | Writer hold (H1 to H7) | `claude/writer-hold-20261125` at `273aa827` | Approved `hold` as the first journaled step: it starts the outage clock and closes admissions, then `freeze` drains. Controller and writer locks. Watchdog `tick` re-closes after a crash or reboot and rolls back at 45 minutes. Production CLI, host adapter, systemd watchdog, admission wrapper, nginx server-level hold, deploy fence, SQLite seal. | Linux suites at `adabedee` in a network-less container: runner 43, guard 20, process contract 6, wrapper 6, fences 12, adapter and CLI 30, nginx 1, host replay 3, refresh 10. systemd 252 unit checks; nginx 1.22.1 hold test. Full SQLite suite: known four only. Host fixture (H5) not run. | Independent: 5 defects fixed. Codex 1: 6 findings (4 fixed, 2 already fixed); 7 open review items: 3 fixed, 1 not run (H5), 1 left to a MySQL adapter lane, 1 owner decision, 1 needs W1 and W2. Codex 2: 5 findings fixed; 3 rechecks hold. | H5 fixture runs. W1 install and W2 drill. Host identity, MySQL and live-config probes. Activation smoke command. Supervisor template reconcile. MySQL promotion and its reboot case. Owner: O1, O2. |
-| Producer replay (P2-03, P2-04, P2-06, P2-07, P2-08, P2-10, P2-11, P2-12) | `claude/producer-replay-20261125` at `9b37553b` | Recruiting replay identity: a divergent replay gets 409. Producer ingress hold in the app and at the nginx edge; careers and Resend inbound give 503 with CRM off. Website ledger tools, calendar reconcile, Stripe undelivered events, Aryeo record, pause and resume, CRM outbound hold with a release check and send dispositions. Flags off by default. | Lane PHP tests on both engines. MySQL profile for CRM and its neighbours: 311 tests, 1 skipped. Process, Python ledger and real-nginx hold tests. Full SQLite suite with a readable vendor copy: 9,626 tests, no failures. | Independent: 1 defect fixed, 1 doc fix. Codex 1: 4 findings (3 fixed, 1 already fixed); 6 open review items: 1 fixed, 1 dismissed with evidence, 2 documented, 1 left to owners, 1 by design, then reopened and fixed in round 2. Codex 2: 1 finding fixed, 1 documented (the Aryeo pause leaves sync writes on); rechecks hold. | Website changes P2-02, P2-05 and the P2-06 export not built. Aryeo 503 retry (docs: about 2 minutes) and Resend replay identity unconfirmed with the providers. Stripe restricted keys. nginx include line in both vhosts. Edge snippet width. MySQL schema dump not regenerated for the new migration. |
+| Producer replay (P2-03, P2-04, P2-06, P2-07, P2-08, P2-10, P2-11, P2-12) | `claude/producer-replay-20261125` at `9b37553b` | Recruiting replay identity: a divergent replay gets 409. Producer ingress hold in the app and at the nginx edge; careers and Resend inbound give 503 with CRM off. Website ledger tools, calendar reconcile, Stripe undelivered events, Aryeo record, pause and resume, CRM outbound hold with a release check and send dispositions. Flags off by default. | Lane PHP tests on both engines. MySQL profile for CRM and its neighbours: 311 tests, 1 skipped. Process, Python ledger and real-nginx hold tests. Full SQLite suite with a readable vendor copy: 9,626 tests, no failures. | Independent: 1 defect fixed, 1 doc fix. Codex 1: 4 findings (3 fixed, 1 already fixed); 6 open review items: 1 fixed, 1 dismissed with evidence, 2 documented, 1 left to owners, 1 by design, then reopened and fixed in round 2. Codex 2: 1 finding fixed, 1 documented (the Aryeo pause leaves sync writes on); rechecks hold. | Website changes P2-02, P2-05 and the P2-06 export not built. Aryeo 503 retry (docs: about 2 minutes) and Resend replay identity unconfirmed with the providers. Stripe restricted keys. nginx include line in both vhosts. Edge snippet width. The MySQL schema dump has since been regenerated with the new migration (schema lane). |
 | Nightly dress (N1, N2, D1, T1) | `claude/nightly-dress-20261125` at `86e7d9e5` | Nightly runner: dry run by default, approval file to execute, lock, guards, journal with resume, 12-minute budget fail-fast, durability-neutral tuning only. Nightly summary needs capture receipts. Draft review policy and dress host and workload profiles. Readiness checker applies the plan's dress marks. | Nightly 72, readiness 68 and cutover 41 tests on Windows and Linux. Mutation checks on the runner. Runner flags probed on a local MySQL 8.4.13. Full SQLite suite: known four only. No PHP changed. | Independent: 4 defects fixed. Codex 1: 4 findings fixed; 5 open review items: 4 fixed, 1 owner decision. Codex 2: no findings; one README wording fix; rechecks hold. | Five approved nights on the host. Finance step, reverse trigger helper, applicant files root, retention, busiest endpoints and identity (N7) unset. Dress rehearsals D2 to D4. Owner decisions 1 to 8. |
 | Off-site backups (B5 to B9) | `claude/offsite-backups-20261125` at `a5fcce5a` | Backup host installer (preview, apply, self-test, undo) and no-echo config entry. Alert bridge with heartbeat and forward timers. Twelve server-side detectors and one thresholds file. MySQL leg units and archive-aware binlog purge. Recovery kit and verifier. Seven-day observer and PITR drill runner. | Off-site tests: 202 on Linux, 116 on Windows. Real systemd 252 manager fixture: 23 of 23. Local MySQL 8.4.13 fixture 4 of 4 before the Codex rounds, focused native checks after each round. MySQL profile backup tests: 11 tests. Full SQLite suite: known four only. | Independent: 9 defects fixed. Codex 1: 10 findings (6 fixed, 4 already fixed); 7 open review items: 5 fixed in whole or part, 1 documented, 1 owner decision. Codex 2: 4 findings fixed; 4 rechecks hold, 1 note corrected. | Nothing installed on Maverick. Bucket, keys and passphrases. Derived upload credential helper not in the repo. MySQL leg apply (B1 e). Alert rounds (B14) and phone channel (B4). No 30-minute timer cadence run and no drill against a bucket. Owner decisions 1 to 6. |
 
@@ -32,7 +32,16 @@ Points found while folding the lanes are marked "Open:" in the
 [cutover runbook](mysql-production-cutover.md) and at the end of this file.
 `database/schema/mysql-schema.sql` was regenerated on MySQL 8.4.13 with the
 45 migrations it lacked, `2026_11_25_140000` included. `migrate:fresh` now
-runs no migration after loading it.
+runs no migration after loading it. `tests/MySql/MySqlSchemaBaselineTest.php`
+checks that the file's ledger lists every migration once, that each table is
+defined once and that `recruit_application_receipts` has the two replay
+columns, so it fails whenever a migration lands without a regenerated file.
+At `4e4a262d` it does not prove the DDL is there: a file with a complete
+ledger but a missing table still passes. The code-fix lane strengthens it.
+Open: no script in the repository regenerates the file, and the method
+(the `mysqldump` flags and the ledger assembly) is recorded only in the
+schema lane's working notes, outside the repository. Owner: keep the test as
+a guard or relax it.
 
 Several lanes report the same four full-suite SQLite failures:
 `ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest`
@@ -1812,14 +1821,20 @@ the site and every writer held until `cli.py refresh` and `cli.py reopen`, by
 design. The probe's new `site_held` check (wake) pages for that state with
 the remedy, and for any hold past the plan's 45 and 60 minute limits, from
 an earlier boot, or with no readable journal. It reads the journal through a
-root view unit with no capabilities. `server_error_rate` leaves out only the
-approved hold's own 503s, the engine checks follow the journal's
-authoritative engine, and `writer_token_held_too_long` (daytime, 30 s)
-covers the writer policy's token alert. `site_unreachable` is paused at the
+root view unit with no capabilities. `server_error_rate` leaves out every
+503 from the start of a hold of the current boot until the reopen, capped
+at 60 minutes, whatever the phase (`site_held` still pages outside the
+limits). The engine checks follow the journal's authoritative engine, and
+`writer_token_held_too_long` (daytime, a holder of 30 s or more) covers the
+writer policy's token alert. One probe run at the very start of a hold can
+send one false `site_held` page. `site_unreachable` is paused at the
 provider for the hold, an owner step; `/up` stays held (see the runbook's
 [Alerts](mysql-production-cutover.md#alerts-b6-b7)). Evidence: off-site tests
-237 on Linux as uid 1000 (1 skipped) and the installer 25 as root; real
-systemd 252 manager fixture 26 of 26, and 32 units pass
-`systemd-analyze verify`; on MySQL 8.4.13 the token query needs only
-`PROCESS` and `SELECT` on `performance_schema.data_locks`. Plan on-call
-cover for the monthly reboot or schedule around it.
+240 at the alerts lane head `6b29f033` (as root from `/app`: 240 OK, 4
+skipped, rerun in this docs pass; as uid 1000 from a copy: 1 skipped) and
+the installer 25 as root; real systemd 252 manager fixture 26 of 26, and 32
+units pass `systemd-analyze verify`; on MySQL 8.4.13 the token query needs
+only `PROCESS` and `SELECT` on `performance_schema.data_locks`. A held
+`writes_possible` phase in the 60-minute tests and a test that pins the
+token query text come with the code-fix lane. Plan on-call cover for the
+monthly reboot or schedule around it.

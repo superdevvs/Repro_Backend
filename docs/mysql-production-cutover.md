@@ -100,7 +100,7 @@ secret and application encryption key in protected storage.
 | Staff, FPM and queued jobs | Close admission before Laravel. Include CRM staff routes, shoot observer writes, public quote views and opt-out actions. Hold and drain scheduler, the named `crm:website-intake` task, the four scheduled CRM Artisan commands, all workers and manual imports. | Reconcile the captured work against the authoritative engine. Keep campaign and drip claims held until replies, bounces and opt-outs are applied and uncertain sends have a reviewed disposition. |
 | Website inquiries, bookings and careers | Preserve the producer's original reference and its durable retry or outbox record. Hold the recruiting outbox runner. Require a durable receipt before acknowledging any submission that cannot be retried. | Reapply the same reference, payload and recruiting attachments. Confirm one business effect per reference and reconcile any partial attachment replay. |
 | Shared Resend webhook | Hold at ingress and return a retryable failure until an approved retry or capture path is proven. The edge snippet and `PRODUCER_INGRESS_HOLD` answer 503 with `Retry-After`. Turning off CRM leaves delivery events and public opt-outs able to write, so it is not a freeze control. Before the producer-replay lane it also acknowledged an inbound reply without processing it; `email.received` now gets 503. | Use fresh provider-signed redelivery under the original provider event identity (`svix-id`). The webhook applies it once and refuses a stale signature. Verify required received email content is recoverable. Check forwarding effects before retrying any ambiguous send. Resend's docs give retries for about 27.5 hours (derived), so a 60-minute hold loses nothing ([provider table](#providers-during-a-60-minute-hold)). Not verified on Resend yet: that a dashboard replay keeps the `svix-id` and re-signs with a fresh timestamp. |
-| Google Calendar | Hold the OAuth callback and the poller (`CRM_CALENDAR_SYNC_HOLD`, step 2 below). Preserve existing mappings and pending pushes. | Reconcile changes made directly in Calendar before releasing sync. Restart an expired OAuth flow from the application. |
+| Google Calendar | Hold the poller, `crm:calendar-sync`, with `CRM_CALENDAR_SYNC_HOLD` (step 2 below). Nothing holds the OAuth callback (`/api/google-calendar/callback`): the writer hold answers it 503 during the hold, and after reopening a reconnect writes at once. Preserve existing mappings and pending pushes. | Reconcile changes made directly in Calendar before releasing sync. Restart an expired OAuth flow from the application. |
 | Aryeo API webhook (`/api/integrations/aryeo/webhooks/{installation}`) | Held with 503 and `Retry-After` at the edge and in the app. Signatures expire after 300 s, so only a fresh delivery from Aryeo can be accepted. Deduplicated by `event_id` with a body hash. | A retried or redelivered event gives one `aryeo_api_webhooks` row and one `ReconcileAryeoWebhook` job (tested). Aryeo's docs give one retry after 10 s and a final attempt after 100 s, so deliveries during the hold are lost except the last 2 minutes or so ([provider table](#providers-during-a-60-minute-hold)). No replay is documented: reconcile through the Aryeo orders API after the hold. Not confirmed with Aryeo. |
 
 Maintain a private ledger of each original identity, payload or attachment
@@ -360,10 +360,21 @@ preflight)
     `local_starts_at` and match the CRM to Google before release. It exits 1
     until none is left. `closed_locally` (done or missed follow-ups, which the
     sync leaves in Google on purpose) and `no_connection` (the rep
-    disconnected Google) are listed for information and do not fail it. Then
-    set `CRM_CALENDAR_SYNC_HOLD=false` and rebuild the config cache. The
-    scheduler runs `crm:calendar-sync` again from its next five-minute slot.
-    Until then `CRM_CALENDAR_SYNC_HOLD` from step 2 holds it: the scheduler
+    disconnected Google) are listed for information and do not fail it.
+    When it exits 0, set `CRM_CALENDAR_SYNC_HOLD=false` and apply it (config
+    cache and FPM reload). The scheduler runs `crm:calendar-sync` again from
+    its next five-minute slot.
+
+    A planned follow-up that shows `push_pending` clears when it is saved
+    again in the CRM. A cancelled one clears only when the sync runs: the
+    CRM refuses to edit a follow-up that is not planned
+    (`CrmEventService::update`), and only `crm:calendar-sync`, the held job,
+    retries its Google delete. While such a row exists, the reconcile cannot
+    exit 0 with the hold on. Settle every other row, release `CRM_CALENDAR_SYNC_HOLD`,
+    let one sync run, then rerun `crm:calendar-reconcile --dry-run`, which
+    must exit 0.
+
+    Until the release, `CRM_CALENDAR_SYNC_HOLD` from step 2 holds the job: the scheduler
     skips it and a manual run calls Google for nothing and writes nothing
     (`tests/Feature/Crm/CrmCalendarSyncHoldTest.php`). Run before this step,
     it pushes pending CRM times over changes made in Google, moves CRM
@@ -775,7 +786,7 @@ unreachable endpoint cannot use up the unit's 45 s limit.
 | backup_stale | daytime | watchdog result (OnSuccess / OnFailure) | point the plan at a stale receipt on a test host |
 | backup_failed (extra) | daytime | nightly backup and kit result | run the backup with a missing rclone config |
 | database_down | wake | probe | rename a fixture database / stop the rehearsal MySQL |
-| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs the engine the cutover journal makes authoritative; the plan's value only with no writer hold) | set the probe plan's expected engine to the other one |
+| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs the engine the cutover journal makes authoritative; the plan's value only with no writer hold) | on a test host without the writer hold (no journal, no ingress folder), set the probe plan's expected engine to the other one; with the writer hold the journal wins, so outside a hold set the fixture's cached config driver or `.env` `DB_CONNECTION` to the other engine |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
 | backup_lag | wake | probe (newest archived binlog, the one before the checkpoint's `next_file`, last written over 300 s ago, two checks; needs `binlog_dir`) | pause the archive timer |
@@ -824,13 +835,23 @@ journal folder and nothing else, and it has no network. It writes the run,
 phase, hold start and hold boot to `/var/lib/repro-alert-cutover/view.json`
 for the probe, and never locks or writes the journal. The probe also checks
 the nginx open marker. The limits are the plan's: 45 minutes from the hold
-in a held phase, 60 minutes of write outage after it (`cutover_hold` in
-`alert-conditions.json`).
+in a held phase (`holding`, `frozen`, `ready`), 60 minutes of write outage
+after it (`sqlite_authoritative`, `writes_possible`, `mysql_authoritative`)
+(`cutover_hold` in `alert-conditions.json`).
 
-- Inside an approved hold of the current boot and within those limits, the
-  hold's own 503s do not count for `server_error_rate`, `site_held` reports
-  the hold as expected, and a switch of the app between SQLite and MySQL
-  does not page `wrong_database_engine`. Other errors still count.
+- Inside an approved hold of the current boot and within those limits,
+  `site_held` reports the held site as expected, and a switch of the app
+  between SQLite and MySQL does not page `wrong_database_engine`.
+- `server_error_rate` leaves out every 503 from the start of a hold of the
+  current boot until the reopen (the open marker's change time), capped at
+  60 minutes, whatever the phase. So a 503 from the app or from a stuck
+  rollback in that span is left out too; `site_held` still pages for a
+  held site outside the limits. Other 5xx always count, and nothing is left
+  out after a reboot.
+- At the very start of an approved hold, one probe run can read a view
+  written just before the hold while the open marker is already gone, and
+  send one false `site_held` page. The next run, a minute later, clears it.
+  Expect at most one such page right after Approval 1.
 - `site_held` pages for every other held site: past a limit, a hold that
   survived a reboot, a held site with no or an unreadable journal, or a
   missing, stale or other-boot view.
