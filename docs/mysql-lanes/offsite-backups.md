@@ -140,7 +140,12 @@ What apply does for `base-backup`:
   default entry so new `-wal` and `-shm` files are readable; the database file,
   `-wal` and `-shm`; and `--x` on any parent the account cannot traverse.
   Nothing is made writable. SQLite sets new `-wal`/`-shm` modes from the
-  database file, so the app's own access does not change.
+  database file, so the app's own access does not change. One side effect: with
+  a default ACL on the database folder, other new files created directly in that
+  folder take their group and other bits from the folder's mode instead of the
+  creating process's umask. Undo removes the default entry; a `-wal` created
+  while it was present keeps a harmless entry for the removed account until
+  SQLite next recreates the file.
 - Installs the five base units **disabled** and runs `daemon-reload`.
 - Runs `enter_r2_config.py --role upload --prefix daily` as `repro-backup` for the
   no-echo prompts, unless `--skip-credentials`.

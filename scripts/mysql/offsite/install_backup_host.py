@@ -753,7 +753,10 @@ def undo(job_name: str, system) -> int:
 
 def bundle_is_protected() -> bool:
     """Root must not run an installer or tool bytes that another account could have changed."""
-    paths = [HERE, *HERE.parents, *(HERE.glob("*.py")), *(UNITS.iterdir()), DEPLOY]
+    names = set(BASE_TOOLS + ALERT_TOOLS + KIT_TOOLS + MYSQL_TOOLS)
+    sources = [folder / name for folder in (HERE, DEPLOY, HERE / "systemd" / "binlog-fixture")
+               for name in names if (folder / name).is_file()]
+    paths = [HERE, *HERE.parents, DEPLOY, UNITS, Path(__file__), *sources, *UNITS.iterdir()]
     return all(os.lstat(path).st_uid == 0 and not os.lstat(path).st_mode & 0o022 for path in paths)
 
 

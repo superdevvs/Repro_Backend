@@ -287,3 +287,14 @@ class ToolClosureTests(unittest.TestCase):
                 self.assertLessEqual({module + ".py" for module in imports}, installed, (name, tool))
         self.assertIn("rotate_closed_binlogs.py", {PurePosixPath(item.path).name for item in
                                                     installer.build_job("mysql-recovery", settings).files})
+
+
+class BundleOwnershipTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(__import__("os"), "geteuid") and OFFSITE.stat().st_uid != 0,
+                         "needs a Linux checkout owned by a non-root account")
+    def test_apply_refuses_a_bundle_another_account_could_change(self):
+        self.assertFalse(installer.bundle_is_protected())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(installer.main(["--job", "base-backup", "--undo"]), 1)
+        self.assertIn("FAIL", output.getvalue())
