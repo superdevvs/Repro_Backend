@@ -9,6 +9,8 @@ still need host integration and acceptance.
 | Journal phase | Allowed on valid authority evidence |
 | --- | --- |
 | `planned` | SQLite web, queue and scheduler writers |
+| `holding` (the approved hold, outage clock running) | None. Writers admitted earlier finish and are drained |
+| `frozen`, `ready`, `writes_possible`, `recovery_required` | None |
 | `sqlite_authoritative` | SQLite writer admissions. Deploy requires a verified activation receipt. |
 | `mysql_authoritative` | MySQL writer admissions. Deploy requires a verified activation receipt. |
 | Other phase, unresolved action or missing evidence | All admissions held |
@@ -37,10 +39,15 @@ the worker itself still runs as its service account.
    configuration pins identify each engine's expected effective runtime
    configuration. Derive them without placing secrets in the record.
 2. **Persistent journal.** Use `/var/lib/repro-cutover-fence` as the runner's
-   root-private state directory. The guard consumes the same `state.json` and
-   `operator.lock` as the runner. Its shared lock fails while a cutover action
-   holds the exclusive lock. Run the controller with root access to that same
-   journal directory and keep the lock inode in place.
+   root-private state directory. The guard consumes the same `state.json` as
+   the runner and shares `operator.lock` with every admitted writer. Its
+   shared lock fails only while a controller drains writers. Controllers (the
+   runner, the watchdog tick and `refresh_engine_evidence`) serialize on a
+   separate `controller.lock`, always taken before `operator.lock`. So the
+   runner can journal the hold while earlier writers still hold the shared
+   lock, and a writer that reads the journal after the hold is refused. Run the
+   controller with root access to that journal directory and keep both lock
+   inodes in place.
 3. **Boot authority evidence.** A trusted verifier checks the backend and
    worker configuration with read-only connection probes while admissions
    are held, and confirms the deployment controls and running processes.
@@ -66,7 +73,8 @@ the worker itself still runs as its service account.
    a `HostAuthority` built from bounded, read-only runtime probes. It must
    measure the route seals, writer state, live database identity, effective
    configuration and release independently of the policy's expected values.
-   The refresh takes the exclusive operator lease, revokes prior authority
+   The refresh takes the controller lock and then the exclusive writer lock
+   (failing at once if either is held), revokes prior authority
    and activation evidence, verifies the observation, rechecks the boot,
    policy, journal and lock inode, then atomically publishes the refreshed
    authority. If a probe fails, admissions remain held. Pending transitions

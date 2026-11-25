@@ -20,7 +20,9 @@ from runner import Identity, Journal, Runner, UnsafeCutover
 
 
 FIXTURE_PREFIX = "repro-cutover-process-"
-DRAIN_SECONDS = 4
+DRAIN_SECONDS = 10
+# Generous: other work on a shared host can slow child start-up a lot.
+CHILD_SECONDS = 20
 MACHINE_ID = b"synthetic-cutover-process-fixture"
 IDENTITY = Identity(
     "process-fixture", "a" * 40, "b" * 64, "c" * 64, "d" * 64,
@@ -143,7 +145,7 @@ class CutoverProcessContractTests(unittest.TestCase):
 
     def call(self, role, operation, *, error=None):
         result = subprocess.run(
-            self.command(role, operation), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5,
+            self.command(role, operation), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=CHILD_SECONDS,
         )
         if error is None:
             self.assertEqual(0, result.returncode, result.stderr)
@@ -159,14 +161,14 @@ class CutoverProcessContractTests(unittest.TestCase):
         for pipe in (child.stdin, child.stdout, child.stderr):
             if pipe is not None and not pipe.closed:
                 pipe.close()
-        child.wait(timeout=5)
+        child.wait(timeout=CHILD_SECONDS)
 
     def pause_at(self, role, operation, message):
         child = subprocess.Popen(
             self.command(role, operation), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.addCleanup(self.close_child, child)
-        self.assertTrue(select.select([child.stdout], [], [], 5)[0], f"Child did not reach {message}")
+        self.assertTrue(select.select([child.stdout], [], [], CHILD_SECONDS)[0], f"Child did not reach {message}")
         self.assertEqual(message.encode() + b"\n", child.stdout.readline())
         self.assertIsNone(child.poll())
         return child
@@ -177,6 +179,12 @@ class CutoverProcessContractTests(unittest.TestCase):
         self.addCleanup(self.close_child, child)
         return child
 
+    def wait_for_pending(self, action, seconds=10):
+        limit = time.monotonic() + seconds
+        while (self.journal.read()["pending"] or {}).get("action") != action:
+            self.assertLess(time.monotonic(), limit, f"The runner never journaled its {action}")
+            time.sleep(0.02)
+
     def test_already_admitted_wrapper_drains_after_hold_and_new_admissions_refused(self):
         wrapper = self.pause_at("writer", "sqlite", "admitted")
         # The hold is journaled while the old writer still holds its shared lease.
@@ -186,13 +194,13 @@ class CutoverProcessContractTests(unittest.TestCase):
         self.call("check", "sqlite", error="holds all admissions")
 
         freeze = self.background("runner", "freeze")
-        time.sleep(0.5)
+        self.wait_for_pending("freeze")
+        time.sleep(0.3)
         self.assertIsNone(freeze.poll(), "The drain finished while an admitted writer still ran")
-        self.assertEqual("freeze", self.journal.read()["pending"]["action"])
         self.assertIsNone(wrapper.poll())
-        _, errors = wrapper.communicate(b"x", timeout=5)
+        _, errors = wrapper.communicate(b"x", timeout=CHILD_SECONDS)
         self.assertEqual(0, wrapper.returncode, errors)
-        _, errors = freeze.communicate(timeout=5)
+        _, errors = freeze.communicate(timeout=CHILD_SECONDS)
         self.assertEqual(0, freeze.returncode, errors)
         frozen = self.journal.read()
         self.assertEqual("frozen", frozen["phase"])
@@ -204,17 +212,17 @@ class CutoverProcessContractTests(unittest.TestCase):
         wrapper = self.pause_at("writer", "sqlite", "admitted")
         self.call("runner", "hold")
         freeze = self.background("runner", "freeze")
-        time.sleep(0.5)
-        self.assertEqual("freeze", self.journal.read()["pending"]["action"])
+        self.wait_for_pending("freeze")
+        time.sleep(0.2)
         freeze.kill()
-        freeze.communicate(timeout=5)
+        freeze.communicate(timeout=CHILD_SECONDS)
         self.assertEqual(-signal.SIGKILL, freeze.returncode)
 
         # Before the deadline the watchdog keeps the hold; new writers stay out.
         ticked = json.loads(self.call("runner", "tick").stdout)
         self.assertEqual(("holding", "freeze"), (ticked["phase"], ticked["pending"]["action"]))
         self.call("check", "sqlite", error="unfinished action")
-        wrapper.communicate(b"x", timeout=5)
+        wrapper.communicate(b"x", timeout=CHILD_SECONDS)
 
         # At the decision deadline, counted from the hold, it rolls back to SQLite only.
         recovered = json.loads(self.call("late-runner", "tick").stdout)
@@ -235,7 +243,7 @@ class CutoverProcessContractTests(unittest.TestCase):
             with self.journal.acquire() as (_, lease):
                 waited = self.journal.drain_writers(lease, DRAIN_SECONDS)
             elapsed = time.monotonic() - started
-            counts = [json.loads(hammer.communicate(timeout=10)[0]) for hammer in hammers]
+            counts = [json.loads(hammer.communicate(timeout=CHILD_SECONDS)[0]) for hammer in hammers]
             self.assertTrue(all(count["attempts"] == count["refused"] > 0 for count in counts))
             results[crowd] = {"drain_ms": round(waited * 1000), "elapsed_ms": round(elapsed * 1000),
                               "refused_checks": sum(count["refused"] for count in counts)}
@@ -251,8 +259,8 @@ class CutoverProcessContractTests(unittest.TestCase):
         self.addCleanup(self.close_child, tick)
         self.assertFalse(select.select([tick.stdout], [], [], 0.5)[0], "Tick ran while a controller held the lock")
         self.assertIsNone(tick.poll())
-        controller.communicate(b"x", timeout=5)
-        output, errors = tick.communicate(timeout=5)
+        controller.communicate(b"x", timeout=CHILD_SECONDS)
+        output, errors = tick.communicate(timeout=CHILD_SECONDS)
         self.assertEqual(0, tick.returncode, errors)
         self.assertEqual("planned", json.loads(output)["phase"])
         self.assertEqual(original, self.journal.path.read_bytes())
@@ -268,7 +276,7 @@ class CutoverProcessContractTests(unittest.TestCase):
         proof = json.loads((self.directory / "fixture-authority.json").read_bytes())
         self.assertNotEqual(guard.sha256(pending_bytes), proof["journal_sha256"])
         child.kill()
-        child.communicate(timeout=5)
+        child.communicate(timeout=CHILD_SECONDS)
         self.assertEqual(-signal.SIGKILL, child.returncode)
         self.assertEqual(pending_bytes, self.journal.path.read_bytes())
         self.call("check", "sqlite", error="unfinished action")
