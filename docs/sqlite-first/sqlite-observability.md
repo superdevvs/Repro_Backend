@@ -52,7 +52,7 @@ No SQL text or values are logged. A failed log write never breaks the request or
 
 Limits of the measurement (they do not change what the application does):
 
-- A transaction whose COMMIT itself fails fires no event, so it is never logged.
+- A transaction whose COMMIT itself fails is not logged when it ran in `DB::transaction()`: Laravel fires no event for it. With `beginTransaction()` and `commit()`, the caller's `rollBack()` ends it, so it is logged as a `rollback` timed to the start of the failed COMMIT.
 - A rollback's `duration_ms` also covers the ROLLBACK and any after-rollback hooks, because Laravel fires no event when a rollback starts.
 
 **File permissions.** New day files are 0660 and are moved to the group of `storage/logs`. So a file the deploy user creates first stays writable by the web workers. Check with `ls -l storage/logs/transactions-*.log`: the group should be `www-data`. This works because the deploy user and `www-data` are both in the `www-data` group.

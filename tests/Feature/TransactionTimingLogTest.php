@@ -189,6 +189,46 @@ class TransactionTimingLogTest extends TestCase
         $this->assertLessThanOrEqual(8, count($open[$connection->getName()] ?? []));
     }
 
+    public function test_a_failed_commit_is_logged_only_when_the_caller_rolls_back(): void
+    {
+        $this->enable();
+        config(['database.connections.timing_failed_commit' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '']]);
+        $connection = DB::connection('timing_failed_commit');
+        $connection->setPdo(new class('sqlite::memory:') extends \PDO
+        {
+            public function commit(): bool
+            {
+                throw new \PDOException('COMMIT failed');
+            }
+        });
+
+        try {
+            // DB::transaction() lowers the level after a failed COMMIT and fires no event.
+            $connection->transaction(fn () => usleep(80_000));
+            $this->fail('The COMMIT should have failed.');
+        } catch (\PDOException) {
+            $connection->getPdo()->rollBack();
+        }
+        $this->assertSame([], $this->records());
+
+        // With beginTransaction() and commit(), the level stays up until the caller's rollBack().
+        $connection->beginTransaction();
+        usleep(80_000);
+        try {
+            $connection->commit();
+            $this->fail('The COMMIT should have failed.');
+        } catch (\PDOException) {
+            $connection->rollBack();
+        }
+        DB::purge('timing_failed_commit');
+
+        $records = $this->records();
+        $this->assertCount(1, $records);
+        $this->assertSame('rollback', $records[0]['context']['outcome']);
+        $this->assertSame('timing_failed_commit', $records[0]['context']['connection']);
+        $this->assertGreaterThanOrEqual(75, $records[0]['context']['duration_ms']);
+    }
+
     public function test_a_read_only_transaction_has_no_write_timings(): void
     {
         $this->enable();
