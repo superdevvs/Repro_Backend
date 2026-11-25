@@ -48,6 +48,11 @@ production has `CRM_ENABLED=true` today, so the CRM-off branches do not run):
 
 ## Runbook: freeze and replay (fold into "CRM freeze and replay")
 
+Superseded: this lane text is folded into "CRM freeze and replay" in
+[the cutover runbook](../mysql-production-cutover.md#crm-freeze-and-replay),
+which is corrected against the code and the provider docs. Use the runbook
+on the night; this section stays as the lane's record.
+
 Record the freeze start time in UTC as `FREEZE_AT`. Each step that changes
 production needs its own approval.
 
@@ -90,12 +95,16 @@ production needs its own approval.
 
 6. Remove the nginx hold file, `nginx -t`, reload; set
    `PRODUCER_INGRESS_HOLD=false`. The website outbox, booking forwarder,
-   Resend, Stripe and Aryeo retry on their own.
+   Resend and Stripe retry on their own. Aryeo stops retrying after about
+   2 minutes, so events of the hold are lost (runbook provider table).
 7. Website ledger. Export the website rows read-only (export spec below) and
-   run
-   `python -B -m scripts.cutover.website_ledger --export <export.json> --capture <capture.json> --private-csv <private.csv> --references <refs.json>`.
-   Then `php artisan crm:website-ledger --connection=<read-only> --references=<refs.json> --json`
-   (or `--sqlite=<copy>`). Replay only through the same reference:
+   run, from the repository root,
+   `python3 -B -m scripts.cutover.website_ledger --export <export.json> --capture <capture.json> --private-csv <private.csv> --references <refs.json>`
+   (the three output paths must be new).
+   Then `php artisan crm:website-ledger --sqlite=<copy> --references=<refs.json> --json`,
+   where `<copy>` is a fresh online backup of the live SQLite file.
+   `config/database.php` defines no read-only connection, so
+   `--connection` has nothing safe to name. Replay only through the same reference:
    `not_in_dashboard` bookings through forward-booking-v2 with the frozen
    quote; `not_received` and `not_delivered` contacts through website-email
    with the same reference; `uncertain` contacts only after the provider log
@@ -275,8 +284,9 @@ A read-only, service-role-only server route or SQL view that returns JSON for
   its `svix-id` and gets a fresh signature, and how long retries last.
 - Stripe: create two restricted keys with Events read only, stored like the
   other secrets.
-- The nginx include line must be added once to both Dashboard vhosts in a
-  normal reviewed deploy before any freeze.
+- The nginx include line must be added once to both Dashboard vhosts as a
+  reviewed root nginx change before any freeze. Deploy-App never touches
+  nginx (cutover runbook, Release and target preparation step 10).
 - The edge snippet is wider than `PRODUCER_INGRESS_HOLD`: it answers 503
   for everything under `/api/external/`, so the website's catalog read
   (`GET /api/external/services`), `POST /api/external/check-client` and the

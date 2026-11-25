@@ -127,9 +127,11 @@ sudo python3 -I -B $B --undo --job recovery-kit                      # undo in r
 ```
 
 Optional keys and defaults: `app_root` `/var/www/backend`, `sqlite_database`
-`/var/www/backend/database/database.sqlite`, `rclone` `/usr/bin/rclone`,
+`/var/www/backend/database/database.sqlite`, `php` `/usr/bin/php8.3`,
+`python` `/usr/bin/python3`, `rclone` `/usr/bin/rclone`,
 `alert_fail_suffix` `/fail` (use `null` for a provider with no fail endpoint),
-`probe_conditions`, `access_logs` and `disks`.
+`probe_conditions` (the six SQLite conditions and `site_held`),
+`access_logs` and `disks` (`SETTING_DEFAULTS` in `install_backup_host.py`).
 
 What apply does for `base-backup`:
 
@@ -182,9 +184,14 @@ accounts, and reloads systemd. The record lives in
 to every source file in the bundle is root-owned and not group- or
 other-writable.
 
-Enable timers only after review:
-`systemctl enable --now repro-backup.timer repro-backup-watchdog.timer`, then the
-alert timers. Install `alerts` right after `base-backup`; until then the backup
+Enable timers only after review, with the commands each job prints:
+`systemctl enable --now repro-backup.timer repro-backup-watchdog.timer`
+(`base-backup`), then
+`systemctl enable --now repro-alert-heartbeat.timer repro-alert-probe.timer repro-alert-forward.timer`
+(`alerts`), then
+`systemctl enable --now repro-recovery-kit.timer repro-recovery-kit.path`
+(`recovery-kit`; the path unit republishes the kit on every `.env` change).
+Install `alerts` right after `base-backup`; until then the backup
 units' bridge targets do not exist and only the journal marker is written.
 
 The installer does not show APP_KEY. Copy the `APP_KEY=` line from `.env` into

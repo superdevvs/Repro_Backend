@@ -1790,8 +1790,9 @@ has been done. Each production step needs its own approval.
 - Producer replay: publish the website changes P2-02, P2-05 and the P2-06
   export, with their Supabase migration.
 - Producer replay: add the `repro-holds` include line to both Dashboard
-  vhosts in a reviewed deploy, and decide whether the edge snippet keeps all
-  of `/api/external/` or only the producer paths.
+  vhosts as a reviewed root nginx change (Deploy-App never touches nginx;
+  runbook, Release and target preparation step 10), and decide whether the
+  edge snippet keeps all of `/api/external/` or only the producer paths.
 - Producer replay: create two Stripe restricted keys with Events read only.
   Confirm with the providers what their docs say (runbook
   [provider table](mysql-production-cutover.md#providers-during-a-60-minute-hold)):

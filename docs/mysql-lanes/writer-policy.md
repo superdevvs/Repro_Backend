@@ -58,8 +58,12 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   The worker loop starts every job at depth 0. A failed database job whose
   delete that rollback undid is deleted again, so it is failed once.
 - **Long holders.** Holds over one second are logged.
-  `php artisan db:writer-token-holders --connection=<monitor> --older-than=N`
-  lists holders from `performance_schema.data_locks` and exits 1 if any.
+  `php artisan db:writer-token-holders --older-than=N` lists holders from
+  `performance_schema.data_locks` and exits 1 if any. `--connection`
+  defaults to `mysql`, the app account, which has no `PROCESS` grant, and
+  `config/database.php` defines no monitor connection. Run the command's
+  query as a MySQL administrator instead (cutover runbook, Release and
+  target preparation step 6).
 - **Fixes found by the WP-7 proofs** (both engines, B17 and B18 in the
   register): the Stripe checkout webhook asks Stripe for the payment intent
   and charge before its payment transaction opens, never inside it; a weekly
@@ -95,6 +99,11 @@ and iGUIDE Lab Tour variants), `REPRO_MYSQL_SCHEDULING_CACHE`,
 
 ## Runbook additions (for docs/mysql-production-cutover.md)
 
+Superseded: these are folded into
+[the cutover runbook](../mysql-production-cutover.md#release-and-target-preparation),
+which is corrected against the code. Use the runbook; this section stays as
+the lane's record.
+
 Fold into "Release and target preparation" and "Validate before reopening
 traffic":
 
@@ -122,13 +131,19 @@ traffic":
 2. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
-3. After switching `.env` to MySQL and before reopening, run as the
-   application user: `php artisan db:writer-policy-check`. It must print
-   `"problems":[]` and exit 0. Add it to every deploy once MySQL is live.
-4. Give the monitor account `PROCESS` and `SELECT` on `performance_schema`
-   and alert on `php artisan db:writer-token-holders --connection=<monitor>
-   --older-than=30` exiting 1. Daytime alert; the plan's threshold list owns
-   the number.
+3. After switching `.env` to MySQL, once the app account may write, and
+   before reopening, run as the application user: `php artisan
+   db:writer-policy-check`. It must print `"problems":[]` and exit 0. It
+   takes the token, so it fails while the cutover's MySQL write gate is
+   closed (runbook, MySQL adapter lane items 3 and 7). Add it to every
+   deploy once MySQL is live.
+4. Give the monitor account `PROCESS` and `SELECT ON
+   performance_schema.data_locks`, and add `writer_token_held_too_long` to
+   the off-site alert probe's plan. The probe runs the query of `php
+   artisan db:writer-token-holders` through the monitor's own socket login
+   and fails at 30 s or more (`max_hold_seconds` in
+   `alert-conditions.json`). No `--connection=<monitor>` exists. Daytime
+   alert; the plan's threshold list owns the number.
 5. Every process must run the same release: a process without the policy
    would write without the token. The engine check in the drill covers this
    for workers.

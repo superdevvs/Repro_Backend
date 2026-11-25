@@ -251,9 +251,11 @@ preflight)
    job is still leased (Tours panel).
 2. Set `CRM_OUTBOUND_HOLD=true`, `CRM_DEFER_REPLY_FORWARDING=true` and
    `CRM_CALENDAR_SYNC_HOLD=true`, then run the three commands above, and
-   confirm the three booleans in the effective config
-   (`php artisan crm:outbound-release-check --since=$FREEZE_AT --json`
-   prints the first two; that is the CLI's view, not FPM's). Keep
+   confirm the three booleans in the effective config:
+   `php artisan crm:outbound-release-check --since=$FREEZE_AT --json`
+   prints the first two (`outbound_hold`, `defer_reply_forwarding`), and
+   `php artisan config:show crm.calendar_sync_hold` prints the third. Both
+   are the CLI's view, not FPM's. Keep
    `CRM_CALENDAR_SYNC_HOLD` in the environment that reopens; step 10
    releases it.
 3. Hold the website recruiting scheduler with the `worker_paused` switch from
@@ -311,7 +313,7 @@ preflight)
    is not built. Once it is, export the website rows read-only and run, from
    the repository root:
    `python3 -B -m scripts.cutover.website_ledger --export <export.json> --capture <capture.json> --private-csv <private.csv> --references <refs.json>`
-   (all four paths new). Then
+   (the three output paths must be new). Then
    `php artisan crm:website-ledger --sqlite=<copy> --references=<refs.json> --json`,
    where `<copy>` is a fresh online backup of the live SQLite file
    (`php scripts/deploy/backup-sqlite.php <live database> <new file>`). No
@@ -416,9 +418,13 @@ The producer hold does not cover Telnyx (`/api/webhooks/telnyx/messaging`,
 `/status`, `/shared-mms/{uuid}` and `/voice`), iGUIDE
 (`/iguide_webhook.php`), CubiCasa (`/cubicasa_webhook.php`), Cakemail
 (`/api/webhooks/cakemail`), Autoenhance (`/api/webhooks/autoenhance`) or
-Vapi (`/api/webhooks/vapi`). This candidate has no Telnyx capture route;
-only the unbound `TelnyxCutoverInbox` primitive exists
-([inbox README](../scripts/cutover/inbox/README.md)). During the hold the
+Vapi (`/api/webhooks/vapi`). This candidate has no Telnyx capture route.
+It has two unbound building blocks: the database-independent spool
+`App\Support\TelnyxCutoverInbox`
+([inbox README](../scripts/cutover/inbox/README.md)) and the standalone
+HTTP adapter `App\Support\TelnyxCutoverCapture`
+(`tests/Unit/TelnyxCutoverCaptureTest.php`), which no route, middleware or
+service activates. Neither is reviewed for activation. During the hold the
 writer hold answers all of them 503 at server level, including the two
 direct `.php` files.
 
@@ -431,7 +437,7 @@ provider publishes.
 | Provider | Retries on 503 | Window | Lost in a 60-minute hold | After the hold |
 | --- | --- | --- | --- | --- |
 | Telnyx messaging (`/api/webhooks/telnyx/messaging`, `/status`, `/shared-mms/{uuid}`) | Yes, any non-2xx (2 s timeout). Up to 3 attempts per URL with exponential backoff, then the failover URL; another Telnyx page says 2 retries per URL. Intervals not published. | Unknown | Assume every text and delivery report of the hold is lost, unless a failover URL on a separate, healthy host is set. | List failed deliveries for the window (`GET /v2/webhook_deliveries?filter[status][eq]=failed&filter[started_at][gte]=...`; each record has the payload; check in the portal that messaging webhooks appear there). Cross-check inbound texts with `GET /v2/detail_records?filter[record_type]=messaging`, and outbound ones still sent or queued with `GET /v2/messages/{id}`. Open: no reviewed path re-injects them; the public endpoint refuses signatures older than 300 s. |
-| Telnyx voice (`/api/webhooks/telnyx/voice`) | Yes for 5xx, 408 and 429; other 4xx are not retried. 2 attempts on the primary URL, then the failover URL; immediate unless a custom retry delay is set. | Seconds by default (derived) | Lost. A call during the hold cannot be controlled, and a replay later is pointless. What the caller hears is not documented beyond the optional hang-up on timeout. | Owner decision before the night: point `webhook_event_failover_url` at an independent host, or route the numbers elsewhere. After: list failed `call.initiated` deliveries and the call records for the window, and call missed callers back. |
+| Telnyx voice (`/api/webhooks/telnyx/voice`) | Yes for 5xx, 408 and 429; other 4xx are not retried. 2 attempts on the primary URL, then the failover URL; immediate unless a custom retry delay is set. | Unknown; seconds by default (derived) | Lost. A call during the hold cannot be controlled, and a replay later is pointless. What the caller hears is not documented beyond the optional hang-up on timeout. | Owner decision before the night: point `webhook_event_failover_url` at an independent host, or route the numbers elsewhere. After: list failed `call.initiated` deliveries and the call records for the window, and call missed callers back. |
 | Vapi (`/api/webhooks/vapi`) | No by default. Opt-in `server.backoffPlan` (API only). `assistant-request` and `campaign.predial` are never retried. | 0 by default; about 85 minutes at the maximum exponential setting (derived; no delay cap documented) | Lost. End-of-call reports and status updates are sent once; inbound calls on `assistant-request` numbers end with `assistant-request-returned-error`; tool calls fail mid-call. | List calls for the window, re-ingest each with Get call, and download recordings before their links expire. Check the Webhook logs (not available under Zero Data Retention). |
 | iGUIDE (`/iguide_webhook.php`) | Only 5xx; 3xx and 4xx are dropped silently. Every 10 to 15 minutes, stops after the 5th failed attempt. | About 40 to 60 minutes after the first attempt (derived) | Partly. An event first sent in about the first 20 minutes of the hold can use all five attempts inside it (derived). The docs say there is no way to know which events were sent. | For every iGUIDE or work order that could have become ready in the window (from our records), call `POST /api/v1/iguides/{iguideId}/events/{eventType}/dispatch?taskId=` (scope `iguide.events`), or GET `/events/ready/object`. The handler must accept duplicates. The scheduled `iguide:resync-pending` (:15 and :45) also retries recent shoots without a tour URL. |
 | CubiCasa (`/cubicasa_webhook.php`) | Unknown. The docs say it tries 3 times and then gives up; intervals not stated. | Unknown | Assume lost. | Poll "Get order by ID" for every order not yet final. The scheduled `cubicasa:resync-pending` (every 30 minutes) reconciles unfinished orders once the scheduler runs. |
@@ -594,7 +600,7 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
     # (frontend.conf and laravel.conf), before any location:
     #     include /etc/nginx/repro-holds/*.conf;
     sudo nginx -t && sudo systemctl reload nginx
-    sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|repro-holds|repro-cutover-hold'
+    sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|location |repro-holds|repro-cutover-hold'
     ```
 
     W1 installs the guard, controller, wrappers, watchdog units, the
@@ -605,8 +611,10 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
 
     - Write and review the identity and MySQL probes
       ([MySQL adapter lane](#mysql-adapter-lane-not-built) items 1 to 3).
-      Neither exists, and every `cli.py` action except
-      `approval-template` runs them.
+      Neither exists. Every `cli.py` action except `approval-template`
+      runs the MySQL probe; `init`, `hold`, `freeze`, `abort`, `tick` and
+      `refresh` also run the identity probe (`status` and `reopen` do
+      not).
     - Write `host.json` completely before `init`, because `hold` refuses a
       host config that changed after `init`. Its `queues` are the nine
       queues plus `iguide-lab-tour:iguide-lab-tour` if the `repro-lab-tour`
@@ -862,7 +870,8 @@ after it (`sqlite_authoritative`, `writes_possible`, `mysql_authoritative`)
   `site_held` reports the held site as expected, and a switch of the app
   between SQLite and MySQL does not page `wrong_database_engine`.
 - `server_error_rate` leaves out every 503 from the start of a hold of the
-  current boot until the reopen (the open marker's change time), capped at
+  current boot until the reopen (the open marker's modification time,
+  `st_mtime`), capped at
   60 minutes, whatever the phase. So a 503 from the app or from a stuck
   rollback in that span is left out too; `site_held` still pages for a
   held site outside the limits. Other 5xx always count, and nothing is left
@@ -1081,12 +1090,15 @@ nothing; each still needs its own approval.
 
 **Scheduled tasks inside the outage.** The app time zone is UTC
 (`config/app.php`), so the Saturday 10 to 11 pm EST outage is 03:00 to
-04:00 UTC on Sunday. The scheduler is held from the freeze and there is no
-catch-up.
+04:00 UTC on Sunday. The guard refuses scheduler admission from the hold
+(`guard.authority` admits only `planned` and the two terminal phases)
+until authority is published again, and there is no catch-up. An abort
+that completes before 03:15 admits the scheduler in time for that slot,
+so check which slots were really skipped.
 
 | Task | When | During the outage | Decision |
 | --- | --- | --- | --- |
-| `crm:nightly` (client health, expired quotes, licence and insurance reminders) | 03:15 UTC | skipped | Run `php artisan crm:nightly` once by hand after CRM step 9 releases the outbound hold. |
+| `crm:nightly` (client health, expired quotes, licence and insurance reminders) | 03:15 UTC | skipped if the scheduler is still held | If it was skipped, run `php artisan crm:nightly` once by hand after CRM step 9 releases the outbound hold. |
 | `copilot:prune` | 03:35 UTC | skipped | Leave it to the next night. |
 | `model:prune` | 03:45 UTC | skipped | Leave it to the next night. |
 | `media:prune-editor-archives --apply` | 04:15 UTC | runs if the scheduler is admitted by then | Leave it. |
@@ -1182,12 +1194,13 @@ undo list no longer needs it.
    one server block lacks an include:
 
    ```bash
-   sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|repro-cutover-hold|repro-holds'
+   sudo nginx -T 2>/dev/null | grep -nE '^# configuration file|server_name|location |repro-cutover-hold|repro-holds'
    ```
 
    Each Dashboard server block that reaches PHP (in `frontend.conf` and
    `laravel.conf`) must show both the `repro-cutover-hold` include and
-   `include /etc/nginx/repro-holds/*.conf;`, before any location. If not,
+   `include /etc/nginx/repro-holds/*.conf;`, with lower line numbers than
+   the block's first `location`. If not,
    stop: no approval. W2 must also rehearse the runtime 503 check of CRM
    step 5. Owner option: apply the edge hold (CRM step 4) a few minutes
    before Approval 1 instead, while the site is open, and run the CRM step
@@ -1333,7 +1346,14 @@ stay held by the marker from `init` until `reopen` lifts it after a
 completed rollback. The watchdog keeps the completed SQLite rollback as it
 is after such a reboot; it does not escalate to recovery. After an aborted
 and reopened cutover the policy still pins the old release, so retire the
-installed fences or start a new run before the next deploy.
+installed fences or start a new run before the next deploy. Neither is
+written yet. A new run cannot simply `init`: the journal lives at the
+guard's fixed state path (`/var/lib/repro-cutover-fence/state.json`), and
+`init` refuses with "A run already exists in this directory" while it is
+there (`Runner.initialize`). Open: a reviewed retire step that moves the
+old journal and its records, whole and unchanged, to a root-only archive,
+retires the old policy, and only then lets a new `init` run. Moving the
+journal aside is not editing it; keep the copy as evidence.
 
 If `abort` or a tick prints "MySQL writes may exist. Use separately verified
 recovery", the journal is `recovery_required`. From there neither `abort`
@@ -1382,7 +1402,9 @@ started the workers.
    Aryeo last. After an abort they run against SQLite; the commands do not
    depend on the engine.
 9. Missed scheduled tasks: `php artisan crm:nightly` once, after the
-   outbound release (see the table above).
+   outbound release, only if its 03:15 UTC slot fell while the scheduler
+   was held. After an early abort the guard admits the scheduler again, so
+   it may already have run (see the table above).
 10. Backup timers and the kit:
     `sudo systemctl start repro-backup.timer repro-recovery-kit.timer repro-recovery-kit.path`.
     Each timer runs once right away if its time has passed (`Persistent=true`).
@@ -1392,7 +1414,8 @@ started the workers.
     preview only, so decide before the night what runs.
 11. Deploys: after a reopened rollback the policy still pins the old
     release. Retire the installed fences or start a new run before the next
-    deploy.
+    deploy. Open: neither step is written, and a new `init` refuses while
+    the old journal is in place (see "Undo" above).
 12. Remove the `.env` work folders (`rm -r "$work"`) once nothing above
     needs them.
 
@@ -1596,7 +1619,12 @@ waits for items 1 to 3.
        every restart: `sudo rm /run/repro-cutover-fence/verified-engine.json`.
        Wait until no writer process is left.
     4. Export and verify as in [Rollback](#rollback-has-two-different-paths).
-    5. Write a new policy for the new SQLite file and run `init` with the W1
+    5. Move the old journal and its records, whole and unchanged, out of
+       `/var/lib/repro-cutover-fence` to a root-only archive (the reviewed
+       retire step under "Undo" in [Freeze all writers](#freeze-all-writers),
+       not written yet). `init` refuses while `state.json` is there, and
+       the guard's state path is fixed. Moving it is not editing it.
+    6. Write a new policy for the new SQLite file and run `init` with the W1
        marker method (create the marker by hand, `init`, remove it, then
        `refresh` and `reopen`).
 
@@ -1625,7 +1653,11 @@ waits for items 1 to 3.
     Options:
     - an exempt nginx location for the Telnyx text paths, served by a
       capture that needs no database and is not drained (a reviewed gate
-      exemption);
+      exemption). The candidate already has the unbound pieces:
+      `TelnyxCutoverCapture` (a standalone HTTP adapter for the
+      messaging, status and voice paths, not `/shared-mms/{uuid}`) on top
+      of the file spool `TelnyxCutoverInbox`. Neither is reviewed for
+      activation, and no entry point serves them yet;
     - a Telnyx failover URL on a separate host that captures to a spool for
       replay after the hold.
 
