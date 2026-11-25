@@ -230,7 +230,12 @@ def cache_write_failed(context: Context) -> tuple[str, str]:
     problems = []
     if context.plan["cache_group_writable"] and os.name == "posix":
         locked, seen = 0, 0
-        for directory, folders, _ in os.walk(context.plan["cache_dir"]):
+
+        def unreadable(_error: OSError) -> None:
+            # os.walk skips what it cannot list; a missing or unreadable folder is not a clean one.
+            raise DetectorError("cache folder could not be read")
+
+        for directory, folders, _ in os.walk(context.plan["cache_dir"], onerror=unreadable):
             for name in folders:
                 seen += 1
                 if not os.lstat(os.path.join(directory, name)).st_mode & stat.S_IWGRP:

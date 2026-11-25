@@ -218,6 +218,21 @@ class DetectorTests(unittest.TestCase):
             "Failed to open stream: Permission denied\n")
         self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "fail")
 
+    @unittest.skipUnless(os.name == "posix", "the cache folder mode check runs on Linux")
+    def test_cache_folder_that_cannot_be_read_is_a_failure(self):
+        # os.walk skips folders it cannot list, so a missing or unreadable cache
+        # folder looked like a clean one.
+        self.baseline()
+        self.write_access(100, 1)
+        self.plan["cache_dir"] = str(self.root / "no-such-cache")
+        self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "fail")
+        self.plan["cache_dir"] = str(self.cache)
+        self.cache.chmod(0)
+        self.addCleanup(self.cache.chmod, 0o775)
+        self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "fail")
+        self.cache.chmod(0o775)
+        self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "ok")
+
     def test_mysql_restarted(self):
         self.induce("mysql_restarted", lambda: self.mysql.update(uptime=120))
 
