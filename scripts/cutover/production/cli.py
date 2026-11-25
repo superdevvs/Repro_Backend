@@ -10,7 +10,8 @@ authority evidence for the current boot (needed after every reboot) and
 reboot and rolls back to SQLite 45 minutes after the hold.
 
 Approval files must be root-owned and writable by root only. The host config
-at /etc/repro-cutover-fence/host.json must be protected the same way.
+at /etc/repro-cutover-fence/host.json, and the identity.json it names, must be
+protected the same way.
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if sys.platform != "linux" or os.geteuid() != 0:
             raise UnsafeCutover("The cutover controller runs as root on the Linux host")
-        config = host.load_config(guard.read_protected(args.config))
+        # identity.json (the identity probe's own input) is read through the same protected-file check.
+        config = host.load_config(guard.read_protected(args.config), read=guard.read_protected)
         installed = (guard.STATE, guard.POLICY, guard.EVIDENCE, guard.ACTIVATION, guard.MACHINE_ID, guard.BOOT_ID)
         if any(Path(config["paths"][name]) != path for name, path in zip(GUARD_PATHS, installed)):
             raise UnsafeCutover("Host config paths differ from the installed guard paths")

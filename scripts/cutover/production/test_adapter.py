@@ -33,6 +33,399 @@ PRODUCTION_QUEUES = [
     "database:voice-notifications", "database:voice-transcripts", "studio:studio", "database:media-archives",
     "iguide-lab-tour:iguide-lab-tour",
 ]
+TARGET_UUID = IDENTITY.target_uuid
+# `.env` keys the night sets after `init` (design 3.1). Denylisted, so they never change `config_sha256`.
+NIGHT_FLAGS = ["CRM_OUTBOUND_HOLD", "CRM_DEFER_REPLY_FORWARDING", "CRM_CALENDAR_SYNC_HOLD", "PRODUCER_INGRESS_HOLD",
+               "SCHEDULER_HOLD_ENABLED"]
+# Every `.env` key `prepare` writes and `seal_sqlite` restores: the switch plus its secret.
+SWITCH_KEYS = ["DB_COLLATION", "DB_CONNECTION", "DB_DATABASE", "DB_PASSWORD", "DB_SOCKET", "DB_USERNAME",
+               "REPRO_MYSQL_EXPECTED_SERVER_UUID"]
+FENCE = "/opt/repro-cutover-fence/production"
+PYTHON = ["/usr/bin/python3", "-I", "-S"]
+
+
+def queue_command(verb, user="www-data", script=None):
+    """The queue pause or resume prefix of design 5.1; the adapter appends `connection:queue` as `$1`."""
+    script = script or f'cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:{verb} "$1"'
+    return ["/usr/sbin/runuser", "-u", user, "--", "/bin/sh", "-c", script, "repro-queue"]
+
+
+def example_config():
+    """The complete host.json for the production host (design 3.1). IDs and the UUID are placeholders."""
+    state, run, etc = "/var/lib/repro-cutover-fence", "/run/repro-cutover-fence", "/etc/repro-cutover-fence"
+    return {
+        "version": 1,
+        "paths": {
+            "state": state, "policy": f"{etc}/policy.json", "evidence": f"{run}/verified-engine.json",
+            "activation": f"{run}/verified-activation.json", "machine_id": "/etc/machine-id",
+            "boot_id": "/proc/sys/kernel/random/boot_id", "ingress_open": "/run/repro-cutover-ingress/open",
+            "deploy_marker": "/etc/repro-database-cutover/active", "scheduler_hold": f"{run}/scheduler-hold.json",
+            "sqlite_seal_record": f"{state}/sqlite-seal.json", "identity_config": f"{etc}/identity.json",
+            "switch_record": f"{state}/switch-record.json", "sealed_hash": f"{state}/sealed-hash.json",
+            "receipt": f"{state}/mysql-receipt.json", "activity": f"{state}/mysql-activity.json",
+            "activated": f"{state}/mysql-activated.json", "smoke_window": f"{state}/smoke-window.json",
+            "evidence_inputs": f"{state}/evidence-inputs.json", "evidence_report": f"{state}/evidence-report.json",
+            "unseal_proof": f"{state}/unseal-proof.json", "issued_approvals": f"{state}/issued-approvals",
+            "scheduler_release": f"{run}/scheduler-released", "wrappers": f"{etc}/wrappers.json",
+            "wrappers_sqlite": f"{etc}/wrappers.sqlite.json", "wrappers_mysql": f"{etc}/wrappers.mysql.json",
+            "retired": f"{etc}/retired.json", "archive": "/var/lib/repro-cutover-archive",
+            "keep": "/var/lib/repro-cutover-keep",
+        },
+        "app_root": "/var/www/backend", "app_owner": "maverick", "app_group": "www-data", "web_user": "www-data",
+        "sqlite": "/var/www/backend/database/database.sqlite",
+        "deploy_locks": ["/home/maverick/.repro-backend-deploy.lock", "/home/maverick/.repro-frontend-deploy.lock"],
+        "deploy_owner": "maverick",
+        "queues": list(PRODUCTION_QUEUES),
+        "mysql": {
+            "mode": "drill", "database": "repro_dashboard", "control_database": "repro_mysql_control",
+            "target_uuid": TARGET_UUID, "datadir": "/var/lib/repro-mysql84-native/data",
+            "client": "/opt/repro-mysql84-native/mysql-8.4.13/bin/mysql",
+            "socket": "/run/repro-mysql84-native/mysql.sock",
+            "probe_defaults": f"{etc}/mysql-probe.cnf", "gate_defaults": f"{etc}/mysql-gate.cnf",
+            "token_check_defaults": f"{etc}/mysql-token-check.cnf",
+            "gated_accounts": ["repro_app@localhost"],
+            "lockable_accounts": ["repro_maint@localhost", "repro_migrator@localhost"],
+            "activity_excluded_tables": ["repro_recovery_heartbeat"],
+            "smoke_tables": ["clients", "shoots", "aryeo_changes", "jobs", "cache", "cache_locks"],
+            "switch": {"DB_CONNECTION": "mysql", "DB_DATABASE": "repro_dashboard",
+                       "DB_SOCKET": "/run/repro-mysql84-native/mysql.sock", "DB_USERNAME": "repro_app",
+                       "DB_COLLATION": "utf8mb4_0900_bin", "REPRO_MYSQL_EXPECTED_SERVER_UUID": TARGET_UUID},
+            "switch_secrets": {"DB_PASSWORD": f"{etc}/mysql-app.env"},
+            "night_flags": list(NIGHT_FLAGS),
+            "offsite_waiver": False,
+        },
+        "fpm": {"unit": "php8.3-fpm.service", "socket": "/run/php/php8.3-fpm.sock",
+                "status_socket": "/run/php/php8.3-fpm-status.sock", "drain_seconds": 90},
+        "smoke": {"client_id": 4101, "shoot_id": 9201},
+        "studio_pause_files": ["/home/maverick/.local/share/repro-studio/paused",
+                               "/home/maverick/.local/share/repro-studio/paused-lab-tour"],
+        "commands": {
+            "identity": PYTHON + [f"{FENCE}/identity_probe.py", "--config", f"{etc}/identity.json"],
+            "mysql": PYTHON + [f"{FENCE}/mysql_probe.py", "--config", f"{etc}/host.json"],
+            "queue_pause": queue_command("pause"), "queue_resume": queue_command("resume"),
+            "stop_workers": [["/usr/bin/supervisorctl", "stop", "laravel-worker:*"],
+                             ["/usr/bin/systemctl", "stop", "repro-media-archives.service"]],
+            "start_workers": [["/usr/bin/systemctl", "start", "php8.3-fpm.service"],
+                              ["/usr/bin/supervisorctl", "start", "laravel-worker:*"],
+                              ["/usr/bin/systemctl", "start", "repro-media-archives.service"]],
+            "drain_fpm": [PYTHON + [f"{FENCE}/fpm_drain.py", "--config", f"{etc}/host.json"],
+                          ["/usr/bin/systemctl", "stop", "php8.3-fpm.service"]],
+            "config_build": ["/usr/sbin/runuser", "-u", "maverick", "-g", "www-data", "--", "/bin/sh", "-c",
+                             'umask 0022 && cd /var/www/backend && exec env APP_CONFIG_CACHE="$1" /usr/bin/php '
+                             'artisan config:cache', "repro-config"],
+            "fpm_start": ["/usr/bin/systemctl", "restart", "php8.3-fpm.service"],
+            "fpm_reload": ["/usr/bin/systemctl", "try-reload-or-restart", "php8.3-fpm.service"],
+            "fpm_stop": ["/usr/bin/systemctl", "stop", "php8.3-fpm.service"],
+            "smoke_readonly": [
+                ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c",
+                 "cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan cutover:smoke --read-only --json",
+                 "repro-smoke"],
+                ["/usr/sbin/runuser", "-u", "maverick", "-g", "www-data", "--", "/bin/sh", "-c",
+                 "cd /var/www/backend && umask 0002 && exec /usr/bin/php artisan cutover:smoke --read-only --json",
+                 "repro-smoke"]],
+            "smoke_write": PYTHON + [f"{FENCE}/admit.py", "cutover-smoke"],
+            "telnyx_replay": PYTHON + [f"{FENCE}/admit.py", "telnyx-replay"],
+            "timer": ["/usr/bin/systemd-run", "--collect", "--property=UMask=0077"],
+        },
+        "writer_processes": ["artisan queue:work", "repro-studio/worker.sh", "repro-studio/lab-tour-worker.sh"],
+        "long_job_processes": ["repro-studio/worker.sh", "--queue=media-archives"],
+        "scheduler_processes": ["artisan schedule:run", "artisan schedule:finish"],
+        "command_seconds": 120,
+        "options": {"max_drain_seconds": 600, "separate_freeze_approval": False, "adopt_external_hold": False,
+                    "require_long_job_predrain": True, "unattended_reopen": False},
+    }
+
+
+def example_identity(config, run_id=IDENTITY.run_id):
+    """identity.json for a host config: the identity probe's inputs, with the one denylist load_config accepts."""
+    return {"version": 1, "run_id": run_id, "app_root": config["app_root"], "sqlite_path": config["sqlite"],
+            "mysql_datadir": config["mysql"]["datadir"], "env_denylist": sorted(NIGHT_FLAGS + SWITCH_KEYS)}
+
+
+def load(config, identity=None):
+    """load_config with identity.json served from exactly the path the host config names."""
+    identity_raw = json.dumps(example_identity(config) if identity is None else identity).encode()
+
+    def read(path):
+        if path != Path(config["paths"]["identity_config"]):
+            raise FileNotFoundError(path)
+        return identity_raw
+
+    return production.load_config(json.dumps(config).encode(), read=read)
+
+
+@unittest.skipUnless(os.name == "posix", "Host config paths are POSIX absolute paths")
+class HostConfigContractTests(unittest.TestCase):
+    """host.json and identity.json (design 3.1): every key explicit, one denylist, safe queue commands."""
+
+    def test_load_config_accepts_complete_v2_example(self):
+        config = example_config()
+        self.assertEqual(config, load(config))
+        # The cutover host config differs only in the mode.
+        config["mysql"]["mode"] = "cutover"
+        self.assertEqual("cutover", load(config)["mysql"]["mode"])
+
+    # Keys added by the MySQL lane; the SQLite-era keys keep their own checks.
+    NEW_KEYS = (
+        *[(name,) for name in ("app_root", "app_owner", "app_group", "web_user", "mysql", "fpm", "smoke",
+                               "studio_pause_files")],
+        *[("mysql", name) for name in example_config()["mysql"]],
+        *[("fpm", name) for name in example_config()["fpm"]],
+        *[("smoke", name) for name in example_config()["smoke"]],
+        *[("paths", name) for name in ("identity_config", "switch_record", "sealed_hash", "receipt", "activity",
+                                       "activated", "smoke_window", "evidence_inputs", "evidence_report",
+                                       "unseal_proof", "issued_approvals", "scheduler_release", "wrappers",
+                                       "wrappers_sqlite", "wrappers_mysql", "retired", "archive", "keep")],
+        *[("commands", name) for name in ("config_build", "fpm_start", "fpm_reload", "fpm_stop", "smoke_readonly",
+                                          "smoke_write", "telnyx_replay", "timer")],
+        ("options", "unattended_reopen"),
+    )
+
+    @staticmethod
+    def changed(document, keys, value=None, delete=False):
+        changed = json.loads(json.dumps(document))
+        parent = changed
+        for key in keys[:-1]:
+            parent = parent[key]
+        if delete:
+            del parent[keys[-1]]
+        else:
+            parent[keys[-1]] = value
+        return changed
+
+    def test_every_new_key_is_required(self):
+        # No silent defaults: a host config without the key is refused, never filled in.
+        identity = example_identity(example_config())
+        for keys in self.NEW_KEYS:
+            with self.subTest(missing=".".join(keys)):
+                with self.assertRaises(guard.Refused):
+                    load(self.changed(example_config(), keys, delete=True), identity)
+
+    def test_unknown_keys_are_refused(self):
+        for keys in (("unexpected",), ("mysql", "unexpected"), ("fpm", "unexpected"), ("smoke", "unexpected")):
+            with self.subTest(extra=".".join(keys)):
+                with self.assertRaises(guard.Refused):
+                    load(self.changed(example_config(), keys, True))
+
+    def test_malformed_new_values_are_refused(self):
+        argv = ["/usr/bin/true"]
+        cases = [
+            (("app_root",), "var/www/backend"), (("app_owner",), ""), (("app_owner",), "root"),
+            (("app_group",), 33), (("web_user",), "root"), (("web_user",), "www data"),
+            (("mysql", "mode"), "live"), (("mysql", "mode"), "Drill"), (("mysql", "database"), "repro-dashboard"), (("mysql", "control_database"), "repro_dashboard"),
+            (("mysql", "control_database"), ""), (("mysql", "target_uuid"), "not-a-uuid"),
+            (("mysql", "datadir"), "var/lib/mysql"), (("mysql", "client"), "mysql"),
+            (("mysql", "socket"), "mysql.sock"), (("mysql", "probe_defaults"), "mysql-probe.cnf"),
+            (("mysql", "gate_defaults"), None), (("mysql", "token_check_defaults"), ["/etc/x.cnf"]),
+            (("mysql", "gated_accounts"), []), (("mysql", "gated_accounts"), ["repro_app"]),
+            (("mysql", "gated_accounts"), ["repro_app@localhost", "repro_app@localhost"]),
+            (("mysql", "gated_accounts"), ["repro_app@%"]),
+            (("mysql", "lockable_accounts"), ["repro_app@localhost"]),
+            (("mysql", "lockable_accounts"), "repro_maint@localhost"),
+            (("mysql", "activity_excluded_tables"), ["repro recovery"]), (("mysql", "smoke_tables"), []),
+            (("mysql", "smoke_tables"), ["clients", "clients"]), (("mysql", "smoke_tables"), ["Clients"]),
+            (("mysql", "switch"), []), (("mysql", "switch", "DB_COLLATION"), 5),
+            (("mysql", "switch", "DB_COLLATION"), "utf8mb4_0900_bin\nAPP_KEY=base64:x"),
+            (("mysql", "switch", "DB_COLLATION"), ""),
+            (("mysql", "switch_secrets", "DB_PASSWORD"), "mysql-app.env"),
+            (("mysql", "night_flags"), "CRM_OUTBOUND_HOLD"), (("mysql", "night_flags"), ["crm_outbound_hold"]),
+            (("mysql", "night_flags"), NIGHT_FLAGS + ["CRM_OUTBOUND_HOLD"]),
+            (("mysql", "offsite_waiver"), "false"), (("mysql", "offsite_waiver"), 0),
+            (("fpm", "unit"), "php8.3-fpm"), (("fpm", "socket"), "php8.3-fpm.sock"),
+            (("fpm", "status_socket"), ""), (("fpm", "drain_seconds"), 0), (("fpm", "drain_seconds"), True),
+            (("fpm", "drain_seconds"), production.MAX_COMMAND_SECONDS + 1), (("fpm", "drain_seconds"), 90.0),
+            (("smoke", "client_id"), 0), (("smoke", "shoot_id"), "9201"), (("smoke", "shoot_id"), True),
+            (("studio_pause_files",), "/home/maverick/.local/share/repro-studio/paused"),
+            (("studio_pause_files",), ["paused"]),
+            (("paths", "switch_record"), "switch-record.json"), (("commands", "timer"), ["systemd-run"]),
+            (("commands", "smoke_readonly"), argv), (("commands", "smoke_readonly"), []),
+            (("commands", "fpm_reload"), [argv]), (("options", "unattended_reopen"), "true"),
+            (("options", "unattended_reopen"), 1),
+        ]
+        for keys, value in cases:
+            with self.subTest(key=".".join(keys), value=value):
+                with self.assertRaises(guard.Refused):
+                    load(self.changed(example_config(), keys, value))
+
+    def test_identity_config_shape_is_checked(self):
+        config = example_config()
+        identity = example_identity(config)
+        cases = [(("run_id",), "run id"), (("run_id",), ""), (("app_root",), "var/www/backend"),
+                 (("sqlite_path",), 7), (("mysql_datadir",), None), (("env_denylist",), "DB_PASSWORD"),
+                 (("env_denylist",), [*identity["env_denylist"][:-1], "db_socket"]), (("version",), 2),
+                 (("unexpected",), True)]
+        for keys, value in cases:
+            with self.subTest(key=".".join(keys), value=value):
+                with self.assertRaises(guard.Refused):
+                    load(config, self.changed(identity, keys, value))
+        for key in identity:
+            with self.subTest(missing=key):
+                with self.assertRaises(guard.Refused):
+                    load(config, self.changed(identity, (key,), delete=True))
+        # The file is JSON with unique keys, like every guard record.
+        with self.assertRaises(guard.Refused):
+            production.load_config(json.dumps(config).encode(),
+                                   read=lambda path: b'{"version": 1, "run_id": "a", "run_id": "b"}')
+
+    @staticmethod
+    def identity_for(config):
+        """identity.json whose denylist matches this config's night flags and switch keys."""
+        mysql = config["mysql"]
+        return {**example_identity(config),
+                "env_denylist": sorted({*mysql["night_flags"], *mysql["switch"], *mysql["switch_secrets"]})}
+
+    def test_denylist_must_equal_night_flags_plus_switch_keys(self):
+        config = example_config()
+        denylist = sorted(NIGHT_FLAGS + SWITCH_KEYS)
+        # Order does not matter, the set does.
+        self.assertEqual(config, load(config, {**example_identity(config), "env_denylist": denylist[::-1]}))
+        for name, changed in (
+            ("a night flag missing", [key for key in denylist if key != "PRODUCER_INGRESS_HOLD"]),
+            ("a switch key missing", [key for key in denylist if key != "DB_SOCKET"]),
+            ("another key hidden from config_sha256", denylist + ["APP_KEY"]),
+            ("a key twice", denylist + ["DB_SOCKET"]),
+            ("night flags only", list(NIGHT_FLAGS)),
+        ):
+            with self.subTest(name):
+                with self.assertRaisesRegex(guard.Refused, "env_denylist"):
+                    load(config, {**example_identity(config), "env_denylist": changed})
+        # A night flag added to host.json must be denylisted too.
+        config["mysql"]["night_flags"].append("CRM_SMS_HOLD")
+        with self.assertRaisesRegex(guard.Refused, "env_denylist"):
+            load(config, example_identity(config))
+        self.assertEqual(config, load(config, self.identity_for(config)))
+
+    def test_switch_keys_include_secret_keys(self):
+        config = example_config()
+        self.assertEqual(SWITCH_KEYS, production.switch_keys(config))
+        self.assertEqual(sorted(NIGHT_FLAGS + SWITCH_KEYS), production.env_denylist(config))
+        # The v1 denylist (night flags plus the switch only) left DB_PASSWORD in config_sha256 (critic RC-H1).
+        v1 = sorted(NIGHT_FLAGS + list(config["mysql"]["switch"]))
+        with self.assertRaisesRegex(guard.Refused, "env_denylist"):
+            load(config, {**example_identity(config), "env_denylist": v1})
+        # The engine-check and schema-cache keys are switch keys once configured, and must be denylisted.
+        config["mysql"]["switch"].update({"DB_EXPECTED_ENGINE": "mysql", "SCHEMA_CACHE_RELEASE": "mysql-20261212"})
+        expected = sorted(SWITCH_KEYS + ["DB_EXPECTED_ENGINE", "SCHEMA_CACHE_RELEASE"])
+        self.assertEqual(expected, production.switch_keys(config))
+        with self.assertRaisesRegex(guard.Refused, "env_denylist"):
+            load(config, example_identity(config))
+        self.assertEqual(config, load(config, {**example_identity(config),
+                                               "env_denylist": sorted(NIGHT_FLAGS + expected)}))
+
+    def test_switch_holds_exactly_the_route_keys_and_the_app_password(self):
+        # Every switch key is denylisted, so a key outside the route would hide its edits from config_sha256.
+        def switch(change):
+            config = example_config()
+            change(config["mysql"])
+            return config
+
+        cases = {
+            "APP_KEY switched": lambda mysql: mysql["switch"].update(APP_KEY="base64:abc"),
+            "DB_SOCKET not switched": lambda mysql: mysql["switch"].pop("DB_SOCKET"),
+            "another secret": lambda mysql: mysql["switch_secrets"].update(APP_KEY="/etc/repro-cutover-fence/key"),
+            "no app password": lambda mysql: mysql["switch_secrets"].clear(),
+            "the password in host.json": lambda mysql: (mysql["switch_secrets"].clear(),
+                                                        mysql["switch"].update(DB_PASSWORD="placeholder")),
+            "a night flag that is switched": lambda mysql: mysql["night_flags"].append("DB_SOCKET"),
+            "an engine check that is not mysql": lambda mysql: mysql["switch"].update(DB_EXPECTED_ENGINE="sqlite"),
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                config = switch(change)
+                with self.assertRaisesRegex(guard.Refused, "switch"):
+                    load(config, self.identity_for(config))
+
+    def test_switch_values_must_match_the_mysql_target(self):
+        for key, value in (("DB_CONNECTION", "sqlite"), ("DB_DATABASE", "repro_mysql_control"),
+                           ("DB_SOCKET", "/run/mysqld/mysqld.sock"), ("DB_USERNAME", "repro_maint"),
+                           ("REPRO_MYSQL_EXPECTED_SERVER_UUID", "0b6d3c52-7f43-4a3e-8f3f-3a6c1d2e4f50")):
+            with self.subTest(key=key):
+                config = example_config()
+                config["mysql"]["switch"][key] = value
+                with self.assertRaisesRegex(guard.Refused, "switch values must match the mysql target"):
+                    load(config)
+
+    def test_offsite_waiver_refused_outside_drill_mode(self):
+        config = example_config()
+        config["mysql"]["offsite_waiver"] = True
+        self.assertTrue(load(config)["mysql"]["offsite_waiver"], "the drill may waive the off-site evidence")
+        config["mysql"]["mode"] = "cutover"
+        with self.assertRaisesRegex(guard.Refused, "off-site waiver is allowed only in drill mode"):
+            load(config)
+        config["mysql"]["offsite_waiver"] = False
+        self.assertEqual("cutover", load(config)["mysql"]["mode"])
+
+    def test_queue_commands_must_run_as_www_data_with_umask_0022(self):
+        # The pause flags live in www-data's 0755 cache folders; the watchdog runs with UMask=0077, and a
+        # 0600 flag the deploy user's workers cannot read counts as "not paused" (design 5.1).
+        for verb in ("pause", "resume"):
+            php = f'exec /usr/bin/php artisan queue:{verb} "$1"'
+            other = "resume" if verb == "pause" else "pause"
+            accepted = [queue_command(verb), queue_command(verb, script=f"umask 0022 && cd /var/www/backend && {php}")]
+            refused = {
+                "as the deploy user": queue_command(verb, user="maverick"),
+                "as root": ["/bin/sh", "-c", f"cd /var/www/backend && umask 0022 && {php}", "repro-queue"],
+                "through sudo": ["/usr/bin/sudo", "-u", "www-data", "--", "/bin/sh", "-c",
+                                 f"umask 0022 && {php}", "repro-queue"],
+                "another runuser path": ["/sbin/runuser", *queue_command(verb)[1:]],
+                "without a shell": ["/usr/sbin/runuser", "-u", "www-data", "--", "/usr/bin/php",
+                                    "/var/www/backend/artisan", f"queue:{verb}"],
+                "no umask": queue_command(verb, script=f"cd /var/www/backend && {php}"),
+                "the watchdog's umask": queue_command(verb, script=f"umask 0077 && {php}"),
+                "umask 0002": queue_command(verb, script=f"umask 0002 && {php}"),
+                "umask after the command": queue_command(verb, script=f"{php} && umask 0022"),
+                "umask overridden": queue_command(verb, script=f"umask 0022 && umask 0077 && {php}"),
+                "umask overridden in one step": queue_command(verb, script=f"umask 0022; umask 0077 && {php}"),
+                "umask in a subshell": queue_command(verb, script=f"(umask 0022) && {php}"),
+                # A run before the umask would leave a 0600 flag that later runs do not re-mode.
+                "a command before the umask": queue_command(
+                    verb, script=f'/usr/bin/php /var/www/backend/artisan queue:{verb} "$1" && umask 0022 && {php}'),
+                "a command inside cd": queue_command(verb, script=f"cd $(/usr/bin/mktemp -d) && umask 0022 && {php}"),
+                "a relative cd": queue_command(verb, script=f"cd backend && umask 0022 && {php}"),
+                "not exec'd": queue_command(verb, script=f'umask 0022 && /usr/bin/php artisan queue:{verb} "$1"'),
+                "a umask inside the command": queue_command(
+                    verb, script=f"umask 0022 && exec /usr/bin/systemd-run --property=UMask=0077 --wait --pipe "
+                                 f'/usr/bin/php /var/www/backend/artisan queue:{verb} "$1"'),
+                "the other queue verb": queue_command(verb, script=f'umask 0022 && exec /usr/bin/php artisan '
+                                                                   f'queue:{other} "$1"'),
+                "the queue not passed as $1": queue_command(verb) + ["extra"],
+                "the queue not used": queue_command(verb, script=f"umask 0022 && exec /usr/bin/php artisan "
+                                                                 f"queue:{verb} database:default"),
+            }
+            for argv in accepted:
+                config = example_config()
+                config["commands"][f"queue_{verb}"] = argv
+                self.assertEqual(argv, load(config)["commands"][f"queue_{verb}"])
+            for name, argv in refused.items():
+                with self.subTest(verb=verb, case=name):
+                    config = example_config()
+                    config["commands"][f"queue_{verb}"] = argv
+                    with self.assertRaisesRegex(guard.Refused, "must run as www-data through runuser with umask 0022"):
+                        load(config)
+
+    def test_identity_config_must_describe_this_host(self):
+        config = example_config()
+        for key, value in (("app_root", "/var/www/backend-next"),
+                           ("sqlite_path", "/var/www/backend/database/copy.sqlite"),
+                           ("mysql_datadir", "/var/lib/mysql")):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(guard.Refused, "identity.json must describe this host"):
+                    load(config, {**example_identity(config), key: value})
+        # The denylist is checked in the file the identity probe reads, not in another copy.
+        for name, argv in (("another file", PYTHON + [f"{FENCE}/identity_probe.py", "--config", "/etc/other.json"]),
+                           ("no config argument", PYTHON + [f"{FENCE}/identity_probe.py"])):
+            with self.subTest(name):
+                changed = example_config()
+                changed["commands"]["identity"] = argv
+                with self.assertRaisesRegex(guard.Refused, "identity probe must read paths.identity_config"):
+                    load(changed)
+
+    def test_identity_example_file_agrees_with_the_example_host_config(self):
+        raw = (Path(__file__).resolve().parent / "identity.example.json").read_bytes()
+        identity = production.load_identity_config(raw)
+        config = example_config()
+        self.assertEqual(config, load(config, identity))
+        self.assertEqual(sorted(NIGHT_FLAGS + SWITCH_KEYS), sorted(identity["env_denylist"]))
 
 
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires Linux root, /proc and flock")
@@ -58,8 +451,16 @@ class ProductionAdapterTests(unittest.TestCase):
         self.boot = self.root / "boot-id"
         self.boot.write_text("2fb9e4be-f041-45a0-9055-8d3ed47f9857\n", encoding="ascii")
         self.log = self.root / "log" / "commands.jsonl"
+        # Queue commands run as www-data (runuser); every recorder appends to the same log.
+        self.log.touch(mode=0o644)
+        os.chown(self.log, 33, 33)
+        self.queue_recorder = self.root / "etc" / "record-queue.py"
+        self.queue_recorder.write_text(
+            "import json, sys\nlog, name, verb, queue = sys.argv[1:]\n"
+            "with open(log, 'a') as stream:\n    stream.write(json.dumps([name, queue]) + '\\n')\n", encoding="ascii")
         self.config_path = self.root / "etc" / "host.json"
         self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
+        (self.root / "etc" / "identity.json").write_text(json.dumps(example_identity(self.config())), encoding="utf-8")
         policy = {
             "version": 1, "machine_id_sha256": guard.sha256((self.root / "machine-id").read_bytes()),
             "identity": {**IDENTITY.__dict__}, "sqlite_live_config_sha256": "1" * 64, "mysql_live_config_sha256": "2" * 64,
@@ -72,42 +473,52 @@ class ProductionAdapterTests(unittest.TestCase):
         return [sys.executable, "-c",
                 "import json, sys; open(sys.argv[1], 'a').write(json.dumps(sys.argv[2:]) + '\\n')", str(self.log), name]
 
+    def record_queue(self, verb, name):
+        """The configured queue prefix form: www-data through runuser, umask 0022, the queue as `$1`."""
+        return queue_command(verb, script=f'umask 0022 && exec {sys.executable} -I -S {self.queue_recorder} '
+                                          f'{self.log} {name} queue:{verb} "$1"')
+
     def config(self, **overrides):
         root = self.root
-        return {
-            "version": 1,
-            "paths": {
-                "state": str(root / "state"), "policy": str(root / "etc" / "policy.json"),
-                "evidence": str(root / "run" / "verified-engine.json"),
-                "activation": str(root / "run" / "verified-activation.json"),
-                "machine_id": str(root / "machine-id"), "boot_id": str(self.boot),
-                "ingress_open": str(root / "ingress" / "open"), "deploy_marker": str(root / "etc" / "active"),
-                "scheduler_hold": str(root / "run" / "scheduler-hold.json"),
-                "sqlite_seal_record": str(root / "state" / "sqlite-seal.json"),
-            },
+        config = example_config()
+        # The host's own paths under this fixture; the MySQL-lane paths are not used by these tests.
+        config["paths"] = {
+            **{name: str(root / "state" / Path(value).name) for name, value in config["paths"].items()},
+            "state": str(root / "state"), "policy": str(root / "etc" / "policy.json"),
+            "evidence": str(root / "run" / "verified-engine.json"),
+            "activation": str(root / "run" / "verified-activation.json"),
+            "machine_id": str(root / "machine-id"), "boot_id": str(self.boot),
+            "ingress_open": str(root / "ingress" / "open"), "deploy_marker": str(root / "etc" / "active"),
+            "scheduler_hold": str(root / "run" / "scheduler-hold.json"),
+            "sqlite_seal_record": str(root / "state" / "sqlite-seal.json"),
+            "identity_config": str(root / "etc" / "identity.json"),
+        }
+        identity_probe = [sys.executable, "-c", f"print({json.dumps(json.dumps(IDENTITY.__dict__))})"]
+        config.update({
             "sqlite": str(self.database),
             "deploy_locks": [str(root / "home" / ".repro-backend-deploy.lock"),
                              str(root / "home" / ".repro-frontend-deploy.lock")],
             "deploy_owner": "www-data",
             "queues": QUEUES,
-            "commands": {
-                "identity": [sys.executable, "-c", f"print({json.dumps(json.dumps(IDENTITY.__dict__))})"],
-                "mysql": [sys.executable, "-c", "print('{\"writable\": false, \"business_activity\": false}')"],
-                "queue_pause": self.record("pause"), "queue_resume": self.record("resume"),
-                # '[f]ake' never matches this shell's own command line.
-                "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
-                                 self.record("stop")],
-                "start_workers": [self.record("start")],
-                "drain_fpm": [self.record("drain-fpm")],
-            },
             "writer_processes": [f"fake-queue-worker-{self.tag}", f"fake-studio-worker-{self.tag}"],
             "long_job_processes": [f"fake-studio-worker-{self.tag}"],
             "scheduler_processes": [f"fake-schedule-run-{self.tag}"],
             "command_seconds": 20,
             "options": {"max_drain_seconds": 5, "separate_freeze_approval": False, "adopt_external_hold": False,
-                        "require_long_job_predrain": True},
-            **overrides,
-        }
+                        "require_long_job_predrain": True, "unattended_reopen": False},
+        })
+        config["commands"].update({
+            # The probe reads the identity config the host config names (python -c ignores the extra arguments).
+            "identity": identity_probe + ["--config", config["paths"]["identity_config"]],
+            "mysql": [sys.executable, "-c", "print('{\"writable\": false, \"business_activity\": false}')"],
+            "queue_pause": self.record_queue("pause", "pause"), "queue_resume": self.record_queue("resume", "resume"),
+            # '[f]ake' never matches this shell's own command line.
+            "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
+                             self.record("stop")],
+            "start_workers": [self.record("start")],
+            "drain_fpm": [self.record("drain-fpm")],
+        })
+        return {**config, **overrides}
 
     def spawn(self, name, seconds=30):
         process = subprocess.Popen([f"{name}-{self.tag}", str(seconds)], executable="/bin/sleep")
@@ -122,7 +533,7 @@ class ProductionAdapterTests(unittest.TestCase):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
     def host(self):
-        loaded = production.load_config(self.config_path.read_bytes())
+        loaded = production.load_config(guard.read_protected(self.config_path), read=guard.read_protected)
         journal = Journal(Path(loaded["paths"]["state"]))
         adapter = production.ProductionAdapter(loaded, journal)
         return journal, adapter, production.runner_for(loaded, journal, adapter)
@@ -146,6 +557,30 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertIsNone(worker.poll(), "The hold must not stop workers; the drain does")
         with self.assertRaisesRegex(guard.Refused, "holds all admissions"):
             guard.authority(json.loads((self.root / "etc" / "policy.json").read_text()), state, "scheduler")
+
+    def test_queue_flags_are_www_data_0644_when_the_controller_runs_with_umask_0077(self):
+        # The watchdog unit runs with UMask=0077; runuser keeps it, so only the prefix's own umask gives the
+        # deploy user's workers a readable flag (an unreadable flag reads as "not paused").
+        flags = self.root / "flags"
+        flags.mkdir(mode=0o755)
+        os.chown(flags, 33, 33)
+        touch = self.root / "etc" / "touch-flag.py"
+        touch.write_text("import os, sys\nflags, verb, queue = sys.argv[1:]\n"
+                         "open(os.path.join(flags, verb + '-' + queue), 'w').close()\n", encoding="ascii")
+        config = self.config()
+        for verb in ("pause", "resume"):
+            config["commands"][f"queue_{verb}"] = queue_command(
+                verb, script=f'umask 0022 && exec {sys.executable} -I -S {touch} {flags} queue:{verb} "$1"')
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        previous = os.umask(0o077)
+        try:
+            journal, adapter, runner = self.started()
+            runner.perform("hold", runner.approval_request("hold"))
+        finally:
+            os.umask(previous)
+        for queue in QUEUES:
+            info = (flags / f"queue:pause-{queue}").stat()
+            self.assertEqual((33, 33, 0o644), (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)), queue)
 
     def test_long_job_worker_still_running_refuses_the_hold(self):
         journal, adapter, runner = self.started()
@@ -607,34 +1042,20 @@ class HostConfigQueueTests(unittest.TestCase):
 
     @staticmethod
     def config(queues):
-        command = ["/usr/bin/true"]
-        return json.dumps({
-            "version": 1,
-            "paths": {name: f"/run/host-config-test/{name}" for name in production.PATHS},
-            "sqlite": "/var/www/backend/database/database.sqlite",
-            "deploy_locks": ["/home/deploy/.repro-backend-deploy.lock", "/home/deploy/.repro-frontend-deploy.lock"],
-            "deploy_owner": "www-data",
-            "queues": queues,
-            "commands": {"identity": command, "mysql": command, "queue_pause": command, "queue_resume": command,
-                         "stop_workers": [command], "start_workers": [command], "drain_fpm": [command]},
-            "writer_processes": ["artisan queue:work"], "long_job_processes": ["artisan queue:work studio"],
-            "scheduler_processes": ["artisan schedule:run"], "command_seconds": 20,
-            "options": {"max_drain_seconds": 600, "separate_freeze_approval": False, "adopt_external_hold": False,
-                        "require_long_job_predrain": True},
-        }).encode()
+        return {**example_config(), "queues": queues}
 
     def test_every_production_queue_and_the_lab_tour_queue_are_accepted(self):
-        self.assertEqual(PRODUCTION_QUEUES, production.load_config(self.config(PRODUCTION_QUEUES))["queues"])
+        self.assertEqual(PRODUCTION_QUEUES, load(self.config(PRODUCTION_QUEUES))["queues"])
 
     def test_names_that_are_not_one_connection_and_one_queue_are_refused(self):
         # A leading hyphen would reach `queue:pause` as an option; a comma or a space would name
         # several queues or arguments; Laravel splits only the first colon.
         for queue in ("database", ":mail", "database:", "-database:mail", "--queue=x:mail", "1database:mail",
-                      "Database:mail", "database:Mail", "lab_tour:lab-tour", "database:mail,default",
+                      "Database:mail", "dataBase:mail", "database:Mail", "lab_tour:lab-tour", "database:mail,default",
                       "database:mail default", "database:mail:extra", "database:mail\n", "", 7):
             with self.subTest(queue=queue):
                 with self.assertRaisesRegex(guard.Refused, "connection:queue names"):
-                    production.load_config(self.config(["database:mail", queue]))
+                    load(self.config(["database:mail", queue]))
 
 
 class UnitFileTests(unittest.TestCase):

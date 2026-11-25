@@ -25,6 +25,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -44,9 +45,49 @@ NOT_SUPPORTED = "This adapter supports the SQLite hold, freeze and rollback only
 CHILD_TAG = "REPRO_CUTOVER_CHILD"
 POLL_SECONDS = 0.25
 PATHS = {"state", "policy", "evidence", "activation", "machine_id", "boot_id", "ingress_open", "deploy_marker",
-         "scheduler_hold", "sqlite_seal_record"}
-COMMANDS = {"identity", "mysql", "queue_pause", "queue_resume", "stop_workers", "start_workers", "drain_fpm"}
-OPTIONS = {"max_drain_seconds", "separate_freeze_approval", "adopt_external_hold", "require_long_job_predrain"}
+         "scheduler_hold", "sqlite_seal_record", "identity_config", "switch_record", "sealed_hash", "receipt",
+         "activity", "activated", "smoke_window", "evidence_inputs", "evidence_report", "unseal_proof",
+         "issued_approvals", "scheduler_release", "wrappers", "wrappers_sqlite", "wrappers_mysql", "retired",
+         "archive", "keep"}
+# One fixed argument list each; the adapter may append arguments.
+SINGLE_COMMANDS = {"identity", "mysql", "queue_pause", "queue_resume", "config_build", "fpm_start", "fpm_reload",
+                   "fpm_stop", "smoke_write", "telnyx_replay", "timer"}
+# Lists of fixed argument lists, run in order.
+COMMAND_LISTS = {"stop_workers", "start_workers", "drain_fpm", "smoke_readonly"}
+COMMANDS = SINGLE_COMMANDS | COMMAND_LISTS
+OPTIONS = {"max_drain_seconds", "separate_freeze_approval", "adopt_external_hold", "require_long_job_predrain",
+           "unattended_reopen"}
+# host.json (design 3.1): every key is required and no other key is accepted, so nothing is filled in silently.
+HOST_KEYS = {"version", "paths", "app_root", "app_owner", "app_group", "web_user", "sqlite", "deploy_locks",
+             "deploy_owner", "queues", "mysql", "fpm", "smoke", "studio_pause_files", "commands", "writer_processes",
+             "long_job_processes", "scheduler_processes", "command_seconds", "options"}
+MYSQL_KEYS = {"mode", "database", "control_database", "target_uuid", "datadir", "client", "socket", "probe_defaults",
+              "gate_defaults", "token_check_defaults", "gated_accounts", "lockable_accounts",
+              "activity_excluded_tables", "smoke_tables", "switch", "switch_secrets", "night_flags", "offsite_waiver"}
+FPM_KEYS = {"unit", "socket", "status_socket", "drain_seconds"}
+SMOKE_KEYS = {"client_id", "shoot_id"}
+# identity.json (design 1.1): the identity probe's own inputs.
+IDENTITY_CONFIG_KEYS = {"version", "run_id", "app_root", "sqlite_path", "mysql_datadir", "env_denylist"}
+MODES = ("drill", "cutover")
+RUN_ID = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+ACCOUNT = r"[a-z_][a-z0-9_-]{0,31}"
+ENV_KEY = r"[A-Z][A-Z0-9_]*"
+# Switch values go into .env unquoted: no spaces, quotes, `#`, `$` (dotenv interpolation) or control characters.
+ENV_VALUE = r"[A-Za-z0-9_.,/:@+-]+"
+SQL_NAME = r"[a-z][a-z0-9_]{0,63}"
+# The server listens on its socket only, so every account is @localhost.
+MYSQL_ACCOUNT = r"[a-z][a-z0-9_]{0,31}@localhost"
+SERVICE_UNIT = r"[A-Za-z0-9@._-]+\.service"
+# The switch (design 3.1): the route keys `prepare` writes into .env and `seal_sqlite` restores. Each one is
+# denylisted, so the switch never changes config_sha256; a key outside this list would hide its edits.
+SWITCH_ROUTE = {"DB_CONNECTION", "DB_DATABASE", "DB_SOCKET", "DB_USERNAME", "DB_COLLATION",
+                "REPRO_MYSQL_EXPECTED_SERVER_UUID"}
+# Switched as well once the engine-check and schema-cache branches are merged and the host config names them.
+SWITCH_OPTIONAL = {"DB_EXPECTED_ENGINE", "SCHEMA_CACHE_RELEASE"}
+# Read from root-only files, never written in host.json.
+SWITCH_SECRETS = {"DB_PASSWORD"}
+# The pause flags live in www-data's 0755 cache folders (design 5.1).
+QUEUE_PREFIX = ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c"]
 # Longest single host command the config may allow (command_seconds).
 MAX_COMMAND_SECONDS = 300
 
@@ -56,17 +97,117 @@ def _argv(value) -> bool:
         and Path(value[0]).is_absolute()
 
 
-def load_config(raw: bytes) -> dict:
+def _absolute(value) -> bool:
+    return isinstance(value, str) and Path(value).is_absolute()
+
+
+def _names(value, pattern: str, *, empty: bool = False) -> bool:
+    """A list of distinct strings that each match the pattern (non-empty unless `empty`)."""
+    return (isinstance(value, list) and (empty or bool(value))
+            and all(guard.matches(pattern, item) for item in value) and len(set(value)) == len(value))
+
+
+def _account(value) -> bool:
+    # Application commands never run as root (design 1).
+    return guard.matches(ACCOUNT, value) and value != "root"
+
+
+def switch_keys(config: dict) -> list[str]:
+    """Every .env key `prepare` writes and `seal_sqlite` restores: the switch and its secrets (DB_PASSWORD)."""
+    return sorted({*config["mysql"]["switch"], *config["mysql"]["switch_secrets"]})
+
+
+def env_denylist(config: dict) -> list[str]:
+    """The one identity.json env_denylist load_config accepts: the night flags plus the switch keys."""
+    return sorted({*config["mysql"]["night_flags"], *switch_keys(config)})
+
+
+def _queue_command(argv, verb: str) -> bool:
+    """`runuser -u www-data -- /bin/sh -c '... && umask 0022 && exec ... queue:<verb> "$1"' <name>`.
+
+    The watchdog runs with UMask=0077, which runuser keeps; a 0600 flag reads as "not paused" to the
+    deploy user's workers. So the final `exec` is the only command, and before it the script holds
+    one `umask 0022` and nothing else but plain `cd /path` steps. The adapter's `connection:queue`
+    argument becomes `$1`.
+    """
+    if not (_argv(argv) and len(argv) == len(QUEUE_PREFIX) + 2 and argv[:len(QUEUE_PREFIX)] == QUEUE_PREFIX):
+        return False
+    *before, command = argv[len(QUEUE_PREFIX)].split(" && ")
+    return (before.count("umask 0022") == 1
+            and all(step == "umask 0022" or re.fullmatch(r"cd /[A-Za-z0-9_./-]*", step) for step in before)
+            and command.startswith("exec ") and command.endswith(f' queue:{verb} "$1"')
+            and "umask" not in command.lower())
+
+
+def load_identity_config(raw: bytes) -> dict:
+    """Check the shape of identity.json; load_config checks it against the host config."""
+    identity = guard.read_json(raw)
+    guard.require(identity.keys() == IDENTITY_CONFIG_KEYS and guard.matches(RUN_ID, identity["run_id"])
+                  and all(_absolute(identity[name]) for name in ("app_root", "sqlite_path", "mysql_datadir"))
+                  and _names(identity["env_denylist"], ENV_KEY),
+                  "identity.json must hold run_id, app_root, sqlite_path, mysql_datadir and env_denylist")
+    return identity
+
+
+def _check_mysql(mysql) -> None:
+    guard.require(isinstance(mysql, dict) and mysql.keys() == MYSQL_KEYS,
+                  "Host config mysql keys are incomplete or unknown")
+    guard.require(mysql["mode"] in MODES, "Host config mysql mode must be drill or cutover")
+    guard.require(type(mysql["offsite_waiver"]) is bool, "Host config offsite_waiver must be true or false")
+    guard.require(guard.matches(SQL_NAME, mysql["database"]) and guard.matches(SQL_NAME, mysql["control_database"])
+                  and mysql["database"] != mysql["control_database"] and guard.valid_uuid(mysql["target_uuid"])
+                  and all(_absolute(mysql[name]) for name in ("datadir", "client", "socket", "probe_defaults",
+                                                              "gate_defaults", "token_check_defaults")),
+                  "Host config mysql target, client or defaults files are invalid")
+    guard.require(_names(mysql["gated_accounts"], MYSQL_ACCOUNT)
+                  and _names(mysql["lockable_accounts"], MYSQL_ACCOUNT, empty=True)
+                  and not set(mysql["gated_accounts"]) & set(mysql["lockable_accounts"]),
+                  "Host config mysql accounts are invalid")
+    guard.require(_names(mysql["activity_excluded_tables"], SQL_NAME, empty=True)
+                  and _names(mysql["smoke_tables"], SQL_NAME),
+                  "Host config mysql tables are invalid")
+    switch, secrets = mysql["switch"], mysql["switch_secrets"]
+    guard.require(isinstance(switch, dict) and all(guard.matches(ENV_KEY, key) and guard.matches(ENV_VALUE, value)
+                                                   for key, value in switch.items())
+                  and isinstance(secrets, dict) and all(guard.matches(ENV_KEY, key) and _absolute(value)
+                                                        for key, value in secrets.items())
+                  and _names(mysql["night_flags"], ENV_KEY, empty=True),
+                  "Host config switch keys, secrets or night flags are invalid")
+    guard.require(SWITCH_ROUTE <= switch.keys() <= SWITCH_ROUTE | SWITCH_OPTIONAL and secrets.keys() == SWITCH_SECRETS
+                  and not set(mysql["night_flags"]) & (switch.keys() | secrets.keys())
+                  and ("DB_EXPECTED_ENGINE" not in switch or switch["DB_EXPECTED_ENGINE"] == "mysql"),
+                  "Host config switch must hold the route keys and the app password only")
+    guard.require(switch["DB_CONNECTION"] == "mysql" and switch["DB_DATABASE"] == mysql["database"]
+                  and switch["DB_SOCKET"] == mysql["socket"]
+                  and switch["REPRO_MYSQL_EXPECTED_SERVER_UUID"] == mysql["target_uuid"]
+                  and f'{switch["DB_USERNAME"]}@localhost' in mysql["gated_accounts"],
+                  "Host config switch values must match the mysql target and a gated account")
+    guard.require(not mysql["offsite_waiver"] or mysql["mode"] == "drill",
+                  "The off-site waiver is allowed only in drill mode")
+
+
+def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
+    """Check host.json and the identity.json it names; refuse anything missing, unknown or malformed.
+
+    `read(path)` returns a file's bytes. The CLI passes guard.read_protected, so identity.json gets
+    the same root-only check as host.json.
+    """
     config = guard.read_json(raw)
+    guard.require(config.keys() == HOST_KEYS, "Host config keys are incomplete or unknown")
     paths, commands, options = config.get("paths"), config.get("commands"), config.get("options")
     guard.require(isinstance(paths, dict) and paths.keys() == PATHS
                   and all(isinstance(value, str) and Path(value).is_absolute() for value in paths.values()),
                   "Host config paths are incomplete")
     guard.require(isinstance(commands, dict) and commands.keys() == COMMANDS
-                  and all(_argv(commands[name]) for name in ("identity", "mysql", "queue_pause", "queue_resume"))
+                  and all(_argv(commands[name]) for name in SINGLE_COMMANDS)
                   and all(isinstance(commands[name], list) and all(map(_argv, commands[name]))
-                          for name in ("stop_workers", "start_workers", "drain_fpm")),
+                          for name in COMMAND_LISTS)
+                  # An empty list would skip the read-only smoke without saying so.
+                  and bool(commands["smoke_readonly"]),
                   "Host config commands must be fixed absolute argument lists")
+    guard.require(_queue_command(commands["queue_pause"], "pause")
+                  and _queue_command(commands["queue_resume"], "resume"),
+                  "Queue commands must run as www-data through runuser with umask 0022")
     guard.require(isinstance(config.get("sqlite"), str) and Path(config["sqlite"]).is_absolute()
                   and isinstance(config.get("deploy_locks"), list) and len(config["deploy_locks"]) == 2
                   and all(isinstance(lock, str) and Path(lock).is_absolute() for lock in config["deploy_locks"])
@@ -87,6 +228,31 @@ def load_config(raw: bytes) -> dict:
                   and type(options["max_drain_seconds"]) is int and 0 < options["max_drain_seconds"] <= 45 * 60
                   and all(type(options[name]) is bool for name in OPTIONS - {"max_drain_seconds"}),
                   "Host config timing or owner options are invalid")
+    guard.require(_absolute(config["app_root"]) and all(_account(config[name])
+                                                        for name in ("app_owner", "app_group", "web_user")),
+                  "Host config app root or accounts are invalid")
+    _check_mysql(config["mysql"])
+    fpm, smoke = config["fpm"], config["smoke"]
+    guard.require(isinstance(fpm, dict) and fpm.keys() == FPM_KEYS and guard.matches(SERVICE_UNIT, fpm["unit"])
+                  and _absolute(fpm["socket"]) and _absolute(fpm["status_socket"])
+                  and type(fpm["drain_seconds"]) is int and 0 < fpm["drain_seconds"] <= MAX_COMMAND_SECONDS,
+                  "Host config fpm unit, sockets or drain_seconds are invalid")
+    guard.require(isinstance(smoke, dict) and smoke.keys() == SMOKE_KEYS
+                  and all(type(smoke[name]) is int and smoke[name] > 0 for name in SMOKE_KEYS),
+                  "Host config smoke records must be the marked test client and shoot IDs")
+    guard.require(isinstance(config["studio_pause_files"], list)
+                  and all(_absolute(path) for path in config["studio_pause_files"])
+                  and len(set(config["studio_pause_files"])) == len(config["studio_pause_files"]),
+                  "Host config studio_pause_files must be absolute paths")
+    # The denylist is checked in the very file the identity probe reads.
+    guard.require(commands["identity"][-2:] == ["--config", paths["identity_config"]],
+                  "The identity probe must read paths.identity_config")
+    identity = load_identity_config(read(Path(paths["identity_config"])))
+    guard.require((identity["app_root"], identity["sqlite_path"], identity["mysql_datadir"])
+                  == (config["app_root"], config["sqlite"], config["mysql"]["datadir"]),
+                  "identity.json must describe this host's app root, SQLite file and MySQL datadir")
+    guard.require(sorted(identity["env_denylist"]) == env_denylist(config),
+                  "identity.json env_denylist must equal the night flags plus the switch keys")
     return config
 
 
