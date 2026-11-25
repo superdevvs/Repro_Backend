@@ -1047,9 +1047,10 @@ nothing; each still needs its own approval.
   `CACHE_DRIVER`, the Laravel 10 name, which this release never reads. If
   the answer is `database`, the flags sit in the SQLite `cache` table.
   Then a rollback from `frozen` runs `queue_pause` again (adapter
-  `close_admissions`) before it unseals SQLite, against the sealed file,
-  and fails on every watchdog tick; and a switch of `DB_CONNECTION` moves
-  the flags to MySQL. Open: confirm `file`, or change the store, or change
+  `close_admissions`) before it unseals SQLite. Run as the deploy user,
+  that write to the sealed file fails, on every watchdog tick; run as root,
+  it writes the sealed file. A switch of `DB_CONNECTION` also moves the
+  flags to MySQL. Open: confirm `file`, or change the store, or change
   the rollback order, before W1.
 - OPcache in FPM: `grep -rhE 'opcache\.(enable|validate_timestamps|revalidate_freq)' /etc/php/8.3/fpm/`
   and the FPM unit name: `systemctl list-units --all 'php*-fpm*'`. This
