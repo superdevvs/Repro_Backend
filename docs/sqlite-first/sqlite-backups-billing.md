@@ -121,7 +121,8 @@ retention and compression with an error, and nothing is deleted.
   out, also after the flag is switched off. Removing the file touches the
   bundle folder, so an old bundle is then kept 14 more days before it goes.
 - `tiered_retention`: keep the newest 5 bundles, plus one per day for 14 days
-  (that day's newest verified bundle, else its newest). These are still kept as
+  (that day's newest verified bundle, else its newest that holds a database,
+  else its newest). These are still kept as
   before: the newest bundle, the newest verified bundle, the newest bundle that
   holds a database, future labels, and old labels touched in the last 14 days.
   Backend bundles with no database file become removable too.

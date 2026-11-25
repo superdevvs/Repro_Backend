@@ -125,6 +125,15 @@ class RetentionTest(unittest.TestCase):
         self.run_retention(policy='tiered')
         self.assertTrue(with_database.exists())
 
+    def test_tiered_day_without_a_verified_bundle_keeps_one_that_holds_a_database(self):
+        for age in range(1, 6):
+            self.bundle(age)
+        with_database = self.bundle(10, suffix=3600)
+        source_only = self.bundle(10, database=None)
+        self.run_retention(policy='tiered')
+        self.assertTrue(with_database.exists())
+        self.assertFalse(source_only.exists())
+
     def test_tiered_policy_keeps_future_and_recently_touched_old_labels(self):
         future = self.bundle(-2)
         old = self.bundle(30)

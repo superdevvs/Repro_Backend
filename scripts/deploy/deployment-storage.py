@@ -162,7 +162,8 @@ def kept_bundles(bundles, now, policy):
         keep.update(item['path'] for item in bundles if item['stamp'] >= cutoff or item['mtime'] >= cutoff)
         return keep
     # Tiered: the newest five, plus one per day inside the 14-day window. A
-    # day's newest verified bundle wins over a newer unverified one.
+    # day's newest verified bundle wins over a newer unverified one; without
+    # one, its newest bundle that holds a database wins over a source-only one.
     with_database = [item for item in bundles if item['database']]
     if with_database:
         keep.add(newest(with_database))
@@ -176,7 +177,8 @@ def kept_bundles(bundles, now, policy):
         elif item['stamp'] >= cutoff:
             days.setdefault(datetime.fromtimestamp(item['stamp']).date(), []).append(item)
     for items in days.values():
-        keep.add(([item for item in items if item['success']] or items)[0]['path'])
+        keep.add(([item for item in items if item['success']]
+                  or [item for item in items if item['database']] or items)[0]['path'])
     return keep
 
 
