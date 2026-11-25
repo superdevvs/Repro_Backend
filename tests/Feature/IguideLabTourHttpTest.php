@@ -857,8 +857,12 @@ class IguideLabTourHttpTest extends TestCase
         $configuration['url'] = null;
         $configuration['prefix'] = '';
         // The test's own wrapper transaction holds the writer token. A second
-        // connection that waited for it would wait for its own process.
+        // connection that waited for it would wait for its own process. In the
+        // application the loader's transaction takes the token, so no writer can
+        // commit between its queries; without the token here, a snapshot read
+        // gives the loader the same single view, as SQLite's does.
         $configuration['repro_writer_policy'] = false;
+        $configuration['isolation_level'] = 'REPEATABLE READ';
         config(['database.connections.tour_snapshot_writer' => $configuration,
             'database.connections.tour_snapshot' => array_replace($configuration, ['prefix' => $prefix])]);
         DB::purge('tour_snapshot_writer');
