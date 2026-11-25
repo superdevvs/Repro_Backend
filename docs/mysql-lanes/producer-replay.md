@@ -56,7 +56,14 @@ production needs its own approval.
    `php artisan aryeo:connection "<name>" --record-state=/private/aryeo-<date>.json --pause`.
    The file is new, mode 0600, holds no secret, and records `enabled`,
    `processing_enabled`, `discover_all_clients`, `delivery_shoot_ids` and
-   `client_ids` with a digest.
+   `client_ids` with a digest. The pause turns off job claims (so no Aryeo
+   action starts) and email-less discovery. Like `--disable-processing`, it
+   leaves request sync on: heartbeats, discovery with a requester email,
+   inventory and provider status still write. Those are re-sent by the agent
+   and are safe before the copy; during the freeze itself the writer freeze
+   (admission closed before Laravel) stops every HTTP write, these included.
+   Then check that no Aryeo job is still leased (Tours panel) before the
+   freeze.
 2. Set `CRM_OUTBOUND_HOLD=true` and `CRM_DEFER_REPLY_FORWARDING=true`, rebuild
    the config cache, and confirm both booleans in the effective config.
 3. Hold the website recruiting scheduler (website change P2-05 below). Do not

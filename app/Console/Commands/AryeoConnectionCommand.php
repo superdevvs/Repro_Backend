@@ -10,7 +10,7 @@ class AryeoConnectionCommand extends Command
 {
     protected $signature = 'aryeo:connection {name} {--company=} {--clients=} {--token-file=} {--enable-processing} {--allow-shoots=} {--disable-processing} {--enable-discovery} {--disable-discovery} {--revoke}
         {--record-state= : Write the current settings to this new private file (freeze)}
-        {--pause : With --record-state, then turn processing and discovery off}
+        {--pause : With --record-state, then turn off processing (job claims, so no Aryeo action starts) and email-less discovery}
         {--resume-processing= : Restore exactly the settings recorded in this file}';
 
     protected $description = 'Provision or rotate a client-scoped Aryeo worker credential without printing secrets';
@@ -97,7 +97,13 @@ class AryeoConnectionCommand extends Command
         return self::SUCCESS;
     }
 
-    /** Freeze: write the settings to a new 0600 file, then optionally pause. No secret is written. */
+    /**
+     * Freeze: write the settings to a new 0600 file, then optionally pause. No
+     * secret is written. The pause stops job claims, so no Aryeo action starts;
+     * like --disable-processing it leaves request sync (heartbeat, discovery
+     * with a requester email, inventory) on. HTTP writes during the freeze are
+     * stopped by the writer freeze (admission closed before Laravel).
+     */
     private function record(?AryeoConnection $connection, string $path, bool $pause): int
     {
         if (! $connection) {
@@ -128,7 +134,11 @@ class AryeoConnectionCommand extends Command
         if ($pause) {
             $connection->forceFill(['processing_enabled' => false, 'discover_all_clients' => false])->save();
         }
-        $this->info('Settings recorded'.($pause ? ' and the agent paused.' : '.').' Resume with --resume-processing='.$path);
+        $this->info('Settings recorded'.($pause ? '; job claims and email-less discovery are off.' : '.').' Resume with --resume-processing='.$path);
+        if ($pause) {
+            // Like --disable-processing: request sync stays on. The writer freeze stops HTTP writes.
+            $this->line('Request sync and heartbeats continue; check that no Aryeo job is still leased before the freeze.');
+        }
 
         return self::SUCCESS;
     }

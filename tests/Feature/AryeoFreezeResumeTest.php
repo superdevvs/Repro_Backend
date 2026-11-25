@@ -126,6 +126,30 @@ class AryeoFreezeResumeTest extends TestCase
         }
     }
 
+    /**
+     * What the pause guarantees for the freeze: the worker cannot claim a job,
+     * so no Aryeo action starts. Request synchronization (heartbeat, discovery
+     * with a requester email, inventory) continues by design; HTTP writes in
+     * the freeze itself are stopped by the writer freeze, not by this command.
+     */
+    public function test_a_paused_worker_cannot_claim_a_job_and_the_command_says_what_continues(): void
+    {
+        $token = 'synthetic-aryeo-worker-token-'.str_repeat('0', 16);
+        $this->connection->update(['token_hash' => hash('sha256', $token), 'last_seen_at' => now(),
+            'capabilities' => ['processing_mode' => 'dashboard_jobs', 'shoot_executor' => true]]);
+        $claim = fn () => $this->withHeader('Authorization', 'Bearer '.$token)->postJson('/api/integrations/aryeo/v1/jobs/claim',
+            ['claim_id' => (string) Str::uuid(), 'lease_token' => 'synthetic-lease-token-'.str_repeat('1', 16)]);
+        $claim()->assertOk()->assertJsonPath('job', null);
+
+        $this->artisan('aryeo:connection', ['name' => 'Studio Mac', '--record-state' => $this->directory.'/aryeo-state.json', '--pause' => true])
+            ->expectsOutputToContain('Request sync and heartbeats continue')->assertSuccessful();
+
+        $claim()->assertStatus(409);
+        $this->withHeader('Authorization', 'Bearer '.$token)->postJson('/api/integrations/aryeo/v1/heartbeat',
+            ['processing_mode' => 'dashboard_jobs', 'shoot_executor' => true, 'inventory_refresh' => true, 'version' => 'test'])
+            ->assertOk()->assertJsonPath('processing_enabled', false);
+    }
+
     public function test_api_webhook_redelivered_with_a_fresh_signature_is_recorded_once(): void
     {
         $client = User::factory()->create(['role' => 'client']);
