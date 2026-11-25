@@ -95,6 +95,39 @@ PHP;
         ], $rules);
     }
 
+    public function test_scanner_reads_string_literals_the_way_php_does(): void
+    {
+        // The database receives the decoded string, so escaped quotes must not hide DATE('now').
+        $source = <<<'PHP'
+<?php
+$q->whereRaw('DATE(due_date) < DATE(\'now\')');
+$q->whereRaw("DATE(due_date) < DATE(\"now\")");
+$q->whereRaw("DATE(due_date) < DATE(\x27now\x27)");
+$q->whereRaw("DATE(due_date) < DATE(\"now\") AND id = {$id}");
+$q->whereRaw(<<<SQL
+    DATE(due_date) < DATE(\x27now\x27)
+    SQL);
+$message = 'It\'s now or never, isn\'t it?';
+$pattern = '/\\\\(now\\\\)/';
+$q->whereRaw(<<<'SQL'
+    note = 'DATE(\x27now\x27)'
+    SQL);
+PHP;
+
+        $rules = array_map(
+            fn (array $finding) => $finding['line'].':'.$finding['rule'],
+            DatabaseDialectScanner::scanSource($source, 'fixture.php'),
+        );
+
+        $this->assertEqualsCanonicalizing([
+            '2:sqlite-date-function',
+            '3:sqlite-date-function',
+            '4:sqlite-date-function',
+            '5:sqlite-date-function',
+            '7:sqlite-date-function',
+        ], $rules);
+    }
+
     public function test_compare_reports_new_and_stale_entries_with_counts(): void
     {
         $finding = ['file' => 'app/A.php', 'line' => 3, 'rule' => 'json-each', 'text' => 'x'];

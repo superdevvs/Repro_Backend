@@ -94,6 +94,8 @@ final class DatabaseDialectScanner
         // Name of the function or method each open bracket belongs to (null for other brackets).
         $calls = [];
         $previous = null;
+        // Inside a nowdoc (<<<'X') the text is taken as written; a heredoc decodes escapes.
+        $nowdoc = false;
 
         foreach (token_get_all($source) as $token) {
             $before = $previous;
@@ -112,6 +114,12 @@ final class DatabaseDialectScanner
             }
             [$id, $text, $line] = $token;
 
+            if ($id === T_START_HEREDOC) {
+                $nowdoc = str_contains($text, "'");
+            } elseif ($id === T_END_HEREDOC) {
+                $nowdoc = false;
+            }
+
             if ($id === T_STRING && preg_match(self::BRANCH_IDENTIFIERS, $text)) {
                 if (! (is_array($before) && $before[0] === T_FUNCTION)) {
                     $branchLines[$line] = true;
@@ -120,9 +128,11 @@ final class DatabaseDialectScanner
                 continue;
             }
 
-            $literal = match ($id) {
-                T_CONSTANT_ENCAPSED_STRING => substr($text, 1, -1),
-                T_ENCAPSED_AND_WHITESPACE => $text,
+            // Decode the literal as PHP does, so the scan sees the SQL the database receives.
+            $literal = match (true) {
+                $id === T_CONSTANT_ENCAPSED_STRING && $text[0] === "'" => self::decodeSingleQuoted(substr($text, 1, -1)),
+                $id === T_CONSTANT_ENCAPSED_STRING => self::decodeDoubleQuoted(substr($text, 1, -1)),
+                $id === T_ENCAPSED_AND_WHITESPACE => $nowdoc ? $text : self::decodeDoubleQuoted($text),
                 default => null,
             };
             if ($literal === null) {
@@ -154,6 +164,30 @@ final class DatabaseDialectScanner
             'rule' => $hit[1],
             'text' => mb_substr(preg_replace('/\s+/', ' ', trim($lines[$hit[0] - 1] ?? '')), 0, 300),
         ], $hits);
+    }
+
+    /** A single-quoted PHP string body: only \\ and \' are escapes. */
+    private static function decodeSingleQuoted(string $body): string
+    {
+        return (string) preg_replace('/\\\\([\\\\\'])/', '$1', $body);
+    }
+
+    /** A double-quoted or heredoc PHP string body, with PHP's escape sequences. */
+    private static function decodeDoubleQuoted(string $body): string
+    {
+        $simple = ['n' => "\n", 'r' => "\r", 't' => "\t", 'v' => "\v", 'e' => "\e", 'f' => "\f", '\\' => '\\', '$' => '$', '"' => '"'];
+
+        return (string) preg_replace_callback(
+            '/\\\\(?:u\{([0-9A-Fa-f]+)\}|x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|([nrtvef\\\\$"]))/',
+            static fn (array $m) => match (true) {
+                $m[1] !== null => (string) mb_chr((int) hexdec($m[1]), 'UTF-8'),
+                $m[2] !== null => chr((int) hexdec($m[2])),
+                $m[3] !== null => chr(octdec($m[3]) & 0xFF),
+                default => $simple[$m[4]],
+            },
+            $body,
+            flags: PREG_UNMATCHED_AS_NULL,
+        );
     }
 
     /**
