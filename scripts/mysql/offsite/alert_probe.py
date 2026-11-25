@@ -6,6 +6,10 @@ the app database (read-only), the MySQL monitor socket, web and app logs, and
 backup or rehearsal receipts. alert_bridge.py forwards the statuses to the
 alert provider. Thresholds come from alert-conditions.json beside this file.
 No status, output or error contains a secret, a row value or a .env value.
+
+Where the writer hold is installed, the cutover journal decides which engine is
+authoritative and whether a held site is inside an approved hold. The probe
+reads it through the view cutover_view.py writes, and the nginx open marker.
 """
 from __future__ import annotations
 
@@ -35,7 +39,24 @@ PLAN_FIELDS = {
     "version", "inbox_dir", "memory_file", "conditions", "app_root", "expected_engine", "sqlite_database",
     "mysql", "disks", "access_logs", "laravel_log", "cache_dir", "cache_group_writable", "money_queries",
     "money_baseline_file", "binlog_checkpoint_file", "binlog_dir", "restore_receipts", "rehearsal_receipts",
+    "cutover",
 }
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+VIEW_SCHEMA = "repro.alert.cutover-view.v1"  # Written by cutover_view.py.
+WORD = re.compile(r"[a-z][a-z_]{0,31}")
+# Cutover phases (scripts/cutover/runner.py). SQLite stays authoritative until the promotion.
+HELD_PHASES = {"holding", "frozen", "ready"}
+SQLITE_PHASES = {"planned", "sqlite_authoritative"} | HELD_PHASES
+MYSQL_PHASES = {"writes_possible", "mysql_authoritative"}
+# After the hold, until the reopen, the site may stay held within the write-outage limit.
+AFTER_HOLD_PHASES = {"sqlite_authoritative"} | MYSQL_PHASES
+# Sessions that have held the writer token (taken at BEGIN, MySqlWriterToken) at least {limit} seconds,
+# as in `php artisan db:writer-token-holders`. Needs PROCESS and SELECT on performance_schema.data_locks.
+TOKEN_HOLDERS = ("SELECT COUNT(DISTINCT t.trx_id), COALESCE(MAX(TIMESTAMPDIFF(SECOND, t.trx_started, NOW())), 0) "
+                 "FROM performance_schema.data_locks l JOIN information_schema.INNODB_TRX t "
+                 "ON t.trx_id = l.ENGINE_TRANSACTION_ID WHERE l.OBJECT_SCHEMA = 'repro_mysql_control' "
+                 "AND l.OBJECT_NAME = 'writer_token' AND l.LOCK_TYPE = 'RECORD' AND l.LOCK_STATUS = 'GRANTED' "
+                 "AND TIMESTAMPDIFF(SECOND, t.trx_started, NOW()) >= {limit}")
 ACCESS_LINE = re.compile(rb'\[(\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\] "[^"]*" (\d{3}) ')
 CACHE_ERROR = re.compile(rb"storage/framework/cache.*(Permission denied|No space left|Read-only file system|"
                          rb"Failed to open stream|Unable to create)", re.IGNORECASE)
@@ -56,14 +77,30 @@ def need(condition: bool, reason: str) -> None:
         raise Refusal(reason)
 
 
-def load_conditions(path: Path = CONDITIONS_FILE) -> dict:
+def load_conditions(path: Path = CONDITIONS_FILE, *, extra: bool = False) -> dict:
+    """The readiness gate's conditions; with extra=True also the conditions outside that gate."""
     record = json.loads(path.read_bytes())
     need(isinstance(record, dict) and record.get("schema") == "repro.alert.conditions.v1"
-         and isinstance(record.get("conditions"), dict), "invalid alert conditions file")
-    for name, item in record["conditions"].items():
+         and isinstance(record.get("conditions"), dict) and isinstance(record.get("extra_conditions", {}), dict),
+         "invalid alert conditions file")
+    chosen = dict(record["conditions"]) | (record.get("extra_conditions", {}) if extra else {})
+    for name, item in chosen.items():
         need(isinstance(item, dict) and set(item) == {"class", "delivery_limit_seconds", "source", "threshold"}
              and isinstance(item["threshold"], dict), "invalid alert condition " + name)
-    return record["conditions"]
+    return chosen
+
+
+def load_hold_limits(path: Path = CONDITIONS_FILE) -> dict:
+    """The cutover plan's limits: decision deadline and write outage from the hold, and the view's age."""
+    limits = json.loads(path.read_bytes()).get("cutover_hold")
+    need(isinstance(limits, dict) and set(limits) == {"decision_deadline_seconds", "max_write_outage_seconds",
+                                                      "max_view_age_seconds"}
+         and all(type(value) is int and value > 0 for value in limits.values()), "invalid cutover hold limits")
+    return limits
+
+
+def read_boot_id() -> str:
+    return BOOT_ID.read_text(encoding="ascii").strip()
 
 
 @dataclass
@@ -73,7 +110,10 @@ class Context:
     mysql_query: Callable[[str], list[list[str]]] | None = None
     disk_stats: Callable[[str], tuple[int, int, bool]] | None = None
     memory: dict = field(default_factory=dict)
-    conditions: dict = field(default_factory=load_conditions)
+    conditions: dict = field(default_factory=lambda: load_conditions(extra=True))
+    hold: dict = field(default_factory=load_hold_limits)
+    boot_id: Callable[[], str] = read_boot_id
+    cache: dict = field(default_factory=dict)
 
     def threshold(self, condition: str) -> dict:
         return self.conditions[condition]["threshold"]
@@ -83,7 +123,7 @@ def parse_plan(raw: bytes) -> dict:
     need(0 < len(raw) <= 64 * 1024, "invalid probe plan size")
     plan = json.loads(raw)
     need(isinstance(plan, dict) and set(plan) == PLAN_FIELDS and plan["version"] == 1, "unexpected probe plan fields")
-    conditions = load_conditions()
+    conditions = load_conditions(extra=True)
     chosen = plan["conditions"]
     need(isinstance(chosen, list) and chosen and len(set(chosen)) == len(chosen)
          and all(name in DETECTORS and conditions.get(name, {}).get("source") in ("probe-host", "probe-backup")
@@ -97,6 +137,10 @@ def parse_plan(raw: bytes) -> dict:
     mysql = plan["mysql"]
     need(mysql is None or (isinstance(mysql, dict) and {"client", "defaults_file", "socket"} <= set(mysql)
                            <= {"client", "defaults_file", "socket", "database"}), "invalid MySQL monitor settings")
+    cutover = plan["cutover"]
+    need(cutover is None or (isinstance(cutover, dict) and set(cutover) == {"view_file", "ingress_open"}
+                             and all(isinstance(value, str) and Path(value).is_absolute() for value in cutover.values())),
+         "cutover needs absolute view_file and ingress_open paths")
     required = {
         "database_down": ["sqlite_database" if plan["expected_engine"] == "sqlite" else "mysql"],
         "disk_nearly_full": ["disks"], "server_error_rate": ["access_logs"],
@@ -105,6 +149,7 @@ def parse_plan(raw: bytes) -> dict:
         "cache_write_failed": ["cache_dir", "laravel_log"], "mysql_restarted": ["mysql"],
         "database_contention": ["mysql"], "backup_lag": ["binlog_checkpoint_file", "binlog_dir"],
         "restore_overdue": ["restore_receipts"], "rehearsal_failed": ["rehearsal_receipts"],
+        "site_held": ["cutover"], "writer_token_held_too_long": ["mysql"],
     }
     for name in chosen:
         for item in required.get(name, []):
@@ -229,6 +274,158 @@ def app_engine(plan: dict) -> tuple[str, str]:
     return cached_engine(raw), "cached config"
 
 
+@dataclass
+class Cutover:
+    """What this boot shows of the cutover: the journal view (None if unusable), the boot, the nginx marker."""
+    view: dict | None
+    problem: str
+    boot: str
+    site_open: bool
+    reopened_at: int | None
+    ingress_folder: bool
+
+
+def valid_view(record: object) -> bool:
+    if not (isinstance(record, dict) and record.get("schema") == VIEW_SCHEMA
+            and type(record.get("observed_unix_s")) is int and isinstance(record.get("boot_id"), str)
+            and record.get("journal") in ("absent", "present", "unreadable")):
+        return False
+    if record["journal"] != "present":
+        return True
+    return (isinstance(record.get("run_id"), str) and isinstance(record.get("phase"), str)
+            and WORD.fullmatch(record["phase"]) is not None and type(record.get("writes_possible")) is bool
+            and (record.get("started_at") is None or type(record["started_at"]) is int)
+            and (record.get("pending_action") is None or isinstance(record["pending_action"], str))
+            and (record.get("hold_boot_id") is None or isinstance(record["hold_boot_id"], str)))
+
+
+def read_view(path: Path, now: int, boot: str, max_age: int) -> tuple[dict | None, str]:
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(64 * 1024 + 1)
+    except FileNotFoundError:
+        return None, "the cutover view is missing"
+    except OSError:
+        return None, "the cutover view is unreadable"
+    try:
+        record = json.loads(raw) if len(raw) <= 64 * 1024 else None
+    except (ValueError, UnicodeError):
+        record = None
+    if not valid_view(record):
+        return None, "the cutover view is invalid"
+    if record["boot_id"] != boot:
+        return None, "the cutover view is from another boot"
+    if not -60 <= now - record["observed_unix_s"] <= max_age:
+        return None, "the cutover view is stale"
+    return record, ""
+
+
+def cutover_state(context: Context) -> Cutover | None:
+    """None when the probe plan has no cutover section (no writer hold on this host)."""
+    settings = context.plan["cutover"]
+    if settings is None:
+        return None
+    if "cutover" not in context.cache:
+        boot = context.boot_id()
+        view, problem = read_view(Path(settings["view_file"]), context.now, boot, context.hold["max_view_age_seconds"])
+        marker = Path(settings["ingress_open"])
+        try:
+            reopened_at, site_open = int(os.stat(marker).st_mtime), True  # nginx tests -f, following links.
+        except FileNotFoundError:
+            reopened_at, site_open = None, False
+        context.cache["cutover"] = Cutover(view, problem, boot, site_open, reopened_at, marker.parent.is_dir())
+    return context.cache["cutover"]
+
+
+def authoritative_engine(context: Context) -> str:
+    """The engine the cutover journal makes authoritative; the plan's value only where no writer hold exists."""
+    state = cutover_state(context)
+    if state is None:
+        return context.plan["expected_engine"]
+    view = state.view
+    if view is None:
+        raise DetectorError("authoritative engine unknown: " + state.problem)
+    if view["journal"] == "unreadable":
+        raise DetectorError("authoritative engine unknown: the cutover journal is unreadable")
+    if view["journal"] == "absent":
+        if state.ingress_folder:
+            raise DetectorError("authoritative engine unknown: the writer hold has no cutover journal")
+        return context.plan["expected_engine"]
+    if view["phase"] in SQLITE_PHASES:
+        return "sqlite"
+    if view["phase"] in MYSQL_PHASES:
+        return "mysql"
+    raise DetectorError("authoritative engine unknown in cutover phase " + view["phase"])
+
+
+def data_engine(context: Context) -> str:
+    """The database the data detectors read: the authoritative one, else the one the app is set to.
+
+    An unknown authority already pages through wrong_database_engine."""
+    if "data_engine" not in context.cache:
+        try:
+            engine = authoritative_engine(context)
+        except DetectorError:
+            try:
+                engine = app_engine(context.plan)[0]
+            except (OSError, DetectorError):
+                engine = None
+            if engine not in ("sqlite", "mysql"):
+                engine = context.plan["expected_engine"]
+        context.cache["data_engine"] = engine
+    return context.cache["data_engine"]
+
+
+def hold_verdict(context: Context) -> tuple[bool, str]:
+    """Whether a held site is inside an approved cutover hold of this boot and within the plan's limits."""
+    state = cutover_state(context)
+    view = state.view
+    if view is None:
+        return False, "cutover state unknown: " + state.problem
+    if view["journal"] == "absent":
+        return False, "site held with no cutover journal"
+    if view["journal"] == "unreadable":
+        return False, "site held: the cutover journal is unreadable"
+    phase, started = view["phase"], view["started_at"]
+    same_boot = view["hold_boot_id"] == state.boot
+    if phase in ("planned", "sqlite_authoritative") and (started is None or not same_boot):
+        return False, "site held after a reboot or an unfinished reopen: run cli.py refresh, then cli.py reopen"
+    if phase == "recovery_required":
+        return False, "site held: the cutover needs verified recovery"
+    if started is None or phase not in HELD_PHASES | AFTER_HOLD_PHASES:
+        return False, f"site held in cutover phase {phase} with no approved hold"
+    if not same_boot:
+        return False, f"cutover hold ({phase}) survived a reboot"
+    age = context.now - started
+    limit = context.hold["decision_deadline_seconds" if phase in HELD_PHASES else "max_write_outage_seconds"]
+    if age < 0:
+        return False, "cutover hold starts in the future: the host clock moved"
+    if age >= limit:
+        return False, f"cutover hold ({phase}) is {age // 60} min old, over its {limit // 60} min limit"
+    return True, f"approved cutover hold ({phase}), {age // 60} of {limit // 60} min"
+
+
+def hold_in_force(context: Context) -> bool:
+    state = cutover_state(context)
+    return state is not None and not state.site_open and hold_verdict(context)[0]
+
+
+def hold_span(context: Context) -> tuple[int, int] | None:
+    """Seconds in which nginx held the site for a cutover hold of this boot, up to the write-outage limit."""
+    state = cutover_state(context)
+    if state is None or state.view is None or state.view["journal"] != "present":
+        return None
+    started = state.view["started_at"]
+    if started is None or state.view["hold_boot_id"] != state.boot or started > context.now:
+        return None
+    end = min(context.now, started + context.hold["max_write_outage_seconds"])
+    if state.site_open:
+        if state.reopened_at is None or state.reopened_at < started:
+            return None
+        end = min(end, state.reopened_at)  # The reopen writes the open marker.
+    return started, end
+
+
 def file_stamp(path: Path) -> tuple:
     info = os.stat(path)
     return info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
@@ -279,13 +476,13 @@ def mysql_rows(context: Context, sql: str) -> list[list[str]]:
 
 
 def app_rows(context: Context, sql: str) -> list:
-    if context.plan["expected_engine"] == "sqlite":
+    if data_engine(context) == "sqlite":
         return [list(row) for row in sqlite_rows(context.plan, sql)]
     return mysql_rows(context, sql)
 
 
 def database_down(context: Context) -> tuple[str, str]:
-    if context.plan["expected_engine"] == "sqlite":
+    if data_engine(context) == "sqlite":
         # SELECT 1 never reads the file; the schema read proves the header and pages open.
         rows = sqlite_rows(context.plan, "SELECT COUNT(*) FROM sqlite_master")
         healthy = bool(rows) and isinstance(rows[0][0], int) and rows[0][0] > 0
@@ -296,7 +493,11 @@ def database_down(context: Context) -> tuple[str, str]:
 
 
 def wrong_database_engine(context: Context) -> tuple[str, str]:
-    (engine, source), expected = app_engine(context.plan), context.plan["expected_engine"]
+    expected = authoritative_engine(context)
+    engine, source = app_engine(context.plan)
+    if engine != expected and engine in ("sqlite", "mysql") and hold_in_force(context):
+        # No writer is admitted on either engine while the hold lasts; the reopen checks again.
+        return "ok", f"app set to {engine} inside the approved cutover hold; {expected} is authoritative"
     if source == "cached config":
         if engine != expected:
             return "fail", f"app runs on {engine[:16]} (cached config), expected {expected}"
@@ -328,7 +529,9 @@ def tail(path: Path, limit: int) -> bytes:
 def server_error_rate(context: Context) -> tuple[str, str]:
     limits = context.threshold("server_error_rate")
     start = context.now - limits["window_seconds"]
-    total = errors = 0
+    total = errors = held = 0
+    # nginx answers 503 to every request while an approved cutover hold holds the site; those are not faults.
+    span = hold_span(context)
     for name in context.plan["access_logs"]:
         # After logrotate the window also spans the previous file (delaycompress keeps it plain).
         for path, rotated in ((Path(name + ".1"), True), (Path(name), False)):
@@ -341,9 +544,14 @@ def server_error_rate(context: Context) -> tuple[str, str]:
             for match in ACCESS_LINE.finditer(chunk):
                 moment = dt.datetime.strptime(match.group(1).decode(), "%d/%b/%Y:%H:%M:%S %z").timestamp()
                 if start <= moment <= context.now + 60:
+                    status = int(match.group(2))
+                    if span is not None and status == 503 and span[0] <= moment <= span[1]:
+                        held += 1
+                        continue
                     total += 1
-                    errors += 500 <= int(match.group(2)) <= 599
+                    errors += 500 <= status <= 599
     detail = f"{errors} of {total} requests failed in {limits['window_seconds'] // 60} min"
+    detail += f"; {held} held by the cutover" if held else ""
     if total >= limits["min_requests"] and errors * 100 > limits["max_percent"] * total:
         return "fail", detail
     return "ok", detail
@@ -513,6 +721,29 @@ def newest_receipt(context: Context, settings: dict, condition: str) -> tuple[st
     return "ok", f"latest passing receipt is {age // 3600} h old"
 
 
+def site_held(context: Context) -> tuple[str, str]:
+    """nginx holds the site while the open marker is missing. Only an approved hold of this boot within the
+    plan's limits is expected; any other held site, including one after a reboot, pages."""
+    state = cutover_state(context)
+    if state.site_open:
+        return "ok", "site open"
+    if state.view is not None and state.view["journal"] == "absent" and not state.ingress_folder:
+        return "ok", "writer hold not installed"
+    expected, detail = hold_verdict(context)
+    return ("ok" if expected else "fail"), detail
+
+
+def writer_token_held_too_long(context: Context) -> tuple[str, str]:
+    if authoritative_engine(context) != "mysql":
+        return "ok", "SQLite is authoritative; there is no writer token"
+    limit = int(context.threshold("writer_token_held_too_long")["max_hold_seconds"])
+    rows = mysql_rows(context, TOKEN_HOLDERS.format(limit=limit))
+    count, oldest = int(rows[0][0]), int(rows[0][1])
+    if count:
+        return "fail", f"{count} session{'s' if count != 1 else ''} held the writer token over {limit} s (oldest {oldest} s)"
+    return "ok", f"no session held the writer token over {limit} s"
+
+
 DETECTORS: dict[str, Callable[[Context], tuple[str, str]]] = {
     "database_down": database_down,
     "wrong_database_engine": wrong_database_engine,
@@ -526,6 +757,8 @@ DETECTORS: dict[str, Callable[[Context], tuple[str, str]]] = {
     "backup_lag": backup_lag,
     "restore_overdue": lambda context: newest_receipt(context, context.plan["restore_receipts"], "restore_overdue"),
     "rehearsal_failed": lambda context: newest_receipt(context, context.plan["rehearsal_receipts"], "rehearsal_failed"),
+    "site_held": site_held,
+    "writer_token_held_too_long": writer_token_held_too_long,
 }
 
 
