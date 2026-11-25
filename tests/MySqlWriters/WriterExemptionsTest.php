@@ -165,15 +165,16 @@ final class WriterExemptionsTest extends TestCase
         $calls = 0;
         $started = microtime(true);
 
+        // Row 2: the holder never touches it, so only the token can make this wait.
         LockedWrite::run(function () use (&$calls) {
             $calls++;
-            DB::table('_writer_policy_probe')->where('id', 1)->increment('counter');
+            DB::table('_writer_policy_probe')->where('id', 2)->increment('counter');
         }, 'writer-policy-test');
 
         $this->assertSame(1, $calls);
         $this->assertGreaterThanOrEqual(4.5, microtime(true) - $started);
         $this->assertSame('held', $this->workerResult($holder)['result']);
-        $this->assertSame(2, $this->counter());
+        $this->assertSame([1, 1], [$this->counter(1), $this->counter(2)]);
     }
 
     public function test_locked_write_never_retries_a_lock_timeout_after_the_token(): void
