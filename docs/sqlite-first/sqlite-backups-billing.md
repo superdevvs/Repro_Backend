@@ -155,7 +155,7 @@ Selections checked:
 | `sales_rep_invoices` | Weekly sales-rep invoices (commission per shoot) | First-day shoots stored as a bare date |
 | `sales_rep_payout_report` | Weekly sales-rep payout report | Same |
 | `photographer_compensations` | Weekly photographer payouts, complimentary-reshoot pay | First-day lines whose `earned_at` is a bare date (the app normally stores a time) |
-| `sales_rep_compensations` | Weekly sales-rep invoices, compensation lines | Same |
+| `sales_rep_compensations` | Weekly sales-rep invoices, complimentary-reshoot compensation lines | Same |
 | `complimentary_reshoot_report` | Complimentary-reshoot summary in the payout report | Last-day shoots stored with a time |
 
 Photographer pay for normal shoots is selected with `whereDate`, which is

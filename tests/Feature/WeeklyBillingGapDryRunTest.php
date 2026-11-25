@@ -95,8 +95,11 @@ class WeeklyBillingGapDryRunTest extends TestCase
             'standard_shoot' => $this->compensation($standard, ShootCompensation::RECIPIENT_PHOTOGRAPHER, $photographer, '2026-10-04'),
         ];
         $repPay = [
-            'bare_first_day' => $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-04'),
-            'datetime_mid_week' => $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00'),
+            'bare_first_day' => $this->compensation($reshoot, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-04'),
+            'datetime_mid_week' => $this->compensation($reshoot, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-06 09:15:00'),
+            // Sales-rep pay on a standard shoot never becomes a weekly line either,
+            // so a fixed date comparison would not bill it: not a gap.
+            'standard_shoot' => $this->compensation($standard, ShootCompensation::RECIPIENT_SALES_REP, $rep, '2026-10-04'),
         ];
 
         $report = $this->dryRun();
@@ -105,12 +108,25 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $this->assertSame(['selected_now' => 2, 'selected_date_correct' => 3, 'skipped' => 1, 'selected_only_by_text' => 0], $selections['photographer_compensations']);
         $this->assertSame(['selected_now' => 1, 'selected_date_correct' => 2, 'skipped' => 1, 'selected_only_by_text' => 0], $selections['sales_rep_compensations']);
         $skipped = collect($report['skipped'])->keyBy('selection');
+        $this->assertCount(1, collect($report['skipped'])->where('selection', 'sales_rep_compensations'));
         $this->assertSame($photographerPay['bare_first_day']->id, $skipped['photographer_compensations']['record_id']);
         $this->assertSame('compensation', $skipped['photographer_compensations']['record_type']);
         $this->assertSame($reshoot->id, $skipped['photographer_compensations']['shoot_id']);
         $this->assertSame($photographer->id, $skipped['photographer_compensations']['recipient_id']);
         $this->assertSame($repPay['bare_first_day']->id, $skipped['sales_rep_compensations']['record_id']);
         $this->assertSame('2026-10-04', $skipped['sales_rep_compensations']['stored_value']);
+
+        // The real sales-rep run writes a compensation line for exactly the
+        // record the report calls "selected now".
+        $invoices = app(InvoiceService::class)->generateSalesRepInvoicesForPeriod(
+            Carbon::parse('2026-10-04'),
+            Carbon::parse('2026-10-10'),
+        );
+        $this->assertSame(
+            [$repPay['datetime_mid_week']->id],
+            InvoiceItem::whereIn('invoice_id', $invoices->pluck('id'))->whereNotNull('shoot_compensation_id')
+                ->pluck('shoot_compensation_id')->map(fn ($id) => (int) $id)->all(),
+        );
     }
 
     public function test_complimentary_report_skips_last_day_shoots_stored_with_a_time(): void

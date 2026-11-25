@@ -76,9 +76,11 @@ final class WeeklyBillingGapAudit
                     ->whereHas('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)),
                 'earned_at', [$start, $end], $dates, 'shoot_id', 'recipient_user_id', $compensationLines,
             ),
-            // InvoiceService::generateSalesRepInvoicesForPeriod, compensation lines.
+            // InvoiceService::generateSalesRepInvoicesForPeriod, compensation lines. Only
+            // complimentary-reshoot pay becomes a line (buildSalesRepCompensationRow).
             'sales_rep_compensations' => $this->compare(
-                $this->compensations(ShootCompensation::RECIPIENT_SALES_REP),
+                $this->compensations(ShootCompensation::RECIPIENT_SALES_REP)
+                    ->whereHas('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)),
                 'earned_at', [$start, $end], $dates, 'shoot_id', 'recipient_user_id', $compensationLines,
             ),
             // PayoutReportService::buildComplimentaryReshootSummary, the branch without scheduled_at.
