@@ -336,6 +336,7 @@ class UnitFileTests(unittest.TestCase):
         self.assertEqual(unit["ExecStart"][0].split(), media["argv"])
         self.assertEqual((unit["User"][0], unit["Group"][0], unit["UMask"][0]), (media["user"], media["group"], media["umask"]))
 
+    @unittest.skipUnless(os.name == "posix", "The wrapper reads POSIX accounts")
     def test_every_example_profile_is_valid_and_every_cron_rule_has_a_profile(self):
         import admit
 

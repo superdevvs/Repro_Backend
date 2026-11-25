@@ -1,0 +1,221 @@
+# Writer hold lane (H1 to H7)
+
+Branch `claude/writer-hold-20261125`, based on `a6e799bb` (draft PR 46 head).
+Local work only: nothing was pushed, deployed or run against production.
+Production still uses SQLite. This lane closes the gap recorded in the
+readiness doc: an external pre-close left the journal in `planned` with no
+outage clock and no watchdog recovery.
+
+Integrators: fold the "Runbook text" section into
+`docs/mysql-production-cutover.md` ("Freeze all writers") and the "Readiness
+text" section into `docs/mysql-production-readiness.md` (replacing the
+paragraph that starts "The Runner currently takes the exclusive operator
+lease").
+
+## What changed
+
+| Item | Change | Where |
+| --- | --- | --- |
+| H1 | Controllers (runner, watchdog tick, authority refresh) serialize on `controller.lock`. Writers share `operator.lock`. A controller takes the writer lock exclusively only to drain writers, by polling within a bounded time, and keeps it to the end of its lease. A tick waits up to 50 s for another controller. | `runner.py`, `fence/guard.py` |
+| H2 | New approved `hold` action: the first journaled step. It writes `holding`, `started_at` and a pending hold (hold ID, boot ID) before any host effect, then closes admissions. `freeze` starts from `holding`, stops workers, drains every admitted writer (at most 10 min, configurable), then holds the scheduler and seals SQLite. An interrupted hold can be retried. Rollback works from `holding`. | `runner.py`, `rehearse.py` |
+| H3 | `tick` in a held phase re-closes admissions after a crash or reboot and re-drains the scheduler under the new boot; at 45 min from the hold it rolls back. Production CLI (`hold`, `freeze`, `tick`, `abort`, `refresh`, `reopen`, ...), host adapter and a root systemd watchdog service and 1-minute timer. | `production/cli.py`, `production/adapter.py`, `production/systemd/` |
+| H4 | The test that pinned the gap is replaced by `test_external_pre_close_is_refused_or_adopted_with_clock`. New runner, guard, refresh and Linux process tests (list below). | `test_runner.py`, `fence/test_*.py`, `test_process_contract.py` |
+| H5 | Host fixture holds first, with an admitted slow writer in flight, server-level nginx hold from the production include, direct `.php` webhook routes, and a recovery scenario that kills the runner mid-drain, restarts nginx and FPM and lets the watchdog roll back. | `host/rehearse.py`, `host/prewrite-fastcgi.py`, `host/probe.php`, `host/run-local.ps1` |
+| H6 | Root admission wrapper for Supervisor, cron and systemd writers; media-archives drop-in; Supervisor and sudoers templates; cron rewriter; nginx server-level include; deploy-fence publisher under both deploy locks; SQLite seal. | `production/` |
+| H7 | Runbook and README text (below and in the READMEs). | this file, `scripts/cutover/**/README.md` |
+
+## Runbook text: freeze all writers (hold first)
+
+Maintenance mode alone is not a writer freeze. The approved hold replaces the
+old order (drain, then pause, then stop, with no journal).
+
+**Before the hold, no outage.**
+
+1. 7:45 pm: pause Studio with its documented pause file; let its job finish.
+2. 9:20 pm: pause the long-job queues with `queue:pause`:
+   `studio:studio`, `database:media-archives`, `database:default`,
+   `database:integrations`, `database:watermarks`. Wait for their running
+   jobs, then stop those workers. The hold refuses while a long-job worker
+   still runs (`require_long_job_predrain`, on by default).
+3. 9:50 pm: preflight as before (no call in progress, Aryeo recorded and
+   paused, no upload in flight).
+
+**The hold: the outage clock starts here.**
+
+4. Approval 1, "start freeze". The operator writes the approval from
+   `cli.py approval-template --phase hold` to a root-owned 0600 file and runs
+   `cli.py hold --approval FILE`. The journal records phase `holding`,
+   `started_at` and the pending hold before anything changes. Then:
+   - the nginx open marker `/run/repro-cutover-ingress/open` is removed, so
+     both vhosts answer 503 with `Retry-After: 30` at server level, including
+     `/cubicasa_webhook.php` and `/iguide_webhook.php`;
+   - `/etc/repro-database-cutover/active` is published under both deploy
+     locks, so no deploy is between its check and its changes;
+   - all nine queues are paused;
+   - the guard refuses every new admission (web, queue, scheduler, deploy).
+   Writers admitted earlier keep running and keep their shared lease.
+
+**Drain and freeze.**
+
+5. `cli.py freeze` stops the worker groups, drains PHP-FPM, waits until no
+   writer process remains and every admitted lease is released (at most 10
+   minutes), waits for running scheduled commands, then seals SQLite:
+   checkpoint, empty WAL, no write bits. If the drain does not finish, the
+   run stays `holding` with admissions closed. Use `cli.py abort`, or let the
+   watchdog roll back.
+6. Data steps as in the cutover runbook. This lane's adapter refuses
+   `prepare` and `promote`; it covers the hold, the freeze and the pre-write
+   rollback only.
+
+**Watchdog.** `repro-cutover-watchdog.timer` runs `cli.py tick` every minute
+from boot. In a held phase it closes admissions again if a reboot or a
+restart reopened them, and re-drains the scheduler under the new boot. At 45
+minutes from the hold it rolls back to SQLite. All deadlines count from the
+hold, so the drain uses the same 60-minute outage budget.
+
+**Undo.** `cli.py abort` (or the watchdog) re-closes admissions, drains,
+unseals SQLite and publishes boot-bound SQLite authority. `cli.py reopen`
+verifies that authority through the guard, resumes the queues, starts the
+workers, recreates the open marker, writes the activation receipt and lifts
+the deploy fence. After any reboot, run `cli.py refresh` first.
+
+## Readiness text
+
+**Writer hold: implemented and tested locally, not installed.** The
+approved hold is now the first journaled step and starts the outage clock.
+A second lock lets the runner journal it while earlier writers still hold
+their shared lease; the freeze then waits for them. The watchdog closes
+admissions again after a crash or reboot, before and after the handoff from
+`holding` to `frozen`, and rolls back to SQLite 45 minutes after the hold.
+An admission closed outside the journal is refused, not silently ignored.
+Local evidence: runner, guard and refresh tests, Linux process tests with a
+real already-admitted writer and a runner killed with SIGKILL, and the
+private nginx/PHP-FPM fixture (results below). Production installation (W1)
+and a production or staging drill with real services and a reboot (W2)
+remain, each with its own approval. Keep production on SQLite.
+
+## Evidence
+
+All runs were local and offline. Linux tests ran as root in a disposable
+`repro-mysql-rehearsal-qa:20261122` container with `--network none`.
+
+| Suite | Command | Result |
+| --- | --- | --- |
+| Runner state machine (Windows) | `python -B -m unittest discover -s scripts/cutover -p test_runner.py` | 42 passed |
+| Guard (Windows) | `python -B -m unittest discover -s scripts/cutover/fence -p test_guard.py` | 20 passed, 3 Linux-only skipped |
+| All Linux suites | `scripts/cutover/run-linux-tests.sh` in the container | runner 42, guard 20, process contract 6, admission wrapper 6, fences 7, adapter and CLI 14, root-only refresh 10; all passed, none skipped |
+
+New tests that prove the hold. They were written before the code; the
+runner, refresh, wrapper, fence and adapter tests were run and seen failing
+before their implementation. On the base commit `hold` does not exist, so
+none of them can pass there.
+
+- `test_runner.py`: `test_hold_is_first_journaled_step_and_starts_outage_clock`,
+  `test_external_pre_close_is_refused_or_adopted_with_clock`,
+  `test_crash_after_hold_intent_before_close_rolls_back_on_tick`,
+  `test_crash_during_drain_after_hold_rolls_back_at_45_minutes_from_hold`,
+  `test_freeze_deadline_counts_from_hold_not_freeze`,
+  `test_reboot_during_hold_reasserts_hold_and_redrains_scheduler`,
+  `test_crash_after_journal_handoff_from_holding_to_frozen`,
+  `test_reboot_after_handoff_to_frozen_redrains_scheduler_before_prepare`,
+  `test_hold_retry_is_idempotent`, `test_hold_approval_binds_challenge_and_expires`,
+  `test_separate_freeze_approval_binds_the_hold`,
+  `test_abort_from_holding_reopens_only_sqlite`,
+  `test_drain_timeout_keeps_admissions_closed`,
+  `test_long_job_queues_must_be_predrained_before_the_hold`, and four lock
+  tests (`test_admitted_writer_does_not_block_a_planned_watchdog_tick`,
+  `test_second_controller_is_refused_while_writers_stay_admitted`,
+  `test_drain_writers_waits_for_admitted_writer_then_excludes_new_ones`,
+  `test_watchdog_tick_waits_for_the_controller_lock`).
+- `test_process_contract.py` (real processes and flock):
+  `test_already_admitted_wrapper_drains_after_hold_and_new_admissions_refused`,
+  `test_runner_killed_mid_drain_is_recovered_by_the_watchdog` (SIGKILL),
+  `test_watchdog_tick_waits_for_controller_lock`,
+  `test_drain_under_refused_admission_load`.
+- `fence/test_guard.py`: `test_holding_and_pending_hold_refuse_every_admission`;
+  `fence/test_refresh.py`: `test_holding_journal_revokes_old_evidence_without_probing`,
+  `test_running_controller_blocks_refresh_and_leaves_evidence_untouched`
+  (confirmed failing against the base guard).
+- `production/test_admit.py`: profile user, group, umask and directory; held
+  journal runs nothing (exit 75); shell, PHP `exec` and `proc_open`
+  background jobs keep the lease after the command exits; SIGTERM forwarding;
+  timeout.
+- `production/test_fences.py`: the deploy marker waits for a deploy inside
+  either lock and then the exact Deploy-App lines exit 95; the SQLite seal
+  refuses owner writes and restores modes, including companions created
+  during the seal; cron rewriting keeps schedule, output and markers and
+  refuses unknown application lines.
+- `production/test_adapter.py`: hold, long-job refusal, freeze with worker
+  and scheduler drain, a writer that never stops (hold kept, watchdog rolls
+  back), abort and ordered reopen, reboot during hold, reboot in `planned`
+  then `refresh` and `reopen`, CLI flows, unit files and example profiles.
+
+Writer starvation under the polling exclusive lock, measured in
+`test_drain_under_refused_admission_load` on 2 CPUs: with 1, 4 and 8
+processes looping refused admission checks (about 4,500 to 10,500 refused
+checks per round), the drain got the writer lock in 0 to 1 ms in every run.
+
+**Host fixture runs (H5): not yet executed.** The code is committed and
+checked (`py_compile`, `php -l`, Pint), but `run-local.ps1` refused to start
+twice by its own device guard: Windows had 0.5 to 1.9 GB free while other
+lanes were running, and the guard requires 2.3 GB. Run both scenarios when
+the machine has headroom, from this branch, with fresh evidence folders:
+
+```powershell
+$params = @{
+    LockedVendorArchive = '<lock-matched dev vendor .tar.gz>'
+    PinnedPyMySqlWheel = 'C:/Users/shubh/.codex/mysql-rehearsal-runtime-20261122/pymysql-1.1.2-py3-none-any.whl'
+    ResourcePrefix = 'writer-hold-dress'
+}
+./scripts/cutover/host/run-local.ps1 @params -Scenario prewrite-fastcgi -EvidenceDirectory <fresh-1>
+./scripts/cutover/host/run-local.ps1 @params -Scenario prewrite-fastcgi-recovery -EvidenceDirectory <fresh-2>
+```
+
+Expected report fields: `hold_to_drained_ms`, `admitted_writer_in_flight_at_hold`,
+`slow_write_effects_in_snapshot: 1`, the per-host and per-layer 503 matrix
+including `cubicasa_direct` and `iguide_direct`, and for the recovery run
+`runner_killed_mid_drain`, `restarts_while_held`, `watchdog_rollback:
+sqlite_authoritative` and `hold_to_watchdog_rollback_ms`.
+
+## Owner decisions
+
+The code implements the safe default and makes each a config value.
+
+| Decision | Default | Config |
+| --- | --- | --- |
+| O1: one approval for hold and freeze, or separate approvals | One approval ("start freeze") covers both | `separate_freeze_approval` |
+| O1: an admission closed outside the journal | Refused loudly; never adopted | `adopt_external_hold` |
+| O1: who signs approvals | Root-owned 0600 approval file written by the operator after the owner's typed approval; no cryptographic signature | none yet |
+| O2: long workers versus the outage clock | Plan default: long-job queues paused and drained before the hold (9:20 pm) | `require_long_job_predrain`, `max_drain_seconds` (600) |
+| Reopen after a reboot | Manual `refresh` then `reopen`; nothing reopens at boot | none (manual) |
+| Smoke-test bypass of the nginx hold | None; the map default stays 1 | `repro-cutover-gate.conf` |
+
+## What is left
+
+- W1 (needs approval per action): install guard, controller, wrappers,
+  watchdog units, nginx include, sudoers, Supervisor and cron changes on the
+  host; then observe 24 to 48 hours in `planned` (C1).
+- W2 (needs a window): drill with real services, an in-flight request and
+  job, restarts and a reboot.
+- The production identity and MySQL probes and an independent live
+  configuration probe are host commands still to be written; `refresh` and
+  the authority proof copy the SQLite live-configuration pin from the policy.
+- The activation receipt sets `application_verified` without an application
+  check; add a smoke command before W2.
+- The Supervisor template must be reconciled with the live
+  `laravel-worker.conf` and the user `supervisord.conf` before W1.
+
+## Risks
+
+- Linux flock has no writer preference. The drain polls every 10 ms.
+  Measured in the fixture with 1, 4 and 8 processes looping refused checks
+  (about 5,000 to 10,000 refused checks per round, 2 CPUs): the drain got the
+  lock in 0 to 1 ms every time. During a real hold, nginx answers 503 before
+  PHP, so refused checks come only from restarting wrappers and cron.
+- Installing the wrappers changes how live workers start even in `planned`.
+  A guard fault, or a reboot without `refresh`, holds every writer and the
+  site (fail closed). It needs on-call cover.
+- Root ignores file modes, so the SQLite seal does not stop root-run tools.
+- `direct-webhook` evidence: behind a stale open marker, the PHP gate holds
+  the write but the file has already answered 200, so the event is lost.
+  Only the nginx server-level hold protects those two files.
