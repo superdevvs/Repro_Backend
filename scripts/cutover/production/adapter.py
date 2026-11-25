@@ -332,6 +332,20 @@ class ProductionAdapter:
             sqlite_writable=observed.sqlite_writable, mysql_writable=observed.mysql_writable,
         )
 
+    def refresh(self) -> None:
+        """Publish current-boot authority evidence for a committed planned or terminal journal.
+
+        Reopening a completed SQLite rollback lifted the deploy fence. After a
+        later reboot the host must be sealed again before it is measured, so
+        the fence is published again first; reopen lifts it once activation is
+        verified. Publishing the fence only ever holds deploys.
+        """
+        state = self.journal.read()
+        if state is not None and state.get("phase") == "sqlite_authoritative" and state.get("pending") is None:
+            deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,
+                                  self.config["command_seconds"], owner=self.owner)
+        guard.refresh_engine_evidence(self.host_authority)
+
     def reopen(self) -> None:
         """Reopen SQLite writers in order once the guard accepts the committed SQLite authority.
 

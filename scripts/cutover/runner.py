@@ -617,8 +617,11 @@ class Runner:
                 if action == "tick":
                     return state
                 raise UnsafeCutover("MySQL writes may exist. Use separately verified recovery")
+            # A reboot after a reopened rollback closes ingress again (/run is empty)
+            # while the deploy fence stays lifted; SQLite is still the only writable engine.
             if (phase == "sqlite_authoritative" and state["writes_possible"] is False
-                    and state["pending"] is None and (before.sealed("sqlite") or before.sqlite_live())):
+                    and state["pending"] is None
+                    and (before.sealed("sqlite") or before.sqlite_live() or before.externally_held())):
                 if action in {"tick", "abort"}:
                     return state
                 raise UnsafeCutover("Completed SQLite rollback cannot be re-run")

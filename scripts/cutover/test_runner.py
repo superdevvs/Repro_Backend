@@ -476,6 +476,28 @@ class CutoverTest(unittest.TestCase):
         self.assertTrue(self.adapter.observe().sqlite_live())
         self.assertFalse(self.adapter.observe().mysql_writable)
 
+    def test_reboot_after_reopened_rollback_keeps_sqlite_authority_for_the_watchdog(self):
+        self.freeze()
+        self.runner.perform("abort")
+        self.adapter.reopen()
+        # A reboot empties /run: ingress is closed, wrapped writers are refused,
+        # and the deploy fence stays lifted. SQLite is still the only writable engine.
+        self.reboot(admissions_open=False, workers_stopped=True)
+        for _ in range(2):
+            self.now += 60
+            state = self.new_runner().perform("tick")
+            self.assertEqual(("sqlite_authoritative", False, None),
+                             (state["phase"], state["writes_possible"], state["pending"]))
+        self.assertEqual("sqlite_authoritative", self.journal.read()["phase"])
+        with self.assertRaisesRegex(UnsafeCutover, "cannot be re-run"):
+            self.new_runner().perform("hold")
+        # A read-only SQLite still cannot be verified as the authority.
+        self.reboot(admissions_open=False, workers_stopped=True, sqlite_writable=False)
+        self.now += 60
+        with self.assertRaisesRegex(UnsafeCutover, "could not be verified"):
+            self.new_runner().perform("tick")
+        self.assertEqual("recovery_required", self.journal.read()["phase"])
+
     def test_drain_timeout_keeps_admissions_closed(self):
         hold_at = self.hold()["started_at"]
         with self.admitted_writer():

@@ -270,6 +270,38 @@ class ProductionAdapterTests(unittest.TestCase):
             guard.verify(policy, journal.path.read_bytes(), json.dumps(evidence).encode(), **host,
                          action="deploy", expected_engine="sqlite")
 
+    def test_reboot_after_reopened_rollback_ticks_refreshes_and_reopens(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        runner.perform("abort")
+        adapter.reopen()
+        self.assertFalse((self.root / "etc" / "active").exists())
+        # A reboot empties /run: no open marker, no authority proof, no activation receipt.
+        (self.root / "ingress" / "open").unlink()
+        for record in (self.root / "run").iterdir():
+            record.unlink()
+        rebooted = "6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11"
+        self.boot.write_text(rebooted + "\n", encoding="ascii")
+
+        code, ticked = self.cli("tick")
+        self.assertEqual(0, code)
+        self.assertEqual(("sqlite_authoritative", False), (ticked["state"]["phase"], ticked["state"]["writes_possible"]))
+        code, refreshed = self.cli("refresh")
+        self.assertEqual(0, code)
+        self.assertEqual("sqlite_authoritative", refreshed["state"]["phase"])
+        self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
+        self.assertEqual(0, self.cli("reopen")[0])
+        self.assertTrue((self.root / "ingress" / "open").exists())
+        self.assertFalse((self.root / "etc" / "active").exists())
+        policy = (self.root / "etc" / "policy.json").read_bytes()
+        evidence = (self.root / "run" / "verified-engine.json").read_bytes()
+        activation = (self.root / "run" / "verified-activation.json").read_bytes()
+        guard.verify(policy, journal.path.read_bytes(), evidence,
+                     machine_sha=guard.sha256((self.root / "machine-id").read_bytes()), boot_id=rebooted,
+                     action="deploy", expected_engine="sqlite", activation_raw=activation)
+        self.assertEqual("sqlite_authoritative", journal.read()["phase"])
+
     def test_cli_refuses_a_config_that_differs_from_the_installed_guard_paths(self):
         self.started()
         self.assertEqual(0, self.cli("status")[0])

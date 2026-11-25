@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "refresh":
             # Current-boot authority for a committed planned or terminal journal, for example after a
             # reboot. It takes both locks without waiting and refuses while a controller runs.
-            guard.refresh_engine_evidence(adapter.host_authority)
+            adapter.refresh()
             result = runner.status()
         elif args.action == "reopen":
             adapter.reopen()
