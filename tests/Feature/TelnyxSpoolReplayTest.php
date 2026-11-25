@@ -261,19 +261,20 @@ class TelnyxSpoolReplayTest extends TestCase
 
     public function test_old_replayed_call_and_rejected_entries_are_pruned_but_waiting_texts_are_kept(): void
     {
-        // Entries are kept for keep_days after they were handled (file mtime).
+        // Entries are kept for keep_days after they were saved or last moved.
+        // Those are real file times, so the clock moves on from the real now.
         $old = $this->t0->subDays(15);
         $spool = $this->spool();
         $waiting = $this->save('messaging', $this->inbound('evt_old_waiting', 'msg_old_waiting', 'still waiting'), $old);
-        touch($this->spoolPath.'/texts/'.$waiting, $old->getTimestamp());
         foreach ([TelnyxMaintenanceSpool::REPLAYED, TelnyxMaintenanceSpool::REJECTED] as $folder) {
             $id = $spool->save(TelnyxMaintenanceSpool::TEXTS, 'messaging', null, '{}', [], $old);
             $spool->move($id, TelnyxMaintenanceSpool::TEXTS, $folder);
-            touch($this->spoolPath.'/'.$folder.'/'.$id, $old->getTimestamp());
         }
-        $oldCall = $spool->save(TelnyxMaintenanceSpool::CALLS, 'vapi', null, '{}', [], $old);
-        touch($this->spoolPath.'/calls/'.$oldCall, $old->getTimestamp());
-        $spool->save(TelnyxMaintenanceSpool::CALLS, 'vapi', null, '{}', [], $this->t0->subDays(2));
+        $spool->save(TelnyxMaintenanceSpool::CALLS, 'vapi', null, '{}', [], $old);
+        $later = CarbonImmutable::createFromTimestamp(time())->addDays(15);
+        Carbon::setTestNow($later);
+        $recentCall = $spool->save(TelnyxMaintenanceSpool::CALLS, 'vapi', null, '{}', [], $later->subDays(2));
+        touch($this->spoolPath.'/calls/'.$recentCall, $later->subDays(2)->getTimestamp());
 
         // The old signature on the waiting text is accepted: freshness is
         // checked against its arrival time, not against the replay time.
@@ -281,7 +282,22 @@ class TelnyxSpoolReplayTest extends TestCase
 
         $this->assertSame([$waiting], array_column($spool->entries(TelnyxMaintenanceSpool::REPLAYED), 'id'));
         $this->assertSame([], $spool->entries(TelnyxMaintenanceSpool::REJECTED));
-        $this->assertCount(1, $spool->entries(TelnyxMaintenanceSpool::CALLS));
+        $this->assertSame([$recentCall], array_column($spool->entries(TelnyxMaintenanceSpool::CALLS), 'id'));
+    }
+
+    public function test_a_handled_entry_is_kept_even_when_its_file_time_could_not_be_restamped(): void
+    {
+        // On the server the deploy user moves files that PHP-FPM owns, so it
+        // cannot restamp their mtime; the move itself still updates the ctime.
+        $old = $this->t0->subDays(15);
+        $id = $this->save('messaging', $this->inbound('evt_late', 'msg_late', 'waited a long time'), $old);
+        $this->artisan('telnyx:replay-spool')->expectsOutputToContain('replayed 1')->assertSuccessful();
+        // What a failed restamp leaves behind: the old mtime and a fresh ctime.
+        touch($this->spoolPath.'/replayed/'.$id, $old->getTimestamp());
+
+        $this->artisan('telnyx:replay-spool')->assertSuccessful();
+
+        $this->assertSame([$id], array_column($this->spool()->entries(TelnyxMaintenanceSpool::REPLAYED), 'id'));
     }
 
     public function test_missed_call_list_shows_one_row_per_call_and_no_message_bodies(): void

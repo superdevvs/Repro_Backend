@@ -74,7 +74,7 @@ Laravel starts, so the receiver cannot run.
 | `SCHEDULER_HOLD_ENABLED` | `false` | Makes `schedule:run` honour hold files |
 | `TELNYX_MAINTENANCE_SPOOL_PATH` | `storage/app/telnyx-spool` | Spool folder, outside any web or storage disk root |
 | `TELNYX_SPOOL_REPLAY_GROUP` | `www-data` | The replay refuses to run under another group. Empty turns the check off |
-| `TELNYX_SPOOL_KEEP_DAYS` | `14` | Replayed, rejected and call files are deleted after this |
+| `TELNYX_SPOOL_KEEP_DAYS` | `14` | Replayed, rejected and call files are deleted this many days after they were saved or moved |
 | `SCHEDULER_HOLD_DIRECTORY` | `storage/framework` | Where hold files live |
 | `SCHEDULER_HOLD_MAX_MINUTES` | `720` | Longest any hold can last |
 

@@ -131,7 +131,10 @@ final class TelnyxMaintenanceSpool
         return $entries;
     }
 
-    /** Moves an entry and stamps its mtime, which marks when it was handled. */
+    /**
+     * Moves an entry. The rename updates its ctime, which marks when it was
+     * handled; the mtime is restamped too when this process owns the file.
+     */
     public function move(string $id, string $from, string $to): void
     {
         $this->assertEntry($id);
@@ -144,14 +147,19 @@ final class TelnyxMaintenanceSpool
         $this->syncDirectory($this->root.'/'.$to);
     }
 
-    /** Deletes entries in $folder last handled (mtime) before $cutoff. */
+    /**
+     * Deletes entries in $folder last saved or moved before $cutoff. The
+     * deploy user cannot restamp files PHP-FPM owns, so the later of mtime
+     * and ctime (set by the move) counts.
+     */
     public function prune(string $folder, CarbonImmutable $cutoff): int
     {
         $deleted = 0;
         foreach ($this->ids($folder) as $id) {
             $path = $this->root.'/'.$folder.'/'.$id;
-            $modified = @filemtime($path);
-            if ($modified !== false && $modified < $cutoff->getTimestamp() && @unlink($path)) {
+            clearstatcache(true, $path);
+            $modified = max((int) @filemtime($path), (int) @filectime($path));
+            if ($modified > 0 && $modified < $cutoff->getTimestamp() && @unlink($path)) {
                 $deleted++;
             }
         }
