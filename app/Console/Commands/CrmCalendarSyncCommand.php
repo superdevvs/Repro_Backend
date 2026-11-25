@@ -25,7 +25,8 @@ class CrmCalendarSyncCommand extends Command
         if (config('crm.calendar_sync_hold')) {
             // Only this job clears a cancelled follow-up's failed Google delete: the CRM refuses to save
             // a cancelled follow-up again, so that row blocks the reconcile until one sync runs.
-            $this->line('Calendar sync is held (CRM_CALENDAR_SYNC_HOLD). Release it after crm:calendar-reconcile --dry-run exits 0.');
+            $this->line('Calendar sync is held (CRM_CALENDAR_SYNC_HOLD). Release it once crm:calendar-reconcile --dry-run exits 0, '
+                .'or once only cancelled push_pending rows are left (see below).');
             $this->line('A planned follow-up that shows push_pending clears when it is saved again in the CRM.');
             $this->line('A cancelled one clears only when the sync runs: settle every other row, release CRM_CALENDAR_SYNC_HOLD, '
                 .'let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.');

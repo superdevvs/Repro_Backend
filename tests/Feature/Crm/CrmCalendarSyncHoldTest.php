@@ -213,7 +213,10 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
         $this->assertSame(0, Artisan::call('crm:calendar-sync'));
 
         $output = Artisan::output();
-        $this->assertStringContainsString('Calendar sync is held (CRM_CALENDAR_SYNC_HOLD).', $output);
+        $this->assertStringContainsString('Calendar sync is held (CRM_CALENDAR_SYNC_HOLD). Release it once crm:calendar-reconcile --dry-run '
+            .'exits 0, or once only cancelled push_pending rows are left (see below).', $output);
+        $this->assertStringNotContainsString('Release it after crm:calendar-reconcile --dry-run exits 0.', $output,
+            'A cancelled push_pending row needs the release before the reconcile can exit 0.');
         $this->assertStringContainsString('A planned follow-up that shows push_pending clears when it is saved again in the CRM.', $output);
         $this->assertStringContainsString('A cancelled one clears only when the sync runs: settle every other row, '
             .'release CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.', $output);
@@ -230,6 +233,7 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
         $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => true]);
         [$exit, $report] = $this->reconcile();
         $this->assertSame([1, ['push_pending' => 1]], [$exit, $report['counts']]);
+        $this->assertArrayNotHasKey('hint', $report, 'A planned follow-up clears when it is saved again, not by releasing the sync.');
 
         app(CrmEventService::class)->update($event->fresh(), ['starts_at' => $moved->toIso8601String()], $this->rep);
 
@@ -255,6 +259,8 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
         $this->assertDatabaseHas('crm_event_calendar_links', ['event_id' => $event->id, 'push_pending' => true]);
         [$exit, $report] = $this->reconcile();
         $this->assertSame([1, ['push_pending' => 1]], [$exit, $report['counts']]);
+        $this->assertStringContainsString('release CRM_CALENDAR_SYNC_HOLD, let one sync run', $report['hint'] ?? '',
+            'The reconcile the operator runs at CRM step 10 says how this row clears.');
 
         try {
             app(CrmEventService::class)->update($event->fresh(), ['note' => 'Saved again'], $this->rep);
@@ -273,6 +279,7 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
         [$exit, $report] = $this->reconcile();
         $this->assertSame(0, $exit);
         $this->assertSame([], $report['counts']);
+        $this->assertArrayNotHasKey('hint', $report);
     }
 
     public function test_the_scheduler_skips_calendar_sync_while_held(): void

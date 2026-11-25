@@ -20,7 +20,9 @@ use Illuminate\Support\Facades\DB;
  * Done or missed follow-ups (the sync leaves them in Google on purpose) and
  * links without a Google connection are listed but never acted on by the
  * poller, so they do not block. Exit 0 when nothing else is found, 1 when
- * something needs a decision.
+ * something needs a decision. When the only blocking rows are cancelled
+ * follow-ups with a pending push, which only a sync run clears, the report
+ * adds a `hint` saying so; the exit code stays 1.
  */
 class CrmCalendarReconcile extends Command
 {
@@ -62,7 +64,14 @@ class CrmCalendarReconcile extends Command
         }
         $counts = array_count_values(array_column($rows, 'category'));
         ksort($counts);
-        $report = ['window' => [$windowStart->toIso8601String(), $windowEnd->toIso8601String()], 'counts' => $counts, 'rows' => $rows];
+        $report = ['window' => [$windowStart->toIso8601String(), $windowEnd->toIso8601String()], 'counts' => $counts];
+        // The CRM refuses to save a cancelled follow-up again, so only a sync run clears its pending push.
+        $blocking = array_filter($rows, fn (array $row) => ! in_array($row['category'], self::NOT_BLOCKING, true));
+        if ($blocking !== [] && array_filter($blocking, fn (array $row) => $row['category'] !== 'push_pending' || $row['local_status'] !== 'cancelled') === []) {
+            $report['hint'] = 'Only cancelled follow-ups with push_pending are left. Only the sync clears them: release '
+                .'CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.';
+        }
+        $report['rows'] = $rows;
 
         if ($this->option('json')) {
             $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -75,6 +84,9 @@ class CrmCalendarReconcile extends Command
             }
             foreach ($counts as $category => $count) {
                 $this->line(str_pad($category, 24).$count);
+            }
+            if (isset($report['hint'])) {
+                $this->line($report['hint']);
             }
         }
 
