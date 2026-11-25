@@ -854,6 +854,18 @@ class NightlyRunnerTests(unittest.TestCase):
             self.assertTrue((self.outputs(day.isoformat()) / "night.json").exists())
         self.assertTrue((foreign / "snapshot.sqlite").exists())
 
+    def test_retention_counts_only_nights_that_still_have_a_snapshot(self):
+        config = copy.deepcopy(self.config) | {"retain_snapshots": 2}
+        days = [(BASE_NOW.date() - timedelta(days=2 - index)) for index in range(3)]
+        for index, day in enumerate(days):
+            host = FakeHost(self.root / f"gap-{day}", now=BASE_NOW - (BASE_NOW.date() - day))
+            host.deploying = index == 1  # the middle night stops before its capture
+            receipt = self.run_night(day.isoformat(), host, config)
+            self.assertEqual(receipt["status"], "stopped" if index == 1 else "reviewer-inputs-ready")
+        self.assertFalse((self.outputs(days[1].isoformat()) / "snapshot.sqlite").exists())
+        kept = [day for day in days if (self.outputs(day.isoformat()) / "snapshot.sqlite").exists()]
+        self.assertEqual(kept, [days[0], days[2]])
+
     def test_default_retention_keeps_every_snapshot(self):
         days = [(BASE_NOW.date() - timedelta(days=1 - index)) for index in range(2)]
         for day in days:

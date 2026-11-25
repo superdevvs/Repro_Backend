@@ -1141,19 +1141,21 @@ class NightlyRunner:
         keep = self.cfg["retain_snapshots"]
         if keep is None:
             return
+        # Count only nights that still hold a snapshot. A night that stopped before
+        # its capture, or was already pruned, must not use up a retention slot.
         runs = []
         for folder in sorted(self.state_dir.iterdir()):
             journal_path = folder / "journal.json"
-            if folder.is_dir() and not folder.is_symlink() and DAY.fullmatch(folder.name) and journal_path.is_file():
+            snapshot = folder / "snapshot.sqlite"
+            if (folder.is_dir() and not folder.is_symlink() and DAY.fullmatch(folder.name) and journal_path.is_file()
+                    and snapshot.is_file() and not snapshot.is_symlink()):
                 journal = json.loads(journal_path.read_bytes())
                 if journal.get("schema") == JOURNAL_SCHEMA and journal.get("scheduled_day_utc") == folder.name:
                     runs.append((folder, journal))
         for folder, journal in runs[:-keep]:
-            snapshot = folder / "snapshot.sqlite"
-            if snapshot.is_file() and not snapshot.is_symlink():
-                snapshot.unlink()
-                journal["snapshot_pruned"] = True
-                write_json(folder / "journal.json", journal)
+            (folder / "snapshot.sqlite").unlink()
+            journal["snapshot_pruned"] = True
+            write_json(folder / "journal.json", journal)
 
 
 def finance_problem(receipt: object, *, snapshot_sha256: str, release: str, rows: int, tables: int) -> str | None:
