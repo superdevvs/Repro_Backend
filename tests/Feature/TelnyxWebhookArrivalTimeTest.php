@@ -3,12 +3,15 @@
 namespace Tests\Feature;
 
 use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
+use App\Http\Resources\Messaging\SmsMessageResource;
 use App\Models\Contact;
 use App\Models\Message;
 use App\Models\MessageThread;
 use App\Services\Messaging\SharedMmsService;
+use App\Services\Messaging\SmsInboxPolicy;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use InvalidArgumentException;
 use Mockery;
@@ -70,6 +73,27 @@ class TelnyxWebhookArrivalTimeTest extends TestCase
         $this->assertSame(2, $thread->messages()->count());
         $this->assertSame($newer->getTimestamp(), $thread->last_message_at->getTimestamp());
         $this->assertSame('Newer text', $thread->last_snippet);
+    }
+
+    public function test_clients_see_and_order_a_replayed_text_at_its_arrival_time(): void
+    {
+        // A newer text reached the thread at 15:04:05, before the older one
+        // (arrived 15:00:05) was replayed at 15:09.
+        $newer = $this->arrivedAt->addMinutes(4);
+        Carbon::setTestNow($newer);
+        $this->controller()->replayVerified('messaging', null, $this->inboundPayload('evt_client_newer', 'msg_client_newer', 'Newer text'), $newer);
+        Carbon::setTestNow('2026-11-25 15:09:00');
+
+        $this->controller()->replayVerified('messaging', null, $this->inboundPayload('evt_client_older', 'msg_client_older', 'Older text'), $this->arrivedAt);
+
+        $older = Message::where('provider_message_id', 'msg_client_older')->sole();
+        $this->assertSame($this->arrivedAt->getTimestamp(), $older->created_at->getTimestamp());
+        $sentAt = (new SmsMessageResource($older))->toArray(Request::create('/'))['sentAt'];
+        $this->assertSame($this->arrivedAt->getTimestamp(), CarbonImmutable::parse($sentAt)->getTimestamp());
+        $thread = $older->thread->fresh();
+        $this->assertSame(['msg_client_older', 'msg_client_newer'],
+            app(SmsInboxPolicy::class)->history($thread)->pluck('provider_message_id')->all());
+        $this->assertSame('msg_client_newer', $thread->latestSmsMessage->provider_message_id);
     }
 
     public function test_replayed_delivery_status_is_stored_at_its_arrival_time(): void

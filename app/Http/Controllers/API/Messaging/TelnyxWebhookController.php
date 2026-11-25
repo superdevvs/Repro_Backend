@@ -149,7 +149,7 @@ class TelnyxWebhookController extends Controller
 
             $thread ??= MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => $at]);
 
-            $message = Message::create([
+            $message = new Message([
                 'channel' => 'SMS',
                 'direction' => 'INBOUND',
                 'provider' => 'TELNYX',
@@ -166,6 +166,13 @@ class TelnyxWebhookController extends Controller
                     'telnyx_event_type' => data_get($payload, 'data.event_type'),
                 ],
             ]);
+            if ($receivedAt !== null) {
+                // Clients show and order texts by created_at (sentAt, the
+                // history and the thread preview), so a replayed text keeps
+                // its arrival time there too, as a live one would have.
+                $message->created_at = $at;
+            }
+            $message->save();
 
             app(\App\Services\Messaging\MessageMediaService::class)->incoming('sms', (string) $message->id, (array) data_get($payload, 'data.payload.media', []));
             // A replayed text keeps its arrival time, so it must not move the

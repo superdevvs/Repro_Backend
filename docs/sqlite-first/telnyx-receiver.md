@@ -31,7 +31,9 @@ behaves exactly as today.
 
 **Replay.** `php artisan telnyx:replay-spool` sends the saved texts through the
 normal handlers, oldest first, with the saved arrival time (used for
-`sent_at`, `delivered_at`, `failed_at` and the thread's last message time). A
+`sent_at`, `delivered_at`, `failed_at` and the thread's last message time,
+and as `created_at` of a replayed incoming text, which clients show as its
+time and sort by). A
 replayed text never moves a thread's last message back past a newer one. It
 checks each saved signature again. Each Telnyx event id, and each inbound
 message id, is handled once, including messages that already reached the app
@@ -123,6 +125,9 @@ code without the replay command, run the replay by hand. Texts wait in
   error and retries, as before.
 - The 200 is sent after the file is on the local disk. There is no off-server
   copy first.
+- A replayed text that arrived more than 10 minutes before the replay gets
+  no Groundwire phone push: the push service skips texts that old. It still
+  shows as unread in the inbox.
 - Appointment reminders look back five minutes. A hold or maintenance window
   longer than that can still skip a reminder.
 - Cross-check a long window against Telnyx's own failed-delivery list.
