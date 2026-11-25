@@ -13,7 +13,8 @@ transaction, which would hold the writer token for the whole test.
 | `WriterExemptionsTest.php` | Queue claim and delete skip the token while enqueue waits for it. Cache locks never wait for their own caller. Each token-free session may write only its own tables. `LockedWrite` and the rate limiter retry once and run their callback once. |
 | `WorkerHygieneTest.php` | A worker rolls back a transaction a job left open and carries on; a leaking job that fails for good is failed once. `db:writer-token-holders` reports an old holder. |
 | `WriterPolicyCheckTest.php` | `db:writer-policy-check` passes on a provisioned server and fails on a missing token row, a policy that is off, or a second token connection. It checks the `DB_URL` target. |
-| `WriterBusinessPathsTest.php` | Eight processes racing for the last Google Routes quota unit reserve it once. Eight first texts from a new number give one contact, one thread and eight messages. Six status webhooks for one message, sent at once in random order, keep the final delivered status. Twelve queue workers run 1,000 jobs, each exactly once. |
+| `WriterBusinessPathsTest.php` | Eight processes racing for the last Google Routes quota unit reserve it once (a test-only trigger holds each insert half a second so the racers really overlap). Eight first texts from a new number give one contact, one thread and eight messages. Six status webhooks for one message, sent at once in random order, keep the final delivered status. Twelve queue workers run 1,000 jobs, each exactly once: not a serialization check, because queue claims skip the token by design. |
+| `WriterBusinessRacesTest.php` | The plan's WP-7 business paths. Eight sends of one editing request give one dispatch and one queued job. Eight staff bookings for one slot give one success: guard off on an empty and a booked day, guard on, and guard on without its photographer lock. Two invoice runs per role give one invoice each and no reused invoice number. One Stripe payment event sent five times gives one payment. A slow (faked) Stripe call does not fail the client editing the same shoot. Two overlapping weekly automation runs give one dispatch. The Aryeo change feed never skips a row behind a delayed writer and moves past a rolled-back one. Each worker sleeps briefly right after the read its path decides on, so the racers overlap. |
 
 ## Running it
 
@@ -35,3 +36,9 @@ off. CI runs it as the last step of `scripts/mysql/test-queue-worker-ci.sh`.
 
 Leave the queue-worker and scheduling-cache pilot flags unset: the suite
 tests the default layout.
+
+To see what the token itself prevents, add `MYSQL_WRITER_PROOF_TOKEN=off`:
+every worker process then runs with `REPRO_MYSQL_WRITER_POLICY=false` while
+the test process keeps it on. The token-rule tests and most business proofs
+then fail; `docs/mysql-lanes/writer-policy.md` lists which, and which other
+guard keeps the rest. Never set it in CI.
