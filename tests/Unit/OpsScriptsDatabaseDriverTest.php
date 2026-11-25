@@ -56,6 +56,23 @@ class OpsScriptsDatabaseDriverTest extends TestCase
         $this->assertSame($before, hash_file('sha256', $database));
     }
 
+    public function test_service_55_correction_refuses_when_db_url_points_the_sqlite_connection_at_mysql(): void
+    {
+        $database = tempnam(sys_get_temp_dir(), 'ops-engine-sqft-url-');
+        $this->files[] = $database;
+        (new PDO('sqlite:'.$database))->exec('CREATE TABLE service_sqft_ranges (id INTEGER PRIMARY KEY)');
+        $before = hash_file('sha256', $database);
+
+        [$status, $output, $error] = $this->runScript('correct-service-55-sqft-boundary.php', ['--database='.$database], [
+            'DB_CONNECTION' => 'sqlite',
+            'DB_URL' => 'mysql://repro@localhost/repro?unix_socket=/nonexistent/repro-ops-engine.sock',
+        ]);
+
+        $this->assertSame(1, $status, $output);
+        $this->assertStringContainsString('the live database is mysql', $error);
+        $this->assertSame($before, hash_file('sha256', $database));
+    }
+
     private function failedJobsDatabase(): string
     {
         $path = tempnam(sys_get_temp_dir(), 'ops-engine-failed-jobs-');

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\DatabaseDriver;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
@@ -45,5 +46,52 @@ class SqliteBackupCommandsEngineTest extends TestCase
         ])->expectsOutputToContain('the live database is mysql')->assertFailed();
 
         $this->assertSame(0, $this->queries);
+    }
+
+    public function test_the_engine_comes_from_db_url_when_it_overrides_the_connection_driver(): void
+    {
+        // Laravel lets DB_URL replace the driver of the chosen connection (ConfigurationUrlParser),
+        // so a "sqlite" connection with a mysql:// URL really talks to MySQL.
+        $this->useSqliteConnectionWithUrl('mysql://repro@localhost/repro?unix_socket=/nonexistent/repro-engine-url.sock');
+
+        $this->assertSame('mysql', DatabaseDriver::driver());
+        $this->assertFalse(DatabaseDriver::isSqlite());
+        $this->assertSame('mysql', DatabaseDriver::driver('sqlite'));
+        $this->assertSame(0, $this->queries);
+    }
+
+    public function test_driver_aliases_in_db_url_resolve_like_laravel_does(): void
+    {
+        $this->useSqliteConnectionWithUrl('mysql2://repro@localhost/repro');
+        $this->assertSame('mysql', DatabaseDriver::driver());
+
+        config()->set('database.connections.sqlite.url', 'sqlite3:///tmp/repro-engine-url.sqlite');
+        $this->assertSame('sqlite', DatabaseDriver::driver());
+        $this->assertTrue(DatabaseDriver::isSqlite());
+    }
+
+    public function test_apply_refuses_when_db_url_points_the_sqlite_connection_at_mysql(): void
+    {
+        $this->useSqliteConnectionWithUrl('mysql://repro@localhost/repro?unix_socket=/nonexistent/repro-engine-url.sock');
+
+        $this->artisan('shoots:classify-travel-fees', [
+            '--apply' => true, '--actor' => 1, '--expected-plan' => str_repeat('a', 64),
+            '--backup-path' => __FILE__,
+        ])->expectsOutputToContain('the live database is mysql')->assertFailed();
+
+        $this->artisan('shoots:reconcile-partial-delivery', [
+            'shoot' => 10, '--source-service' => 11, '--target-service' => 12, '--file-ids' => '13,14',
+            '--expected-source-scheduled-at' => '2026-11-20 10:00:00', '--finalization-event' => 15,
+            '--actor' => 1, '--backup-path' => __FILE__, '--apply' => true,
+        ])->expectsOutputToContain('the live database is mysql')->assertFailed();
+
+        $this->assertSame(0, $this->queries);
+    }
+
+    private function useSqliteConnectionWithUrl(string $url): void
+    {
+        DB::purge('sqlite');
+        config()->set('database.default', 'sqlite');
+        config()->set('database.connections.sqlite.url', $url);
     }
 }
