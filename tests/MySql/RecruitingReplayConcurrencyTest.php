@@ -50,11 +50,15 @@ final class RecruitingReplayConcurrencyTest extends TestCase
             file_put_contents($directory.'/start-b', '1');
             // B blocks on A's uncommitted receipt row, either in its INSERT IGNORE
             // duplicate check or in the locking read that follows it.
+            // With the MySQL writer policy, B waits earlier, for A's writer token.
+            $policy = config('database.connections.mysql.repro_writer_policy') === true;
             $deadline = microtime(true) + 8;
             do {
                 $waiting = collect(DB::select('SHOW FULL PROCESSLIST'))->contains(fn ($thread) => (int) $thread->Id === $connections[1]
-                    && is_string($thread->Info) && str_contains($thread->Info, '`recruit_application_receipts`')
-                    && (str_contains(strtolower($thread->Info), 'for update') || str_starts_with(strtolower($thread->Info), 'insert ignore')));
+                    && is_string($thread->Info) && ($policy
+                        ? str_contains($thread->Info, '`writer_token`') && str_contains(strtolower($thread->Info), 'for update')
+                        : str_contains($thread->Info, '`recruit_application_receipts`')
+                            && (str_contains(strtolower($thread->Info), 'for update') || str_starts_with(strtolower($thread->Info), 'insert ignore'))));
                 if (! $waiting) {
                     usleep(20_000);
                 }
