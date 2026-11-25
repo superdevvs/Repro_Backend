@@ -26,6 +26,8 @@ REOPENED_RECEIPT = "synthetic-sqlite-reopened"
 
 
 class PostWriteRehearsal(ContainerRehearsal):
+    writer_authority = "manufactured-postwrite"
+
     def configure_databases(self):
         super().configure_databases()
         self.reverse_password = secrets.token_hex(32)

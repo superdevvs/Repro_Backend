@@ -77,6 +77,8 @@ def mysql_rows(connection):
 class ContainerRehearsal:
     """An adapter limited to the small, manufactured Docker fixture."""
 
+    writer_authority = "journal"
+
     def __init__(self, pymysql, release, artifact):
         require(os.getuid() == 1000 and Path("/workspace").is_dir() and Path("/host").is_dir(),
                 "The disposable fixture entrypoint is required")
@@ -158,6 +160,7 @@ class ContainerRehearsal:
             "DB_HOST": "localhost", "DB_SOCKET": SOCKET, "DB_USERNAME": "dresser",
             "DB_PASSWORD": self.mysql_password, "DB_FOREIGN_KEYS": "true", "FILESYSTEM_DISK": "local",
             "REPRO_DRESS_ENGINE": engine, "REPRO_DRESS_SQLITE_PATH": str(self.sqlite_path),
+            "REPRO_DRESS_WRITER_AUTHORITY": self.writer_authority,
         }
 
     def php(self, engine, *args):
@@ -347,13 +350,32 @@ class ContainerRehearsal:
         lease.require_current()
         require(engine == "sqlite" and self.observe().sealed(engine) and time.time() < deadline,
                 "SQLite fixture authority is not sealed")
-        self.journal.write_record("proof.json", {
+        self.journal.write_record("proof.json", self.sqlite_proof(candidate))
+
+    def sqlite_proof(self, candidate):
+        return {
             "version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy()),
-            "journal_sha256": guard.sha256(candidate), "engine": engine,
+            "journal_sha256": guard.sha256(candidate), "engine": "sqlite",
             "database_identity": self.identity().source_sha256,
             "live_config_sha256": file_digest(CONFIG), "release_sha": self.identity().release_sha,
             "artifact_sha256": self.identity().artifact_sha256, "competing_writer_detected": False,
-        })
+        }
+
+    def install_planned_proof(self):
+        with self.journal.acquire() as (state, _):
+            require(state["phase"] == "planned" and self.observe().sqlite_live(), "Fixture preflight changed")
+            self.journal.write_record("policy.json", json.loads(self.policy()))
+            self.journal.write_record("proof.json", self.sqlite_proof(self.journal.path.read_bytes()))
+
+    def assert_writer_hold(self):
+        require(self.http("POST", 503) == {"admission_held": True}, "HTTP writer escaped the journal hold")
+        require(self.queue("work") == {"admission_held": True}, "Queue writer escaped the journal hold")
+
+    def restart_and_check_hold(self, engine):
+        previous = self.server.pid
+        require(self.open_server(engine) == {**self.baseline, "engine": engine} and self.server.pid != previous,
+                "The restarted fixture must complete the dedicated read-only smoke path")
+        self.assert_writer_hold()
 
     def verify_guard(self, engine, evidence=None):
         proof = (self.journal.directory / "proof.json").read_bytes() if evidence is None else evidence
@@ -383,12 +405,23 @@ def prepare_fixture(adapter, *, queue_before_freeze):
     runner = Runner(adapter.journal, adapter.identity(), adapter)
     initial = runner.initialize()
     require(initial["phase"] == "planned", "Runner did not start planned")
+    if adapter.writer_authority == "journal":
+        adapter.install_planned_proof()
+        with adapter.journal.acquire():
+            adapter.assert_writer_hold()
     require(set(adapter.http("POST")["receipts"]) == {"synthetic-http-receipt"}, "Synthetic write not acknowledged")
     if queue_before_freeze:
         require(adapter.queue("enqueue") == {"queued": 1}, "Synthetic queue payload was not stored")
     adapter.baseline = adapter.http()
     require(adapter.baseline["pending"] == int(queue_before_freeze), "Unexpected fixture queue baseline")
     runner.perform("freeze", runner.approval_request("freeze"))
+    if adapter.writer_authority == "journal":
+        # A stale permissive launch record cannot override the durable freeze.
+        adapter.set_gate("sqlite", True)
+        try:
+            adapter.restart_and_check_hold("sqlite")
+        finally:
+            adapter.set_gate("sqlite", False)
     try:
         runner.perform("prepare")
     except UnsafeCutover as error:
@@ -417,6 +450,15 @@ def exercise(adapter):
     runner.perform("abort")
     adapter.reopen()
     after_reopen = time.monotonic()
+    proof_path = adapter.journal.directory / "proof.json"
+    good_proof = json.loads(proof_path.read_bytes())
+    proof_path.unlink()
+    adapter.restart_and_check_hold("sqlite")
+    adapter.journal.write_record("proof.json", {"version": 1})
+    adapter.restart_and_check_hold("sqlite")
+    adapter.journal.write_record("proof.json", {**good_proof, "boot_id": str(uuid.uuid4())})
+    adapter.restart_and_check_hold("sqlite")
+    adapter.journal.write_record("proof.json", good_proof)
     first = adapter.queue("work")
     require(first == {"worker_exit": 0, "effects": ["synthetic-queue-effect"]}, "Real Laravel queue work failed")
     require(adapter.queue("work") == first and adapter.http()["pending"] == 0, "Queue duplicated or lost the effect")
@@ -427,6 +469,9 @@ def exercise(adapter):
         "abort_to_sqlite_http_ms": round((after_reopen - before_abort) * 1000),
         "acknowledged_http_receipts": 1, "queue_effects": 1, "mysql_business_writes": 0,
         "offsite_gate_refused": True, "promotion_refused": True, "stale_boot_refused": True,
+        "exclusive_lease_held_writers": True,
+        "writer_restart_holds": ["frozen-journal", "missing-proof", "invalid-proof", "stale-boot-proof"],
+        "writer_verifier_sha256": file_digest(Path("/host/verify-writer.py")),
         "authority": runner.status()["phase"], "harness_sha256": file_digest(Path(__file__)),
         "php_probe_sha256": file_digest(Path("/host/probe.php")),
         "scope": "synthetic fixture HTTP and one-shot queue; PHP CLI server, SQLite, socket-only MySQL",

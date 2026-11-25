@@ -35,6 +35,15 @@ function requireFixture(bool $valid): void
     }
 }
 
+function held(bool $web): array
+{
+    if ($web) {
+        http_response_code(503);
+    }
+
+    return ['admission_held' => true];
+}
+
 function runProbe(): array
 {
     $engine = (string) getenv('REPRO_DRESS_ENGINE');
@@ -52,14 +61,47 @@ function runProbe(): array
         return ['missing' => true];
     }
 
-    if ($operation !== 'read' && $gate['open'] !== true) {
-        if ($web) {
-            http_response_code(503);
-        }
-
-        return ['admission_held' => true];
+    if ($operation === 'read') {
+        return exerciseLaravel($engine, $operation);
+    }
+    if ($gate['open'] !== true) {
+        return held($web);
+    }
+    $authority = getenv('REPRO_DRESS_WRITER_AUTHORITY');
+    if ($authority === 'manufactured-postwrite') {
+        return exerciseLaravel($engine, $operation);
+    }
+    if ($authority !== 'journal') {
+        return held($web);
     }
 
+    // This synthetic process owns its private journal. Retain the same shared
+    // lock through bootstrap and execution so the runner cannot race admission.
+    $lease = @fopen('/private/authority/operator.lock', 'rb');
+    if ($lease === false) {
+        return held($web);
+    }
+    try {
+        if (! flock($lease, LOCK_SH | LOCK_NB)) {
+            return held($web);
+        }
+        $check = @proc_open(
+            ['/usr/bin/python3', '-I', '-S', '-B', '/host/verify-writer.py', $web ? 'web-writer' : 'queue-worker', $engine],
+            [['file', '/dev/null', 'r'], ['file', '/dev/null', 'w'], ['file', '/dev/null', 'w']],
+            $pipes,
+        );
+        if ($check === false || proc_close($check) !== 0) {
+            return held($web);
+        }
+
+        return exerciseLaravel($engine, $operation);
+    } finally {
+        fclose($lease);
+    }
+}
+
+function exerciseLaravel(string $engine, string $operation): array
+{
     $application = require '/workspace/bootstrap/app.php';
     $application->useStoragePath('/private/storage');
     $application->make(Kernel::class)->bootstrap();

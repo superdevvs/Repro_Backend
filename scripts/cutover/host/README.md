@@ -21,9 +21,11 @@ The trial exercises these operations in order.
 4. Verify the runner refuses readiness and promotion when off-site backup evidence is unavailable.
 5. Run the pre-write abort. Restore the original Laravel cache and SQLite authority, test that wrong-engine and stale-boot evidence hold admission, then verify that HTTP reads work again and Laravel drains the queued job exactly once.
 
+The pre-write fixture requires the same durable journal and boot evidence on each HTTP write and one-shot queue invocation. Both PHP entry points hold a shared lease through execution and refuse admission while the runner has the exclusive lease. A stale permissive launch record cannot override a frozen journal after a PHP server restart. Separate restarts also verify missing, invalid and stale-boot proof. The smoke read checks only the dedicated fixture route during freeze.
+
 The report records the exact source commit and harness hashes, freeze-to-target-smoke time, abort-to-SQLite-HTTP time and the acknowledged effects. The cleanup receipt records the source archive digest and confirms removal of owned resources.
 
-The scope covers a dedicated fixture HTTP route on PHP's CLI server and a one-shot database worker. The scheduler inventory is empty by construction. Actual application HTTP ingress, privileged and restart-safe writer admission, the systemd scheduler, provider replay, production-sized parity, comparable load and off-site restore require separate evidence. The fixture's local backup values remain false, and the adapter refuses to open MySQL for writes.
+The scope covers a dedicated fixture HTTP route on PHP's CLI server and a one-shot database worker under the same synthetic user. The scheduler inventory is empty by construction. Actual application HTTP ingress, the root-owned installation and authority publisher, long-lived workers, the systemd scheduler, provider replay, production-sized parity, comparable load and off-site restore require separate evidence. The fixture's local backup values remain false, and the adapter refuses to open MySQL for writes.
 
 ## Post-write failback fixture
 
