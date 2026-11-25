@@ -642,19 +642,46 @@ def apply(job: Job, system, settings: dict, *, enter_credentials: bool) -> int:
         print(f"Run the undo command and paste its output: {undo_command(job.name)}")
         return 1
     print(f"PASS {job.name} installed; units are disabled")
-    if enter_credentials and job.credential_step:
-        account = "repro-alert" if job.name == "alerts" else ACCOUNT
+    expected = enter_credentials and bool(job.credential_step)
+    entry_failed = False
+    if expected:
+        account = CREDENTIALS[job.name][0]
         print("Enter the private values now. Nothing you type is shown or logged.")
         code, _ = system.run(["/usr/sbin/runuser", "-u", account, "--", *job.credential_step], input_tty=True)
         if code != 0:
+            entry_failed = True
             print(f"FAIL credential entry. Run it again later as: sudo runuser -u {account} -- "
                   + " ".join(job.credential_step))
     failures = self_test(job, system, settings, record)
+    present = credentials_present(job, system, expected=expected)
     if failures:
         print(f"Run the undo command and paste its output: {undo_command(job.name)}")
         return 1
+    if entry_failed or present is False:
+        print("The install is in place but its private values are not. Enter them with the command above,")
+        print("then run this apply again to repeat the self-tests.")
+        return 1
     print("Enable the timers only after review: " + job.enable_hint)
     return 0
+
+
+# The account that holds each job's private values, the file they land in, and the self-test label.
+CREDENTIALS = {
+    "base-backup": (ACCOUNT, f"{STATE}/credentials/rclone-daily.conf", "upload credentials entered (rclone-daily.conf)"),
+    "alerts": ("repro-alert", "/var/lib/repro-alert/ping-urls.json",
+               "ping URLs entered (/var/lib/repro-alert/ping-urls.json)"),
+}
+
+
+def credentials_present(job: Job, system, *, expected: bool) -> bool | None:
+    """PASS when the job's private values are readable by their account; FAIL if they were to be
+    entered in this run, TODO if the owner chose --skip-credentials. None for a job without any."""
+    if job.name not in CREDENTIALS or not job.credential_step:
+        return None
+    account, path, label = CREDENTIALS[job.name]
+    code, _ = system.run(["/usr/sbin/runuser", "-u", account, "--", "/usr/bin/test", "-r", path])
+    print(("PASS " if code == 0 else "FAIL " if expected else "TODO ") + label)
+    return code == 0 if expected else None
 
 
 SANDBOX_READ = (
@@ -700,9 +727,6 @@ def self_test(job: Job, system, settings: dict, record: dict) -> int:
         code, _ = system.run(["/usr/sbin/runuser", "-u", ACCOUNT, "--", "/usr/bin/test", "-w",
                               str(PurePosixPath(settings["sqlite_database"]).parent)])
         report(code != 0, "repro-backup cannot write the database directory")
-        code, _ = system.run(["/usr/sbin/runuser", "-u", ACCOUNT, "--", "/usr/bin/test", "-r",
-                              f"{STATE}/credentials/rclone-daily.conf"])
-        print(("PASS " if code == 0 else "TODO ") + "upload credentials entered (rclone-daily.conf)")
     return failures
 
 

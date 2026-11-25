@@ -327,6 +327,61 @@ class PreviewAndApplyTests(unittest.TestCase):
         self.assertNotIn("/var/lib/repro-alert-probe", system.dirs)
         self.assertNotIn("/var/lib/repro-alert-probe/memory.json", system.files)
 
+    class CredentialSystem(FakeSystem):
+        """The no-echo entry exits with entry_code; `test -r` passes only for the readable paths."""
+
+        def __init__(self, *, entry_code=0, readable=()):
+            super().__init__()
+            self.entry_code, self.readable = entry_code, set(readable)
+
+        def run(self, argv, *, input_tty=False, env=None):
+            if input_tty:
+                self.commands.append(list(argv))
+                return self.entry_code, b""
+            if argv[-2:-1] == ["-r"]:
+                self.commands.append(list(argv))
+                return (0 if argv[-1] in self.readable else 1), b""
+            return super().run(argv, input_tty=input_tty, env=env)
+
+    def apply_with_credentials(self, system, *jobs):
+        output, codes = io.StringIO(), []
+        with contextlib.redirect_stdout(output):
+            for name in jobs:
+                codes.append(installer.apply(installer.build_job(name, self.settings), system, self.settings,
+                                             enter_credentials=True))
+        return codes, output.getvalue()
+
+    def test_a_failed_credential_entry_makes_apply_fail(self):
+        # It printed FAIL but exited 0, so a script or a quick look saw a finished install.
+        system = self.CredentialSystem(entry_code=1)
+        codes, text = self.apply_with_credentials(system, "base-backup")
+        self.assertEqual(codes, [1])
+        self.assertIn("FAIL credential entry", text)
+        self.assertIn("FAIL upload credentials entered", text)
+
+    def test_alerts_self_test_checks_the_ping_url_file(self):
+        rclone = "/var/lib/repro-backup/credentials/rclone-daily.conf"
+        urls = "/var/lib/repro-alert/ping-urls.json"
+        system = self.CredentialSystem(readable={rclone})
+        codes, text = self.apply_with_credentials(system, "base-backup", "alerts")
+        self.assertEqual(codes, [0, 1], text)
+        self.assertIn("FAIL ping URLs entered (" + urls + ")", text)
+        self.assertIn(["/usr/sbin/runuser", "-u", "repro-alert", "--", "/usr/bin/test", "-r", urls], system.commands)
+        system.readable.add(urls)
+        codes, text = self.apply_with_credentials(system, "alerts")
+        self.assertEqual(codes, [0], text)
+        self.assertIn("PASS ping URLs entered", text)
+
+    def test_skipped_credentials_are_a_todo_not_a_failure(self):
+        system = FakeSystem()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            for name in ("base-backup", "alerts"):
+                self.assertEqual(installer.apply(installer.build_job(name, self.settings), system, self.settings,
+                                                 enter_credentials=False), 0)
+        self.assertIn("TODO upload credentials entered", output.getvalue())
+        self.assertIn("TODO ping URLs entered", output.getvalue())
+
     def test_alerts_job_requires_the_base_job(self):
         system = FakeSystem()
         output = io.StringIO()
