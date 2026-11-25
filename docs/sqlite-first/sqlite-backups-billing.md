@@ -111,7 +111,10 @@ retention and compression with an error, and nothing is deleted.
   25 MB/s, 48%), which suggests about two minutes for a 4.5 GB file including
   the check. Real data has zeroed free pages and should shrink more; time the
   first real run. A failure prints a warning, keeps the raw copy, and the deploy
-  still counts as done. Older bundles are not compressed; they age out.
+  still counts as done. Older bundles are not compressed; they age out. If a
+  run is killed (reboot, out of memory), the next compress step removes its
+  `.database.sqlite.gz.partial` file, so retention can still age the bundle
+  out. If you switch the flag off after such a crash, delete that file by hand.
 - `tiered_retention`: keep the newest 5 bundles, plus one per day for 14 days
   (that day's newest verified bundle, else its newest). These are still kept as
   before: the newest bundle, the newest verified bundle, the newest bundle that
