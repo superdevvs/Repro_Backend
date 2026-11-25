@@ -48,6 +48,15 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(self.select(entries=entries, active="binlog.000006", next_file="binlog.000006",
                                      mtimes=old, keep=5), None)
 
+    def test_fewer_closed_files_than_the_minimum_count_are_all_kept(self):
+        # closed[len(closed) - keep:] turns into a negative slice when keep is larger,
+        # which kept only the newest few instead of every closed file.
+        entries = catalog(1, 6)
+        old = ages(1, 6, {n: 30 for n in range(1, 6)})
+        for keep in (6, 7, 30):
+            self.assertIsNone(self.select(entries=entries, active="binlog.000006", next_file="binlog.000006",
+                                          mtimes=old, keep=keep), keep)
+
     def test_the_active_file_is_never_a_candidate(self):
         entries = catalog(1, 3)
         mtimes = ages(1, 3, {1: 30, 2: 30, 3: 30})

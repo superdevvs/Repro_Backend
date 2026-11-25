@@ -42,7 +42,7 @@ def select_target(entries: list[tuple[str, int]], *, active: str, checkpoint_nex
         backup.need(chain.next_log(earlier) == later, "binary log inventory has a gap")
     backup.need(number(checkpoint_next)[0] == prefix, "archive checkpoint names a different log sequence")
     closed = names[:-1]
-    kept_tail = set(closed[len(closed) - keep_files:]) if keep_files else set()
+    kept_tail = set(closed[max(0, len(closed) - keep_files):]) if keep_files else set()
     archived_before = number(checkpoint_next)[1]
     last = None
     for name in closed:
