@@ -252,6 +252,39 @@ class TelnyxSpoolReplayTest extends TestCase
         $this->assertCount(1, $this->spool()->entries(TelnyxMaintenanceSpool::TEXTS));
     }
 
+    public function test_a_lock_that_cannot_be_opened_fails_loudly(): void
+    {
+        $this->save('messaging', $this->inbound('evt_no_lock', 'msg_no_lock', 'hello'), $this->t0);
+        // Something the replay cannot open as its lock file, as when the
+        // deploy user cannot write to the spool folder.
+        mkdir($this->spoolPath.'/.replay.lock');
+
+        $this->artisan('telnyx:replay-spool')
+            ->expectsOutputToContain('Cannot open the Telnyx spool lock')
+            ->assertFailed();
+
+        $this->assertSame(0, Message::count());
+        $this->assertCount(1, $this->spool()->entries(TelnyxMaintenanceSpool::TEXTS));
+    }
+
+    public function test_a_replay_already_running_is_skipped_quietly(): void
+    {
+        $this->save('messaging', $this->inbound('evt_locked', 'msg_locked', 'hello'), $this->t0);
+        $held = fopen($this->spoolPath.'/.replay.lock', 'c');
+        $this->assertTrue(flock($held, LOCK_EX | LOCK_NB));
+
+        try {
+            $this->artisan('telnyx:replay-spool')
+                ->expectsOutputToContain('Another Telnyx spool replay is running.')
+                ->assertSuccessful();
+        } finally {
+            flock($held, LOCK_UN);
+            fclose($held);
+        }
+
+        $this->assertSame(0, Message::count());
+    }
+
     public function test_an_empty_or_missing_spool_is_a_quiet_no_op(): void
     {
         $this->artisan('telnyx:replay-spool')->expectsOutputToContain('Telnyx spool is empty.')->assertSuccessful();

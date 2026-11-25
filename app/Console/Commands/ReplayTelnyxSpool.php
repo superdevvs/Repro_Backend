@@ -47,7 +47,14 @@ class ReplayTelnyxSpool extends Command
         }
 
         $lock = @fopen($spool->root().'/.replay.lock', 'c');
-        if ($lock === false || ! flock($lock, LOCK_EX | LOCK_NB)) {
+        if ($lock === false) {
+            // Not "another replay": nothing would ever replay these texts.
+            $this->error('Cannot open the Telnyx spool lock; check that this user can write to '.$spool->root().'.');
+
+            return self::FAILURE;
+        }
+        if (! flock($lock, LOCK_EX | LOCK_NB)) {
+            fclose($lock);
             $this->warn('Another Telnyx spool replay is running.');
 
             return self::SUCCESS;
