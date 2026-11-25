@@ -41,6 +41,100 @@ class WriterPolicyCheckCommandTest extends TestCase
         }
     }
 
+    /** @var array<string, array{0: mixed, 1: mixed, 2: string|false}> Environment values to restore. */
+    private array $savedEnvironment = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->savedEnvironment as $name => [$server, $env, $process]) {
+            if ($server === null) {
+                unset($_SERVER[$name]);
+            } else {
+                $_SERVER[$name] = $server;
+            }
+            if ($env === null) {
+                unset($_ENV[$name]);
+            } else {
+                $_ENV[$name] = $env;
+            }
+            putenv($process === false ? $name : $name.'='.$process);
+        }
+        $this->savedEnvironment = [];
+        parent::tearDown();
+    }
+
+    /** Set real environment variables, as a deployed .env would, and rebuild the database config from them. */
+    private function useEnvironment(array $values): void
+    {
+        foreach ($values as $name => $value) {
+            $this->savedEnvironment[$name] ??= [$_SERVER[$name] ?? null, $_ENV[$name] ?? null, getenv($name)];
+            $_SERVER[$name] = $_ENV[$name] = $value;
+            putenv($name.'='.$value);
+        }
+        config(['database' => require config_path('database.php')]);
+    }
+
+    /**
+     * Answers the check's session query and token transaction as a correctly
+     * provisioned server would, and records where it was asked to connect.
+     */
+    private function provisionedServer(): ConnectionFactory
+    {
+        $factory = new class(app()) extends ConnectionFactory
+        {
+            /** @var list<array> */
+            public array $made = [];
+
+            public function make(array $config, $name = null)
+            {
+                $this->made[] = $config;
+
+                return new class
+                {
+                    public function selectOne($query)
+                    {
+                        return (object) ['isolation' => 'READ-COMMITTED', 'row_lock_wait' => 5, 'metadata_lock_wait' => 5];
+                    }
+
+                    public function transaction($callback)
+                    {
+                        return $callback();
+                    }
+
+                    public function disconnect(): void {}
+                };
+            }
+        };
+        $this->app->instance(ConnectionFactory::class, $factory);
+
+        return $factory;
+    }
+
+    private function check(): array
+    {
+        $code = Artisan::call('db:writer-policy-check');
+
+        return [$code, json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR)];
+    }
+
+    public function test_a_database_url_in_the_environment_passes_with_the_shipped_connections(): void
+    {
+        // The shipped sqlite, mariadb, pgsql and sqlsrv templates also read DB_URL, but nothing
+        // connects through them. Only the default connection's target is the application's.
+        $this->useEnvironment(['DB_CONNECTION' => 'mysql', 'DB_URL' => 'mysql://url-user:url-secret@url-host:3307/url_database']);
+        $factory = $this->provisionedServer();
+
+        [$code, $report] = $this->check();
+
+        $this->assertSame([], $report['problems']);
+        $this->assertSame(0, $code);
+        $this->assertSame('mysql', $report['engine']);
+        $this->assertCount(1, $factory->made);
+        $this->assertSame(['url-host', 3307, 'url_database'], [
+            $factory->made[0]['host'] ?? null, $factory->made[0]['port'] ?? null, $factory->made[0]['database'] ?? null,
+        ]);
+    }
+
     public function test_the_check_connects_to_the_database_url_target_as_the_application_does(): void
     {
         config([

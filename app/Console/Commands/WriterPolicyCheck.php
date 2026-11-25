@@ -24,19 +24,23 @@ final class WriterPolicyCheck extends Command
     public function handle(Repository $config, ConnectionFactory $factory): int
     {
         $default = (string) $config->get('database.default');
-        // Resolve DB_URL as Laravel's DatabaseManager does before it connects, so the
-        // check inspects the database the application actually uses.
-        $parser = new ConfigurationUrlParser;
-        $connections = array_map(fn ($settings) => is_array($settings) || is_string($settings)
-            ? $parser->parseConfiguration($settings) : $settings, (array) $config->get('database.connections'));
-        $engine = $connections[$default]['driver'] ?? null;
+        $connections = (array) $config->get('database.connections');
+        // Resolve DB_URL for the default connection as Laravel's DatabaseManager does
+        // before it connects, so the check inspects the database the application uses.
+        $target = $connections[$default] ?? null;
+        if (is_array($target) || is_string($target)) {
+            $target = (new ConfigurationUrlParser)->parseConfiguration($target);
+        }
+        $engine = $target['driver'] ?? null;
         if ($engine !== 'mysql') {
             return $this->report(['engine' => $engine, 'writer_policy' => 'not applicable', 'problems' => []]);
         }
 
         $problems = [];
         foreach ($connections as $name => $settings) {
-            if ($name === $default || ($settings['driver'] ?? null) !== 'mysql') {
+            // Other connections count by the driver they declare. The shipped sqlite, mariadb,
+            // pgsql and sqlsrv templates read DB_URL too, but nothing connects through them.
+            if ($name === $default || ! is_array($settings) || ($settings['driver'] ?? null) !== 'mysql') {
                 continue;
             }
             if (($settings['repro_writer_policy'] ?? false) === true) {
@@ -45,7 +49,7 @@ final class WriterPolicyCheck extends Command
                 $problems[] = "Connection {$name} writes MySQL without the writer token or a table limit.";
             }
         }
-        $policy = ($connections[$default]['repro_writer_policy'] ?? false) === true;
+        $policy = ($target['repro_writer_policy'] ?? false) === true;
         if (! $policy) {
             $problems[] = 'The writer policy is off on the default MySQL connection.';
         }
@@ -55,7 +59,7 @@ final class WriterPolicyCheck extends Command
         $connection = null;
         try {
             // A fresh session, never the shared connection or an open transaction.
-            $connection = $factory->make($connections[$default], $default.'-writer-policy-check');
+            $connection = $factory->make($target, $default.'-writer-policy-check');
             $row = $connection->selectOne('SELECT @@SESSION.transaction_isolation AS isolation,
                 @@SESSION.innodb_lock_wait_timeout AS row_lock_wait, @@SESSION.lock_wait_timeout AS metadata_lock_wait');
             $session = ['isolation' => $row->isolation, 'row_lock_wait' => (int) $row->row_lock_wait,

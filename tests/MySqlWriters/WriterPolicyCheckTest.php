@@ -18,8 +18,21 @@ final class WriterPolicyCheckTest extends TestCase
         $this->setUpWriterFixture();
     }
 
+    private ?array $savedUrl = null;
+
     protected function tearDown(): void
     {
+        if ($this->savedUrl !== null) {
+            [$server, $env, $process] = $this->savedUrl;
+            unset($_SERVER['DB_URL'], $_ENV['DB_URL']);
+            if ($server !== null) {
+                $_SERVER['DB_URL'] = $server;
+            }
+            if ($env !== null) {
+                $_ENV['DB_URL'] = $env;
+            }
+            putenv($process === false ? 'DB_URL' : 'DB_URL='.$process);
+        }
         $this->tearDownWriterFixture();
         parent::tearDown();
     }
@@ -71,6 +84,23 @@ final class WriterPolicyCheckTest extends TestCase
 
         $this->assertSame(1, $code);
         $this->assertStringContainsString('mysql_extra', implode(' ', $report['problems']));
+    }
+
+    public function test_a_database_url_in_the_environment_passes_with_the_shipped_connections(): void
+    {
+        // As a deployed .env would: the shipped sqlite, mariadb, pgsql and sqlsrv templates
+        // read DB_URL too, but nothing connects through them.
+        $this->savedUrl = [$_SERVER['DB_URL'] ?? null, $_ENV['DB_URL'] ?? null, getenv('DB_URL')];
+        $_SERVER['DB_URL'] = $_ENV['DB_URL'] = 'mysql://localhost/repro_mysql_test';
+        putenv('DB_URL=mysql://localhost/repro_mysql_test');
+        config(['database' => require config_path('database.php')]);
+        DB::purge('mysql');
+        [$code, $report] = $this->check();
+
+        $this->assertSame([], $report['problems']);
+        $this->assertSame(0, $code);
+        $this->assertTrue($report['token']['acquired']);
+        $this->assertFalse($this->tokenIsHeld());
     }
 
     public function test_checks_the_database_url_target_as_the_application_does(): void
