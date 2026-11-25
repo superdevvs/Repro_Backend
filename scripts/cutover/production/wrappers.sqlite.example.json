@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "profiles": {
+    "laravel-worker": {
+      "action": "queue-worker", "engine": "sqlite", "user": "www-data", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0007", "env": {}, "timeout_seconds": null,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "queue:work", "database",
+               "--queue=mail,integrations,default,watermarks", "--sleep=3", "--tries=3"]
+    },
+    "media-archives": {
+      "action": "queue-worker", "engine": "sqlite", "user": "www-data", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0007", "env": {}, "timeout_seconds": null,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "queue:work", "database", "--queue=media-archives",
+               "--sleep=2", "--tries=3", "--timeout=600", "--max-time=3600"]
+    },
+    "studio": {
+      "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
+      "argv": ["/home/maverick/.local/share/repro-studio/worker.sh"]
+    },
+    "lab-tour": {
+      "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
+      "argv": ["/home/maverick/.local/share/repro-studio/lab-tour-worker.sh"]
+    },
+    "voice-realtime": {
+      "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "queue:work", "database", "--queue=voice-realtime"]
+    },
+    "voice-notifications": {
+      "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "queue:work", "database", "--queue=voice-notifications"]
+    },
+    "voice-transcripts": {
+      "action": "queue-worker", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": null,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "queue:work", "database", "--queue=voice-transcripts"]
+    },
+    "telnyx-replay": {
+      "action": "queue-worker", "engine": "sqlite", "user": "www-data", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": 600,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "telnyx:replay-spool"]
+    },
+    "cutover-smoke": {
+      "action": "queue-worker", "engine": "sqlite", "user": "www-data", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0022", "env": {}, "timeout_seconds": 300,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "cutover:smoke", "--write", "--json"]
+    },
+    "scheduler": {
+      "action": "scheduler", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": 3300,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "schedule:run"]
+    },
+    "auth-prune": {
+      "action": "scheduler", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": 900,
+      "argv": ["/usr/bin/php", "/var/www/backend/artisan", "auth:prune-security-limits", "--limit=1000"]
+    },
+    "cubicasa-poll": {
+      "action": "scheduler", "engine": "sqlite", "user": "maverick", "group": "www-data",
+      "cwd": "/var/www/backend", "umask": "0002", "env": {}, "timeout_seconds": 1500,
+      "argv": ["/bin/sh", "-c", "/usr/local/sbin/repro-storage-guard --live && exec /usr/bin/flock -n /home/maverick/.repro-cubicasa-revision-poll/poll.lock /usr/bin/php artisan cubicasa:refresh-deliveries --limit=25"]
+    }
+  }
+}

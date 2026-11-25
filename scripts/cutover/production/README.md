@@ -14,12 +14,17 @@ approval for each action (handoff item W1).
 | `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.json` | Writer profiles: user, command, action, engine |
 | host config (see below) | `/etc/repro-cutover-fence/host.json` | Paths, queues, host commands, owner options |
 | `systemd/repro-cutover-watchdog.{service,timer}` | `/etc/systemd/system/` | Watchdog tick every minute from boot |
-| `tmpfiles.d/repro-cutover-fence.conf` | `/etc/tmpfiles.d/` | Recreates `/run/repro-cutover-fence` and `/run/repro-cutover-ingress` (root, 0755) at every boot |
+| `tmpfiles.d/repro-cutover-fence.conf` | `/etc/tmpfiles.d/` | Recreates `/run/repro-cutover-fence`, `/run/repro-cutover-ingress` and `/run/repro-telnyx-capture` (root, 0755) at every boot |
 | `systemd/repro-media-archives.service.d/cutover-fence.conf` | `/etc/systemd/system/repro-media-archives.service.d/` | Media worker through the wrapper |
 | `supervisor/laravel-worker.conf.example` | compare with `/etc/supervisor/conf.d/laravel-worker.conf` | System worker group through the wrapper |
 | `sudoers/repro-cutover-admit` | `/etc/sudoers.d/repro-cutover-admit` | Deploy user's Supervisor and cron reach the wrapper only |
-| `nginx/repro-cutover-gate.conf` | `/etc/nginx/conf.d/` | http-level map |
-| `nginx/repro-cutover-hold.conf` | included at the top of `frontend.conf` and `laravel.conf` server blocks | Server-level 503 unless `/run/repro-cutover-ingress/open` exists |
+| `nginx/repro-cutover-gate.conf` | `/etc/nginx/conf.d/` | Two http-level maps: the hold (default 1, no exemption) and the Telnyx paths |
+| `nginx/repro-cutover-hold.conf` | included at the top of `frontend.conf` and `laravel.conf` server blocks | Server-level 503 unless `/run/repro-cutover-ingress/open` exists; while held, Telnyx goes to the capture |
+| `capture/capture.php` | `/opt/repro-telnyx-capture/capture.php` (root 0644) | Hold-time Telnyx capture into the app's spool (below) |
+| `capture/php-fpm.conf` | `/etc/repro-telnyx-capture/php-fpm.conf` (root 0644) | The capture's own PHP-FPM master and pool |
+| `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` (root 0644) | Release path and open marker |
+| `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times |
+| `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | `wrappers.example.json` plus `telnyx-replay` and `cutover-smoke` (design 3.8) |
 | `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper |
 
 All files and every parent directory must be owned by root and not writable
@@ -66,6 +71,45 @@ Deploy-App); another file would close nothing and the hold would fail open. The 
 must observe the deployed release, artifact, source and configuration digests
 independently of the pinned policy. The MySQL probe must report
 `writable` and `business_activity` for the target.
+
+## Telnyx while held (design 5.2)
+
+While the hold is in force, nginx answers 503 before Laravel and the freeze
+drains the app's PHP-FPM, so the app's own maintenance capture never sees a
+text. `repro-cutover-hold.conf` therefore sends exactly the Telnyx webhook
+paths (`$repro_cutover_telnyx` in the gate file: messaging, status, voice and
+shared MMS with a UUID) to the hold-time capture, in both server blocks,
+until the open marker exists. The rewrite lives in the one hold include, so
+a server block cannot have the hold without the capture, and a gate file
+without the Telnyx map fails `nginx -t`. The v1 `repro-cutover-telnyx.conf`
+must not be installed.
+
+`repro-telnyx-capture.service` runs `capture.php` in its own PHP-FPM master
+(pool `repro-telnyx-capture`, `www-data`, 4 static children, socket in
+`/run/repro-telnyx-capture`). The cutover never drains or stops it, so it
+must not appear in `drain_fpm`, `stop_workers` or `writer_processes`.
+`capture.php` boots no kernel and opens no database: it loads the release's
+autoloader and cached config, checks the request as
+`CaptureTelnyxDuringMaintenance` does (fresh timestamp, Ed25519 signature,
+event ID) and saves it with the receiver's `TelnyxMaintenanceSpool` into the
+spool `telnyx:replay-spool` reads. The spool path, signature key, tolerance
+and body limit all come from the app's cached config; `capture.json` names
+only the release and the open marker. Under the spool's capture lock it
+checks the marker again and refuses once it exists.
+
+| Request while held | Answer |
+| --- | --- |
+| Signed text, status update or shared MMS, saved and flushed to disk | 200 `{"status":"captured"}` |
+| Signed voice event, saved for the missed-call list | 503 with `Retry-After` (provider retry and failover unchanged) |
+| Unsigned, stale, without an event ID, not saved, or the marker appeared | 503 `{"captured":false}` with `Retry-After` |
+| Capture down, failed (500) or a body over 1 MiB | 503 `{"admission_held":true}` with `Retry-After` from nginx |
+| Anything else, or `/__repro_telnyx_capture` called directly | 503 `{"admission_held":true}` with `Retry-After` |
+
+With the marker, Telnyx reaches the app in both server blocks and the
+internal URI answers 404. The reopens (design 3.6 and 3.7, built in later
+slices) replay the spool through `admit.py telnyx-replay` (`www-data`, umask
+0002) before the queues resume and again after the marker; the replay waits
+for any capture still saving.
 
 ## Owner options (defaults are the safe choice)
 
@@ -127,6 +171,11 @@ lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
 
 `test_admit.py`, `test_fences.py` and `test_adapter.py` need Linux root and
 run in a disposable container through `../run-linux-tests.sh`. The cron and
-unit-file tests also run on Windows. Real systemd, Supervisor, nginx reloads
+unit-file tests also run on Windows. `test_nginx_hold.py` needs nginx and
+PHP-FPM (the QA image has both). `test_capture.py`'s file tests run anywhere;
+its `CaptureTests` run the real `capture.php` behind nginx and replay a
+captured text through `telnyx:replay-spool` into the app's handler, so they
+need root, nginx, PHP-FPM and an application checkout whose `vendor/` the
+web user can read (the command is in the file's docstring). Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).

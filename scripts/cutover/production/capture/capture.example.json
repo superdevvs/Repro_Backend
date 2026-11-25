@@ -1,0 +1,4 @@
+{
+  "app_root": "/var/www/backend",
+  "ingress_open_marker": "/run/repro-cutover-ingress/open"
+}

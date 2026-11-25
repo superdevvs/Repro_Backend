@@ -640,12 +640,17 @@ class UnitFileTests(unittest.TestCase):
 
     def test_every_boot_recreates_the_runtime_directories_of_the_guard_and_nginx(self):
         # /run is a tmpfs. The guard checks the evidence directory's chain, the controller writes
-        # its records there, and nginx looks for the open marker in the ingress directory.
+        # its records there, nginx looks for the open marker in the ingress directory, and the
+        # hold-time Telnyx capture's PHP-FPM listens in its own directory.
         config = self.HERE / "tmpfiles.d" / "repro-cutover-fence.conf"
         lines = [line.split() for line in config.read_text(encoding="ascii").splitlines()
                  if line.strip() and not line.startswith("#")]
+        hold = (self.HERE / "nginx" / "repro-cutover-hold.conf").read_text(encoding="ascii")
+        capture = re.findall(r"fastcgi_pass unix:(\S+);", hold)
+        self.assertEqual(1, len(capture))
         self.assertEqual({guard.EVIDENCE.parent.as_posix(), guard.ACTIVATION.parent.as_posix(),
-                          cli.INGRESS_OPEN.parent.as_posix()}, {line[1] for line in lines})
+                          cli.INGRESS_OPEN.parent.as_posix(), Path(capture[0]).parent.as_posix()},
+                         {line[1] for line in lines})
         for line in lines:
             with self.subTest(path=line[1]):
                 self.assertEqual(["d", line[1], "0755", "root", "root", "-"], line)
