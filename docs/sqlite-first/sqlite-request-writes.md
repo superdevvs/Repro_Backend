@@ -12,7 +12,7 @@ It needs no migration.
 | Request telemetry is written after the response is sent. Durations still stop when the response was ready. | On | `SYSTEM_OVERVIEW_RECORD_AFTER_RESPONSE=false` |
 | Table and column checks on request paths come from a cache keyed by the release. | **Off** | `SCHEMA_CACHE_ENABLED=false` |
 | `automation_runs` and their steps get an age limit, run by the daily `model:prune` at 03:45. | **Off** until an age is set | leave `AUTOMATION_RUNS_RETENTION_DAYS` empty |
-| Cherry-pick of `2943bc40`: the fal.ai job no longer saves its outgoing request (which can hold the whole image) in `provider_payload`; AI job and automation run lists read fewer columns; scheduled iGUIDE recovery goes through the recovery throttle instead of queuing asset ingest again (it still moves older, unassigned iGUIDE floorplans onto the booked iGUIDE service first, as the ingest job did). | On | revert `b7b79cc6`, then `cb51c0cd` |
+| Cherry-pick of `2943bc40`: the fal.ai job no longer saves its outgoing request (which can hold the whole image) in `provider_payload`; AI job and automation run lists read fewer columns; scheduled iGUIDE recovery goes through the recovery throttle instead of queuing asset ingest again (it still moves older, unassigned iGUIDE floorplans onto the booked iGUIDE service first, and refreshes cached file and shoot lists, as the ingest job did). | On | revert `51a227e1`, `ca618eb6`, `b7b79cc6`, then `cb51c0cd` |
 
 What users may notice: "Last active" on the profile security page can lag by up to five
 minutes. Nothing else should look different.
@@ -90,8 +90,20 @@ test first.
 - reviewer#1 (`deployment-storage.py`): documented. It belongs to the sqlite-backups-billing branch, which changes that file. That branch reads only the `driver` key, so a `mysql://` `DB_URL` would look like SQLite there too.
 - reviewer#2 (schema cache off): owner decision. It stays off until `SCHEMA_CACHE_ENABLED=true`.
 - reviewer#3 (two changes on by default): owner decision. They are the point of P0-6; each has an env switch (table above).
-- reviewer#4 (no MySQL run): run locally on MySQL 8.4.13. All lane test files pass there (details below). A MySQL CI shard still needs PR #46.
+- reviewer#4 (no MySQL run): run locally on MySQL 8.4.13 (details below). Every test the lane added or changed passes there. One older test in `MediaAttributionBoundaryTest` fails only because the PR #46 dump lacks a base column. A MySQL CI shard still needs PR #46.
 - reviewer#5 (not pushed): owner decision. Push and PR wait for approval.
+
+Second round: Codex reviewed `9bff5eaa` and found nothing. A re-check of the first round:
+
+- sqlite-request-writes#2 follow-up: fixed in `ca618eb6` and `51a227e1`. The scheduled sync moved the
+  files but, unlike the ingest job, did not refresh cached file and shoot lists. The move writes
+  no `updated_at`, so the file list could show the floorplans as unassigned for up to 30 seconds.
+  Test: `IguideAutomaticSyncTest::test_scheduled_sync_refreshes_cached_media_after_assigning_legacy_floorplans`.
+- reviewer#1: still holds. The sqlite-backups-billing branch changes `deployment-storage.py`.
+  This branch does not.
+- reviewer#4: corrected. The first list left out `MediaAttributionBoundaryTest`,
+  `StudioExistingEndpointContractIntegrationTest` and `StudioQueueControllerTest`. They now run
+  on MySQL; results are below.
 
 MySQL 8.4.13 run (local, READ COMMITTED, `utf8mb4_0900_bin`): main's migrations do not run
 on MySQL (`shoot_service` points at `shoots` before it exists), so the schema came from the
@@ -104,7 +116,14 @@ file. These passed: `IguideAutomaticSyncTest`, `SqliteBackupCommandsEngineTest`,
 `Schema::create` commits on MySQL and ends the test transaction). `MediaStorageHealthTest`
 passed with `MEDIA_HEALTH_DATABASE_DIRECTORY` set, because the server ran in another container.
 With `DB_CONNECTION=sqlite` and a `mysql://` `DB_URL`, `DatabaseDriver` said `mysql`, as did
-the live connection.
+the live connection. Second round, same setup: `IguideAutomaticSyncTest` (18),
+`StudioExistingEndpointContractIntegrationTest` (17), `StudioQueueControllerTest` (4),
+`IguideFloorPlanDiscoveryTest` (35) and `ProviderFloorplanRecoveryTest` (11) passed.
+`MediaAttributionBoundaryTest` passed 14 of 15, including the lane's fal test. The one error is in
+an older test: the dump has no `services.financial_only` column (base migration `2026_11_05_190000`).
+`InternalTestShootIsolationTest` passed 13 of 14. Its one error is missing
+`shoot_delivery_notification_outbox` (base migration `2026_11_06_000002`). Neither test is touched
+by this branch.
 
 Left as they were (both also on base):
 
