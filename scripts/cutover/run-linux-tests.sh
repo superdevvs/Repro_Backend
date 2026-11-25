@@ -6,6 +6,10 @@
 #     --mount type=bind,source=<checkout>,target=/src,readonly \
 #     --entrypoint /bin/sh repro-mysql-rehearsal-qa:20261122 /src/scripts/cutover/run-linux-tests.sh
 #
+# The Laravel tests in production/test_queue_flag.py also need the vendor tree:
+#   --mount type=volume,source=<vendor volume>,target=/src/vendor,readonly,volume-subpath=vendor
+# (an empty vendor/ folder in the checkout is the mount point). Without it they are skipped.
+#
 # Never run this on a real host: it installs a copy of the guard at its fixed
 # production path inside the container.
 #
@@ -33,7 +37,7 @@ install -d -o root -g root -m 0700 /var/lib/repro-fence-test
 python3 -B -m unittest discover -s "$cutover" -p test_runner.py
 python3 -B -m unittest discover -s "$cutover/fence" -p test_guard.py
 python3 -B -m unittest discover -s "$cutover" -p test_process_contract.py -v
-for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.py; do
+for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.py test_queue_flag.py; do
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
 # The MySQL probe's fixture tests skip without their fixtures (see the check at the top).

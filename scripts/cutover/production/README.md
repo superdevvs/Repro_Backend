@@ -20,6 +20,8 @@ approval for each action (handoff item W1).
 | `systemd/repro-media-archives.service.d/cutover-fence.conf` | `/etc/systemd/system/repro-media-archives.service.d/` | Media worker through the wrapper |
 | `supervisor/laravel-worker.conf.example` | compare with `/etc/supervisor/conf.d/laravel-worker.conf` | System worker group through the wrapper |
 | `sudoers/repro-cutover-admit` | `/etc/sudoers.d/repro-cutover-admit` | Deploy user's Supervisor and cron reach the wrapper only |
+| `sbin/repro-queue-flag` | `/usr/local/sbin/repro-queue-flag` (root 0755) | Deploy user's queue pause and resume as `www-data` (imports `adapter.py` from `/opt/repro-cutover-fence/production/`) |
+| `sudoers/repro-queue-flag` | `/etc/sudoers.d/repro-queue-flag` (root 0440) | One line: the deploy user runs the queue flag helper |
 | `nginx/repro-cutover-gate.conf` | `/etc/nginx/conf.d/` | http-level map |
 | `nginx/repro-cutover-hold.conf` | included at the top of `frontend.conf` and `laravel.conf` server blocks | Server-level 503 unless `/run/repro-cutover-ingress/open` exists |
 | `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper |
@@ -161,6 +163,35 @@ the `connection:queue` argument, which becomes `$1`:
 "queue_pause": ["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c",
   "cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:pause \"$1\"", "repro-queue"]
 ```
+
+**Queue flags for the deploy user** (design 5.1). The pre-hold pauses and
+the undo list's resumes run as the deploy user through one sudoers line:
+
+```text
+sudo -n /usr/local/sbin/repro-queue-flag pause database:media-archives
+sudo -n /usr/local/sbin/repro-queue-flag resume database:media-archives
+```
+
+Laravel keeps a pause flag in the file cache: the file is
+`storage/framework/cache/data/<h[0:2]>/<h[2:4]>/<h>`, where `h` is the SHA-1
+of `illuminate:queue:paused:<connection>:<queue>`, and holds
+`9999999999b:1;` (forever, `true`). The folders belong to `www-data` with
+mode 0755, so the deploy user can neither write nor remove a flag, and a
+flag its workers cannot read counts as "not paused". The helper
+(`/usr/bin/python3 -IS`, standard library only) takes exactly
+`pause|resume <connection:queue>` (exit 2 otherwise), runs only as root
+(exit 1), loads `/etc/repro-cutover-fence/host.json` with `load_config`,
+reading `host.json` and `identity.json` through `guard.read_protected`, so
+it refuses whatever the controller refuses (exit 1). It refuses a queue not
+listed in `queues`, exact match only (exit 1). Then it runs
+`commands.queue_pause` or `queue_resume` with the queue appended, with only
+`PATH` and `LANG` in the environment, in its own process group, for at most
+`command_seconds`. A failure or timeout exits 3, the whole group is killed
+and the flag may or may not have changed. The flag is `www-data:www-data`
+0644 in 0755 folders whatever umask sudo or the caller had. The helper takes
+no lock: a resume while the controller holds the queues paused un-pauses
+that queue, so only the undo list uses `resume`. `database:cutover-smoke`
+can be flagged only if `host.json` lists it.
 
 **New `paths`** (absolute): `identity_config`, `switch_record`,
 `sealed_hash`, `receipt`, `activity`, `activated`, `smoke_window`,
@@ -322,6 +353,13 @@ and removes the containers and volumes again; `--linux-suite` runs
 `../run-linux-tests.sh` prints a `WARNING` line naming the skipped probe tests,
 first and last, and still exits 0; with `REPRO_REQUIRE_PROBE_FIXTURE=1` it
 stops before any suite. The probe file's docstring has the same recipe by
-hand. Its accounts and renderer tests run anywhere with bash. Real systemd, Supervisor, nginx reloads
+hand. Its accounts and renderer tests run anywhere with bash. `test_queue_flag.py`
+needs Linux root for the helper tests; its Laravel tests also need `php` and
+the vendor tree at the repository root (mount the locked vendor volume at
+`/src/vendor`; a read-only checkout needs an empty `vendor/` folder as the
+mount point). They run the real `php artisan queue:pause` and `queue:resume`
+through the helper and a real `queue:work` as a member of `www-data`, and are
+skipped without vendor. Its sudoers test checks the text only: `visudo -cf`
+is not in the QA image and runs at install. Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).
