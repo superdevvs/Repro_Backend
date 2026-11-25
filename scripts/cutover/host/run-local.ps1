@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$LockedVendorArchive,
     [Parameter(Mandatory = $true)][string]$PinnedPyMySqlWheel,
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
-    [ValidateSet('prewrite', 'postwrite')][string]$Scenario = 'prewrite'
+    [ValidateSet('prewrite', 'prewrite-fastcgi', 'postwrite')][string]$Scenario = 'prewrite'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,6 +58,7 @@ python3 -c 'import json; lock=json.load(open("composer.lock")); installed=json.l
 php -l /host/probe.php >/dev/null
 case "$3" in
     prewrite) entrypoint=/host/rehearse.py ;;
+    prewrite-fastcgi) entrypoint=/host/prewrite-fastcgi.py ;;
     postwrite) entrypoint=/host/postwrite.py ;;
     *) exit 3 ;;
 esac

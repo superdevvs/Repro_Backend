@@ -175,7 +175,7 @@ class ContainerRehearsal:
         self.php(engine, "artisan", "config:cache", "--no-interaction")
         require(CONFIG.is_file(), "Laravel did not create the expected cache")
 
-    def close(self):
+    def close_server(self):
         if self.server is not None:
             self.server.terminate()
             try:
@@ -184,13 +184,14 @@ class ContainerRehearsal:
                 self.server.kill()
                 self.server.wait(3)
             self.server = None
+
+    def close(self):
+        self.close_server()
         if hasattr(self, "admin"):
             self.admin.close()
 
     def open_server(self, engine):
-        if self.server is not None:
-            self.server.terminate()
-            self.server.wait(4)
+        self.close_server()
         self.server = subprocess.Popen(
             ("php", "-S", "127.0.0.1:8764", "/host/probe.php"), cwd="/workspace",
             env=self.environment(engine), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

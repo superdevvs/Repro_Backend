@@ -50,7 +50,7 @@ function runProbe(): array
     $gate = json_decode(file_get_contents('/private/authority/gate.json'), true, flags: JSON_THROW_ON_ERROR);
     requireFixture(posix_geteuid() === 1000 && in_array($engine, ['sqlite', 'mysql'], true)
         && $gate['engine'] === $engine);
-    $web = PHP_SAPI === 'cli-server';
+    $web = in_array(PHP_SAPI, ['cli-server', 'fpm-fcgi'], true);
     $operation = $web ? ($_SERVER['REQUEST_METHOD'] === 'GET' ? 'read' : 'write') : ($GLOBALS['argv'][1] ?? '');
     requireFixture(in_array($operation, ['read', 'write', 'enqueue', 'work'], true));
 
@@ -154,7 +154,7 @@ function exerciseLaravel(string $engine, string $operation): array
 try {
     echo json_encode(runProbe(), JSON_THROW_ON_ERROR).PHP_EOL;
 } catch (Throwable $error) {
-    if (PHP_SAPI === 'cli-server') {
+    if (in_array(PHP_SAPI, ['cli-server', 'fpm-fcgi'], true)) {
         http_response_code(500);
     }
     $code = $error->getCode();

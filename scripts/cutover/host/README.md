@@ -27,6 +27,12 @@ The report records the exact source commit and harness hashes, freeze-to-target-
 
 The scope covers a dedicated fixture HTTP route on PHP's CLI server and a one-shot database worker under the same synthetic user. The scheduler inventory is empty by construction. Actual application HTTP ingress, the root-owned installation and authority publisher, long-lived workers, the systemd scheduler, provider replay, production-sized parity, comparable load and off-site restore require separate evidence. The fixture's local backup values remain false, and the adapter refuses to open MySQL for writes.
 
+## Private nginx and PHP-FPM restart rehearsal
+
+Set `$params.Scenario = 'prewrite-fastcgi'` and a fresh evidence directory to run the same pre-write rehearsal through the pinned nginx and PHP-FPM binaries. nginx listens on a private Unix HTTP socket and forwards to a private FastCGI socket. Closing the fixture ingress denies a write with HTTP 503 before it reaches PHP-FPM, including after replacing both processes. An intentionally stale, open ingress marker exercises the PHP-FPM journal guard independently. Before each replacement the launcher sends `SIGQUIT`, waits for the master and observes the identified worker exit through its Linux pidfd. The dedicated smoke read and the one-shot queue use the same synthetic data and release cache.
+
+For host acceptance, install the root-owned guard and evidence publisher in an isolated staging host with the deployed nginx vhosts, PHP-FPM service, scheduler supervisor, and worker launchers. Close ingress across every writing route before Laravel, including GET routes with side effects, and verify retry behavior through nginx. Drain the old FPM cohort and verify cgroup and service-manager state under the scheduler hold and exclusive journal lease. Restart nginx, FPM and each worker launcher while the durable journal holds admission, then verify only the journal's engine can open after the publisher verifies the current boot. The local run covers one synthetic route and one FPM worker under the fixture account. Actual vhost mappings and systemd wiring remain staging acceptance work.
+
 ## Post-write failback fixture
 
 Request a separate disposable run with fresh evidence.
