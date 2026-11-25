@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from contextlib import closing
 import sys
@@ -368,6 +369,28 @@ class DetectorTests(unittest.TestCase):
                 db.execute("INSERT INTO jobs (queue, available_at, reserved_at, created_at) VALUES "
                            "('default', ?, NULL, ?), ('default', ?, NULL, ?)", (NOW - 601, NOW - 601, NOW + 900, NOW))
         self.induce("queue_stale", change)
+
+    def test_queue_stale_counts_a_reservation_no_worker_took_back(self):
+        # A worker that died leaves its job reserved. Laravel hands it out again only after the
+        # queue's retry_after; with no worker left nobody does, and nothing new was waiting.
+        expiry = probe.load_conditions()["queue_stale"]["threshold"]["reserved_expiry_seconds"]
+
+        def reserve(reserved_at):
+            with closing(sqlite3.connect(self.database)) as db, db:
+                db.execute("DELETE FROM jobs")
+                db.execute("INSERT INTO jobs (queue, available_at, reserved_at, created_at) VALUES "
+                           "('studio', ?, ?, ?)", (reserved_at - 5, reserved_at, reserved_at - 5))
+
+        self.induce("queue_stale", lambda: reserve(NOW - expiry - 601))
+        reserve(NOW - expiry + 60)  # Still within every queue's retry_after: a long job may be running.
+        self.assertEqual(self.run_probe()["queue_stale"]["state"], "ok")
+
+    def test_reserved_expiry_covers_every_retry_after_in_the_queue_config(self):
+        text = (REPO / "config" / "queue.php").read_text(encoding="utf-8")
+        values = [int(value) for value in re.findall(r"'retry_after' => (?:\(int\) env\('[A-Z_]+', )?(\d+)", text)]
+        self.assertGreaterEqual(len(values), 3)
+        expiry = probe.load_conditions()["queue_stale"]["threshold"]["reserved_expiry_seconds"]
+        self.assertGreaterEqual(expiry, max(values))
 
     def test_cache_write_failed_from_folder_mode_or_log(self):
         if os.name == "posix":

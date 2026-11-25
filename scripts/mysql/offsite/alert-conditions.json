@@ -27,7 +27,7 @@
     "mysql_restarted": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
       "threshold": {"min_uptime_seconds": 900}},
     "queue_stale": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
-      "threshold": {"max_age_seconds": 600}},
+      "threshold": {"max_age_seconds": 600, "reserved_expiry_seconds": 7260}},
     "cache_write_failed": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
       "threshold": {"window_seconds": 600, "max_read_bytes": 8388608, "max_folders": 20000}},
     "server_silent": {"class": "wake", "delivery_limit_seconds": 600, "source": "heartbeat",

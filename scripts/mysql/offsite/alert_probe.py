@@ -362,9 +362,13 @@ def historical_money_totals_changed(context: Context) -> tuple[str, str]:
 
 
 def queue_stale(context: Context) -> tuple[str, str]:
-    limit = context.threshold("queue_stale")["max_age_seconds"]
-    rows = app_rows(context, "SELECT COUNT(*), MIN(available_at) FROM jobs "
-                             f"WHERE reserved_at IS NULL AND available_at <= {int(context.now)}")
+    limits = context.threshold("queue_stale")
+    limit, expiry, now = limits["max_age_seconds"], int(limits["reserved_expiry_seconds"]), int(context.now)
+    # A reservation older than the longest retry_after in config/queue.php is expired on every
+    # queue: its worker died and no worker took the job back. It has waited since it expired.
+    rows = app_rows(context, "SELECT COUNT(*), MIN(CASE WHEN reserved_at IS NULL THEN available_at "
+                             f"ELSE reserved_at + {expiry} END) FROM jobs WHERE available_at <= {now} "
+                             f"AND (reserved_at IS NULL OR reserved_at <= {now - expiry})")
     count, oldest = rows[0]
     if not count or str(count) == "0" or oldest in (None, "NULL"):
         return "ok", "no waiting jobs"
