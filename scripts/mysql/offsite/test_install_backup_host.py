@@ -5,7 +5,11 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
+import stat
+import sys
+import tempfile
 import unittest
 
 import install_backup_host as installer
@@ -103,7 +107,10 @@ class FakeSystem:
 
     def set_acl(self, path, default, raw):
         self.mutate("set_acl", path, default)
-        if raw is None:
+        minimal = raw is not None and not default and {tag for tag, _, _ in installer.decode_acl(raw)} == {
+            installer.USER_OBJ, installer.GROUP_OBJ, installer.OTHER}
+        if raw is None or minimal:
+            # Like the kernel: an access ACL of only the three base entries is just the mode.
             self.acls.pop((path, default), None)
         else:
             self.acls[(path, default)] = raw
@@ -138,6 +145,43 @@ class AclTests(unittest.TestCase):
         acl = installer.with_named_user(installer.acl_from_mode(0o775), 801, installer.READ)
         self.assertEqual(installer.describe_acl(acl),
                          "user::rwx,user:801:r--,group::rwx,mask::rwx,other::r-x")
+
+
+@unittest.skipUnless(sys.platform == "linux", "needs Linux POSIX ACL xattrs")
+class RealAclUndoTests(unittest.TestCase):
+    """Undo on the real kernel: removing an access ACL leaves the group bits at the mask."""
+
+    def test_undo_returns_a_file_that_had_no_acl_to_its_exact_mode(self):
+        recorded = {"version": 1, "job": "base-backup", "groups": [], "users": [], "directories": [],
+                    "files": {}, "acls": {}}
+
+        class System(installer.LinuxSystem):
+            def user_id(self, name):
+                return 12345 if name == installer.ACCOUNT else None
+
+            def read(self, path):
+                if path.startswith(installer.RECORD_DIR):
+                    return json.dumps(recorded).encode() if path == installer.record_path("base-backup") else None
+                return super().read(path)
+
+            def remove_file(self, path):
+                assert path.startswith(installer.RECORD_DIR), path
+
+            def remove_tree(self, path):
+                assert path == installer.RECORD_DIR, path
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "private.env")
+            Path(path).write_text("APP_KEY=fixture\n")
+            os.chmod(path, 0o600)
+            system = System()
+            self.assertTrue(installer.apply_grant(system, installer.Grant(path, installer.ACCOUNT, installer.READ),
+                                                  recorded))
+            self.assertIsNotNone(system.get_acl(path, False))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(installer.undo("base-backup", system), 0)
+            self.assertIsNone(system.get_acl(path, False))
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, "undo widened the group bits")
 
 
 class JobTests(unittest.TestCase):

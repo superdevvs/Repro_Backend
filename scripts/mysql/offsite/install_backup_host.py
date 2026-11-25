@@ -698,6 +698,22 @@ def self_test(job: Job, system, settings: dict, record: dict) -> int:
     return failures
 
 
+def restore_acl(system, path: str, default: bool, previous: str | None) -> None:
+    """Put back the ACL recorded before the first grant, including the mode's group bits."""
+    if previous is not None:
+        system.set_acl(path, default, base64.b64decode(previous))
+        return
+    current = None if default else system.get_acl(path, False)
+    if current is None:
+        system.set_acl(path, default, None)
+        return
+    # Removing an access ACL leaves the group bits at the mask, which the grant may have
+    # widened. Writing only the owner, group and other entries drops the ACL and sets the
+    # group bits back from the group entry, keeping any later owner or other change.
+    base = [entry for entry in decode_acl(current) if entry[0] in (USER_OBJ, GROUP_OBJ, OTHER)]
+    system.set_acl(path, False, encode_acl(base))
+
+
 def undo(job_name: str, system) -> int:
     print(f"RePro backup host installer: UNDO job {job_name}")
     record = load_record(system, job_name)
@@ -716,7 +732,7 @@ def undo(job_name: str, system) -> int:
     for key, previous in record["acls"].items():
         path, kind = key.rsplit("|", 1)
         if system.lstat(path) is not None:
-            system.set_acl(path, kind == "default", None if previous is None else base64.b64decode(previous))
+            restore_acl(system, path, kind == "default", previous)
     for path, digest in record["files"].items():
         current = system.read(path)
         if current is None:
