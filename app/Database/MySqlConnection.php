@@ -578,10 +578,19 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
     /** The first application frame outside the database layer, for long-holder and lock reports. */
     private static function caller(): ?string
     {
-        foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 40) as $frame) {
-            $file = $frame['file'] ?? '';
+        return self::callerFrom(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 40));
+    }
+
+    /** @param  list<array{file?: string, line?: int}>  $frames */
+    private static function callerFrom(array $frames): ?string
+    {
+        foreach ($frames as $frame) {
+            // Windows paths use backslashes, which basename() and dirname() on Linux do not split.
+            $file = str_replace('\\', '/', $frame['file'] ?? '');
             if ($file !== '' && ! str_contains($file, '/vendor/') && ! str_contains($file, '/app/Database/')) {
-                return basename(dirname($file)).'/'.basename($file).':'.($frame['line'] ?? 0);
+                $parts = explode('/', $file);
+
+                return implode('/', array_slice($parts, -2)).':'.($frame['line'] ?? 0);
             }
         }
 
