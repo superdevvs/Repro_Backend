@@ -6,6 +6,7 @@ use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
 use App\Models\Message;
 use App\Support\TelnyxMaintenanceSpool;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -101,8 +102,10 @@ class ReplayTelnyxSpool extends Command
             try {
                 app(TelnyxWebhookController::class)->replayVerified($entry['route'], $entry['route_key'], $payload, $entry['arrived_at']);
             } catch (Throwable $error) {
-                // Left in texts/ for the next run. Never log bodies or numbers.
-                report($error);
+                // Left in texts/ for the next run. Error messages can carry SQL
+                // bindings (numbers, text), so only the class is recorded.
+                Log::warning('Telnyx spool replay could not handle one entry.', ['entry' => $entry['id'], 'error' => $error::class]);
+                $this->warn("Entry {$entry['id']} failed: ".$error::class);
                 $counts['failed']++;
 
                 continue;
@@ -138,7 +141,8 @@ class ReplayTelnyxSpool extends Command
         if ($expected === '' || ! function_exists('posix_getegid') || ! function_exists('posix_getgrgid')) {
             return null;
         }
-        $actual = posix_getgrgid(posix_getegid())['name'] ?? (string) posix_getegid();
+        $group = posix_getgrgid(posix_getegid());
+        $actual = is_array($group) ? (string) $group['name'] : (string) posix_getegid();
 
         return $actual === $expected ? null
             : "Run the replay with the {$expected} group (for example sg {$expected}); the current group is {$actual}.";

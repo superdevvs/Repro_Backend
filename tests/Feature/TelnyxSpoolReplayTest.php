@@ -15,6 +15,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Mockery;
 use RuntimeException;
 use Tests\TestCase;
@@ -198,17 +199,25 @@ class TelnyxSpoolReplayTest extends TestCase
         $flaky = Mockery::mock(TelnyxWebhookController::class);
         $flaky->shouldReceive('replayVerified')->andReturnUsing(function (...$arguments) use ($real): JsonResponse {
             if (data_get($arguments[2], 'data.id') === 'evt_fails') {
-                throw new RuntimeException('database is locked');
+                // Database errors can carry SQL bindings such as numbers and text.
+                throw new RuntimeException('database is locked: insert values (+12025550177, first)');
             }
 
             return $real->replayVerified(...$arguments);
         });
         $this->app->instance(TelnyxWebhookController::class, $flaky);
+        Log::spy();
 
         $this->artisan('telnyx:replay-spool')
+            ->expectsOutputToContain('failed: '.RuntimeException::class)
             ->expectsOutputToContain('replayed 1, duplicates 0, set aside 0, failed 1')
             ->assertFailed();
         $this->assertCount(1, $this->spool()->entries(TelnyxMaintenanceSpool::TEXTS));
+        Log::shouldNotHaveReceived('error');
+        Log::shouldNotHaveReceived('log');
+        Log::shouldHaveReceived('warning')->once()->with('Telnyx spool replay could not handle one entry.',
+            Mockery::on(fn (array $context) => $context['error'] === RuntimeException::class
+                && ! str_contains(json_encode($context), '+12025550177')));
 
         $this->app->forgetInstance(TelnyxWebhookController::class);
         $this->artisan('telnyx:replay-spool')->expectsOutputToContain('replayed 1, duplicates 0, set aside 0, failed 0')->assertSuccessful();
