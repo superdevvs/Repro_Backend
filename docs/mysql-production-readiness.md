@@ -1780,7 +1780,20 @@ has been done. Each production step needs its own approval.
   and `alert_fail_suffix`; decide on an app-side WAL keeper; supply the SQL
   and baseline for the money check.
 
-Open: once the writer hold is installed, any reboot, including the monthly
-one on the 28th, leaves the site and every writer held until an operator runs
-`cli.py refresh` and `cli.py reopen`. Plan on-call cover or schedule around
-it.
+Off-site alerts on the cutover night and after a held reboot (local only,
+nothing installed): once the writer hold is installed, a reboot still leaves
+the site and every writer held until `cli.py refresh` and `cli.py reopen`, by
+design. The probe's new `site_held` check (wake) pages for that state with
+the remedy, and for any hold past the plan's 45 and 60 minute limits, from
+an earlier boot, or with no readable journal. It reads the journal through a
+root view unit with no capabilities. `server_error_rate` leaves out only the
+approved hold's own 503s, the engine checks follow the journal's
+authoritative engine, and `writer_token_held_too_long` (daytime, 30 s)
+covers the writer policy's token alert. `site_unreachable` is paused at the
+provider for the hold, an owner step; `/up` stays held (see the runbook's
+[Alerts](mysql-production-cutover.md#alerts-b6-b7)). Evidence: off-site tests
+237 on Linux as uid 1000 (1 skipped) and the installer 25 as root; real
+systemd 252 manager fixture 26 of 26, and 32 units pass
+`systemd-analyze verify`; on MySQL 8.4.13 the token query needs only
+`PROCESS` and `SELECT` on `performance_schema.data_locks`. Plan on-call
+cover for the monthly reboot or schedule around it.
