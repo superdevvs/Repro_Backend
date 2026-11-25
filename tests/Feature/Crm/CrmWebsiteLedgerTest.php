@@ -94,16 +94,8 @@ class CrmWebsiteLedgerTest extends CrmTestCase
         return $path;
     }
 
-    public function test_reports_each_reference_and_lists_bookings_without_a_reference_read_only(): void
+    private function assertLedger(int $exit, array $report, array $refs, Shoot $shoot, Shoot $orphan): void
     {
-        [$refs, $shoot, $orphan] = $this->seedLedger();
-        $copy = $this->copy();
-        $before = hash_file('sha256', $copy);
-
-        $exit = Artisan::call('crm:website-ledger', ['--sqlite' => $copy, '--references' => $this->references($refs), '--json' => true]);
-        $report = json_decode(Artisan::output(), true);
-
-        $this->assertSame($before, hash_file('sha256', $copy));
         $this->assertSame(1, $exit, 'Anything other than confirmed or delivered needs an operator decision.');
         $rows = collect($report['rows'])->keyBy('reference_sha256');
         $row = fn (string $key) => $rows[hash('sha256', strtolower($refs[$key]))];
@@ -123,16 +115,45 @@ class CrmWebsiteLedgerTest extends CrmTestCase
         $this->assertArrayNotHasKey('reference', $row('confirmed'));
     }
 
-    public function test_the_given_database_is_opened_read_only_and_the_default_connection_is_untouched(): void
+    public function test_a_sqlite_copy_is_reported_without_changing_its_bytes(): void
+    {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('The copy fixture is built from the SQLite test database; MySQL uses the named connection test.');
+        }
+        [$refs, $shoot, $orphan] = $this->seedLedger();
+        $copy = $this->copy();
+        $before = hash_file('sha256', $copy);
+
+        $exit = Artisan::call('crm:website-ledger', ['--sqlite' => $copy, '--references' => $this->references($refs), '--json' => true]);
+
+        $this->assertSame($before, hash_file('sha256', $copy));
+        $this->assertLedger($exit, json_decode(Artisan::output(), true), $refs, $shoot, $orphan);
+        $this->assertSame(0, (int) DB::selectOne('PRAGMA query_only')->query_only);
+    }
+
+    public function test_a_named_connection_is_read_in_a_read_only_session_and_restored(): void
+    {
+        [$refs, $shoot, $orphan] = $this->seedLedger();
+        $writes = [];
+        DB::listen(function ($query) use (&$writes) {
+            if (preg_match('/^\s*(insert|update|delete|replace)\b/i', $query->sql)) {
+                $writes[] = $query->sql;
+            }
+        });
+
+        $exit = Artisan::call('crm:website-ledger', ['--connection' => DB::getDefaultConnection(), '--references' => $this->references($refs), '--json' => true]);
+
+        $this->assertSame([], $writes);
+        $this->assertLedger($exit, json_decode(Artisan::output(), true), $refs, $shoot, $orphan);
+        // The session is writable again afterwards.
+        DB::table('website_email_deliveries')->where('reference', $refs['failed'])->update(['updated_at' => now()]);
+    }
+
+    public function test_it_refuses_to_run_without_a_database_or_references(): void
     {
         [$refs] = $this->seedLedger();
-        $copy = $this->copy();
 
-        Artisan::call('crm:website-ledger', ['--sqlite' => $copy, '--references' => $this->references($refs), '--json' => true]);
-
-        $this->assertSame(0, (int) DB::selectOne('PRAGMA query_only')->query_only);
-        $source = new \PDO('sqlite:'.$copy);
-        $this->assertSame(1, (int) $source->query('SELECT count(*) FROM external_booking_submissions WHERE shoot_id IS NULL')->fetchColumn());
         $this->assertSame(2, Artisan::call('crm:website-ledger', ['--references' => $this->references($refs)]));
+        $this->assertSame(2, Artisan::call('crm:website-ledger', ['--connection' => DB::getDefaultConnection()]));
     }
 }

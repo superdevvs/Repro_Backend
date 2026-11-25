@@ -1,0 +1,263 @@
+# Producer replay lane (P2-03, P2-04, P2-06, P2-07, P2-08, P2-10, P2-11, P2-12)
+
+Status: local code and offline tests only. Nothing here has run against
+production, the live website, Supabase or any provider. Every flag below is
+off by default. Fold the runbook and evidence sections into
+`docs/mysql-production-cutover.md` ("CRM freeze and replay") and
+`docs/mysql-production-readiness.md`; this file avoids editing them so the
+lanes do not conflict.
+
+Branch `claude/producer-replay-20261125`, based on `a6e799bb` (draft PR 46).
+
+## What changed
+
+| Item | Change | Main tests |
+| --- | --- | --- |
+| P2-03 | `recruit_application_receipts` gets `payload_sha256` and `attachment_sha256s` (new migration `2026_11_25_140000`). The first use of a reference records a SHA-256 of the canonical validated fields (files and empty values left out, keys sorted, scalars as text) and the ordered `kind:sha256` list of attachments. A replay with other fields, other bytes, missing files, or against a receipt from before this change returns **409** `{received:false, error:"reference_conflict"}`, stores no file and sends recruiters a `recruit_reference_conflict` notice (no applicant data in it). Exact replays still return the stored applicant. | `tests/Feature/Crm/RecruitingReplayIntegrityTest.php`, `tests/MySql/RecruitingReplayConcurrencyTest.php` |
+| P2-04 | The careers route uses `crm.enabled:retry`: CRM off gives **503 + Retry-After**, not 404. Staff CRM routes still give 404. Website intake receipts are always registered, even with CRM off; `crm:website-intake` replays them once the CRM is back. | `tests/Feature/Crm/ProducerIngressHoldTest.php` |
+| P2-04, P2-07 | `PRODUCER_INGRESS_HOLD` answers the producer routes with 503 + Retry-After, first in the global middleware stack (before telemetry, maintenance and controllers). Resend `email.received` with CRM off now gives 503, never 200 "ignored". A reviewed nginx snippet does the same at the edge. | `ProducerIngressHoldTest.php`, `tests/Feature/Crm/ResendRedeliveryTest.php`, `scripts/cutover/fence/test_producer_hold.py` |
+| P2-06 | `scripts/cutover/website_ledger.py` turns a read-only website export into the capture ledger, a private CSV and a references file. `php artisan crm:website-ledger` reports the Dashboard side for each reference, read-only against the database it is given, and lists bookings saved without a reference. | `scripts/cutover/test_website_ledger.py`, `tests/Feature/Crm/CrmWebsiteLedgerTest.php` |
+| P2-08 | `php artisan crm:calendar-reconcile --dry-run` compares every linked follow-up with Google, inside and outside the poll window. | `tests/Feature/Crm/CrmCalendarReconcileTest.php` |
+| P2-10 | `php artisan stripe:undelivered-events` lists events with pending deliveries, using a restricted read key. Tests prove a payment event sent 5 times gives one payment. | `tests/Feature/StripeReplayAfterFreezeTest.php` |
+| P2-11 | `aryeo:connection` gains `--record-state=<file> --pause` and `--resume-processing=<file>`. The Aryeo API webhook is held with the other producers. | `tests/Feature/AryeoFreezeResumeTest.php` |
+| P2-12 | `CRM_OUTBOUND_HOLD` stops drips, campaigns, the follow-up digest and marketing sends, while replies, delivery events, opt-outs and website intake keep working. `crm:outbound-release-check` gates the release; `crm:send-disposition` records the review of an uncertain send. | `tests/Feature/Crm/CrmOutboundHoldTest.php` |
+
+## Flags and settings
+
+All default to off or empty. Set them only inside an approved window, then
+rebuild the config cache.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `PRODUCER_INGRESS_HOLD` | `false` | 503 + `Retry-After` for `api/external/recruiting/application`, `api/external/website-email`, `api/external/book-shoot`, `api/webhooks/resend`, `api/webhooks/stripe`, `api/webhooks/stripe/listing-studio`, `api/integrations/aryeo/webhooks/*`. Reads such as `/api/external/services` stay open. Telnyx is not held here (its own lane owns the capture route). |
+| `PRODUCER_INGRESS_RETRY_AFTER` | `60` | Seconds in the `Retry-After` header. |
+| `CRM_OUTBOUND_HOLD` | `false` | `crm:send-due` claims nothing, `crm:follow-up-digest` sends nothing, and any marketing send throws `CrmSendBlocked('outbound_hold')`. Transactional sends (reply forwards, quotes, one-off non-marketing) are not blocked. |
+| `STRIPE_EVENTS_READ_KEY` | empty | Restricted Stripe key with Events read only, for `stripe:undelivered-events`. Never the secret key. |
+| `LISTING_STUDIO_STRIPE_EVENTS_READ_KEY` | empty | The same for the Listing Studio account (`--account=listing-studio`). |
+
+Behaviour that changes without a flag once deployed (all safe on SQLite, and
+production has `CRM_ENABLED=true` today, so the CRM-off branches do not run):
+
+- A divergent replay of a website application reference gets 409 instead of
+  a silent 201. The website routes 409 to staff review.
+- With `CRM_ENABLED=false`: careers gets 503 instead of 404; Resend
+  `email.received` gets 503 instead of 200 "ignored"; website contact and
+  booking receipts are still saved (encrypted) and replayed after the switch.
+- New migration on `recruit_application_receipts` (two nullable columns).
+
+## Runbook: freeze and replay (fold into "CRM freeze and replay")
+
+Record the freeze start time in UTC as `FREEZE_AT`. Each step that changes
+production needs its own approval.
+
+**Before the freeze**
+
+1. Record and pause the Aryeo agent:
+   `php artisan aryeo:connection "<name>" --record-state=/private/aryeo-<date>.json --pause`.
+   The file is new, mode 0600, holds no secret, and records `enabled`,
+   `processing_enabled`, `discover_all_clients`, `delivery_shoot_ids` and
+   `client_ids` with a digest.
+2. Set `CRM_OUTBOUND_HOLD=true` and `CRM_DEFER_REPLY_FORWARDING=true`, rebuild
+   the config cache, and confirm both booleans in the effective config.
+3. Hold the website recruiting scheduler (website change P2-05 below). Do not
+   turn off `recruiting_forwarding_settings.enabled`: that stops capture.
+
+**Freeze**
+
+4. Hold producers at the edge: copy
+   `scripts/cutover/fence/producer-hold.nginx.conf` into
+   `/etc/nginx/repro-holds/`, run `nginx -t`, reload. Each Dashboard server
+   block (`frontend.conf` and `laravel.conf`) must already carry
+   `include /etc/nginx/repro-holds/*.conf;` once. Optionally also set
+   `PRODUCER_INGRESS_HOLD=true` as the in-app second layer. Never use
+   `CRM_ENABLED=false` as the freeze control; it is now safe for producers
+   but it also stops reply processing and intake processing.
+5. Check that every held path answers 503 with `Retry-After` (never 403, 404
+   or a redirect; the website treats 3xx and 4xx other than 408/425/429 as
+   permanent).
+
+**Release, in this order**
+
+6. Remove the nginx hold file, `nginx -t`, reload; set
+   `PRODUCER_INGRESS_HOLD=false`. The website outbox, booking forwarder,
+   Resend, Stripe and Aryeo retry on their own.
+7. Website ledger. Export the website rows read-only (export spec below) and
+   run
+   `python -B -m scripts.cutover.website_ledger --export <export.json> --capture <capture.json> --private-csv <private.csv> --references <refs.json>`.
+   Then `php artisan crm:website-ledger --connection=<read-only> --references=<refs.json> --json`
+   (or `--sqlite=<copy>`). Replay only through the same reference:
+   `not_in_dashboard` bookings through forward-booking-v2 with the frozen
+   quote; `not_received` and `not_delivered` contacts through website-email
+   with the same reference; `uncertain` contacts only after the provider log
+   shows the outcome; `submission_without_shoot` and every
+   `manual_reconciliation` entry by a person. Each replay POST needs
+   approval per reference. Compare the capture and replay ledgers with
+   `verify_website_replay`.
+8. Resend. In the Resend dashboard, replay the failed messages of the window
+   (approval per batch). The webhook accepts a fresh signature with the
+   original `svix-id` and applies it once; a stale signature is refused.
+   Then set `CRM_DEFER_REPLY_FORWARDING=false` and request the replay of the
+   recorded replies, so each is forwarded once
+   (`crm-reply-fwd-{send}-{md5(email_id)}`). Forwards are transactional and
+   are not blocked by the outbound hold.
+9. `php artisan crm:outbound-release-check --since=$FREEZE_AT`. It is
+   read-only and exits 1 while any of these is non-zero: replies not yet
+   forwarded; permanent bounces or complaints without a suppression;
+   uncertain or queued sends without a reviewed disposition; due drip steps
+   that would reach someone who replied, bounced or opted out. For each
+   uncertain send, check the provider log and run
+   `php artisan crm:send-disposition <send-id> delivered|not_delivered|resend_approved|abandoned --note="..."`.
+   When it exits 0, set `CRM_OUTBOUND_HOLD=false`.
+10. `php artisan crm:calendar-reconcile --dry-run --json`. It reads Google
+    and writes nothing; connections whose token needs a refresh are listed as
+    `token_refresh_needed` (add `--allow-token-refresh` only if approved, as a
+    refresh saves the new token). Decide each `moved_in_google`,
+    `deleted_in_google` and `push_pending` row (a pending push overwrites
+    Google). Then release `crm:calendar-sync`.
+11. Stripe at +30 minutes and +2 hours:
+    `php artisan stripe:undelivered-events --since=$FREEZE_AT --json` and the
+    same with `--account=listing-studio`. Exit 1 means something is still
+    pending; resend it from the Stripe dashboard with approval. A repeated
+    event is harmless (tested 5 times on both endpoints).
+12. Resume Aryeo last:
+    `php artisan aryeo:connection "<name>" --resume-processing=/private/aryeo-<date>.json`.
+    It refuses a file for another connection or an edited file, prints what
+    it changed, and the agent should be seen again within a minute.
+
+**Provider table rows to add**
+
+| Provider | During the freeze | Afterwards |
+| --- | --- | --- |
+| Aryeo API webhook (`/api/integrations/aryeo/webhooks/{installation}`) | Held with 503 + Retry-After. Signatures expire after 300 s, so only a fresh delivery from Aryeo can be accepted. Deduped by `event_id` with a body hash. | Aryeo retries or redelivers; same event gives one `aryeo_api_webhooks` row and one `ReconcileAryeoWebhook` job (tested). **Aryeo's retry window is not confirmed**: ask Aryeo or read their docs before a real freeze. |
+| Shared Resend webhook | Held with 503 + Retry-After (edge and in-app). | Dashboard replay under the original `svix-id`. **Not verified on Resend yet**: that a dashboard replay keeps the `svix-id`, re-signs with a fresh timestamp, and the retry schedule covers a 60-minute hold. |
+
+## Website change spec (not done in this lane)
+
+These changes belong to the website repo (Lovable project "RE Pro Photos",
+reviewed at `4011d53a`). Publishing them and applying the Supabase migration
+are production writes that need approval.
+
+### P2-02: snapshot the recruiting payload at capture, and keep it on delete
+
+Files: `supabase/pending/20261124150000_recruiting_outbox.sql` (or a new
+migration applied after it), `src/lib/recruiting/recruitingOutbox.ts`,
+`src/routes/api/public/recruiting-outbox.ts`.
+
+1. Add to `recruiting_outbox`: `payload jsonb`, `payload_text text`,
+   `payload_sha256 text CHECK (payload_sha256 ~ '^[0-9a-f]{64}$')`,
+   `captured_at timestamptz`, and `source_deleted_at timestamptz`.
+2. Add `'review_mismatch'` to the `status` CHECK list.
+3. In `enqueue_recruiting_application()`, build the payload in SQL from
+   `NEW` with exactly the fields `buildRecruitingPayload` sends today
+   (`external_reference`, `role`, `name`, `email`, `phone`, `city`,
+   `state` from `state_region`, `metros` from `primary_markets`,
+   `portfolio_url` when it starts with http(s), `gear`, `flies_drone`), and
+   store it in `payload`. Simpler and safer: keep the trigger as is, and have
+   the worker fill the snapshot on the first claim, in the same transaction
+   as the claim, only when `payload IS NULL` (`captured_at = now()`). Either
+   way the snapshot is written once and never updated.
+4. `payload_text` is the exact string later sent as the request body
+   (`JSON.stringify(payload)`), and `payload_sha256` its SHA-256. Every retry
+   sends `payload_text` byte for byte, never a rebuild from the current row.
+5. Before each send, rebuild the payload from the current application row.
+   If the row exists and its canonical payload differs from the snapshot,
+   set `status = 'review_mismatch'` and do not send. Staff resolve it.
+6. Change the foreign key from `ON DELETE CASCADE` to `ON DELETE SET NULL`
+   (make `application_id` nullable). Add a `BEFORE DELETE` trigger on
+   `photographer_applications` that stamps `source_deleted_at` on the outbox
+   row. A row with a snapshot and no application still replays the snapshot;
+   a row without a snapshot moves to `review_mismatch`.
+7. Attachments: the website sends none today (`cv_url` is not forwarded). If
+   CV forwarding is added later, store the original bytes in a private
+   Storage bucket keyed by SHA-256 at submit time, add
+   `attachment_sha256s text[]` to the snapshot, and send exactly those
+   bytes. The Dashboard now refuses changed bytes with 409 (P2-03).
+8. Backfill: the one delivered row needs nothing. Rows pending at deploy time
+   get a snapshot from the current row, marked
+   `last_error_code = 'snapshot_backfilled'` so a person confirms it before
+   it is sent.
+9. Tests: extend `rehearse-producers.mjs` (isolated Postgres, no network):
+   edit after capture gives `review_mismatch` and no POST; delete after
+   capture keeps the snapshot and replays it once; an unchanged row replays a
+   `payload_sha256` equal to the capture ledger. Extend
+   `recruitingOutbox.test.ts` likewise.
+
+### P2-05: a scheduler hold that keeps capture on
+
+1. Add `worker_paused boolean NOT NULL DEFAULT false` and
+   `worker_paused_at timestamptz` to `recruiting_forwarding_settings`.
+2. `runOutbox` reads `worker_paused` in `store.settings()` and, when true,
+   returns `{ paused: true, ... }` before `claim()`. The route returns 200
+   with that body so the outside scheduler does not alarm.
+3. The insert trigger still checks only `enabled`, so new applications are
+   captured while the worker is paused.
+4. Freeze: set `worker_paused = true` (one row update, approval). Drain: wait
+   until no row has `status = 'sending'` with `lease_until > now()` (leases
+   are 5 minutes). Release: set it back to false.
+5. Holding the worker uses no attempts. Without it, about 127 minutes of 503s
+   (8 attempts, 1 to 64 minute backoff) turn rows into `failed_exhausted`.
+   Add a reviewed reset query for that case:
+   `UPDATE recruiting_outbox SET status = 'pending', attempts = 0, next_attempt_at = now() WHERE status = 'failed_exhausted' AND id = ANY(:ids)`.
+6. Test in the isolated Postgres rehearsal: paused worker returns
+   `{paused:true}` without claiming while an insert is still captured;
+   interrupt mid-lease, unpause after expiry, one reclaim and one Dashboard
+   effect.
+
+### P2-06: website export for the operator ledger
+
+A read-only, service-role-only server route or SQL view that returns JSON for
+`scripts/cutover/website_ledger.py`:
+
+```json
+{"site_commit": "<40-hex published commit>", "freeze_sha256": "<64-hex freeze id>",
+ "rows": [{"producer": "booking|contact|recruiting", "reference": "<original reference>",
+           "state": "<state>", "request": "<exact original request body>",
+           "attachment_sha256s": []}]}
+```
+
+- Bookings: every booking row created since the freeze minus a margin. State
+  is `confirmed` only when the Dashboard shoot id is stored; otherwise
+  `pending_with_quote`, `pending_without_quote` (fenced catalog, no frozen
+  quote, no POST), `reconciliation_pending`, `sync_failed` or `conflict`.
+  `request` is the exact body forward-booking-v2 sends with the frozen quote.
+- Contacts: every saved inquiry whose delivery outcome is not `delivered`
+  with `status_recorded`. `request` is the exact website-email body.
+- Recruiting: every outbox row not `delivered`, with `request` =
+  `payload_text` (after P2-02).
+- The exporter keeps only rows whose state is not settled
+  (`confirmed` for bookings, `delivered` otherwise). It writes hashes to the
+  shared ledger and raw references only to the private CSV.
+
+## Owner decisions and provider checks
+
+- Receipts written before this change have no recorded identity. A replay of
+  one gets 409 for staff review (safest default). Only one delivered row
+  exists in production.
+- Aryeo retry behaviour for 503 on the API webhook is unconfirmed. If Aryeo
+  does not retry, held deliveries need a manual redelivery request.
+- Resend: confirm in the dashboard (read-only) that a replayed message keeps
+  its `svix-id` and gets a fresh signature, and how long retries last.
+- Stripe: create two restricted keys with Events read only, stored like the
+  other secrets.
+- The nginx include line must be added once to both Dashboard vhosts in a
+  normal reviewed deploy before any freeze.
+
+## Notes for the integrator
+
+- New migration `2026_11_25_140000_add_replay_identity_to_recruit_application_receipts`.
+  Regenerate `database/schema/mysql-schema.sql` once all lanes have landed
+  their migrations. The table stays in the 328-table scope.
+- New config file `config/producer_replay.php`; new keys in `config/crm.php`
+  (`outbound_hold`).
+- `bootstrap/app.php` gains one `prepend(HoldProducerIngress)` line. The
+  Telnyx lane's receiver also belongs before maintenance; keep both first.
+- `routes/crm-public.php`: `crm.enabled` becomes `crm.enabled:retry` on the
+  careers route only.
+- `tests/MySql/RecruitingReplayConcurrencyTest.php` truncates tables (like
+  the other process tests). Run it after the feature tests, as CI's sorted
+  file order already does.
+
+## Evidence
+
+See the "Test runs" section at the end, filled in from the actual runs on
+this branch.
