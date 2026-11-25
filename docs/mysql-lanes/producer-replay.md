@@ -259,5 +259,22 @@ A read-only, service-role-only server route or SQL view that returns JSON for
 
 ## Evidence
 
-See the "Test runs" section at the end, filled in from the actual runs on
-this branch.
+All runs were offline: Docker `--network none`, the pinned image
+`repro-mysql-rehearsal-qa:20261122` (PHP 8.3.33), the shared read-only
+vendor volume, and for MySQL a disposable `mysql:8.4` (8.4.13, image
+`sha256:a81d0439…`) container with its socket on a tmpfs volume. No
+provider, website or production system was contacted. Each new behaviour
+was seen failing first for the expected reason (missing column, 404 or 200
+instead of 503, missing command or option), then passing.
+
+| Run | Result |
+| --- | --- |
+| New and touched PHP tests on SQLite (`RecruitingReplayIntegrityTest`, `ProducerIngressHoldTest`, `ResendRedeliveryTest`, `CrmOutboundHoldTest`, `CrmCalendarReconcileTest`, `CrmWebsiteLedgerTest`, `AryeoFreezeResumeTest`, `StripeReplayAfterFreezeTest`) | All pass |
+| Regression files on SQLite: `tests/Feature/Crm`, `WebsiteEmailTest`, `ExternalBookingControllerTest`, `ExternalBookingReleaseContractTest` | 139 tests, 1116 assertions, OK (before P2-12 and later items) |
+| Aryeo and Stripe neighbours on SQLite: `AryeoIntegrationTest`, `AryeoApiTest`, `StripeWebhookOwnershipTest`, `ListingStudioStripeSyncTest` | OK |
+| MySQL profile (`phpunit.mysql.xml`): `tests/Feature/Crm` plus the Aryeo, Stripe, Listing Studio, website email and external booking files above | 308 tests, 2158 assertions, 2 errors, both in the SQLite-only copy fixture of `CrmWebsiteLedgerTest`. Fixed in `59198581`; that file then gave 3 tests, 1 skipped (SQLite copy only), OK |
+| MySQL process tests: `tests/MySql/RecruitingReplayConcurrencyTest.php` | OK: two overlapping replays, one applicant, one file |
+| `tests/MySql/CrmWebsiteIntakeConcurrencyTest.php` (unchanged) | Timed out waiting for its worker once while the full SQLite suite was using the CPU; passed when rerun alone |
+| `python -B -m unittest scripts.cutover.test_website_ledger scripts.cutover.test_verify_website_replay` (Windows and the Linux image) | 8 tests OK |
+| `scripts/cutover/fence/test_producer_hold.py` in the Linux image (real nginx) | 2 tests OK; fails as expected when the snippet returns 404 or drops `Retry-After`; skips on Windows |
+| Full SQLite suite (`php vendor/bin/phpunit`, code at `9cae88c6`, the tree copied into a container tmpfs) | 9623 tests, 320499 assertions, 2 errors, 2 failures, 3 skipped, 140 minutes. The four are `ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest` (`test_fpm_upload_and_separate_worker_can_share_private_files`), `WorkspacePhotoLogoPermissionsTest::test_php_can_upload_a_logo_when_worker_outputs_are_not_group_writable` and `IguideLabImportTest::test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk`. Each drops to a non-root user that cannot read the copied vendor tree in this container. All four fail the same way on the base `a6e799bb` with the same runner, so they are pre-existing here and unrelated to this lane. The later commit `59198581` only changed `CrmWebsiteLedgerTest`, rerun separately on both engines. |
