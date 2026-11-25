@@ -34,7 +34,10 @@ normal handlers, oldest first, with the saved arrival time (used for
 `sent_at`, `delivered_at`, `failed_at` and the thread's last message time,
 and as `created_at` of a replayed incoming text, which clients show as its
 time and sort by). A
-replayed text never moves a thread's last message back past a newer one. It
+replayed text never moves a thread's last message back past a newer one, and
+never marks a conversation unanswered when a newer staff reply exists (the
+newest incoming or manual message decides, as in `SmsInboxPolicy::backfill()`);
+it is still marked unread. It
 checks each saved signature again. Each Telnyx event id, and each inbound
 message id, is handled once, including messages that already reached the app
 live. Forged or damaged files go to `rejected/`. A file that fails stays for
@@ -189,3 +192,20 @@ Codex reviewed 6fa49bbd; fixes are on top of 171d25dd.
 - MySQL 8.4.13: not run for this lane. Main's migrations stop on MySQL at
   `2024_07_09_000001_create_shoot_service_table.php` (error 1824, `shoots`
   does not exist yet); that is PR #46's work.
+
+Second round: Codex reviewed 8624bf56.
+
+- r2#1 (replaying an older text after a newer staff reply marked the
+  conversation unanswered, so it showed under `filter=unanswered`): fixed in
+  e1f87cc3. `SmsInboxPolicy::recordBackdated()` lets the newest incoming
+  or manual message decide, as `backfill()` does; only the replay calls it.
+  On MySQL 8.4.13 the test file still stops at the same 1824 migration, so a
+  scratch check ran `recordBackdated()` against minimal `messages` and
+  `message_threads` tables instead; it passed.
+- reviewer#5 re-checked: still not a defect. Pint's diff for the controller
+  and `AppServiceProvider.php` is hunk-for-hunk the same on base 8bb478e6, and
+  the other 14 lane files pass.
+- reviewer#6 re-checked: still not a defect. The tests that read the
+  schedule binding (`schedule:list`, `app(Schedule::class)->events()`) pass,
+  no class overrides the changed controller methods with the old signature,
+  and the lane's regression set passes.
