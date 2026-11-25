@@ -22,7 +22,9 @@ How it works:
   a good new copy, so a failing night never lowers the number of good copies.
   Only a copy with its `.sha256` file counts. A run stopped between the two
   leaves a copy without one; it is not counted and is removed once it is older
-  than the kept copies.
+  than the kept copies. A run stopped while publishing can leave the copy under
+  its `.partial-` name too; the next run drops that name, and the copy is then
+  handled the same way.
 - Every run writes `last-run.json` in the copy folder (`status`, `finished_at`,
   `file`, `bytes`, `sha256`). Use it for the backup-age alert. The file is 0600
   inside the 0700 folder, so only `maverick` can read it: the backup-age check
@@ -127,7 +129,10 @@ retention and compression with an error, and nothing is deleted.
   run is killed (reboot, out of memory), the next compress step or applied
   retention (both hold the deploy lock) removes its
   `.database.sqlite.gz.partial` file, so retention can still age the bundle
-  out, also after the flag is switched off. Removing the file touches the
+  out, also after the flag is switched off. This includes a partial name still
+  linked to the bundle's verified `database.sqlite.gz` (a run killed just after
+  publishing it); that bundle keeps both the raw copy and the gzip until it
+  ages out. Removing the file touches the
   bundle folder, so an old bundle is then kept 14 more days before it goes.
 - `tiered_retention`: keep the newest 5 bundles, plus one per day for 14 days
   (that day's newest verified bundle, else its newest that holds a database,
@@ -230,3 +235,10 @@ Codex reviewed `60995685`; fixes are on top of `ab30dbca`.
 - Reviewer 5 (tiered day kept a newer source-only bundle): fixed in `d768a959`. Without a verified bundle, the day keeps its newest bundle that holds a database.
 - Reviewer 6: the private-snapshot run (item 8), the production install and apply (items 1b and 3b), and the catch-up decision (item 8b) still need owner approval.
 - Found while running on MySQL 8.4.13: five billing tests that build SQLite text dates failed there, already at `ab30dbca`. They now skip off SQLite (`ba005bd4`).
+
+Second round: Codex reviewed `98f70922`.
+
+- `r2#1` (dry run counted shoots and pay the sales-rep runs never pay: no rep, or an inactive rep): fixed in `20d2a68b`; the client's rep is resolved without saving it. MySQL coverage in `f890b625`.
+- `r2#2` (payout report's sales-rep pay on standard shoots not checked): fixed in `ca5dc0dd`; new report-only selection `sales_rep_payout_report_compensations`.
+- `r2#3` (a run killed between `link()` and `unlink()` leaves two names, kept forever): fixed for deploy compression in `91ce12e8` and for the nightly copy in `f4dec6da`.
+- Re-checked: Reviewer 1 stands (the log covers all 990 test files at `0ac446c9`; every failure is on the known list). Reviewer 2 stands (no config value is an object or enum; the Python test reads a cached config with real `php`). Reviewer 4 stands (both `link()` users fail closed and keep the original).
