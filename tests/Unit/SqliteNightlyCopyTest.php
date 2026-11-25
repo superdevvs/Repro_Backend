@@ -190,11 +190,15 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_the_process_must_run_with_the_database_files_group(): void
     {
-        if (! function_exists('posix_getegid') || posix_geteuid() !== 0) {
-            $this->markTestSkipped('Changing a file group to a foreign group needs root (Linux test container).');
+        $this->assertTrue(function_exists('posix_getegid'), 'The copy script relies on the posix extension.');
+        // Root may use any group; anyone else may use one of their supplementary groups.
+        $otherGroups = array_values(array_diff(posix_getgroups(), [posix_getegid()]));
+        $foreignGroup = posix_geteuid() === 0 ? posix_getegid() + 4242 : ($otherGroups[0] ?? null);
+        if ($foreignGroup === null) {
+            $this->markTestIncomplete('This account has no second group to give the source file.');
         }
         $this->createSource(rows: 10);
-        chgrp($this->source, posix_getegid() + 4242);
+        $this->assertTrue(chgrp($this->source, $foreignGroup));
 
         $process = $this->runCopy();
 
