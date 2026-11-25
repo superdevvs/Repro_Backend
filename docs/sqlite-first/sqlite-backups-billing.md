@@ -92,7 +92,10 @@ Always on (no behaviour change on today's SQLite bundles):
   (`bootstrap/cache/config.php`), or `DB_CONNECTION` in `.env` when there is no
   cache. On MySQL it no longer looks at `database/database.sqlite` and estimates
   the next dump from the previous `database.sql.gz`. Unknown engines stop the
-  deploy. It prints `deploy-database-engine=...`.
+  deploy. It prints `deploy-database-engine=...`. It reads the cache with a
+  bare `php`, without the autoloader, so a config value cached as an object or
+  enum would stop every backend deploy here.
+  `tests/Feature/CachedConfigReadableWithoutAutoloadTest.php` fails in CI first.
 
 Off until switched on, in `/home/maverick/.repro-deploy-retention/settings.json`:
 
