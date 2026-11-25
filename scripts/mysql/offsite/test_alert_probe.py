@@ -275,3 +275,41 @@ class DetectorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExternalAlertContractTests(unittest.TestCase):
+    """Synthetic phone observations at each condition's own delivery limit pass summarize_external_alerts."""
+
+    def observations(self, late=None):
+        from scripts.cutover.readiness import summarize_external_alerts as alerts
+        from scripts.cutover.readiness.test_check import readiness_fixture
+        from scripts.cutover.runner import digest
+
+        policy, _ = readiness_fixture()
+        now = 1_800_000_000_000
+        rounds = {}
+        for index, milestone in enumerate(check.ALERT_MILESTONES, 1):
+            cases = {}
+            for order, (name, item) in enumerate(sorted(probe.load_conditions().items())):
+                delay = item["delivery_limit_seconds"] * 1000 + (1 if name == late else 0)
+                cases[name] = {"triggered_at_unix_ms": now - delay, "phone_observed_at_unix_ms": now,
+                               "condition_evidence_sha256": f"{index * 100 + order:064x}",
+                               "delivery_receipt_sha256": f"{index * 1000 + order:064x}"}
+            rounds[milestone] = {"report_sha256": f"{index:064x}", "cases": cases}
+        raw = json.dumps({"schema": alerts.SCHEMA, "identity_sha256": digest(policy["identity"]),
+                          "monitor_profile_sha256": policy["operations"]["monitor_profile_sha256"],
+                          "phone_recipient_sha256": policy["operations"]["phone_recipient_sha256"],
+                          "rounds": rounds}).encode()
+        policy["operations"]["external_alerts_report_sha256"] = __import__("hashlib").sha256(raw).hexdigest()
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "observations.json"
+            path.write_bytes(raw)
+            return alerts.summarize(policy, path, now_unix_ms=now)
+
+    def test_thresholds_file_limits_pass_the_external_alert_gate(self):
+        summary = self.observations()
+        self.assertEqual(summary["before_drill"]["cases"]["server_silent"]["delivery_ms"], 10 * check.MINUTE)
+
+    def test_one_millisecond_over_a_limit_fails_the_gate(self):
+        with self.assertRaises(check.Failed):
+            self.observations(late="queue_stale")
