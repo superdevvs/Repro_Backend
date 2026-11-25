@@ -143,7 +143,9 @@ What apply does for `base-backup`:
   database file, so the app's own access does not change. One side effect: with
   a default ACL on the database folder, other new files created directly in that
   folder take their group and other bits from the folder's mode instead of the
-  creating process's umask. Undo removes the default entry; a `-wal` created
+  creating process's umask. That matches umask 002; confirm the deploy user,
+  PHP-FPM and the queue workers use 002 before apply, because with a stricter
+  umask new files there would gain group bits. Undo removes the default entry; a `-wal` created
   while it was present keeps a harmless entry for the removed account until
   SQLite next recreates the file.
 - Installs the five base units **disabled** and runs `daemon-reload`.
@@ -153,7 +155,12 @@ What apply does for `base-backup`:
   and mode; the account; `systemd-analyze verify`; timers not enabled; the
   producer's reads (vendor, `.env`, cached config if present, the WAL database)
   as `repro-backup` inside the unit's sandbox via `systemd-run`; that the account
-  cannot write the database folder; and whether credentials were entered.
+  cannot write the database folder; and whether credentials were entered
+  (`rclone-daily.conf`; for `alerts`, `ping-urls.json` as `repro-alert`). If the
+  no-echo entry fails, or its file is not there after an entry in this run,
+  that line is FAIL and apply exits 1; enter the values with the printed
+  command and run apply again. With `--skip-credentials` the line is TODO and
+  apply exits 0.
 
 Apply is idempotent and never overwrites a file it did not install or one that
 changed after install. Re-running it repairs a lost ACL. It refuses to add a
@@ -180,6 +187,9 @@ the password manager yourself (checklist E.3), on the server, not through a sess
 One bridge account, `repro-alert`, is the only one with IP networking. It holds
 the ping URLs in `/var/lib/repro-alert/ping-urls.json` (0600), entered with
 `alert_bridge.py enter-urls`. Output, errors and the journal never contain a URL.
+`forward` sends every condition's ping at once (up to eight threads), so one
+slow or unreachable endpoint cannot use up the unit's 45 s limit before the
+later conditions are tried.
 
 | Condition | Class | Sent by | How to induce it for a round |
 | --- | --- | --- | --- |
@@ -187,18 +197,18 @@ the ping URLs in `/var/lib/repro-alert/ping-urls.json` (0600), entered with
 | backup_stale | daytime | watchdog result (OnSuccess / OnFailure) | point the plan at a stale receipt on a test host |
 | backup_failed (extra) | daytime | nightly backup and kit result | run the backup with a missing rclone config |
 | database_down | wake | probe | rename a fixture database / stop the rehearsal MySQL |
-| wrong_database_engine | wake | probe (`.env` DB_CONNECTION vs plan) | set the probe plan's expected engine to the other one |
+| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan) | set the probe plan's expected engine to the other one |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
 | backup_lag | wake | probe (archive checkpoint older than 300 s, two checks) | pause the archive timer |
-| server_error_rate | wake | probe (5xx over 2% in 30 min, at least 50 requests) | fixture access log |
+| server_error_rate | wake | probe (5xx over 2% in 30 min, at least 50 requests; reads `access.log.1` too) | fixture access log |
 | historical_money_totals_changed | wake | probe (reviewed SELECTs vs baseline digest) | change a row on the rehearsal copy |
 | rehearsal_failed | daytime | probe (newest nightly receipt red or older than 36 h) | fixture receipt |
 | restore_overdue | daytime | probe (newest restore-test receipt older than 8 days) | fixture receipt |
 | database_contention | daytime | probe (InnoDB deadlocks plus lock timeouts over 5 an hour) | two sessions deadlocking on the rehearsal MySQL |
 | mysql_restarted | daytime | probe (uptime under 15 min) | restart the rehearsal MySQL |
-| queue_stale | daytime | probe (oldest waiting job over 10 min) | insert a delayed job on a copy |
-| cache_write_failed | daytime | probe (cache folder not group-writable, or a cache write error in the app log) | `chmod g-w` a fixture cache folder |
+| queue_stale | daytime | probe (oldest waiting job over 10 min; a reservation older than 7,260 s, the longest `retry_after`, counts as waiting since then) | insert a delayed job on a copy |
+| cache_write_failed | daytime | probe (cache root or a cache folder not group-writable, or a cache write error in the app log) | `chmod g-w` a fixture cache folder |
 
 Provider setup: one check per row, period and grace from `alert-conditions.json`;
 for wake-me checks a 15-minute repeat and the second contact. The default probe
@@ -210,15 +220,20 @@ baseline from `alert_probe.py money-digest`. The MySQL monitor account needs
 and `SELECT` on the app's `jobs` table and the money query tables. Without
 `PROCESS`, `database_contention` fails every minute.
 
-`wrong_database_engine` reads only `DB_CONNECTION` in `.env`. It does not see a
-cached config (`bootstrap/cache/config.php`) or a long-lived worker still on the
-old engine. The plan's per-minute engine and server ID record, written by a
-scheduled command, is the real check; until it exists this detector is a
-config check only.
+`wrong_database_engine` reads the cached config first, because `Deploy-App`
+runs `php artisan config:cache` and Laravel then ignores `.env`: it takes the
+default connection's driver from `bootstrap/cache/config.php` (a `DB_URL`
+scheme wins, as in Laravel), as `backup-database.php` does, by parsing the
+`var_export` text without running PHP and keeping only the driver name. With
+no cached config it reads `DB_CONNECTION` in `.env`. It still does not see a
+long-lived worker on the old engine. The plan's per-minute engine and server
+ID record, written by a scheduled command, is the real check; until it exists
+this detector is a config check only.
 
-A probe that cannot read `.env` reports `wrong_database_engine` as failed. That
-is a wake alert, so a deploy that replaces `.env` by rename (see limits below)
-pages within minutes, not only at the next backup.
+A probe that cannot read `.env` (or a cached config it cannot read or parse)
+reports `wrong_database_engine` as failed. That is a wake alert, so a deploy
+that replaces `.env` by rename (see limits below) pages within minutes, not
+only at the next backup.
 
 ## Timers and the monthly reboot
 
@@ -302,17 +317,31 @@ python -B -m scripts.cutover.readiness.summarize_backup_health --policy review-p
 
 Use `interval_s` 60. The summarizer credits a slot only while lag stays within
 300 s, using the value seen at the slot start, so a 300 s interval would demand
-zero lag. Recoverable-through is the seal time of the last contiguous binlog
-batch from the newest base; it can be up to one rotation newer than the last
-transaction. SQLite alone has no binlog chain, so the lag rule cannot pass
-before the MySQL leg runs.
+zero lag. Recoverable-through is the time of the Rotate event that closed the
+last log of the newest contiguous binlog batch from the newest base. The
+observer reads that one log (checked against the size and digest the batch
+manifest lists) and walks its events to the terminal rotation, which must name
+the next file and pass its CRC; MySQL 8.4.13 stamps that event with the
+rotation time (checked natively). Every transaction committed before it is in
+the chain. It is never the batch's seal time: after an archive outage the
+collector's file and byte limits can cut a catch-up batch to old logs sealed
+now. A last log over 64 MiB, or one that does not end in its rotation, leaves
+the previous value. A base or batch counts for a slot only if its completion
+`verified_at` is at or before the slot start (the marker is uploaded seconds
+after that stamp). SQLite alone has no binlog chain, so the lag rule cannot
+pass before the MySQL leg runs.
 
 A publication folder without `completion.json` (still uploading, or abandoned)
-is skipped and read again on the next run. Every other failed run (network,
-rclone timeout, the machine asleep) leaves its minute without a row, and
-`export` then refuses the whole window. The observer must run every minute for
-seven days without a gap, so run it on a machine that does not sleep, and check
-the journal daily.
+is skipped and read again on the next run. A crash between writing a slot's
+sample and its journal row, or in the middle of the row, no longer costs the
+slot: the retry replaces the orphan sample and drops the cut row. A lock on
+the journal keeps two runs from writing one slot. Every other failed run
+(network, rclone timeout, the machine asleep) still leaves its minute without a
+row if nothing retries it, and `export` then refuses the whole window. So run
+`observe` every 20 s (for example a systemd timer at `*:*:05,25,45`): a run for
+a slot already recorded returns at once without touching the bucket, and a
+retry later in the slot still observes as of the slot start. Run it on a
+machine that does not sleep, and check the journal daily.
 
 ```sh
 python3 -I -B run_pitr_drill.py --plan drill-a.json --output drill-a
@@ -321,6 +350,10 @@ python3 -I -B run_pitr_drill.py --plan drill-a.json --output drill-a
 The drill plan names the base and binlog publications (IDs, sizes, digests),
 the stop coordinate (end of the chosen commit), the target UTC second, a check
 for the chosen row and, for drill 2, a check that the planted row is absent.
+`backup-database.php` dumps one database without `--databases`, so the dump has
+no `CREATE DATABASE` or `USE`. The runner creates the plan's `database` on the
+fresh target (refused if it already exists) and loads into it; MySQL 8.4.13
+refused the dump with ERROR 1046 before this.
 
 ## Risks fixed and limits found
 
@@ -335,13 +368,18 @@ for the chosen row and, for drill 2, a check that the planted row is absent.
   backup fails with exit 1 (no partial copy, `backup_failed` alerts). Maverick's
   long-lived queue workers normally keep the WAL open. Options: accept a rare
   loud failure; add an app-side keeper process that holds one idle connection;
-  or schedule around worker restarts. The review found the same limit in the
-  probe: with no app connection open, its read-only open fails ("attempt to
-  write a readonly database", checked in the QA image), so `database_down` (a
-  wake alert) and `queue_stale` report failure. A deploy or maintenance window
-  that stops the queue workers can page at night. A WAL keeper fixes both; a
-  probe-side fallback (for example `immutable=1` only while no `-wal` exists)
-  would need review because it can misread during a checkpoint.
+  or schedule around worker restarts. The probe had the same limit (its
+  read-only open failed, so `database_down`, a wake alert, paged during a
+  deploy that stopped the workers). It is fixed in the probe: when the normal
+  read-only open fails, the probe reads the file alone with `immutable=1`
+  (still read-only, no locks, no `-shm`) and keeps the answer only if no `-wal`
+  or `-journal` existed before or after the read and the file's inode, size and
+  times did not change during it; otherwise it retries and fails after three
+  attempts. A writer that opens meanwhile writes to a new `-wal` first, and a
+  checkpoint that rewrites the file changes its times, so a torn read is not
+  kept. This needs SQLite 3.22 or later for immutable WAL reads (the QA image
+  has 3.40.1). An empty `-wal` left by a persistent-WAL setting would still
+  fail; Laravel does not set it. The backup's limit is unchanged.
 - **Limit: `.env` replaced by rename.** `Deploy-App.ps1` rewrites `.env` by rename
   when it stores a new Stripe webhook secret. That drops the ACL; the next
   backup fails loudly, the kit fails, and the probe reports
@@ -448,7 +486,51 @@ check only; the monitor account needs `PROCESS`; the backup time sits next to
 the cutover outage; `queue_stale` ignores reserved jobs whose worker died;
 `server_error_rate` sees only the current access log, so it undercounts for 30
 minutes after log rotation; credential or URL entry failure still lets apply
-exit 0 (it prints FAIL, and the base self-test prints TODO).
+exit 0 (it prints FAIL, and the base self-test prints TODO). The Codex round
+below fixed most of these.
+
+## Codex review round (25 Nov)
+
+Codex reviewed `fd4a34da`; the findings were re-checked at `48f6145b` and each
+real defect was fixed test-first as its own commit. Nothing here touched
+production or a provider.
+
+| Finding | Outcome |
+| --- | --- |
+| offsite-backups#1 (P1) drill load had no database selected | Fixed `7b4cf317`: runner creates and selects the plan database; ERROR 1046 reproduced and gone on MySQL 8.4.13; native fixture now dumps like the producer. |
+| offsite-backups#2 (P1) unchanged kit expires | Already fixed `309eaf1d` (`produce_recovery_kit.py` republishes after 7 days; `test_an_unchanged_kit_is_republished_before_the_bucket_expires_it`). |
+| offsite-backups#3 (P1) prefixes without a marker | Already fixed `fcab9308` (`refresh` skips them; `test_a_publication_without_its_completion_marker_is_skipped_until_the_marker_lands`). |
+| offsite-backups#4 (P1) coverage from seal time | Fixed `5b101f49`: recovery reaches the closing Rotate event's time of the newest batch's last log, read and verified once. |
+| offsite-backups#5 (P2) undo left 0640 | Already fixed `59c99926` (`restore_acl`; `RealAclUndoTests` on the real kernel). |
+| offsite-backups#6 (P2) negative purge slice | Already fixed `7217c8bb` (`max(0, ...)`; `test_fewer_closed_files_than_the_minimum_count_are_all_kept`). |
+| offsite-backups#7 (P2) slot credit before publication | Fixed `19d34e02`: bases and batches count only if `verified_at` is at or before the slot start. |
+| offsite-backups#8 (P2) engine from `.env` only | Fixed `4ef789e4`: cached config wins, as in Laravel; long-lived workers on the old engine remain a documented limit. |
+| offsite-backups#9 (P2) cache root not checked | Missing or unreadable root already fixed `9b31fc1b`; the root's own group-write bit fixed `ca4fad98`. |
+| offsite-backups#10 (P2) forward budget | Fixed `440112dd`: pings go out together, each run tries every condition within about one timeout. |
+| reviewer#1 probe pages with no WAL connection | Fixed `56b57866`: guarded `immutable=1` read; the backup's own limit stays owner decision 5. |
+| reviewer#2 observer loses slots | Crash between sample and row, and a cut row, fixed `67c842fe`; other failed runs documented with a 20 s retry schedule. |
+| reviewer#3 engine check misses cached config | Fixed with #8 (`4ef789e4`); the per-minute engine record is still to come. |
+| reviewer#4 backup timer in the cutover outage | Owner decision 3 (unchanged). |
+| reviewer#5 PROCESS, reserved jobs, rotated log | Rotated log fixed `d5d0d2df`; dead-worker reservations fixed `cf595598`; the `PROCESS` grant is a documented setup step. |
+| reviewer#6 apply exits 0 / no ping URL check | Fixed `78162406`. |
+| reviewer#7 default ACL and umask | Documented (installer runbook): the default ACL mirrors the folder mode, so it matches umask 002; confirm the app's umask is 002 before apply. |
+
+Re-runs at the round head (Linux runs in the pinned QA image, `--network none`,
+uid 1000 with a private `HOME` on a tmpfs, unless noted):
+
+| Command | Result |
+| --- | --- |
+| Windows: the eight lane test modules in `scripts/mysql/offsite` | 109 tests OK, 20 skipped (Linux or root only) |
+| Linux uid 1000: `discover -s scripts/mysql/offsite -p 'test_*.py'` | 195 tests OK, 2 skipped |
+| Linux root: `test_install_backup_host` | 21 tests OK, 1 skipped (non-root only) |
+| `test_rotation_attempt` (Linux); `systemd/test_units.py`; `test_production_units`; readiness discover | 6, 8, 12 and 59 tests OK |
+| `manager-fixture/run.py` (real systemd 252) | passed: 23 of 23 checks, container removed |
+| MySQL 8.4.13, two containers (server plus QA image, sockets on a tmpfs volume, no network; scratch scripts outside the repo) | drill `load_base` on a dump made with the producer's mysqldump argv: refused before the fix (the bare client says ERROR 1046), loads rows after; `rotated_at` on a real closed binlog equals the FLUSH second and the chain verifier accepts the same file; `queue_stale` through the real client: ok, ok, fail, fail for empty, reserved within 7,260 s, reserved 601 s past it, waiting 601 s |
+
+Not re-run in this round: `native-fixture/run.py` needs three containers at
+once and this round was limited to two (its dump argv changed to the
+producer's; the load it exercises was checked above); the PHP suites (no PHP
+changed); `run-fixture.ps1` (no unit file changed).
 
 ## Owner decisions
 
@@ -463,7 +545,7 @@ exit 0 (it prints FAIL, and the base self-test prints TODO).
    cutover and drill runbooks hold the backup and kit timers that night.
 4. Alert provider and phone channel (B4), and whether `alert_fail_suffix` stays `/fail`.
 5. Whether to add an app-side WAL keeper, or accept a rare loud backup failure
-   and a false `database_down` page when no app connection is open.
+   when no app connection is open. (The probe no longer pages in that case.)
 6. The SQL and baseline for `historical_money_totals_changed`.
 
 ## Folding into the shared docs
