@@ -10,8 +10,10 @@ use App\Models\Recruiting\RecruitApplicantFile;
 use App\Models\Recruiting\RecruitJobPosting;
 use App\Models\Recruiting\RecruitRoster;
 use App\Models\User;
+use App\Services\Crm\CrmBusinessTime;
 use App\Services\Crm\Email\CrmSignatureService;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -228,13 +230,16 @@ class CrmRecruitingTest extends CrmTestCase
 
     public function test_morning_digest_lists_only_the_reps_own_follow_ups(): void
     {
+        // At this UTC date boundary, "today" still means the prior Eastern day.
+        $this->travelTo(Carbon::parse('2026-11-25T03:00:00Z'));
+        $businessNow = now(CrmBusinessTime::TIMEZONE);
         $rep = $this->rep(['email' => 'rep@reprophotos.com']);
         $other = $this->rep();
         $mine = $this->contactFor($rep, ['name' => 'Dana Whitfield']);
         $theirs = $this->contactFor($other, ['name' => 'Hidden Person']);
-        app(\App\Services\Crm\CrmEventService::class)->schedule($mine, ['type' => 'call', 'starts_at' => now()->setTime(11, 0)->toIso8601String()], $rep);
+        app(\App\Services\Crm\CrmEventService::class)->schedule($mine, ['type' => 'call', 'starts_at' => $businessNow->copy()->setTime(11, 0)->toIso8601String()], $rep);
         // An old follow-up still assigned to $rep on a contact that moved to another rep.
-        CrmEvent::create(['contact_id' => $theirs->id, 'type_id' => \App\Models\Crm\CrmEventType::query()->value('id'), 'starts_at' => now()->subDay(), 'duration_min' => 15, 'assigned_user_id' => $rep->id, 'status' => 'planned']);
+        CrmEvent::create(['contact_id' => $theirs->id, 'type_id' => \App\Models\Crm\CrmEventType::query()->value('id'), 'starts_at' => $businessNow->copy()->subDay(), 'duration_min' => 15, 'assigned_user_id' => $rep->id, 'status' => 'planned']);
 
         $this->artisan('crm:follow-up-digest')->assertSuccessful();
         $this->artisan('crm:follow-up-digest')->assertSuccessful();
