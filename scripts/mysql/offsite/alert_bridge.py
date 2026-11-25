@@ -179,13 +179,25 @@ def read_status(inbox: Path, condition: str, now: int, max_age: int) -> tuple[st
     return record["state"], "detector reported " + record["state"]
 
 
+FORWARD_WORKERS = 8  # Threads count against the unit's TasksMax=16.
+
+
 def forward(config: dict, urls: dict[str, str], *, context: ssl.SSLContext | None = None,
             now: int) -> list[dict]:
-    results = []
-    for condition in config["forward"]:
+    """Relay every condition at once, so one slow endpoint cannot use up the unit's time limit.
+
+    One after another, six conditions at a 10 s timeout could outlast the 45 s unit limit,
+    and each run starts again at the first condition, so the later ones would never go out."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def relay(condition: str) -> dict:
         state, status = read_status(Path(config["inbox_dir"]), condition, now, config["max_status_age_seconds"])
-        results.append(signal(config, urls, condition, state, context=context) | {"status": status})
-    return results
+        return signal(config, urls, condition, state, context=context) | {"status": status}
+
+    if not config["forward"]:
+        return []
+    with ThreadPoolExecutor(max_workers=min(FORWARD_WORKERS, len(config["forward"]))) as pool:
+        return list(pool.map(relay, config["forward"]))
 
 
 FIXED_CHECKS = ("server_silent", "backup_stale", "backup_failed")

@@ -202,6 +202,25 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual([item["result"] for item in results], ["alert-ping-failed", "alert-ping-failed"])
         self.assertEqual(len(Recorder.paths), 2)
 
+    def test_forward_attempts_every_condition_within_one_timeout_when_the_provider_is_slow(self):
+        # The installer forwards six conditions with a 10 s timeout each. One after another
+        # that is up to 60 s, past the unit's 45 s limit, and every run starts again at the
+        # first condition, so the later ones could go unsent minute after minute.
+        names = ["database_down", "wrong_database_engine", "disk_nearly_full", "server_error_rate", "queue_stale",
+                 "cache_write_failed"]
+        self.config["forward"] = names
+        self.urls["checks"] |= {name: f"{self.base}-{name}" for name in names}
+        for name in names:
+            self.write_status(name, "ok")
+        Recorder.delay = 1.0
+        started = time.monotonic()
+        results = self.forward()
+        elapsed = time.monotonic() - started
+        self.assertEqual([item["condition"] for item in results], names, "results keep the configured order")
+        self.assertEqual({item["result"] for item in results}, {"alert-ping-delivered"})
+        self.assertEqual(sorted(Recorder.paths), sorted(f"/ping/{TOKEN}-{name}" for name in names))
+        self.assertLess(elapsed, 3.0, "the pings must not wait for each other")
+
     def test_config_refuses_unreviewed_fields(self):
         with self.assertRaises(bridge.Refusal):
             bridge.parse_config(json.dumps(self.config | {"proxy": "https://x"}).encode())
