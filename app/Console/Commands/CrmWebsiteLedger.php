@@ -183,15 +183,22 @@ class CrmWebsiteLedger extends Command
         return $receipt === null ? 'missing' : ($receipt->completed_at === null ? 'pending' : 'completed');
     }
 
-    /** Website bookings saved without a reference: their CRM receipt is keyed "shoot-<id>". */
+    /**
+     * Website bookings saved without a reference: their CRM receipt is keyed
+     * "shoot-<id>". Any source without a reference gets such a receipt, and
+     * another source may send a reference that looks like one, so a receipt
+     * counts only when its shoot is a website booking without a reference.
+     */
     private function withoutReference(ConnectionInterface $db, ?Carbon $since): array
     {
+        $website = fn () => $db->table('shoots')->where('external_booking_payload->source', self::WEBSITE)
+            ->whereNull('external_booking_payload->external_reference');
+        $websiteIds = $website()->pluck('id')->map(fn ($id) => (int) $id)->flip();
         $fromReceipts = $db->table('crm_website_intake_receipts')->where('kind', 'booking')->where('reference', 'like', 'shoot-%')
             ->when($since, fn ($q) => $q->where('created_at', '>=', $since))->pluck('reference')
-            ->map(fn ($reference) => (int) substr((string) $reference, 6));
-        $fromShoots = $db->table('shoots')->where('external_booking_payload->source', self::WEBSITE)
-            ->whereNull('external_booking_payload->external_reference')
-            ->when($since, fn ($q) => $q->where('created_at', '>=', $since))->pluck('id')->map(fn ($id) => (int) $id);
+            ->map(fn ($reference) => preg_match('/^shoot-([1-9][0-9]{0,18})$/', (string) $reference, $m) ? (int) $m[1] : null)
+            ->filter(fn (?int $id) => $id !== null && $websiteIds->has($id));
+        $fromShoots = $website()->when($since, fn ($q) => $q->where('created_at', '>=', $since))->pluck('id')->map(fn ($id) => (int) $id);
 
         return $fromReceipts->merge($fromShoots)->unique()->sort()->values()
             ->map(fn (int $id) => ['shoot_id' => $id, 'crm_reference' => 'shoot-'.$id])->all();

@@ -161,6 +161,41 @@ class CrmWebsiteLedgerTest extends CrmTestCase
         DB::table('website_email_deliveries')->where('reference', $refs['failed'])->update(['updated_at' => now()]);
     }
 
+    /**
+     * Only website bookings saved without a reference need a person. Another
+     * integration's reference-less booking also gets a "shoot-<id>" receipt,
+     * and another integration may send a reference that looks like one.
+     */
+    public function test_only_website_bookings_without_a_reference_need_manual_reconciliation(): void
+    {
+        $reference = (string) Str::uuid();
+        $settled = Shoot::factory()->create(['external_booking_payload' => ['source' => 'reprophotos.com', 'external_reference' => $reference]]);
+        $partnerWithout = Shoot::factory()->create(['external_booking_payload' => ['source' => 'partner.example']]);
+        $lookalike = 'shoot-'.$settled->id;
+        $partnerLookalike = Shoot::factory()->create(['external_booking_payload' => ['source' => 'partner.example', 'external_reference' => $lookalike]]);
+        DB::table('external_booking_submissions')->insert([
+            ['source' => 'reprophotos.com', 'external_reference' => $reference, 'request_hash' => str_repeat('a', 64),
+                'shoot_id' => $settled->id, 'response_payload' => '{"shoot_id":'.$settled->id.'}', 'created_at' => now(), 'updated_at' => now()],
+            ['source' => 'partner.example', 'external_reference' => $lookalike, 'request_hash' => str_repeat('b', 64),
+                'shoot_id' => $partnerLookalike->id, 'response_payload' => '{"shoot_id":'.$partnerLookalike->id.'}', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        DB::table('crm_website_intake_receipts')->insert([
+            ['kind' => 'booking', 'reference' => $reference, 'payload' => null, 'completed_at' => now(), 'created_at' => now(), 'updated_at' => now()],
+            ['kind' => 'booking', 'reference' => 'shoot-'.$partnerWithout->id, 'payload' => null, 'completed_at' => now(), 'created_at' => now(), 'updated_at' => now()],
+            ['kind' => 'booking', 'reference' => $lookalike, 'payload' => null, 'completed_at' => now(), 'created_at' => now(), 'updated_at' => now()],
+            ['kind' => 'booking', 'reference' => 'shoot-999999', 'payload' => null, 'completed_at' => now(), 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        $path = $this->directory.'/settled-references.json';
+        file_put_contents($path, json_encode(['rows' => [['producer' => 'booking', 'reference' => $reference]]]));
+
+        $exit = Artisan::call('crm:website-ledger', ['--connection' => DB::getDefaultConnection(), '--references' => $path, '--json' => true]);
+        $report = json_decode(Artisan::output(), true);
+
+        $this->assertSame([], array_column($report['manual_reconciliation'], 'shoot_id'));
+        $this->assertSame(['in_dashboard' => 1], $report['counts']);
+        $this->assertSame(0, $exit, 'Every website booking is settled.');
+    }
+
     public function test_it_refuses_to_run_without_a_database_or_references(): void
     {
         [$refs] = $this->seedLedger();
