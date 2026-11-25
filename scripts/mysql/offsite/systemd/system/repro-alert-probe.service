@@ -1,5 +1,8 @@
 [Unit]
 Description=RePro local alert detectors (no network)
+# A fresh view of the cutover journal before every run; a missing or stale view pages.
+Wants=repro-alert-cutover-view.service
+After=repro-alert-cutover-view.service
 
 [Service]
 Type=oneshot

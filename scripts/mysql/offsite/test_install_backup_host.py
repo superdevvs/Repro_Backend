@@ -246,6 +246,32 @@ class JobTests(unittest.TestCase):
         inbox = next(item for item in job.directories if item.path == "/var/lib/repro-alert-inbox")
         self.assertEqual((inbox.owner, inbox.group, inbox.mode), ("repro-backup", "repro-alert", 0o2750))
 
+    def test_alert_job_installs_the_read_only_cutover_view(self):
+        import cutover_view
+
+        job = installer.build_job("alerts", self.settings)
+        files = {item.path: item for item in job.files}
+        tool = files["/opt/repro-backup-tools/cutover_view.py"]
+        self.assertEqual((tool.owner, tool.group, tool.mode), ("root", "root", 0o444))
+        self.assertIn("/etc/systemd/system/repro-alert-cutover-view.service", files)
+        folder = next(item for item in job.directories if item.path == "/var/lib/repro-alert-cutover")
+        self.assertEqual((folder.owner, folder.group, folder.mode, folder.remove_contents),
+                         ("root", "repro-backup", 0o750, True))
+        plan = json.loads(files["/etc/repro-backup/alert-probe.json"].data)
+        self.assertEqual(plan["cutover"], {"view_file": "/var/lib/repro-alert-cutover/view.json",
+                                           "ingress_open": "/run/repro-cutover-ingress/open"})
+        self.assertEqual(str(PurePosixPath(cutover_view.OUTPUT)), plan["cutover"]["view_file"])
+        self.assertIn("site_held", plan["conditions"])
+        self.assertIn("site_held", json.loads(files["/etc/repro-alert/bridge.json"].data)["forward"])
+        # The journal the guard keeps, and the marker nginx and the boot folders use.
+        cutover = Path(installer.__file__).resolve().parents[2] / "cutover"
+        self.assertIn('STATE = Path("/var/lib/repro-cutover-fence")', (cutover / "fence" / "guard.py").read_text())
+        self.assertEqual(str(PurePosixPath(cutover_view.JOURNAL)), "/var/lib/repro-cutover-fence/state.json")
+        hold = (cutover / "production" / "nginx" / "repro-cutover-hold.conf").read_text()
+        self.assertIn("if (-f /run/repro-cutover-ingress/open)", hold)
+        boot = (cutover / "production" / "tmpfiles.d" / "repro-cutover-fence.conf").read_text()
+        self.assertIn("d /run/repro-cutover-ingress 0755 root root -", boot)
+
     @unittest.skipUnless(os.name == "posix", "the tools check POSIX absolute paths")
     def test_rendered_alert_configs_are_ones_the_bridge_and_probe_accept(self):
         import alert_bridge
@@ -337,6 +363,20 @@ class PreviewAndApplyTests(unittest.TestCase):
             self.assertEqual(installer.undo("base-backup", system), 0)
         self.assertNotIn("/var/lib/repro-alert-probe", system.dirs)
         self.assertNotIn("/var/lib/repro-alert-probe/memory.json", system.files)
+
+    def test_undo_removes_the_cutover_view_folder(self):
+        system = FakeSystem()
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name in ("base-backup", "alerts"):
+                self.assertEqual(installer.apply(installer.build_job(name, self.settings), system, self.settings,
+                                                 enter_credentials=False), 0)
+        self.assertIn("/var/lib/repro-alert-cutover", system.dirs)
+        system.files["/var/lib/repro-alert-cutover/view.json"] = (b"{}", 0, system.group_id("repro-backup"), 0o640)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(installer.undo("alerts", system), 0)
+            self.assertEqual(installer.undo("base-backup", system), 0)
+        self.assertNotIn("/var/lib/repro-alert-cutover", system.dirs)
+        self.assertNotIn("/var/lib/repro-alert-cutover/view.json", system.files)
 
     class CredentialSystem(FakeSystem):
         """The no-echo entry exits with entry_code; `test -r` passes only for the readable paths."""

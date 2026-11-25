@@ -174,6 +174,43 @@ def pings():
     return path.read_text().split() if path.exists() else []
 
 
+def probe_status(condition):
+    run(["systemctl", "start", "repro-alert-probe.service"], check=False)
+    return json.loads(Path(f"/var/lib/repro-alert-inbox/{condition}.json").read_text())
+
+
+def cutover_view_checks():
+    """The view unit (root, no capabilities) reads a root-private journal the real runner wrote."""
+    view = Path("/var/lib/repro-alert-cutover/view.json")
+    info = view.stat() if view.exists() else None
+    record("cutover_view_written_before_the_probe",
+           info is not None and (info.st_uid, info.st_gid, info.st_mode & 0o777)
+           == (0, int(run(["id", "-g", "repro-backup"]).stdout), 0o640)
+           and json.loads(view.read_text())["journal"] == "absent", info and oct(info.st_mode))
+    sys.path.insert(0, str(BUNDLE / "cutover"))
+    from rehearse import FixtureAdapter
+    from runner import Identity, Journal, Runner
+
+    fence, ingress = Path("/var/lib/repro-cutover-fence"), Path("/run/repro-cutover-ingress")
+    ingress.mkdir(mode=0o755)  # tmpfiles.d creates it at boot once the writer hold is installed
+    identity = Identity("fixture-cutover", "a" * 40, "b" * 64, "c" * 64, "d" * 64, "ec219d68-61fd-4a9e-ba98-43ddb4008383")
+    journal = Journal(fence)
+    adapter = FixtureAdapter(journal, identity)
+    adapter.BOOT_ID = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    runner = Runner(journal, identity, adapter)
+    runner.initialize()
+    planned = probe_status("site_held")
+    record("held_site_outside_a_hold_pages_with_the_remedy",
+           planned["state"] == "fail" and "cli.py refresh" in planned["detail"], planned)
+    runner.perform("hold", runner.approval_request("hold"))
+    held = probe_status("site_held")
+    record("approved_hold_read_through_the_root_private_journal_is_expected",
+           oct(fence.stat().st_mode & 0o777) == "0o700" and held["state"] == "ok"
+           and "approved cutover hold" in held["detail"], held)
+    shutil.rmtree(fence)
+    ingress.rmdir()
+
+
 def main():
     started = time.monotonic()
     report["systemd"] = run(["systemctl", "--version"]).stdout.decode().splitlines()[0]
@@ -224,7 +261,7 @@ def main():
     mock_server()
     checks = {name: f"https://127.0.0.1:{PORT}/ping/{TOKEN}-{name}" for name in
               ("server_silent", "backup_stale", "backup_failed", "database_down", "wrong_database_engine",
-               "disk_nearly_full", "server_error_rate", "queue_stale", "cache_write_failed")}
+               "disk_nearly_full", "server_error_rate", "queue_stale", "cache_write_failed", "site_held")}
     urls = Path("/var/lib/repro-alert/ping-urls.json")
     urls.write_text(json.dumps({"version": 1, "checks": checks}))
     os.chown(urls, int(run(["id", "-u", "repro-alert"]).stdout), int(run(["id", "-g", "repro-alert"]).stdout))
@@ -242,8 +279,10 @@ def main():
     record("probe_unit_writes_statuses", probe_run.returncode == 0, probe_log[-800:])
     run(["systemctl", "start", "repro-alert-forward.service"], check=False)
     expected = {f"/ping/{TOKEN}-disk_nearly_full/fail"} | {f"/ping/{TOKEN}-{name}" for name in
-               ("database_down", "wrong_database_engine", "server_error_rate", "queue_stale", "cache_write_failed")}
+               ("database_down", "wrong_database_engine", "server_error_rate", "queue_stale", "cache_write_failed",
+                "site_held")}
     record("detector_statuses_relayed", wait_for(lambda: expected <= set(pings())), sorted(set(pings()) - expected))
+    cutover_view_checks()
     journal = run(["journalctl", "-o", "cat", "--no-pager"]).stdout
     inbox = b"".join(path.read_bytes() for path in Path("/var/lib/repro-alert-inbox").iterdir())
     record("no_ping_url_in_journal_or_inbox", TOKEN.encode() not in journal and TOKEN.encode() not in inbox)
@@ -292,6 +331,7 @@ def main():
            {key: (modes_before.get(key), value) for key, value in modes_after.items() if modes_before.get(key) != value})
     leftovers = [path for path in ("/opt/repro-backup-tools", "/etc/repro-backup", "/etc/repro-alert", "/var/lib/repro-backup",
                                    "/var/lib/repro-alert", "/var/lib/repro-alert-inbox", "/var/lib/repro-alert-probe",
+                                   "/var/lib/repro-alert-cutover",
                                    "/var/lib/repro-backup-installer",
                                    "/etc/systemd/system/repro-backup.service", "/etc/systemd/system/repro-alert-heartbeat.timer")
                  if os.path.lexists(path)]
