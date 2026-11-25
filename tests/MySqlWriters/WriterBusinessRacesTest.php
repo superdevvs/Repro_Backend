@@ -249,6 +249,40 @@ final class WriterBusinessRacesTest extends TestCase
         $this->assertFalse($this->tokenIsHeld());
     }
 
+    public function test_two_overlapping_automation_runs_give_one_dispatch(): void
+    {
+        if (! MessageChannel::where('type', 'EMAIL')->where('is_default', true)->exists()) {
+            MessageChannel::create(['type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'Writer policy proof email',
+                'from_email' => 'hello@example.com', 'owner_scope' => 'GLOBAL', 'is_default' => true, 'config_json' => []]);
+        }
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $schedule = ['type' => 'weekly', 'day_of_week' => 1, 'time' => '11:00'];
+        $rule = AutomationRule::create(['name' => 'Writer policy weekly report', 'trigger_type' => 'WEEKLY_SALES_REPORT',
+            'scope' => 'SYSTEM', 'is_active' => true, 'editor_mode' => 'visual', 'engine_version' => 2,
+            'schedule_json' => $schedule, 'recipients_json' => ['rep'], 'workflow_definition_json' => [
+                'nodes' => [
+                    ['id' => 'trigger', 'type' => 'trigger.schedule', 'config' => ['triggerType' => 'WEEKLY_SALES_REPORT', 'schedule' => $schedule]],
+                    ['id' => 'send', 'type' => 'action.email', 'config' => ['subject' => 'Weekly report {{report_total_shoots}}',
+                        'bodyText' => 'Report', 'recipientMode' => 'roles', 'recipientRoles' => ['rep']]],
+                    ['id' => 'end', 'type' => 'end', 'config' => []],
+                ],
+                'edges' => [['id' => 'one', 'source' => 'trigger', 'target' => 'send'], ['id' => 'two', 'source' => 'send', 'target' => 'end']],
+            ]]);
+
+        // The scheduler's minute run and an admin's "Run now" for the same rule, at the same time.
+        $runs = $this->race(2, fn (int $slot) => $this->businessWorker('automation-run',
+            [(string) $slot, (string) $rule->id, $slot === 2 ? '1' : '0', (string) $rep->id]));
+
+        $this->assertSame([0, 0], array_column($runs, 'exit'), json_encode($runs));
+        $count = fn (string $sql) => (int) $this->admin->query($sql)->fetchColumn();
+        $this->assertSame(1, $count('SELECT COUNT(*) FROM automation_dispatches WHERE automation_rule_id = '.(int) $rule->id),
+            'Two overlapping runs started the same period twice: '.json_encode($runs));
+        $this->assertSame(1, $count('SELECT COUNT(*) FROM automation_runs WHERE automation_rule_id = '.(int) $rule->id));
+        $this->assertSame(1, $count('SELECT COUNT(*) FROM messages WHERE to_address = '.$this->admin->quote($rep->email)),
+            'The sales rep must get one weekly report.');
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
     /**
      * A writer holds a change open while a later writer commits. A reader that
      * pages by record number in between must not move its cursor past the open one.
