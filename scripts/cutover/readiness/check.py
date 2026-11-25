@@ -527,16 +527,20 @@ def review_nightly_runs(policy: dict, nights: object, crm_scope_table_count: int
             raise Failed("Nightly parity report requires an exact release commit")
         if index > NIGHTLY_RUN_COUNT - FROZEN_NIGHT_COUNT and tested_release != release:
             raise Failed("Both final nightly runs must use the frozen release")
-        cap(night, "import_and_verify_ms", 12 * MINUTE)
-        for name in NIGHTLY_COUNTERS:
-            zero(night, name)
-        for proof in NIGHTLY_PROOFS:
-            confirmed(night, proof)
-        crm = object_field(night, "crm")
-        review_nightly_crm(crm, night, scope_sha, crm_scope_table_count)
-        crm_digests.add(crm["report_sha256"])
+        review_nightly_night(night, scope_sha, crm_scope_table_count)
+        crm_digests.add(night["crm"]["report_sha256"])
     if len(crm_digests) != NIGHTLY_RUN_COUNT:
         raise Failed("Nightly runs require distinct CRM review digests")
+
+
+def review_nightly_night(night: dict, scope_sha: str, crm_scope_table_count: int) -> None:
+    """The data gates for one night, independent of its place in the streak."""
+    cap(night, "import_and_verify_ms", 12 * MINUTE)
+    for name in NIGHTLY_COUNTERS:
+        zero(night, name)
+    for proof in NIGHTLY_PROOFS:
+        confirmed(night, proof)
+    review_nightly_crm(object_field(night, "crm"), night, scope_sha, crm_scope_table_count)
 
 
 def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> dict:

@@ -1,0 +1,62 @@
+{
+  "schema": "repro.nightly-runner.config.v1",
+  "backend_root": "/var/www/backend",
+  "candidate_root": "/home/maverick/repro-nightly-candidate",
+  "native_mysql_root": "/opt/repro-mysql84-native/mysql-8.4.13",
+  "php": "/usr/bin/php8.3",
+  "python": "/usr/bin/python3",
+  "pymysql_wheel": {
+    "path": "/home/maverick/repro-nightly-tools/pymysql-1.1.2-py3-none-any.whl",
+    "sha256": "e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9"
+  },
+  "deploy_lock": "/home/maverick/.repro-backend-deploy.lock",
+  "scope": {
+    "path": "database/schema/migration-scope.json",
+    "sha256": "a3807732af33e799198c3e681b2610ff470605e023d2029fc5b8ec81bf5c99d2"
+  },
+  "approved_exceptions": {
+    "path": "/home/maverick/repro-mysql-rehearsal-20261122/native-import-02/exceptions-private.json",
+    "sha256": "10a9321ac072f9e06c650f7027421b76b7ac4fc60c1acaebb4d319c941059704"
+  },
+  "reviewed_schema_sha256": "87e79c75b2735f73001aa7ea2d6cb545071e643489ce52f3c1b74335488d1b6a",
+  "crm_migrations": [
+    "2026_11_24_100000_create_crm_core_tables",
+    "2026_11_24_110000_create_crm_event_tables",
+    "2026_11_24_120000_create_crm_email_tables",
+    "2026_11_24_130000_create_crm_drip_and_campaign_tables",
+    "2026_11_24_140000_create_recruit_tables",
+    "2026_11_24_150000_create_crm_feature_tables",
+    "2026_11_24_160000_create_crm_intake_receipts",
+    "2026_11_24_161000_add_booking_details_to_crm_quotes",
+    "2026_11_24_180000_add_crm_communication_receipts"
+  ],
+  "budget": {
+    "import_and_verify_ms": 720000,
+    "fail_fast": true,
+    "baseline": {
+      "snapshot_bytes": 4460900352,
+      "import_and_verify_ms": 596700
+    }
+  },
+  "guards": {
+    "min_free_bytes": 45000000000,
+    "free_bytes_per_source_byte": 9,
+    "max_source_bytes": 6000000000,
+    "min_mem_available_kib": 12582912,
+    "mem_margin_kib": 8388608
+  },
+  "priority": {
+    "nice": 10,
+    "ionice_class": 3,
+    "ionice_level": null,
+    "capture_nice": 15
+  },
+  "mysql_tuning": {
+    "innodb_buffer_pool_size": "4G",
+    "innodb_redo_log_capacity": "2G"
+  },
+  "reverse_triggers": null,
+  "finance": null,
+  "applicant_files_root": null,
+  "retain_snapshots": null
+}
