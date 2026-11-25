@@ -31,7 +31,7 @@ Config is cached; `cache.default` is `file`, `queue.default` `database`,
 deploy user cannot write there, and root would create root-owned folders
 where none existed, which later cache writes fail on. `queue:restart` and
 `config:cache` run as the deploy user, the way Deploy-App runs them, never
-as `www-data` or root. 142 of the 256 top-level cache folders are 755, so
+as `www-data` or root. 142 of the 257 top-level cache folders are 755, so
 the off-site `cache_write_failed` check would fail as soon as it is
 installed (owner decision, below). The host runs on America/New_York and
 the deploy user's crontab has no `CRON_TZ`, so its `35 3` and `47 3` lines
@@ -1872,7 +1872,7 @@ has been done. Each production step needs its own approval.
   `data/ee/2f` (expected `maverick` 0644), the effective OPcache values
   (`php-fpm8.3 -i`; the search may have missed the `conf.d` symlinks),
   and the cache store again on the day before the night.
-- Cache folders: 142 of 256 top-level cache folders are 755. Before the
+- Cache folders: 142 of 257 top-level cache folders are 755. Before the
   off-site `alerts` job is installed, the owner decides whether to make
   the cache tree group-writable or to drop or change
   `cache_group_writable`; otherwise `cache_write_failed` fails at once.

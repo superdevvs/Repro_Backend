@@ -264,7 +264,7 @@ here; only the next backup and the kit fail.
 `cache_write_failed` would fail on production as soon as the `alerts` job
 is installed. The default plan sets `cache_group_writable: true`
 (`install_backup_host.py`), and the check fails on any cache folder
-without group write, but 142 of the 256 top-level folders under
+without group write, but 142 of the 257 top-level folders under
 `storage/framework/cache/data` are 755 (measured 25 November). The owner
 decides before the install (owner decision 7 below).
 

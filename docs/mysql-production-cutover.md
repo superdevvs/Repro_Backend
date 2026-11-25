@@ -928,7 +928,7 @@ Adding them to an alert round is an owner decision.
 `cache_write_failed` fails on production as soon as it is installed. The
 default probe plan sets `cache_group_writable: true`
 (`install_backup_host.py`), and the check fails on any cache folder
-without group write (`alert_probe.py`), while 142 of the 256 top-level
+without group write (`alert_probe.py`), while 142 of the 257 top-level
 cache folders on production are 755 (measured 25 November; see the
 read-only checks in [Freeze all writers](#freeze-all-writers)). Before
 the `alerts` job is installed, the owner decides: make the cache tree
@@ -1210,7 +1210,7 @@ night.
   `data/86/52` (`database:integrations`), `data/7a/f7`
   (`database:watermarks`) and `data/9c/90`
   (`iguide-lab-tour:iguide-lab-tour`), all `www-data:www-data` 755 with no
-  pause file. Of the 256 top-level `data/` folders, 142 are 755, 114 are
+  pause file. Of the 257 top-level `data/` folders (one more than the 256 hex names, not identified), 142 are 755, 114 are
   775 and one is 3777; `cache` and `cache/data` are `www-data:www-data`
   775. That is why every queue command runs as `www-data` (step 2 below,
   and `host.json`). The other five queues' folders were not measured. To
@@ -1222,17 +1222,24 @@ night.
       database:voice-realtime database:voice-notifications database:voice-transcripts \
       studio:studio database:media-archives iguide-lab-tour:iguide-lab-tour; do
     h=$(printf '%s' "illuminate:queue:paused:$q" | sha1sum | cut -c1-40)
-    stat -c "%U:%G %a %n $q" "${h:0:2}/${h:2:2}" 2>/dev/null || echo "absent ${h:0:2}/${h:2:2} $q"
+    for d in "${h:0:2}" "${h:0:2}/${h:2:2}"; do
+      stat -c "%U:%G %a %n $q" "$d" 2>/dev/null || echo "absent $d $q"
+    done
   done
   ```
 
-  An absent folder is created at the first pause, by `www-data` with the
-  command's umask: 775 with the runbook's `umask 0002`. Without that
-  umask it would be 755 under `sudo` (umask 0022), which adds to the
-  folders below that trip `cache_write_failed`, and 0700 with a 0600 flag
-  under the watchdog's `UMask=0077`, which the workers that run as
-  `maverick` cannot read. A root-owned folder is not fine; stop and call
-  the owner.
+  Pass rule, for each queue: look at the deepest folder that exists
+  (`xx/yy`, or `xx` when `xx/yy` is absent, or `data` when both are
+  absent). The key passes only if that folder is owned by `www-data`, or
+  has group `www-data` with group write. Anything else stops the night
+  until the owner fixes it, including a folder owned by `maverick` with
+  mode 755 (a deploy or cron run under umask 0022 makes those) and a
+  root-owned folder. A missing folder is then created at the first pause
+  by `www-data` with the command's umask: 775 with the runbook's
+  `umask 0002`. Without that umask it would be 755 under `sudo` (umask
+  0022), which adds to the folders below that trip `cache_write_failed`,
+  and 0700 with a 0600 flag under the watchdog's `UMask=0077`, which the
+  workers that run as `maverick` cannot read.
 - Queue restart key. `queue:restart` writes `illuminate:queue:restart`
   under `data/ee/2f`, not measured. Every deploy writes it as the deploy
   user, so expect a `maverick` file with mode 0644:
@@ -1245,7 +1252,7 @@ night.
   If another user owns it and group `www-data` cannot write it, the
   runbook's `queue:restart` fails, and so does the next deploy's; stop and
   call the owner.
-- Cache folders and the off-site alerts. 142 of the 256 top-level `data/`
+- Cache folders and the off-site alerts. 142 of the 257 top-level `data/`
   folders are 755, so they are not group-writable. Three effects:
   - Processes that run as `maverick` in group `www-data` (the Studio,
     lab-tour and voice workers, and the scheduler, with umask 0002)
@@ -1259,9 +1266,14 @@ night.
     for a unit that sets no `UMask`) add more such folders.
 
   Owner decision, before the alerts are installed: make the cache tree
-  group-writable (for example `g+w`, and setgid on the folders), or drop
-  or change `cache_group_writable` in the probe plan. Either changes
-  production and needs its own approval.
+  group-writable in a way that lasts, or drop or change
+  `cache_group_writable` in the probe plan. `chmod g+w` alone does not
+  last: PHP-FPM, `sudo`, cron and Deploy-App write cache keys under umask
+  0022 and keep creating new 755 folders. A default ACL does last,
+  because it replaces the umask for new entries, for example
+  `setfacl -R -m g:www-data:rwX,d:g:www-data:rwX storage/framework/cache`
+  plus setgid on the folders (as root, in an administrator session).
+  Either choice changes production and needs its own approval.
 - FPM. The unit is `php8.3-fpm.service`, active. No
   `opcache.enable`, `opcache.validate_timestamps` or
   `opcache.revalidate_freq` line was found under `/etc/php/8.3/fpm`, so
