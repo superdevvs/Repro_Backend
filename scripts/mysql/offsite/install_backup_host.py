@@ -644,7 +644,11 @@ def apply(job: Job, system, settings: dict, *, enter_credentials: bool) -> int:
     print(f"PASS {job.name} installed; units are disabled")
     expected = enter_credentials and bool(job.credential_step)
     entry_failed = False
-    if expected:
+    if expected and credentials_readable(job, system):
+        # The entry steps only create, and refuse values that exist. A later apply (an ACL repair,
+        # or repeating the self-tests) keeps them; replacing them is a separate, deliberate step.
+        print(f"Private values already entered ({CREDENTIALS[job.name][1]}); not asked again.")
+    elif expected:
         account = CREDENTIALS[job.name][0]
         print("Enter the private values now. Nothing you type is shown or logged.")
         code, _ = system.run(["/usr/sbin/runuser", "-u", account, "--", *job.credential_step], input_tty=True)
@@ -673,15 +677,21 @@ CREDENTIALS = {
 }
 
 
+def credentials_readable(job: Job, system) -> bool:
+    """Whether the job's private values file is readable by the account that uses it."""
+    account, path, _ = CREDENTIALS[job.name]
+    code, _ = system.run(["/usr/sbin/runuser", "-u", account, "--", "/usr/bin/test", "-r", path])
+    return code == 0
+
+
 def credentials_present(job: Job, system, *, expected: bool) -> bool | None:
     """PASS when the job's private values are readable by their account; FAIL if they were to be
     entered in this run, TODO if the owner chose --skip-credentials. None for a job without any."""
     if job.name not in CREDENTIALS or not job.credential_step:
         return None
-    account, path, label = CREDENTIALS[job.name]
-    code, _ = system.run(["/usr/sbin/runuser", "-u", account, "--", "/usr/bin/test", "-r", path])
-    print(("PASS " if code == 0 else "FAIL " if expected else "TODO ") + label)
-    return code == 0 if expected else None
+    present = credentials_readable(job, system)
+    print(("PASS " if present else "FAIL " if expected else "TODO ") + CREDENTIALS[job.name][2])
+    return present if expected else None
 
 
 SANDBOX_READ = (

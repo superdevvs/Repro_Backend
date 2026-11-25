@@ -383,6 +383,42 @@ class PreviewAndApplyTests(unittest.TestCase):
         self.assertEqual(codes, [0], text)
         self.assertIn("PASS ping URLs entered", text)
 
+    class CreateOnlySystem(CredentialSystem):
+        """The real entry steps only create: enter_r2_config refuses an existing config folder and
+        alert_bridge enter-urls an existing URL file. A successful entry leaves its file readable."""
+
+        TARGETS = {"enter_r2_config.py": "/var/lib/repro-backup/credentials/rclone-daily.conf",
+                   "alert_bridge.py": "/var/lib/repro-alert/ping-urls.json"}
+
+        def run(self, argv, *, input_tty=False, env=None):
+            if input_tty:
+                self.commands.append(list(argv))
+                target = next(path for tool, path in self.TARGETS.items() if any(item.endswith(tool) for item in argv))
+                if target in self.readable:
+                    return 1, b""
+                self.readable.add(target)
+                return 0, b""
+            return super().run(argv, input_tty=input_tty, env=env)
+
+    def test_a_second_apply_keeps_the_entered_values_and_passes(self):
+        # Re-running apply is how a lost ACL is repaired, and how the self-tests are repeated after
+        # entering the values by hand. It ran the create-only entry again, which refused the
+        # existing values, so a correct install exited 1 on every later apply.
+        system = self.CreateOnlySystem()
+        codes, _ = self.apply_with_credentials(system, "base-backup", "alerts")
+        self.assertEqual(codes, [0, 0])
+        def entries():
+            return sum(1 for argv in system.commands if any(item.endswith(tool) for item in argv
+                                                            for tool in self.CreateOnlySystem.TARGETS))
+
+        self.assertEqual(entries(), 2)
+        codes, text = self.apply_with_credentials(system, "base-backup", "alerts")
+        self.assertEqual(codes, [0, 0], text)
+        self.assertEqual(entries(), 2, "the values already entered are not asked for again")
+        self.assertIn("PASS upload credentials entered", text)
+        self.assertIn("PASS ping URLs entered", text)
+        self.assertNotIn("FAIL", text)
+
     def test_skipped_credentials_are_a_todo_not_a_failure(self):
         system = FakeSystem()
         output = io.StringIO()

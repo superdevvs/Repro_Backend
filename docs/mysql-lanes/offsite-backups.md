@@ -159,8 +159,10 @@ What apply does for `base-backup`:
   (`rclone-daily.conf`; for `alerts`, `ping-urls.json` as `repro-alert`). If the
   no-echo entry fails, or its file is not there after an entry in this run,
   that line is FAIL and apply exits 1; enter the values with the printed
-  command and run apply again. With `--skip-credentials` the line is TODO and
-  apply exits 0.
+  command and run apply again. A later apply that finds the values already
+  readable by their account does not run the create-only entry again (it would
+  refuse them) and passes that line. With `--skip-credentials` the line is
+  TODO and apply exits 0.
 
 Apply is idempotent and never overwrites a file it did not install or one that
 changed after install. Re-running it repairs a lost ACL. It refuses to add a
