@@ -116,3 +116,12 @@ Codex reviewed 50329a84; findings checked again at eeaa0601.
 - reviewer#4 (failed COMMIT and rollback timing): documented under "Limits of the measurement". Laravel fires no event for either, so they cannot be measured from events.
 - reviewer#5 (`/up` is public and reads the database): not a defect. One `exists()` read on `migrations` per request (plus `@@server_uuid` on MySQL when that check is on), with no session and no write. A rate limit, if wanted, belongs in nginx.
 - reviewer#6 (uid-33 fork tests fail locally): not a branch defect. The local read-only vendor volume causes it, identically on base 8bb478e6. CI runs as a non-root user and does not hit it.
+
+Second round: Codex reviewed 8c05c699; the earlier dismissals were checked again.
+
+- r2#1 (engine guard skipped by code that takes the PDO itself): fixed in d7513ff1. On the wrong engine the default connection's PDO handles now throw `DatabaseEngineMismatch`, so `ListingStudioTrialMonitoring` can no longer write its counters to the old database. Test: `test_code_that_takes_the_pdo_itself_cannot_write_on_the_wrong_engine`.
+- sqlite-observability#2: still fixed. The after-commit test passes at the new head.
+- sqlite-observability#3: still not a defect. Monolog 3.10.0's `StreamHandler::write()` calls `$this->write()` again after the inode changes, so the override sees a closed stream. The next-day test passes.
+- reviewer#4: the note was partly wrong. A failed COMMIT inside `DB::transaction()` is not logged, but with `beginTransaction()`/`commit()` the caller's `rollBack()` logs it as a rollback. Corrected in 8b812807; `test_a_failed_commit_is_logged_only_when_the_caller_rolls_back` pins both paths.
+- reviewer#5: still not a defect. `/up` gets no middleware group, and the global middleware writes nothing to the database for it, as before this change.
+- reviewer#6: still not a branch defect. The shared vendor volume is mode 0700 root, so uid 33 cannot read `vendor/autoload.php` before any app code loads.
