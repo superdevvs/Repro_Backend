@@ -62,8 +62,10 @@ final class LockedWrite
             try {
                 return $writerToken ? self::runWithWriterToken($connection, $write, $context, $attempts) : $write();
             } catch (Throwable $e) {
-                if ($attempt >= $attempts || ! self::isLockContention($e)) {
-                    if (self::isLockContention($e)) {
+                // Only SQLite's own refusal replays the callback. A MySQL token
+                // wait was already retried in place and is never replayed here.
+                if ($attempt >= $attempts || ! self::isSqliteLockContention($e)) {
+                    if (self::isSqliteLockContention($e)) {
                         Log::error('Write still blocked by another database writer after retrying; giving up.', [
                             'context' => $context,
                             'attempts' => $attempt,
@@ -115,12 +117,27 @@ final class LockedWrite
     }
 
     /**
-     * Is this specifically SQLite refusing a write because of another writer?
+     * Was this write refused because another writer was busy? Callers answer
+     * "busy, retry" for it. That is SQLite's "database is locked", or on MySQL
+     * a WriterTokenTimeout: the wait for the writer token ran out before the
+     * statement or transaction did anything.
      *
      * Matched narrowly: anything broader would retry genuine failures such as a
-     * constraint violation, which must surface on the first attempt.
+     * constraint violation, or a MySQL lock error after the token was held.
      */
     public static function isLockContention(Throwable $e): bool
+    {
+        for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof WriterTokenTimeout || self::describesLock($current)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** SQLite's own lock refusal, the only failure that replays a LockedWrite callback. */
+    private static function isSqliteLockContention(Throwable $e): bool
     {
         for ($current = $e; $current !== null; $current = $current->getPrevious()) {
             if (self::describesLock($current)) {

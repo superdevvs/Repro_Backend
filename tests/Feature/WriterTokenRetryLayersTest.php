@@ -135,6 +135,35 @@ class WriterTokenRetryLayersTest extends TestCase
         $this->assertSame(2, $calls);
     }
 
+    public function test_a_writer_token_timeout_is_lock_contention_for_busy_responses(): void
+    {
+        // Callers answer "busy, retry" (503 or 409) when LockedWrite says lock contention.
+        // On MySQL the token wait is what SQLite's "database is locked" was.
+        $timeout = new WriterTokenTimeout('The MySQL writer token is busy.');
+
+        $this->assertTrue(LockedWrite::isLockContention($timeout));
+        $this->assertTrue(LockedWrite::isLockContention(new \RuntimeException('Dispatch failed.', 0, $timeout)));
+        // A lock error after the token is held is a real failure, never "busy".
+        $this->assertFalse(LockedWrite::isLockContention(self::mysqlError(1205, 'Lock wait timeout exceeded; try restarting transaction')));
+        $this->assertFalse(LockedWrite::isLockContention(self::mysqlError(1213, 'Deadlock found when trying to get lock; try restarting transaction')));
+    }
+
+    public function test_locked_write_never_replays_a_callback_for_a_token_timeout_on_any_connection(): void
+    {
+        // The default test connection carries no writer policy: only SQLite's own
+        // lock message may replay the callback.
+        $calls = 0;
+        try {
+            LockedWrite::run(function () use (&$calls) {
+                $calls++;
+                throw new WriterTokenTimeout('The MySQL writer token is busy.');
+            }, 'test');
+            $this->fail('The timeout must escape.');
+        } catch (WriterTokenTimeout) {
+        }
+        $this->assertSame(1, $calls);
+    }
+
     public static function limiterOperations(): array
     {
         return [['tooManyAttempts'], ['hit']];

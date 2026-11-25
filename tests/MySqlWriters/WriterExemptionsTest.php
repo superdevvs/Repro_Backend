@@ -98,6 +98,21 @@ final class WriterExemptionsTest extends TestCase
         $this->assertSame(0, $this->counter());
     }
 
+    public function test_a_token_wait_that_runs_out_is_busy_for_callers(): void
+    {
+        $this->holdTokenOnAdmin();
+        try {
+            $error = $this->failureOf(fn () => DB::table('_writer_policy_probe')->where('id', 1)->update(['counter' => 9]));
+        } finally {
+            $this->releaseAdminToken();
+        }
+
+        $this->assertInstanceOf(WriterTokenTimeout::class, $error);
+        // Callers answer "busy, retry" (503 or 409) for this, as for SQLite's lock error.
+        $this->assertTrue(LockedWrite::isLockContention($error));
+        $this->assertSame(0, $this->counter());
+    }
+
     public function test_a_cache_lock_never_waits_for_its_own_callers_token(): void
     {
         DB::transaction(function () {
