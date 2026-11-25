@@ -644,6 +644,30 @@ class NightlyRunnerTests(unittest.TestCase):
                 self.assertIn("mysqld-stopped", host.events)
                 shutil.rmtree(self.outputs())
 
+    def test_the_target_is_sealed_read_only_between_the_import_and_the_verification(self):
+        self.run_night()
+        calls = [" ".join(call) for call in self.host.calls]
+        imported = next(index for index, call in enumerate(calls) if "import-empty" in call)
+        verified = next(index for index, call in enumerate(calls) if "verify-fields.php" in call)
+        between = calls[imported + 1:verified]
+        self.assertEqual(len(between), 1, between)
+        self.assertIn("SET GLOBAL super_read_only=ON", between[0])
+        self.assertIn("SELECT @@read_only,@@super_read_only", between[0])
+
+    def test_a_seal_that_does_not_read_back_stops_before_the_verification(self):
+        answer = self.host.on_mysql
+
+        def unsealed(argv, timeout_s, sql):
+            if "super_read_only=ON" in (sql or "") + " ".join(argv):
+                return nightly.Completed(0, "0\t1\n", "")
+            return answer(argv, timeout_s, sql)
+
+        self.host.on_mysql = unsealed
+        receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                         ("stopped", "import_and_verify", "seal-failed"))
+        self.assertNotIn("verify-fields.php", self.host.events)
+
     def test_a_finance_receipt_that_does_not_prove_parity_is_refused(self):
         write_receipt = self.host.on_finance
 
