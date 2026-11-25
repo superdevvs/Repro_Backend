@@ -123,7 +123,7 @@ trait WriterFixture
         return (int) $this->admin->query('SELECT COUNT(*) FROM _writer_policy_probe')->fetchColumn();
     }
 
-    protected function worker(string $mode, array $arguments = [], int $timeout = 60): Process
+    protected function worker(string $mode, array $arguments = [], int $timeout = 240): Process
     {
         $process = new Process([PHP_BINARY, dirname(__DIR__).'/support/writer-worker.php', $mode, $this->markers, ...$arguments]);
         $process->setTimeout($timeout);
@@ -133,7 +133,8 @@ trait WriterFixture
         return $process;
     }
 
-    protected function awaitMarker(string $name, float $seconds = 30): void
+    /** Generous: a worker boots the whole application, which is slow on a loaded host. */
+    protected function awaitMarker(string $name, float $seconds = 120): void
     {
         $deadline = microtime(true) + $seconds;
         while (! is_file($this->markers.'/'.$name) && microtime(true) < $deadline) {

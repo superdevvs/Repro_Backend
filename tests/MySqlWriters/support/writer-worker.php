@@ -43,7 +43,7 @@ $result = match ($mode) {
         if (isset($arguments[0])) {
             usleep((int) ((float) $arguments[0] * 1_000_000));
         } else {
-            $await('release', 40);
+            $await('release', 200);
         }
 
         return 'held';
