@@ -113,6 +113,27 @@ and each boolean result in `NIGHTLY_PROOFS` from
 [`check.py`](check.py). Keep the snapshot creation evidence even when two
 fresh snapshots have identical contents.
 
+When the capture uses `scripts/deploy/backup-database.php`, independently
+review its `database-backup.json` and pin its exact bytes alongside the
+nightly report. Check the UTC capture date and snapshot checksum locally.
+
+```sh
+python -B -m scripts.cutover.readiness.verify_nightly_capture \
+  --night night1.json --night-sha256 "$NIGHT_SHA" \
+  --producer database-backup.json --producer-sha256 "$PRODUCER_SHA"
+```
+
+Retain the original producer receipt for each night. A receipt used on a
+different UTC date fails even if the snapshot bytes are identical. This
+supplemental check verifies the exact supplied records. Reviewers still
+confirm the capture's provenance and the complete nightly parity results.
+For the private online-copy workflow, supply its original date-bearing
+receipt as `--producer` and the independently observed deployed source
+release as `--expected-source-release`. That workflow records the UTC
+completion of the copy and integrity checks. The nightly report separately
+identifies the candidate release under test. The check emits only the UTC
+time and digests for review.
+
 Review the same night's CRM evidence and save a separate JSON object with
 `schema` set to `repro.nightly-crm-parity.review.v1`. Copy the night's exact
 `scheduled_day_utc`, `release_sha`, `snapshot_sha256` and `nightly_scope_sha256`.
