@@ -171,12 +171,21 @@ try {
     }
 
     // Rotate only after a good copy. Only exact copy names owned by this user
-    // are considered; anything else in the directory is left alone.
+    // are considered; anything else in the directory is left alone. Only a copy
+    // with its .sha256 file counts toward --keep: a run stopped between the two
+    // leaves a copy the restore proof refuses. Such a copy stays until it is
+    // older than the kept complete copies, then goes like any other.
     $copies = array_values(array_filter(scandir($destination) ?: [], static fn (string $name): bool => (bool) preg_match(COPY_PATTERN, $name)
         && nightlyOwnedRegularFile($destination.'/'.$name)));
     rsort($copies, SORT_STRING);
+    $kept = 0;
     $removed = [];
-    foreach (array_slice($copies, $options['keep']) as $name) {
+    foreach ($copies as $name) {
+        if ($kept < $options['keep']) {
+            $kept += nightlyOwnedRegularFile($destination.'/'.$name.'.sha256') ? 1 : 0;
+
+            continue;
+        }
         unlink($destination.'/'.$name);
         if (nightlyOwnedRegularFile($destination.'/'.$name.'.sha256')) {
             unlink($destination.'/'.$name.'.sha256');
@@ -194,7 +203,7 @@ try {
         'quick_check' => 'ok',
         'tables' => $tables,
         'source_bytes' => $sourceInfo['size'] + $walBytes,
-        'kept' => min(count($copies), $options['keep']),
+        'kept' => $kept,
         'removed' => $removed,
     ];
     nightlyWriteStatus($destination, $status);

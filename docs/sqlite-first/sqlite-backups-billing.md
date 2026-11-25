@@ -20,6 +20,9 @@ How it works:
   `sha256sum -c` understands.
 - It keeps the newest 7 copies (`--keep=N`). Old copies are removed only after
   a good new copy, so a failing night never lowers the number of good copies.
+  Only a copy with its `.sha256` file counts. A run stopped between the two
+  leaves a copy without one; it is not counted and is removed once it is older
+  than the kept copies.
 - Every run writes `last-run.json` in the copy folder (`status`, `finished_at`,
   `file`, `bytes`, `sha256`). Use it for the backup-age alert.
 

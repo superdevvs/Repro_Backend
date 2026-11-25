@@ -148,6 +148,38 @@ class SqliteNightlyCopyTest extends TestCase
         $this->assertFileDoesNotExist($this->destination.'/.partial-20260101-010000-0123abcd.sqlite');
     }
 
+    public function test_a_copy_without_its_checksum_file_does_not_count_toward_the_kept_copies(): void
+    {
+        // A run stopped between publishing a copy and writing its .sha256 file
+        // leaves a copy the restore proof refuses. It must not push a complete
+        // older copy out of the --keep window.
+        $this->createSource(rows: 10);
+        foreach (['20260101-010000', '20260102-010000', '20260103-010000'] as $stamp) {
+            file_put_contents($this->destination."/database-{$stamp}.sqlite", 'old copy');
+            file_put_contents($this->destination."/database-{$stamp}.sqlite.sha256", 'old checksum');
+        }
+        file_put_contents($this->destination.'/database-20260104-010000.sqlite', 'copy whose checksum write was cut off');
+        file_put_contents($this->destination.'/database-20251231-010000.sqlite', 'older copy whose checksum write was cut off');
+
+        $process = $this->runCopy(['--keep=3']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $names = array_map('basename', glob($this->destination.'/database-*'));
+        foreach (['20260102-010000', '20260103-010000'] as $stamp) {
+            $this->assertContains("database-{$stamp}.sqlite", $names);
+            $this->assertContains("database-{$stamp}.sqlite.sha256", $names);
+        }
+        $this->assertNotContains('database-20260101-010000.sqlite', $names);
+        $this->assertNotContains('database-20260101-010000.sqlite.sha256', $names);
+        // An incomplete copy inside the window stays but is not counted; once it
+        // is older than the kept complete copies it is removed like any other.
+        $this->assertContains('database-20260104-010000.sqlite', $names);
+        $this->assertNotContains('database-20251231-010000.sqlite', $names);
+        $status = json_decode(file_get_contents($this->destination.'/last-run.json'), true);
+        $this->assertSame(3, $status['kept']);
+        $this->assertSame(['database-20260101-010000.sqlite', 'database-20251231-010000.sqlite'], $status['removed']);
+    }
+
     public function test_a_rollback_journal_source_is_refused_because_it_would_block_writers(): void
     {
         $this->createSource(rows: 10, journal: 'DELETE');
