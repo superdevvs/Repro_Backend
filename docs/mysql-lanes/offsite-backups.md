@@ -261,6 +261,13 @@ alert. With a cached config, as on production, the probe never reads `.env`,
 so a deploy that replaces `.env` by rename (see limits below) does not page
 here; only the next backup and the kit fail.
 
+`cache_write_failed` would fail on production as soon as the `alerts` job
+is installed. The default plan sets `cache_group_writable: true`
+(`install_backup_host.py`), and the check fails on any cache folder
+without group write, but 142 of the 256 top-level folders under
+`storage/framework/cache/data` are 755 (measured 25 November). The owner
+decides before the install (owner decision 7 below).
+
 ## Timers and the monthly reboot
 
 | Timer | Schedule (UTC) | Catches up after downtime |
@@ -619,6 +626,10 @@ suites and `run-fixture.ps1` (no PHP or unit file changed).
 5. Whether to add an app-side WAL keeper, or accept a rare loud backup failure
    when no app connection is open. (The probe no longer pages in that case.)
 6. The SQL and baseline for `historical_money_totals_changed`.
+7. The production cache folders and `cache_write_failed`: make the cache
+   tree group-writable (for example `g+w`, and setgid on the folders)
+   before the `alerts` install, or drop or change `cache_group_writable`
+   in the probe plan. Each changes production and needs its own approval.
 
 ## Folding into the shared docs
 

@@ -12,8 +12,14 @@ is built, any run is a SQLite dress rehearsal that ends in abort and reopen.
 Even that needs W1, which waits for the host identity and MySQL probes and
 the `drain_fpm` command (none written), the code-fix lane's host-config
 change if the lab-tour worker is installed (`4e4a262d` refuses
-`iguide-lab-tour:iguide-lab-tour`), and `queue_pause` and `queue_resume`
-in `host.json` that run as `www-data`. The cache store no longer blocks
+`iguide-lab-tour:iguide-lab-tour`), `queue_pause` and `queue_resume`
+in `host.json` that run as `www-data` and set `umask 0002` themselves (the
+watchdog's `UMask=0077` would otherwise make flags the `maverick` workers
+cannot read), and a `crontab.py` that keeps the storage guard: W1's cron
+rewrite drops anything before the matched command, and on production all
+but one of the deploy user's cron lines run through
+`/usr/local/sbin/repro-storage-guard`. Neither lane has changed
+`crontab.py`. The cache store no longer blocks
 the abort: production keeps the queue pause flags in the `file` store
 (measured 25 November), so an abort after the seal writes them under
 `storage/framework/cache`, not into the sealed SQLite file.
@@ -21,13 +27,20 @@ the abort: production keeps the queue pause flags in the `file` store
 **Production facts, measured read-only on 25 November at about 19:00 UTC.**
 Config is cached; `cache.default` is `file`, `queue.default` `database`,
 `app.timezone` UTC. The pause flags' cache folders are `www-data` 755, so
-queue commands run as `www-data` through `runuser`: the deploy user cannot
-write there, and root would leave root-owned files and folders. The host
-runs on America/New_York and the deploy user's crontab has no `CRON_TZ`, so
-its `35 3` and `47 3` lines run at 03:35 and 03:47 Eastern, outside the 10
-to 11 pm Eastern outage. FPM is `php8.3-fpm.service` with PHP's OPcache
-defaults (`validate_timestamps=1`, `revalidate_freq=2`). None of the
-off-site timers is installed yet. The runbook's
+`queue:pause` and `queue:resume` run as `www-data` through `runuser`: the
+deploy user cannot write there, and root would create root-owned folders
+where none existed, which later cache writes fail on. `queue:restart` and
+`config:cache` run as the deploy user, the way Deploy-App runs them, never
+as `www-data` or root. 142 of the 256 top-level cache folders are 755, so
+the off-site `cache_write_failed` check would fail as soon as it is
+installed (owner decision, below). The host runs on America/New_York and
+the deploy user's crontab has no `CRON_TZ`, so its `35 3` and `47 3` lines
+run at 03:35 and 03:47 Eastern, outside the 10 to 11 pm Eastern outage.
+FPM is `php8.3-fpm.service`, active. No OPcache line was found under
+`/etc/php/8.3/fpm`, so PHP's defaults (`validate_timestamps=1`,
+`revalidate_freq=2`) most likely apply; the search may have missed the
+`conf.d` symlinks, so the effective values still need `php-fpm8.3 -i`.
+None of the off-site timers is installed yet. The runbook's
 [read-only checks](mysql-production-cutover.md#freeze-all-writers) have the
 detail; the disk figures are under
 [Operational work still requiring approval](#operational-work-still-requiring-approval).
@@ -63,7 +76,10 @@ ledger but a missing table still passes. The code-fix lane (`4815a4ab`)
 adds checks that the file creates exactly the tables listed in
 `database/schema/migration-scope.json`, that tables the regenerated
 migrations changed carry sample new columns, and that the one trigger they
-added is present.
+added is present. Its later `a3aa8a40` compares every baseline table,
+column, index and trigger with a fresh SQLite migrate of the checkout; each
+reviewed difference is listed with its reason, and one that no longer
+applies fails too.
 Open: no script in the repository regenerates the file, and the method
 (the `mysqldump` flags and the ledger assembly) is recorded only in the
 schema lane's working notes, outside the repository. Owner: keep the test as
@@ -1625,15 +1641,29 @@ two hours before the check. `/mnt/16tb` has 2.8 TB free and `/mnt/ssd4tb`
   MySQL data and binary logs (`/var/lib/repro-mysql84-native` unless it is
   mounted elsewhere) and the post-import backup.
 - Each approved nightly run keeps about 4.5 GB under its state directory
-  (`retain_snapshots` is `null`, so every snapshot is kept) and refuses to
-  start below 45 GB free.
+  and refuses to start below 45 GB free. `retain_snapshots` is `null`, so
+  every snapshot is kept (`prune` returns at once): the five-night streak
+  alone keeps about 22.5 GB. The nightly README's example state directory,
+  `/home/maverick/repro-nightly`, is most likely on the root file system
+  (the measurement listed `/home/maverick` folders but no separate `/home`
+  mount). Pointing `--state-dir` at `/mnt/16tb` or `/mnt/ssd4tb`, or
+  setting `retain_snapshots`, is an owner choice.
 - Once the off-site `alerts` job is installed, `disk_nearly_full` (wake)
   fires below 10% free (`alert-conditions.json`), and the default probe
   plan checks `/`. On this disk that line is about 91.5 GB, about 4.5 GB
-  below today's free space, so the first night's snapshot alone could
-  page.
+  below today's free space. So any one 4.5 GB snapshot on `/`, a nightly
+  run's or the cutover night's, brings free space down to about that line,
+  and the five-night streak takes it to about 73.5 GB, well below it.
 - Pending, each with the owner's per-action approval: the answer on
   deploy-backup retention, and the clean-up of the 109 GB rehearsal folder.
+  That folder holds a file the committed nightly config pins:
+  `approved_exceptions` is
+  `/home/maverick/repro-mysql-rehearsal-20261122/native-import-02/exceptions-private.json`,
+  pinned by SHA-256 (`scripts/cutover/nightly/nightly-config.json`). If it
+  goes, every nightly run stops (`exceptions-pin-differs`) and the
+  approved-exception evidence is lost. The clean-up must keep that file,
+  or move it and re-pin `approved_exceptions` (path and SHA-256) first; the
+  owner's approval covers that choice too.
 
 The [scope audit](../scripts/mysql/scope-audit.py) checks that a pinned
 manifest classifies every table in a standalone candidate snapshot. It
@@ -1819,7 +1849,12 @@ has been done. Each production step needs its own approval.
 - Writer hold: write and review the host identity and MySQL probes before
   W1, and complete `host.json` (all four owner options, the lab-tour queue
   if installed, `drain_fpm`, and `queue_pause` and `queue_resume` run as
-  `www-data` through `runuser`) before `init`.
+  `www-data` through `runuser` with their own `umask 0002`) before `init`.
+- Writer hold: before W1, change `crontab.py` to refuse or carry over a
+  command prefix such as `/usr/local/sbin/repro-storage-guard --live &&`,
+  and make the `scheduler` and `auth-prune` profiles run the storage
+  guard. Today the rewrite drops the prefix without a report (checked at
+  `4e4a262d`). A code change; not in either lane.
 - Cutover runbook: build the
   [MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built),
   and decide its open choices: the MySQL write gate that `seal_mysql` opens
@@ -1830,14 +1865,23 @@ has been done. Each production step needs its own approval.
   `recovery_required`), and a reviewed retire step before a new run's
   `init`.
 - Cutover runbook: the read-only production checks were run on 25
-  November (cache store `file`, FPM unit and OPcache defaults, host time
-  zone America/New_York, pause folder owners). Still open: the other five
-  queues' pause folders, and the cache store again on the day before the
-  night.
+  November (cache store `file`, FPM unit, no OPcache line under
+  `/etc/php/8.3/fpm`, host time zone America/New_York, pause folder
+  owners). Still open: the other five
+  queues' pause folders, the owner of the `queue:restart` key under
+  `data/ee/2f` (expected `maverick` 0644), the effective OPcache values
+  (`php-fpm8.3 -i`; the search may have missed the `conf.d` symlinks),
+  and the cache store again on the day before the night.
+- Cache folders: 142 of 256 top-level cache folders are 755. Before the
+  off-site `alerts` job is installed, the owner decides whether to make
+  the cache tree group-writable or to drop or change
+  `cache_group_writable`; otherwise `cache_write_failed` fails at once.
 - Disk: decide deploy-backup retention and whether to clean up the 109 GB
   rehearsal folder, each with its own approval (see
-  [the disk risk](#operational-work-still-requiring-approval)). The root
-  disk is about 4.5 GB above the `disk_nearly_full` line.
+  [the disk risk](#operational-work-still-requiring-approval)). The
+  clean-up must keep the pinned `native-import-02/exceptions-private.json`
+  or re-pin it first. Decide where nightly snapshots live and how many to
+  keep. The root disk is about 4.5 GB above the `disk_nearly_full` line.
 - Nightly runs: decide the order "deploy the candidate, re-pin
   `reviewed_schema_sha256` from a production snapshot, then start the
   five-night streak". With the code-fix lane's ten-migration list, every

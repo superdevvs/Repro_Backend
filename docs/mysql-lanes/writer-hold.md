@@ -33,12 +33,14 @@ old order (drain, then pause, then stop, with no journal).
 
 1. 7:45 pm: pause Studio with its documented pause file; let its job finish.
 2. 9:20 pm: pause the long-job queues with `queue:pause`, run as
-   `www-data` (`sudo /usr/sbin/runuser -u www-data -- /usr/bin/php
-   /var/www/backend/artisan queue:pause <connection:queue>`):
+   `www-data` with its own umask (`sudo /usr/sbin/runuser -u www-data --
+   /bin/sh -c 'umask 0002 && exec /usr/bin/php /var/www/backend/artisan
+   queue:pause "$1"' pause <connection:queue>`):
    `studio:studio`, `database:media-archives`, `database:default`,
    `database:integrations`, `database:watermarks`. The flags are files in
    the `file` cache under `www-data` 755 folders (measured 25 November),
-   which the deploy user cannot write and root would leave root-owned. Wait
+   which the deploy user cannot write. Root would create root-owned
+   folders where none existed, which later cache writes fail on. Wait
    for their running jobs, then stop those workers. The hold refuses while
    a long-job worker still runs (`require_long_job_predrain`, on by default).
 3. 9:50 pm: preflight as before (no call in progress, Aryeo recorded and
@@ -248,8 +250,18 @@ The code implements the safe default and makes each a config value.
   drain limit. The host-config check at `4e4a262d` (`[a-z]+:[a-z0-9-]+`)
   refuses that name; the code-fix lane (`71f7db04`) accepts it.
 - `queue_pause` and `queue_resume` in the host config must run as
-  `www-data` through `/usr/sbin/runuser -u www-data --` (runbook, Release
-  and target preparation step 10, and MySQL adapter lane item 17).
+  `www-data` through `/usr/sbin/runuser -u www-data --` and set `umask
+  0002` themselves (runbook, Release and target preparation step 10, and
+  MySQL adapter lane item 17). `runuser` keeps the caller's umask, and the
+  watchdog sets `UMask=0077`, so a flag it creates would be 0600 and the
+  workers that run as `maverick` would not see the pause.
+- `crontab.py` drops anything before the matched command. On production
+  all but one of the deploy user's cron lines run through
+  `/usr/local/sbin/repro-storage-guard` (25 November; only schedules and
+  command names were read), so W1 would remove the storage guard from the
+  `scheduler` and `auth-prune` lines, whose profiles run no guard. The chained-command fix
+  (`e2513923`) checks only what follows the match. Before W1, refuse or
+  carry over such a prefix and add the guard to those profiles.
 
 ## Risks
 
