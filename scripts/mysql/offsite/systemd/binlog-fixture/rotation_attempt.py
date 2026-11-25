@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 GUARD = Path("/var/lib/repro-binlog-fixture-rotation/attempt.pending")
@@ -47,17 +48,18 @@ def classify(raw: bytes, code: int) -> dict | None:
     return None
 
 
-def release_guard() -> None:
-    directory = os.open(GUARD.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+def release_guard(guard: Path) -> None:
+    directory = os.open(guard.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        os.rmdir(GUARD.name, dir_fd=directory)
+        os.rmdir(guard.name, dir_fd=directory)
         os.fsync(directory)
     finally:
         os.close(directory)
 
 
-def run(plan: str, pin: str) -> int:
-    if not GUARD.is_dir() or GUARD.is_symlink():
+def run(plan: str, pin: str, guard: Path | None = None) -> int:
+    guard = GUARD if guard is None else guard
+    if not guard.is_dir() or guard.is_symlink():
         print("Rotation refused because the service guard was not opened.", flush=True)
         return 1
     try:
@@ -77,7 +79,7 @@ def run(plan: str, pin: str) -> int:
     held = completed.returncode != 0 and report["rotation_requested"] is not False
     if not held:
         try:
-            release_guard()
+            release_guard(guard)
         except OSError:
             print(json.dumps(report | {"rotation_guard_release_durable": False}, sort_keys=True), flush=True)
             return 1
@@ -89,8 +91,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True)
     parser.add_argument("--plan-sha256", required=True)
-    args = parser.parse_args()
-    return run(args.plan, args.plan_sha256)
+    parser.add_argument("--guard", default=str(GUARD), help="absolute .../attempt.pending of the calling unit")
+    args = parser.parse_args(sys.argv[1:])
+    guard = Path(args.guard)
+    if not guard.is_absolute() or guard.name != "attempt.pending" or ".." in guard.parts:
+        print("Rotation refused because the guard path is not an absolute attempt.pending.", flush=True)
+        return 1
+    return run(args.plan, args.plan_sha256, guard)
 
 
 if __name__ == "__main__":

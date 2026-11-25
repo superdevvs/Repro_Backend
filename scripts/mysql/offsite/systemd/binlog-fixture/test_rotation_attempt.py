@@ -80,3 +80,27 @@ class RotationGuardTests(unittest.TestCase):
                   contextlib.redirect_stdout(io.StringIO()) as output):
                 self.assertEqual(runner.run("/approved/rotation.json", "f" * 64), 1)
             self.assertIs(json.loads(output.getvalue())["rotation_guard_release_durable"], False)
+
+
+class GuardOptionTests(unittest.TestCase):
+    def test_production_unit_can_name_its_own_guard(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            guard = Path(scratch) / "attempt.pending"
+            guard.mkdir()
+            completed = subprocess.CompletedProcess([], 0, stdout=VERIFIED)
+            argv = ["rotation_attempt.py", "--plan", "/approved/rotation.json", "--plan-sha256", "f" * 64,
+                    "--guard", str(guard)]
+            with (patch.object(runner.sys, "argv", argv),
+                  patch.object(runner.subprocess, "run", return_value=completed),
+                  contextlib.redirect_stdout(io.StringIO())):
+                self.assertEqual(runner.main(), 0)
+            self.assertFalse(guard.exists())
+            self.assertEqual(runner.GUARD, Path("/var/lib/repro-binlog-fixture-rotation/attempt.pending"))
+
+    def test_guard_must_be_an_absolute_attempt_pending_path(self):
+        for value in ("relative/attempt.pending", "/var/lib/x/other", "/var/lib/../attempt.pending"):
+            argv = ["rotation_attempt.py", "--plan", "/p.json", "--plan-sha256", "f" * 64, "--guard", value]
+            with (patch.object(runner.sys, "argv", argv), patch.object(runner.subprocess, "run") as child,
+                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())):
+                self.assertNotEqual(runner.main(), 0)
+            child.assert_not_called()
