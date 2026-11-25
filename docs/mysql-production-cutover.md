@@ -3,6 +3,27 @@
 Status: implementation and isolated rehearsal. Production cutover has a separate
 approval gate. The previous Docker-based rehearsal is historical evidence.
 
+> **What this candidate can do on the night.** It can hold, freeze, abort
+> and reopen production on SQLite. It cannot reach MySQL:
+>
+> - `cli.py` has no `prepare` or `promote` action (`ACTIONS` in
+>   `scripts/cutover/production/cli.py`).
+> - `cli.py approval-template` accepts only `--phase hold` or
+>   `--phase freeze`, so no "reopen on MySQL" approval can be issued.
+> - The host adapter refuses `prepare`, `evidence` and `seal_mysql`
+>   (`NOT_SUPPORTED` in `scripts/cutover/production/adapter.py`), and
+>   `cli.py reopen` reopens SQLite only.
+> - Every writer profile in `scripts/cutover/production/wrappers.example.json`
+>   is pinned to `"engine": "sqlite"`. The guard admits MySQL writers only in
+>   `mysql_authoritative`, which only `promote` reaches.
+> - The watchdog rolls back to SQLite 45 minutes after the hold
+>   (`Runner.DECISION_SECONDS`), whatever the import shows.
+>
+> Until the [MySQL adapter lane](#mysql-adapter-lane-not-built) is built,
+> any run at this candidate is a SQLite dress rehearsal that ends in
+> `cli.py abort` and `cli.py reopen`. Even that needs W1, and W1 needs the
+> host identity and MySQL probes, which are not written yet.
+
 Use the separate native **MySQL 8.4.13** target from
 [`scripts/mysql/native`](../scripts/mysql/native/README.md). The existing 8.0.46
 service is outside this migration. The actual target host, its administrator
@@ -878,6 +899,179 @@ completed rollback. The watchdog keeps the completed SQLite rollback as it
 is after such a reboot; it does not escalate to recovery. After an aborted
 and reopened cutover the policy still pins the old release, so retire the
 installed fences or start a new run before the next deploy.
+
+## MySQL adapter lane (not built)
+
+This candidate stops at the SQLite hold, freeze and pre-write rollback. The
+next lane must build and test everything below before a night can reach
+MySQL. The list comes from the two runbook reviews of 25 November
+(executability findings 1, 2, 3, 13 and 15; ordering findings H1 to H4, M2
+to M4 and M8). Each item is a requirement for that lane, not a step to run
+now.
+
+**Host probes.** These are needed for W1, so even a SQLite dress rehearsal
+waits for items 1 to 3.
+
+1. `host.json` carries `commands.identity` and `commands.mysql` as absolute
+   argument lists; `adapter.load_config` refuses anything else. Every
+   `cli.py` action except `approval-template` calls `adapter.observe()`,
+   which runs the MySQL probe and refuses on a failed command, invalid JSON
+   or a missing boolean. Neither probe is written.
+2. The identity probe prints the six `Identity` fields as JSON (`run_id`,
+   `release_sha`, `artifact_sha256`, `source_sha256`, `config_sha256`,
+   `target_uuid`), measured on the host, not copied from the policy. The
+   runner compares it with the pinned identity before `init`, `hold`,
+   `freeze`, `abort` and every watchdog `tick`
+   (`Runner._verify_identity`). A mismatch refuses all of them, the
+   automatic rollback included. So `config_sha256` must leave out the flags
+   the night changes after `init`: `CRM_OUTBOUND_HOLD`,
+   `CRM_DEFER_REPLY_FORWARDING`, `CRM_CALENDAR_SYNC_HOLD`,
+   `PRODUCER_INGRESS_HOLD`, and the database settings if the switch happens
+   during the hold (ordering M4).
+3. The MySQL probe prints exactly `{"writable": bool, "business_activity": bool}`:
+   - `writable` means the application's MySQL route can write: the app
+     account, through the configured socket, with the writer token row in
+     place. It does not mean that the server or the importer's maintenance
+     account can write.
+   - `business_activity` means application rows changed after the recorded
+     end of the import (for example a binlog position the import records).
+     Migrations and `complete-schema.php` do not count.
+
+   Why it matters: `init` needs both false, and once either is true the
+   runner records `recovery_required` and refuses `abort` and the 45-minute
+   rollback with "MySQL writes may exist. Use separately verified recovery"
+   (`Runner._rollback`, `Runner.perform`). The site then stays held. W2 must
+   prove that the import, the writer token, `php artisan migrate` and
+   `complete-schema.php` keep both false, and that a write through the app
+   route turns them true (executability 3, ordering H3).
+4. A live configuration probe. `observe()` hard-codes `engine="sqlite"`,
+   and `publish_authority` and `refresh` copy `sqlite_live_config_sha256`
+   from the policy instead of measuring it. `reopen` must refuse unless the
+   cached config's default driver (`bootstrap/cache/config.php`, else `.env`
+   `DB_CONNECTION`) matches the engine the journal makes authoritative. The
+   off-site alert probe already reads the driver this way. Without it, a
+   reopen after a no-go with `.env` already switched starts workers, the
+   scheduler and FPM on MySQL while the journal says SQLite (ordering H2).
+5. The activation receipt sets `application_verified` without any
+   application check. Add the smoke command from item 11.
+
+**Controller actions.**
+
+6. `cli.py prepare`, `cli.py promote` and `cli.py approval-template --phase
+   promote` (Approval 2, "reopen on MySQL"). The runner has both actions
+   (`Runner._prepare`, `Runner._promote`); `cli.py` exposes neither. A
+   promote approval expires 5 minutes after it is issued and never later
+   than 45 minutes after the hold (`Runner._request`).
+7. Adapter `prepare`, `evidence` and `seal_mysql`. `evidence()` returns the
+   `Evidence` record: snapshot and report digests, the starting binlog file
+   and position, and `true` for forward parity, final schema, read-only
+   smoke and both off-site backups (final SQLite and MySQL). `seal_mysql`
+   makes the app's MySQL route the only writable one.
+8. A MySQL `reopen`: verify the `mysql_authoritative` proof through the
+   guard, resume the queues, start the workers, create the open marker and
+   write an activation receipt for engine `mysql`. In
+   `mysql_authoritative` the runner refuses everything but `tick`, so this
+   reopen is the only way forward.
+9. MySQL writer profiles. Every profile in `wrappers.json` says `"engine":
+   "sqlite"`, so the guard refuses every wrapped writer on MySQL until the
+   profiles change at promotion.
+
+**Switch, smoke and timing.**
+
+10. The `.env` switch and its undo (ordering H2). Choose one; this is open:
+    - Switch before Approval 2 and write the undo: restore the saved `.env`
+      in place (ACL kept, see [Freeze all writers](#freeze-all-writers)
+      step 4), `php artisan config:cache`, `sudo systemctl reload
+      php8.3-fpm`, and only then `cli.py abort` and `cli.py reopen`. Item 4
+      makes `reopen` refuse if this is skipped.
+    - Or move the switch after Approval 2, into `promote`.
+
+    The keys the switch sets are in
+    [Validate before reopening traffic](#validate-before-reopening-traffic).
+11. A smoke path that does not need the nginx hold to open. The gate map
+    defaults to 1 with no exemption (`repro-cutover-gate.conf`), so an HTTP
+    smoke test through nginx is impossible before the point of no return
+    (ordering M8). Either a CLI smoke command run as the app user against
+    the target, or a reviewed bypass design. This is open. The same gap
+    means nothing confirms the flags in FPM's effective config:
+    `config:cache` and `crm:outbound-release-check --json` show the CLI
+    view only, and Deploy-App's OPcache reset is an HTTPS fetch that the
+    hold answers with 503 (executability 15).
+12. The way back after MySQL writes (ordering H4), with a time budget. In
+    `mysql_authoritative` `cli.py abort` fails, and the guard keeps
+    admitting MySQL writers and the scheduler while the proof is valid. A
+    new SQLite file fails the pinned source identity, and a new run's
+    `init` needs a live SQLite route. Steps to write and rehearse:
+    1. Remove the open marker: `sudo rm /run/repro-cutover-ingress/open`
+       (nginx answers 503 at once, no reload).
+    2. Run each `stop_workers` command from `host.json`, and `sudo
+       systemctl stop repro-media-archives.service`.
+    3. Revoke the authority proof so the guard refuses the scheduler and
+       every restart: `sudo rm /run/repro-cutover-fence/verified-engine.json`.
+       Wait until no writer process is left.
+    4. Export and verify as in [Rollback](#rollback-has-two-different-paths).
+    5. Write a new policy for the new SQLite file and run `init` with the W1
+       marker method (create the marker by hand, `init`, remove it, then
+       `refresh` and `reopen`).
+
+    Budget: not timed end to end. The measured parts are the reverse export
+    plus verification (174.6 s, 209.2 s and 790 s in local rehearsals) and
+    the forward field check (135.4 s). Reconciling external side effects has
+    no bound. Expect at least another 30 minutes of write outage.
+13. Approval expiry branches (ordering M3), written in
+    [Freeze all writers](#freeze-all-writers) under "Approvals that run
+    out".
+14. `host.json` complete before `init` (ordering M4): `hold` refuses a
+    changed host config (`preflight_sha256` includes it) and `init` cannot
+    run twice. That includes the lab-tour queue
+    (`iguide-lab-tour:iguide-lab-tour`) when the program is installed.
+15. The scheduler starts at authority publication, before `reopen`, on both
+    paths (ordering M2). `crm:calendar-sync` is held by
+    `CRM_CALENDAR_SYNC_HOLD` until CRM step 10. Any other task that must
+    wait for a CRM step needs its own hold.
+16. Telnyx texts during the hold (executability 13). The nginx hold answers
+    503 before Laravel, and the freeze drains PHP-FPM. The maintenance-mode
+    receiver on `claude/telnyx-receiver-20261125` runs inside Laravel, so it
+    never sees a text during the hold. Telnyx retries a few times and then
+    stops (see the [provider table](#freeze-and-replay-steps)). Options:
+    - an exempt nginx location for the Telnyx text paths, served by a
+      capture that needs no database and is not drained (a reviewed gate
+      exemption);
+    - a Telnyx failover URL on a separate host that captures to a spool for
+      replay after the hold.
+
+    Open: no option is chosen or built.
+
+**Other branches the night depends on.** None is in this candidate.
+
+- `claude/telnyx-receiver-20261125`: the per-task scheduler hold
+  (`SCHEDULER_HOLD_ENABLED`, `php artisan scheduler:hold set <owner>
+  --only=<task>`; off by default, needs `config:cache`, a hold lasts at most
+  720 minutes) and the Telnyx maintenance capture with
+  `telnyx:replay-spool`. The capture does not work behind the cutover hold
+  (item 16).
+- `claude/sqlite-observability-20261125`: `DB_EXPECTED_ENGINE`. If it is
+  set to `sqlite` before the night, the switch must change it with
+  `DB_CONNECTION` and run `php artisan queue:restart`, or every query on
+  the default connection throws `DatabaseEngineMismatch`; `complete-schema`
+  and `migrate` in a staged copy of the production `.env` fail the same way.
+  The way back restores it. Its database-backed `/up` and `ops:heartbeat`
+  also page during the hold; add both to the alert plan for the night.
+- `claude/sqlite-backups-billing-20261125`: the nightly SQLite copy at
+  01:40 server time. Its cron line matches no rule in
+  `cron-rules.example.json`, so `crontab.py` refuses it at W1, and a copy
+  still running at `freeze` can hold `-shm` open, which makes the seal
+  refuse. It also brings the
+  engine-aware deploy preflight and retention: the candidate's
+  `deployment-storage.py` still requires `database/database.sqlite` and
+  never ages out bundles that hold a MySQL dump.
+- `claude/sqlite-request-writes-20261125`: the schema cache
+  (`SCHEMA_CACHE_ENABLED`). The dress pass mark needs no layout lookup on
+  any of the 50 busiest endpoints, and the candidate still asks for the
+  layout per request, so the speed mark cannot pass without it. With the
+  cache on, the switch must set a new `SCHEMA_CACHE_RELEASE` and run
+  `config:cache`, because the cache store must not be cleared. Its dialect
+  guard is also not in this candidate's CI.
 
 ## Import into the empty target
 

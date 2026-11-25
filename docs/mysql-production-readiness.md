@@ -2,6 +2,14 @@
 
 ## November 25 lane integration
 
+**Night status at this candidate.** It can hold, freeze, abort and reopen
+production on SQLite. It cannot reach MySQL: no `prepare` or `promote`
+action, `approval-template` accepts only `hold` or `freeze`, the adapter
+refuses `prepare`, `evidence` and `seal_mysql`, every writer profile is
+pinned to SQLite, and the watchdog rolls back at 45 minutes. Until the
+[MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built)
+is built, any run is a SQLite dress rehearsal that ends in abort and reopen.
+
 **Hold.** Five lanes, each based on `a6e799bb`, were merged into the release
 candidate at `e9679aed` (draft PR 46). All lane work was local and offline.
 The lanes pushed nothing, and nothing was deployed, installed or run on
