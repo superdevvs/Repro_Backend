@@ -339,7 +339,13 @@ class ProductionAdapter:
         later reboot the host must be sealed again before it is measured, so
         the fence is published again first; reopen lifts it once activation is
         verified. Publishing the fence only ever holds deploys.
+
+        The guard revokes the current proof before it measures the host. On a
+        live host that would hold the scheduler and every restarted worker, so
+        refresh refuses while the ingress open marker exists.
         """
+        if self.paths["ingress_open"].exists() or self.paths["ingress_open"].is_symlink():
+            raise UnsafeCutover("Ingress is open. Refresh measures a held host only, for example after a reboot")
         state = self.journal.read()
         if state is not None and state.get("phase") == "sqlite_authoritative" and state.get("pending") is None:
             deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,

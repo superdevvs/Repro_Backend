@@ -303,6 +303,21 @@ class ProductionAdapterTests(unittest.TestCase):
                      action="deploy", expected_engine="sqlite", activation_raw=activation)
         self.assertEqual("sqlite_authoritative", journal.read()["phase"])
 
+    def test_refresh_on_an_open_host_keeps_the_current_proof(self):
+        self.started()
+        (self.root / "ingress" / "open").unlink()
+        self.assertEqual(0, self.cli("refresh")[0])
+        self.assertEqual(0, self.cli("reopen")[0])
+        evidence = (self.root / "run" / "verified-engine.json").read_bytes()
+        # Live host: refresh must not revoke the proof that admits the scheduler and restarted workers.
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            self.assertEqual(1, self.cli("refresh")[0])
+        self.assertTrue((self.root / "run" / "verified-engine.json").exists(), "Refresh revoked the live proof")
+        self.assertEqual(evidence, (self.root / "run" / "verified-engine.json").read_bytes())
+        self.assertIn("Ingress is open", errors.getvalue())
+        self.assertTrue((self.root / "ingress" / "open").exists())
+
     def test_cli_refuses_a_config_that_differs_from_the_installed_guard_paths(self):
         self.started()
         self.assertEqual(0, self.cli("status")[0])

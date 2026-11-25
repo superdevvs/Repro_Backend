@@ -91,7 +91,10 @@ no authority proof for the new boot and no open marker. The operator runs
 `cli.py refresh`, which measures the host and publishes current-boot evidence
 for a committed `planned` or `sqlite_authoritative` journal through the
 guard, then `cli.py reopen`. There is no automatic reopen at boot (owner
-decision). In `planned`, reopen leaves deploys held and writes no activation
+decision). `refresh` refuses while the open marker exists, because the guard
+revokes the current proof before it measures the host. After a reopened
+rollback, `refresh` publishes the deploy fence again before it measures, and
+`reopen` lifts it once activation is verified. In `planned`, reopen leaves deploys held and writes no activation
 receipt. `refresh` copies the SQLite live-configuration pin from the policy;
 an independent configuration probe is still to be added before W1.
 
