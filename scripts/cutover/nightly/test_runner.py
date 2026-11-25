@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -1044,6 +1045,17 @@ class CommittedConfigTests(unittest.TestCase):
         self.assertTrue(config.data["budget"]["fail_fast"])
         self.assertIsNone(config.data["retain_snapshots"])
         self.assertIsNone(config.data["finance"])
+
+    def test_committed_config_lists_every_crm_migration(self):
+        # The capture requires every listed migration in the live ledger. A CRM migration is one that
+        # creates or changes a CRM table, by the rule the capture uses for CRM tables (is_crm_table).
+        migrations = HERE.parents[2] / "database" / "migrations"
+        changed = re.compile(r"Schema::(?:create|table)\(\s*'([a-z0-9_]+)'")
+        crm = sorted(path.stem for path in migrations.glob("*.php")
+                     if any(nightly.is_crm_table(table) for table in changed.findall(path.read_text(encoding="utf-8"))))
+        self.assertIn("2026_11_24_100000_create_crm_core_tables", crm)
+        config = nightly.Config.load(HERE / "nightly-config.json").data
+        self.assertEqual(crm, config["crm_migrations"])
 
     def test_cli_checks_config_and_defaults_to_dry_run(self):
         path = HERE / "nightly-config.json"

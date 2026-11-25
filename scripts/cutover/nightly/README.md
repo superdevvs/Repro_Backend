@@ -144,7 +144,8 @@ python3 -B -m scripts.cutover.nightly.runner check-config --config scripts/cutov
 | --- | --- | --- |
 | `candidate_root` | `/home/maverick/repro-nightly-candidate` | A clean checkout of the candidate release. |
 | `scope` | `database/schema/migration-scope.json`, `a3807732…` | Re-pin after any reviewed scope change. |
-| `reviewed_schema_sha256` | `87e79c75…` | The reviewed converted layout. A schema change stops the night until it is reviewed. |
+| `reviewed_schema_sha256` | `87e79c75…` | The reviewed converted layout. A schema change stops the night until it is reviewed. `migrate.py plan` computes it from the captured live file, so only a production snapshot can re-pin it: a fresh build has 321 tables, not 328, and another digest. It was pinned while the live ledger had nine CRM migrations. The tenth adds two `recruit_application_receipts` columns, which change the digest, so a night after the candidate is deployed stops at `plan` (`reviewed-layout-differs`) until it is re-pinned from such a snapshot. |
+| `crm_migrations` | the ten CRM migrations | Every migration that creates or changes a CRM table (`crm_*`, `recruit_*`, `email_suppressions`). The capture stops (`crm-ledger-differs`) unless the live ledger has all of them, so nights before the candidate is deployed stop there. `test_committed_config_lists_every_crm_migration` fails when one is missing; `scripts/mysql/crm-rehearsal-fixture.php` runs the same set. |
 | `reverse_triggers` | `null` | The reviewed trigger helper is not committed yet. Pin its path and digest here. |
 | `finance` | `null` | The finance rehearsal needs an administrator sandbox. Until a step is configured, `invoice_and_payout_parity_verified` is false and the night cannot qualify. |
 | `applicant_files_root` | `null` | Set to the private disk root to read applicant files read-only. |

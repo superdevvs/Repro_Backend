@@ -20,8 +20,10 @@ $app->make(Kernel::class)->bootstrap();
 config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => realpath($argv[1])]);
 DB::purge('sqlite');
 DB::statement('PRAGMA journal_mode=DELETE');
-foreach (glob(database_path('migrations/2026_11_24_*.php')) as $file) {
-    if (preg_match('/_(crm|recruit)_/', basename($file))) {
+// Every migration that creates or changes a CRM table (crm_*, recruit_*, email_suppressions), in order,
+// whatever its date: the same set as crm_migrations in scripts/cutover/nightly/nightly-config.json.
+foreach (glob(database_path('migrations/*.php')) as $file) {
+    if (preg_match("/Schema::(?:create|table)\(\s*'(?:(?:crm|recruit)_[a-z0-9_]*|email_suppressions)'/", file_get_contents($file))) {
         (require $file)->up();
     }
 }
