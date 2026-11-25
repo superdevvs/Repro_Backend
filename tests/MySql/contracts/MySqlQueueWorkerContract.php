@@ -3,6 +3,7 @@
 namespace Tests\MySql\Contracts;
 
 use App\Jobs\DispatchScheduledMessages;
+use App\Queue\MySqlDatabaseQueue;
 use App\Queue\MySqlWorkerDatabaseQueue;
 use App\Queue\SqliteDatabaseQueue;
 use Illuminate\Contracts\Console\Kernel;
@@ -234,7 +235,10 @@ final class MySqlQueueWorkerContract extends TestCase
     public function test_opt_out_preserves_the_stock_mysql_queue_and_the_sqlite_connector(): void
     {
         $this->app['config']->set('queue.connections', $this->configuredQueues('mysql', []));
-        self::assertSame(DatabaseQueue::class, $this->app['queue']->connection('database')::class);
+        // Without the pilot, the business connection keeps the stock queue; with the
+        // writer policy on, its claim and delete skip the token on that connection.
+        self::assertSame(MySqlDatabaseQueue::class, $this->app['queue']->connection('database')::class);
+        self::assertInstanceOf(DatabaseQueue::class, $this->app['queue']->connection('database'));
         $this->app['config']->set([
             'database.connections.sqlite.database' => ':memory:',
             'queue.connections.studio.connection' => 'sqlite',
@@ -294,7 +298,7 @@ final class MySqlQueueWorkerContract extends TestCase
         });
         self::assertSame(['mysql', 'mysql'], $inserts);
         self::assertSame(['studio', 'iguide-lab-tour'], $this->admin->query('SELECT queue FROM jobs ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
-        self::assertSame(DatabaseQueue::class, $this->app['queue']->connection('database')::class);
+        self::assertSame(MySqlDatabaseQueue::class, $this->app['queue']->connection('database')::class);
     }
 
     public function test_aliases_share_the_verified_worker_and_keep_their_retry_windows(): void
