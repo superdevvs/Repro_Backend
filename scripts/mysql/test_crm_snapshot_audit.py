@@ -116,6 +116,34 @@ class CrmSnapshotTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual("crm-migration-ledger-differs", report["reason"])
 
+    def test_snapshot_with_an_unreviewed_crm_migration_is_refused(self):
+        # A CRM migration this release has not reviewed stops the audit, as a missing one does. The
+        # reviewed layout pin catches one that changes a table, but not a data-only one.
+        with closing(sqlite3.connect(self.snapshot)) as db, db:
+            db.execute("INSERT INTO migrations VALUES (200, '2026_12_01_000000_add_notes_to_shoots', 14)")
+        code, report = self.run_audit()
+        self.assertEqual(0, code, report)
+        self.assertEqual(10, report["migrations"]["count"])
+        for name in ("2026_12_01_000000_backfill_crm_contact_sources", "2026_12_01_000000_archive_recruit_notes",
+                     "2026_12_01_000000_prune_email_suppressions"):
+            with self.subTest(name=name):
+                with closing(sqlite3.connect(self.snapshot)) as db, db:
+                    db.execute("DELETE FROM migrations WHERE id = 201")
+                    db.execute("INSERT INTO migrations VALUES (201, ?, 14)", (name,))
+                code, report = self.run_audit()
+                self.assertEqual(1, code)
+                self.assertEqual("crm-migration-ledger-differs", report["reason"])
+
+    def test_no_other_migration_of_the_release_or_the_baseline_ledger_has_a_crm_name(self):
+        # The name rule must not refuse a ledger this release produces: every migration file, and every
+        # row of the production-derived baseline ledger, has a CRM name only if it is in MIGRATIONS.
+        root = Path(__file__).resolve().parents[2]
+        names = {path.stem for path in (root / "database/migrations").glob("*.php")}
+        sql = (root / "database/schema/mysql-schema.sql").read_text(encoding="utf-8")
+        names |= set(re.findall(r"\(\d+,'(\d{4}_\d{2}_\d{2}_\d{6}_[a-z0-9_]+)',\d+\)", sql))
+        self.assertGreater(len(names), 400)
+        self.assertEqual(sorted(crm.MIGRATIONS), sorted(name for name in names if crm.CRM_MIGRATION_NAME.search(name)))
+
     def test_reviewed_tables_references_and_ledger_cover_candidate_layout(self):
         root = Path(__file__).resolve().parents[2]
         sql = (root / "database/schema/mysql-schema.sql").read_text(encoding="utf-8")
