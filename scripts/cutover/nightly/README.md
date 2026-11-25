@@ -145,7 +145,7 @@ python3 -B -m scripts.cutover.nightly.runner check-config --config scripts/cutov
 | `candidate_root` | `/home/maverick/repro-nightly-candidate` | A clean checkout of the candidate release. |
 | `scope` | `database/schema/migration-scope.json`, `a3807732…` | Re-pin after any reviewed scope change. |
 | `reviewed_schema_sha256` | `87e79c75…` | The reviewed converted layout. A schema change stops the night until it is reviewed. `migrate.py plan` computes it from the captured live file, so only a production snapshot can re-pin it: a fresh build has 321 tables, not 328, and another digest. It was pinned while the live ledger had nine CRM migrations. The tenth adds two `recruit_application_receipts` columns, which change the digest, so a night after the candidate is deployed stops at `plan` (`reviewed-layout-differs`) until it is re-pinned from such a snapshot. See [Re-pin the reviewed layout](#re-pin-the-reviewed-layout). |
-| `crm_migrations` | the ten CRM migrations | Every migration that names a CRM table (`crm_*`, `recruit_*`, `email_suppressions`) anywhere, including in a `DB::statement`. The capture stops (`crm-ledger-differs`) unless the live ledger has all of them, so nights before the candidate is deployed stop there. `test_committed_config_lists_every_crm_migration` fails when one is missing. `crm-snapshot-audit.py` checks the same list, and `scripts/mysql/crm-rehearsal-fixture.php` runs the same set (both tested). |
+| `crm_migrations` | the ten CRM migrations | Every migration that names a CRM table (`crm_*`, `recruit_*`, `email_suppressions`) anywhere, including in a `DB::statement`. The capture stops (`crm-ledger-differs`) unless the live ledger has all of them, so nights before the candidate is deployed stop there. `test_committed_config_lists_every_crm_migration` fails when one is missing. `crm-snapshot-audit.py` checks the same list and refuses any other ledger row whose name contains `crm_`, `recruit_` or `email_suppressions`, and `scripts/mysql/crm-rehearsal-fixture.php` runs the same set (both tested). |
 | `reverse_triggers` | `null` | The reviewed trigger helper is not committed yet. Pin its path and digest here. |
 | `finance` | `null` | The finance rehearsal needs an administrator sandbox. Until a step is configured, `invoice_and_payout_parity_verified` is false and the night cannot qualify. |
 | `applicant_files_root` | `null` | Set to the private disk root to read applicant files read-only. |
@@ -179,10 +179,13 @@ To re-pin, as the deploy user, from the clean candidate checkout:
    yet (its parent must). It writes `schema-plan.json`,
    `exceptions-private.json` and `result.json`, all mode 0600, and never
    changes the snapshot. On the full snapshot it can take many minutes; the
-   runner allows it 30.
+   runner allows it 30. It reads the whole snapshot on the live host, so run
+   it at the runner's priority (`priority` in the config: nice 10, idle I/O
+   class 3).
 
    ```sh
-   /usr/bin/python3 -B scripts/mysql/migrate.py plan \
+   /usr/bin/nice -n 10 /usr/bin/ionice -c 3 \
+     /usr/bin/python3 -B scripts/mysql/migrate.py plan \
      --snapshot <state-dir>/<day>/snapshot.sqlite \
      --snapshot-sha256 <snapshot_sha256 from copy-receipt.json> \
      --output <state-dir>/repin-<day>
@@ -196,13 +199,31 @@ To re-pin, as the deploy user, from the clean candidate checkout:
    not keep the earlier layout, so take it from an earlier reviewed run's
    `schema-plan.json`, or read the whole file.
 4. Copy `schema_sha256` from `<state-dir>/repin-<day>/result.json` into
-   `reviewed_schema_sha256` of the config the runner uses. If that is the
-   committed `nightly-config.json`, commit the change and update the
-   candidate checkout: the runner refuses a dirty checkout.
+   `reviewed_schema_sha256` of the config the runner uses. The runner
+   refuses a dirty checkout, so either keep that config as a private file
+   outside the checkout and pass it with `--config`, or commit the change to
+   `nightly-config.json` and update the candidate checkout. A commit is a
+   new candidate release: every later night's `release_sha` is that commit,
+   not the release deployed in step 1. The readiness check requires the
+   last two nights' `release_sha` to equal the frozen release in the policy
+   (`scripts/cutover/readiness/check.py`), and at the cutover the identity
+   probe must find that same release deployed (`scripts/cutover/runner.py`).
+   So a committed re-pin must be deployed too, and the frozen identity must
+   name it.
 5. Run `check-config` and give the owner the new `config_sha256` for a new
    approval file.
 6. Start the streak on the next night. The stopped night cannot be resumed
    under the new config (`config-changed-for-this-night`).
+
+Check disk space before the streak. `retain_snapshots` is `null`, so every
+night that gets past `capture` keeps its `snapshot.sqlite` (about 4.5 GB),
+the stopped re-pin night too; a night that stops at `capture` removes its
+copy. Each night also needs more free space than the larger of
+`guards.min_free_bytes` (45 GB) and `guards.free_bytes_per_source_byte` (9)
+times the live database, checked before the copy and again before `target`,
+or it stops with `insufficient-disk`. If space is short, set
+`retain_snapshots` (a config change, so a new approval) or ask the owner to
+approve a cleanup.
 
 ## Commands
 
