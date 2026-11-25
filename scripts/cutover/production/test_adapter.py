@@ -204,6 +204,43 @@ class ProductionAdapterTests(unittest.TestCase):
                      activation_raw=activation)
         self.assertTrue(adapter.observe().sqlite_live())
 
+    def admitted_worker(self, name):
+        """A started worker whose wrapper keeps its shared writer lease for its whole life."""
+        code = ("import fcntl, sys, time\nlease = open(sys.argv[1], 'rb')\nfcntl.flock(lease, fcntl.LOCK_SH)\n"
+                "print('admitted', flush=True)\ntime.sleep(60)\n")
+        process = subprocess.Popen([sys.executable, "-c", code, str(self.root / "state" / "operator.lock"),
+                                    f"{name}-{self.tag}"], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        self.addCleanup(process.stdout.close)
+        self.assertEqual("admitted\n", process.stdout.readline())
+        return process
+
+    def test_reopen_retry_stops_workers_that_a_failed_reopen_started(self):
+        blocker = self.root / "etc" / "second-group-fails"
+        blocker.write_text("", encoding="ascii")
+        config = self.config(command_seconds=3)
+        config["commands"]["start_workers"] = [self.record("start"), ["/bin/sh", "-c", f"! test -e {blocker}"]]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        runner.perform("abort")
+        with self.assertRaisesRegex(UnsafeCutover, "Host command failed"):
+            adapter.reopen()
+        # The first group started before the second failed; its wrapper keeps the shared lease.
+        worker = self.admitted_worker("fake-queue-worker")
+        self.assertFalse((self.root / "ingress" / "open").exists())
+        blocker.unlink()
+
+        before = len(self.commands())
+        adapter.reopen()
+        self.assertIsNotNone(worker.poll(), "The retry did not stop the worker the failed reopen started")
+        self.assertEqual([["stop"]] + [["resume", queue] for queue in QUEUES] + [["start"]], self.commands()[before:])
+        self.assertTrue((self.root / "ingress" / "open").exists())
+        self.assertTrue((self.root / "run" / "verified-activation.json").exists())
+        self.assertFalse((self.root / "etc" / "active").exists())
+        self.assertTrue(adapter.observe().sqlite_live())
+
     def test_reboot_during_hold_reasserts_the_closed_route_under_the_new_boot(self):
         journal, adapter, runner = self.started()
         runner.perform("hold", runner.approval_request("hold"))

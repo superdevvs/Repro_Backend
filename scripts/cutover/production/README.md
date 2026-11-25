@@ -102,6 +102,16 @@ rollback, `refresh` publishes the deploy fence again before it measures, and
 receipt. `refresh` copies the SQLite live-configuration pin from the policy;
 an independent configuration probe is still to be added before W1.
 
+**Retrying `reopen`.** If a reopen fails after it started a worker group,
+those wrappers keep their shared writer lease. Run `cli.py reopen` again: it
+stops any running worker group first (`stop_workers`), waits for the writer
+lock, then resumes the queues and starts the workers in order.
+
+**Watchdog run time.** A deadline tick runs the whole rollback, so the
+service allows 25 minutes (`TimeoutStartSec`). While a tick runs, an
+operator command is refused with "Another host operator holds the cutover
+lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
+
 ## Tests
 
 `test_admit.py`, `test_fences.py` and `test_adapter.py` need Linux root and

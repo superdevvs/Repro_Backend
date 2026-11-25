@@ -359,8 +359,19 @@ class ProductionAdapter:
 
         After an abort this follows sqlite_authoritative. After a reboot in the
         planned phase it follows a refresh of the authority evidence.
+
+        A reopen that failed or crashed after starting a worker group leaves
+        wrappers that keep their shared writer lease for their whole life. A
+        retry stops those groups first, so the writer lock can drain, and
+        starts them again below. Stopping workers only ever holds writers.
         """
         with self.journal.acquire() as (state, lease):
+            if self.processes(self.config["writer_processes"]):
+                deadline = self.clock() + self.config["command_seconds"]
+                for argv in self.config["commands"]["stop_workers"]:
+                    self._run(argv, deadline)
+                self._wait_absent(self.config["writer_processes"], deadline,
+                                  "Workers started by an earlier reopen are still running")
             self.journal.drain_writers(lease, self.config["command_seconds"])
             journal_raw = self.journal.path.read_bytes()
             evidence_raw = self.paths["evidence"].read_bytes()
