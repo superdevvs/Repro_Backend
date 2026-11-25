@@ -2,13 +2,19 @@ import errno
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
 
+from fence import guard
 from rehearse import FixtureAdapter
 from runner import Identity, Journal, Runner, UnsafeCutover
+
+REBOOTED = "6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11"
 
 
 class SimulatedPowerLoss(BaseException):
@@ -18,6 +24,9 @@ class SimulatedPowerLoss(BaseException):
 class FaultAdapter(FixtureAdapter):
     def __init__(self, journal, identity):
         super().__init__(journal, identity)
+        self.before_close = lambda: None
+        self.after_close = lambda: None
+        self.before_drain = lambda: None
         self.before_freeze = lambda: None
         self.after_freeze = lambda: None
         self.before_promote = lambda: None
@@ -27,9 +36,24 @@ class FaultAdapter(FixtureAdapter):
         self.after_authority_publish = lambda: None
         self.children_active = False
         self.backup_ok = True
+        self.long_jobs = True
         self.evidence_override = {}
         self.sqlite_restores = 0
+        self.close_calls = 0
         self.last_lease = None
+
+    def close_admissions(self, lease, deadline):
+        self.close_calls += 1
+        self.before_close()
+        super().close_admissions(lease, deadline)
+        self.after_close()
+
+    def drain(self, lease, deadline):
+        self.before_drain()
+        super().drain(lease, deadline)
+
+    def long_jobs_drained(self):
+        return self.long_jobs
 
     def freeze(self, lease, deadline):
         self.last_lease = lease
@@ -75,11 +99,21 @@ class CutoverTest(unittest.TestCase):
         self.runner = self.new_runner()
         self.runner.initialize()
 
-    def new_runner(self):
-        return Runner(self.journal, self.identity, self.adapter, lambda: self.now)
+    def new_runner(self, **options):
+        return Runner(self.journal, self.identity, self.adapter, lambda: self.now, **options)
+
+    def hold(self, runner=None):
+        runner = runner or self.runner
+        return runner.perform("hold", runner.approval_request("hold"))
 
     def freeze(self):
-        self.runner.perform("freeze", self.runner.approval_request("freeze"))
+        self.hold()
+        return self.runner.perform("freeze")
+
+    def reboot(self, **observed):
+        """A new boot restores the open nginx configuration and restarts services."""
+        self.adapter.BOOT_ID = REBOOTED
+        self.journal.write_record("fixture.json", asdict(replace(self.adapter.observe(), **observed)))
 
     def ready(self):
         self.freeze()
@@ -88,6 +122,78 @@ class CutoverTest(unittest.TestCase):
     @staticmethod
     def crash():
         raise SimulatedPowerLoss()
+
+    @contextmanager
+    def admitted_writer(self):
+        """Hold the lock an admitted writer shares (exclusive on Windows, which has no flock)."""
+        with (self.journal.directory / "operator.lock").open("a+b") as stream:
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def test_admitted_writer_does_not_block_a_planned_watchdog_tick(self):
+        original = self.journal.path.read_bytes()
+        with self.admitted_writer():
+            self.now += 60
+            self.assertEqual("planned", self.runner.perform("tick")["phase"])
+        self.assertEqual(original, self.journal.path.read_bytes())
+
+    def test_second_controller_is_refused_while_writers_stay_admitted(self):
+        with self.journal.acquire():
+            with self.assertRaisesRegex(UnsafeCutover, "holds the cutover lock"):
+                self.runner.perform("abort")
+            with self.admitted_writer():
+                pass
+
+    def test_drain_writers_waits_for_admitted_writer_then_excludes_new_ones(self):
+        with self.journal.acquire() as (state, lease):
+            self.journal.write(state | {"generation": lease.generation})
+            with self.admitted_writer():
+                with self.assertRaisesRegex(UnsafeCutover, "did not drain"):
+                    self.journal.drain_writers(lease, 0.05)
+                with self.assertRaisesRegex(UnsafeCutover, "not been drained"):
+                    lease.require_writers_drained()
+            self.journal.drain_writers(lease, 1)
+            lease.require_writers_drained()
+            with self.assertRaises(OSError):
+                with self.admitted_writer():
+                    self.fail("A writer was admitted after the drain")
+            lease.writers.close()
+            with self.assertRaisesRegex(UnsafeCutover, "no longer excludes admitted writers"):
+                lease.require_current()
+        with self.admitted_writer():
+            pass
+
+    def test_watchdog_tick_waits_for_the_controller_lock(self):
+        held, release = threading.Event(), threading.Event()
+
+        def other_controller():
+            with self.journal.acquire():
+                held.set()
+                release.wait(5)
+
+        thread = threading.Thread(target=other_controller)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(release.set)
+        self.assertTrue(held.wait(5))
+        threading.Timer(0.3, release.set).start()
+        started = time.monotonic()
+        self.now += 60
+        self.assertEqual("planned", self.runner.perform("tick")["phase"])
+        self.assertGreaterEqual(time.monotonic() - started, 0.25)
 
     def test_prepare_promotion_and_exact_marker_order(self):
         self.ready()
@@ -111,52 +217,301 @@ class CutoverTest(unittest.TestCase):
         self.assertEqual(0, self.adapter.sqlite_restores)
 
     def test_standby_rejects_wrong_artifact_or_target(self):
-        approval = self.runner.approval_request("freeze")
+        approval = self.runner.approval_request("hold")
         for override in [{"artifact_sha256": "a" * 64},
                          {"target_uuid": "a6a22173-806c-4d38-90ee-07bde9aa5ecd"}]:
             self.adapter._identity = replace(self.identity, **override)
             with self.assertRaisesRegex(UnsafeCutover, "identity differs"):
-                self.new_runner().perform("freeze", approval)
+                self.new_runner().perform("hold", approval)
         self.assertTrue(self.adapter.observe().sqlite_live())
 
     def test_approval_binds_run_gate_phase_and_expiry(self):
-        approval = self.runner.approval_request("freeze")
+        approval = self.runner.approval_request("hold")
         for changed in [
             replace(approval, action="promote"), replace(approval, identity_sha256="7" * 64),
             replace(approval, evidence_sha256="8" * 64), replace(approval, challenge="different"),
         ]:
             with self.assertRaisesRegex(UnsafeCutover, "phase approval"):
-                self.runner.perform("freeze", changed)
+                self.runner.perform("hold", changed)
         self.now = approval.expires_at
         with self.assertRaisesRegex(UnsafeCutover, "phase approval"):
-            self.runner.perform("freeze", approval)
+            self.runner.perform("hold", approval)
         self.assertTrue(self.adapter.observe().sqlite_live())
+        self.assertEqual(0, self.adapter.close_calls)
 
     def test_crash_before_or_after_freeze_effect_records_undo_intent(self):
         self.adapter.before_freeze = self.crash
         with self.assertRaises(SimulatedPowerLoss):
             self.freeze()
         state = self.journal.read()
-        self.assertTrue(state["pending"]["before"]["admissions_open"])
-        self.assertTrue(self.adapter.observe().sqlite_live())
+        self.assertEqual("freeze", state["pending"]["action"])
+        # The hold came first, so admissions were already closed before the freeze.
+        self.assertFalse(state["pending"]["before"]["admissions_open"])
+        self.assertFalse(self.adapter.observe().admissions_open)
         self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
 
-    def test_an_external_ingress_hold_does_not_start_a_recoverable_freeze(self):
-        approval = self.runner.approval_request("freeze")
-        observed = replace(self.adapter.observe(), admissions_open=False)
+    def test_external_pre_close_is_refused_or_adopted_with_clock(self):
+        approval = self.runner.approval_request("hold")
+        observed = replace(self.adapter.observe(), admissions_open=False, deployment_fenced=True)
         self.journal.write_record("fixture.json", asdict(observed))
         original = self.journal.read()
 
-        with self.assertRaisesRegex(UnsafeCutover, "SQLite preflight changed"):
-            self.runner.perform("freeze", approval)
-        self.now += Runner.WINDOW_SECONDS + 1
-        self.assertEqual(original, self.runner.perform("tick"))
-        with self.assertRaisesRegex(UnsafeCutover, "No freeze is active"):
-            self.runner.perform("abort")
-
+        # Default: refuse loudly and change nothing.
+        with self.assertRaisesRegex(UnsafeCutover, "closed outside the cutover journal"):
+            self.runner.perform("hold", approval)
         self.assertEqual(original, self.journal.read())
-        self.assertIsNone(original["started_at"])
-        self.assertEqual(observed, self.adapter.observe())
+        self.assertEqual(0, self.adapter.close_calls)
+
+        # Explicit adoption journals the hold and starts the outage clock.
+        adopting = self.new_runner(adopt_external_hold=True)
+        state = adopting.perform("hold", approval)
+        self.assertEqual("holding", state["phase"])
+        self.assertEqual(self.now, state["started_at"])
+        self.assertTrue(state["hold"]["adopted_external_close"])
+        self.assertFalse(state["history"][-1]["before"]["admissions_open"])
+        self.now += Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("tick")["phase"])
+        self.adapter.reopen()
+        self.assertTrue(self.adapter.observe().sqlite_live())
+
+    def test_hold_is_first_journaled_step_and_starts_outage_clock(self):
+        def nothing_closed_yet_but_hold_is_durable():
+            state = self.journal.read()
+            self.assertEqual("holding", state["phase"])
+            self.assertEqual(self.now, state["started_at"])
+            self.assertEqual("hold", state["pending"]["action"])
+            self.assertEqual(state["hold"]["hold_id"], state["pending"]["hold_id"])
+            self.assertEqual(self.adapter.BOOT_ID, state["pending"]["boot_id"])
+            self.assertTrue(state["pending"]["before"]["admissions_open"])
+            self.assertTrue(self.adapter.observe().sqlite_live())
+            with self.assertRaises(guard.Refused):
+                guard.authority(self.adapter.policy(), state, "queue-worker")
+
+        self.adapter.before_close = nothing_closed_yet_but_hold_is_durable
+        state = self.hold()
+        self.assertEqual("holding", state["phase"])
+        self.assertIsNone(state["pending"])
+        self.assertEqual(["hold"], [entry["action"] for entry in state["history"]])
+        observed = self.adapter.observe()
+        self.assertFalse(observed.admissions_open)
+        self.assertTrue(observed.deployment_fenced)
+        self.assertTrue(observed.sqlite_writable)
+        with self.assertRaisesRegex(guard.Refused, "holds all admissions"):
+            guard.authority(self.adapter.policy(), state, "web-writer")
+
+    def test_long_job_queues_must_be_predrained_before_the_hold(self):
+        original = self.journal.read()
+        self.adapter.long_jobs = False
+        with self.assertRaisesRegex(UnsafeCutover, "Long-job queues"):
+            self.hold()
+        self.assertEqual(original, self.journal.read())
+        self.assertEqual(0, self.adapter.close_calls)
+        # The owner can choose to drain long jobs inside the clock instead.
+        self.assertEqual("holding", self.hold(self.new_runner(require_long_job_predrain=False))["phase"])
+
+    def test_crash_after_hold_intent_before_close_rolls_back_on_tick(self):
+        self.adapter.before_close = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.hold()
+        state = self.journal.read()
+        self.assertEqual(("holding", "hold"), (state["phase"], state["pending"]["action"]))
+        self.assertTrue(self.adapter.observe().admissions_open)
+
+        self.adapter.before_close = lambda: None
+        self.now += 60
+        ticked = self.new_runner().perform("tick")
+        self.assertEqual("hold", ticked["pending"]["action"])
+        self.assertFalse(self.adapter.observe().admissions_open)
+
+        self.now = state["started_at"] + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("tick")["phase"])
+        self.adapter.reopen()
+        self.assertTrue(self.adapter.observe().sqlite_live())
+
+    def test_crash_during_drain_after_hold_rolls_back_at_45_minutes_from_hold(self):
+        hold_at = self.hold()["started_at"]
+        self.now += 10 * 60
+        self.adapter.before_drain = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.runner.perform("freeze")
+        self.adapter.before_drain = lambda: None
+        state = self.journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+
+        self.now = hold_at + Runner.DECISION_SECONDS - 1
+        self.assertEqual("holding", self.new_runner().perform("tick")["phase"])
+        self.assertFalse(self.adapter.observe().admissions_open)
+        self.now = hold_at + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("tick")["phase"])
+        self.assertEqual("interrupted", self.journal.read()["history"][-2]["phase"])
+
+    def test_freeze_deadline_counts_from_hold_not_freeze(self):
+        hold_at = self.hold()["started_at"]
+        self.now = hold_at + 30 * 60
+        frozen = self.runner.perform("freeze")
+        self.assertEqual(("frozen", hold_at), (frozen["phase"], frozen["started_at"]))
+        self.assertIn("writers_drained_ms", frozen["drain"])
+        self.now = hold_at + 31 * 60
+        self.runner.perform("prepare")
+        self.now = hold_at + 44 * 60
+        approval = self.runner.approval_request("promote")
+        self.assertEqual(hold_at + Runner.DECISION_SECONDS, approval.expires_at)
+        self.now = hold_at + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("tick")["phase"])
+
+    def test_reboot_during_hold_reasserts_hold_and_redrains_scheduler(self):
+        self.hold()
+        # The freeze drained the scheduler under the old boot, then power was lost.
+        self.adapter.before_freeze = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.runner.perform("freeze")
+        self.adapter.before_freeze = lambda: None
+        self.assertEqual(FixtureAdapter.BOOT_ID, self.journal.read()["scheduler_drain"]["boot_id"])
+
+        self.reboot(admissions_open=True, workers_stopped=False, deployment_fenced=False)
+        self.now += 60
+        state = self.new_runner().perform("tick")
+        observed = self.adapter.observe()
+        self.assertFalse(observed.admissions_open)
+        self.assertTrue(observed.deployment_fenced)
+        self.assertEqual(REBOOTED, state["hold"]["boot_id"])
+        self.assertEqual(REBOOTED, state["scheduler_drain"]["boot_id"])
+        self.assertEqual("reassert_hold", state["history"][-1]["action"])
+        self.assertEqual("freeze", state["pending"]["action"])
+
+        aborted = self.new_runner().perform("abort")
+        self.assertEqual("sqlite_authoritative", aborted["phase"])
+        proof = json.loads((self.journal.directory / "fixture-authority.json").read_bytes())
+        self.assertEqual(REBOOTED, proof["boot_id"])
+
+    def test_crash_after_journal_handoff_from_holding_to_frozen(self):
+        self.adapter.after_freeze = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.freeze()
+        self.adapter.after_freeze = lambda: None
+        state = self.journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+        self.assertTrue(self.adapter.observe().frozen())
+        self.now += 60
+        self.assertEqual("holding", self.new_runner().perform("tick")["phase"])
+        self.assertTrue(self.adapter.observe().frozen())
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
+
+    def test_reboot_after_handoff_to_frozen_redrains_scheduler_before_prepare(self):
+        self.assertEqual("frozen", self.freeze()["phase"])
+        self.reboot()
+        with self.assertRaisesRegex(UnsafeCutover, "scheduler hold"):
+            self.new_runner().perform("prepare")
+        self.assertEqual("frozen", self.journal.read()["phase"])
+        self.now += 60
+        state = self.new_runner().perform("tick")
+        self.assertEqual(REBOOTED, state["scheduler_drain"]["boot_id"])
+        self.assertEqual("ready", self.new_runner().perform("prepare")["phase"])
+
+    def test_hold_retry_is_idempotent(self):
+        self.adapter.after_close = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.hold()
+        self.adapter.after_close = lambda: None
+        interrupted = self.journal.read()
+        self.assertEqual("hold", interrupted["pending"]["action"])
+        self.assertFalse(self.adapter.observe().admissions_open)
+
+        self.now += 30
+        retried = self.new_runner().perform("hold")
+        self.assertEqual(("holding", None), (retried["phase"], retried["pending"]))
+        self.assertEqual(interrupted["started_at"], retried["started_at"])
+        self.assertEqual(interrupted["hold"], retried["hold"])
+        self.assertEqual(["hold"], [entry["action"] for entry in retried["history"]])
+        self.assertEqual(2, self.adapter.close_calls)
+        self.now += 30
+        self.assertEqual("holding", self.new_runner().perform("tick")["phase"])
+        self.assertEqual(2, self.adapter.close_calls)
+        with self.assertRaisesRegex(UnsafeCutover, "invalid for the current phase"):
+            self.new_runner().perform("hold")
+
+    def test_hold_approval_binds_challenge_and_expires(self):
+        approval = self.runner.approval_request("hold")
+        self.assertEqual(self.journal.read()["challenge"], approval.challenge)
+        self.assertEqual(self.now + Runner.APPROVAL_SECONDS, approval.expires_at)
+        self.now = approval.expires_at
+        with self.assertRaisesRegex(UnsafeCutover, "phase approval"):
+            self.runner.perform("hold", approval)
+        self.now -= 1
+        with self.assertRaisesRegex(UnsafeCutover, "phase approval"):
+            self.runner.perform("hold", None)
+        state = self.runner.perform("hold", approval)
+        self.assertNotEqual(approval.challenge, state["challenge"])
+        self.assertEqual(asdict(approval), state["history"][0]["approval"])
+        # By default the approved hold also authorizes the freeze.
+        with self.assertRaisesRegex(UnsafeCutover, "approved hold authorizes the freeze"):
+            self.runner.approval_request("freeze")
+        with self.assertRaisesRegex(UnsafeCutover, "approved hold authorizes the freeze"):
+            self.runner.perform("freeze", approval)
+        self.assertEqual("holding", self.journal.read()["phase"])
+
+    def test_separate_freeze_approval_binds_the_hold(self):
+        runner = self.new_runner(separate_freeze_approval=True)
+        self.hold(runner)
+        with self.assertRaisesRegex(UnsafeCutover, "phase approval"):
+            runner.perform("freeze")
+        approval = runner.approval_request("freeze")
+        with self.assertRaisesRegex(UnsafeCutover, "phase approval"):
+            runner.perform("freeze", replace(approval, evidence_sha256="8" * 64))
+        self.assertEqual("frozen", runner.perform("freeze", approval)["phase"])
+
+    def test_abort_from_holding_reopens_only_sqlite(self):
+        self.hold()
+        state = self.runner.perform("abort")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertEqual(["hold", "abort"], [entry["action"] for entry in state["history"]])
+        self.assertTrue(self.adapter.observe().sealed("sqlite"))
+        proof = (self.journal.directory / "fixture-authority.json").read_bytes()
+        policy, committed = self.journal.encode(self.adapter.policy()), self.journal.path.read_bytes()
+        host = {"machine_sha": self.adapter.MACHINE_SHA256, "boot_id": self.adapter.BOOT_ID}
+        guard.verify(policy, committed, proof, **host, action="queue-worker", expected_engine="sqlite")
+        with self.assertRaisesRegex(guard.Refused, "not authoritative"):
+            guard.verify(policy, committed, proof, **host, action="queue-worker", expected_engine="mysql")
+        self.adapter.reopen()
+        self.assertTrue(self.adapter.observe().sqlite_live())
+        self.assertFalse(self.adapter.observe().mysql_writable)
+
+    def test_reboot_after_reopened_rollback_keeps_sqlite_authority_for_the_watchdog(self):
+        self.freeze()
+        self.runner.perform("abort")
+        self.adapter.reopen()
+        # A reboot empties /run: ingress is closed, wrapped writers are refused,
+        # and the deploy fence stays lifted. SQLite is still the only writable engine.
+        self.reboot(admissions_open=False, workers_stopped=True)
+        for _ in range(2):
+            self.now += 60
+            state = self.new_runner().perform("tick")
+            self.assertEqual(("sqlite_authoritative", False, None),
+                             (state["phase"], state["writes_possible"], state["pending"]))
+        self.assertEqual("sqlite_authoritative", self.journal.read()["phase"])
+        with self.assertRaisesRegex(UnsafeCutover, "cannot be re-run"):
+            self.new_runner().perform("hold")
+        # A read-only SQLite still cannot be verified as the authority.
+        self.reboot(admissions_open=False, workers_stopped=True, sqlite_writable=False)
+        self.now += 60
+        with self.assertRaisesRegex(UnsafeCutover, "could not be verified"):
+            self.new_runner().perform("tick")
+        self.assertEqual("recovery_required", self.journal.read()["phase"])
+
+    def test_drain_timeout_keeps_admissions_closed(self):
+        hold_at = self.hold()["started_at"]
+        with self.admitted_writer():
+            with self.assertRaisesRegex(UnsafeCutover, "did not drain"):
+                self.new_runner(max_drain_seconds=0.05).perform("freeze")
+            state = self.journal.read()
+            self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+            observed = self.adapter.observe()
+            self.assertFalse(observed.admissions_open)
+            self.assertFalse(observed.frozen())
+            with self.assertRaisesRegex(guard.Refused, "unfinished action"):
+                guard.authority(self.adapter.policy(), state, "web-writer")
+        self.now = hold_at + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("tick")["phase"])
 
     def test_scheduler_drain_blocks_snapshot_while_background_permit_remains(self):
         self.freeze()
@@ -223,7 +578,8 @@ class CutoverTest(unittest.TestCase):
         self.assertEqual(0, self.adapter.sqlite_restores)
         self.adapter.children_active = False
         self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
-        self.assertEqual("interrupted", self.journal.read()["history"][0]["phase"])
+        self.assertEqual(["holding", "interrupted", "sqlite_authoritative"],
+                         [entry["phase"] for entry in self.journal.read()["history"]])
 
     def test_timeout_from_start_reserves_time_for_abort(self):
         self.ready()

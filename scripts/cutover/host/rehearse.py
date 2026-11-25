@@ -150,6 +150,10 @@ class ContainerRehearsal:
         with closing(self.fixture_mysql()) as connection:
             return mysql_rows(connection)
 
+    def mysql_baseline(self):
+        """The MySQL rows the fixture expects: the import once prepared, else the pristine target."""
+        return self.mysql_initial if self.imported is None else self.imported
+
     def environment(self, engine):
         return {
             "PATH": "/usr/local/bin:/usr/bin:/bin", "APP_ENV": "testing", "APP_KEY": self.app_key,
@@ -236,7 +240,7 @@ class ContainerRehearsal:
             cursor.execute("SELECT @@global.super_read_only, @@server_uuid")
             read_only, server_uuid = cursor.fetchone()
         require(server_uuid == self.native_uuid, "Private MySQL target changed")
-        mysql_changed = self.rows_mysql() != (self.mysql_initial if self.imported is None else self.imported)
+        mysql_changed = self.rows_mysql() != self.mysql_baseline()
         return Observation(
             gate["engine"], gate["open"], not gate["open"], bool(SOURCE.stat().st_mode & stat.S_IWUSR),
             not read_only, mysql_changed, not gate["open"],
@@ -261,12 +265,37 @@ class ContainerRehearsal:
         # inventory for the Runner; it is not protected systemd evidence.
         return SchedulerDrain(**json.loads((self.journal.directory / "no-scheduler-fixture.json").read_text()))
 
-    def freeze(self, lease, deadline):
+    def long_jobs_drained(self):
+        # The fixture starts no long-job worker, so the pre-hold queue pause is empty.
+        return True
+
+    def close_admissions(self, lease, deadline):
         lease.require_current()
-        self.set_gate("sqlite", False)
-        self.closed_at = time.monotonic()
+        # Idempotent: a rollback after prepare re-closes on the current engine.
+        self.set_gate(self.gate()["engine"], False)
+        self.closed_at = getattr(self, "closed_at", None) or time.monotonic()
         require(self.http("POST", 503) == {"admission_held": True}, "SQLite HTTP write escaped the fixture hold")
         require(self.queue("work") == {"admission_held": True}, "Fixture queue worker escaped the hold")
+        require(time.time() < deadline, "Fixture hold deadline expired")
+
+    def drain(self, lease, deadline):
+        # One-shot fixture workers exit by themselves; admitted requests hold
+        # the shared lease, which the runner drains next.
+        lease.require_current()
+        require(time.time() < deadline, "Fixture drain deadline expired")
+
+    def before_hold(self):
+        # A subclass can start an already-admitted writer here.
+        return None
+
+    def admitted_effects(self):
+        # Effects of writers admitted before the hold and drained by the runner.
+        return []
+
+    def freeze(self, lease, deadline):
+        lease.require_writers_drained()
+        self.drained_at = time.monotonic()
+        require(not self.gate()["open"], "The fixture hold was lost before the freeze")
         SOURCE.chmod(0o400)
         with closing(sqlite_connect()) as source:
             try:
@@ -324,8 +353,9 @@ class ContainerRehearsal:
         )
 
     def seal_sqlite(self, lease, deadline):
-        lease.require_current()
-        require(sqlite_rows(SOURCE) == sqlite_rows(SNAPSHOT), "Frozen SQLite data changed")
+        lease.require_writers_drained()
+        # A rollback from the hold, before any freeze, has no snapshot to compare.
+        require(not SNAPSHOT.exists() or sqlite_rows(SOURCE) == sqlite_rows(SNAPSHOT), "Frozen SQLite data changed")
         SOURCE.chmod(0o600)
         replacement = CONFIG.with_suffix(".candidate")
         with replacement.open("xb") as stream:
@@ -363,7 +393,8 @@ class ContainerRehearsal:
         }
 
     def install_planned_proof(self):
-        with self.journal.acquire() as (state, _):
+        with self.journal.acquire() as (state, lease):
+            self.journal.drain_writers(lease, 5)
             require(state["phase"] == "planned" and self.observe().sqlite_live(), "Fixture preflight changed")
             self.journal.write_record("policy.json", json.loads(self.policy()))
             self.journal.write_record("proof.json", self.sqlite_proof(self.journal.path.read_bytes()))
@@ -387,7 +418,8 @@ class ContainerRehearsal:
         )
 
     def reopen(self):
-        with self.journal.acquire():
+        with self.journal.acquire() as (_, lease):
+            self.journal.drain_writers(lease, 5)
             self.verify_guard("sqlite")
             stale_proof = json.loads((self.journal.directory / "proof.json").read_bytes())
             stale_proof["boot_id"] = str(uuid.uuid4())
@@ -408,14 +440,19 @@ def prepare_fixture(adapter, *, queue_before_freeze):
     require(initial["phase"] == "planned", "Runner did not start planned")
     if adapter.writer_authority == "journal":
         adapter.install_planned_proof()
-        with adapter.journal.acquire():
+        with adapter.journal.acquire() as (_, lease):
+            adapter.journal.drain_writers(lease, 5)
             adapter.assert_writer_hold()
     require(set(adapter.http("POST")["receipts"]) == {"synthetic-http-receipt"}, "Synthetic write not acknowledged")
     if queue_before_freeze:
         require(adapter.queue("enqueue") == {"queued": 1}, "Synthetic queue payload was not stored")
     adapter.baseline = adapter.http()
     require(adapter.baseline["pending"] == int(queue_before_freeze), "Unexpected fixture queue baseline")
-    runner.perform("freeze", runner.approval_request("freeze"))
+    adapter.before_hold()
+    # The approved hold is the first journaled step and starts the outage clock.
+    held = runner.perform("hold", runner.approval_request("hold"))
+    require(held["phase"] == "holding" and held["started_at"] is not None, "The hold was not journaled first")
+    runner.perform("freeze")
     if adapter.writer_authority == "journal":
         # A stale permissive launch record cannot override the durable freeze.
         adapter.set_gate("sqlite", True)
@@ -461,12 +498,15 @@ def exercise(adapter):
     adapter.restart_and_check_hold("sqlite")
     adapter.journal.write_record("proof.json", good_proof)
     first = adapter.queue("work")
-    require(first == {"worker_exit": 0, "effects": ["synthetic-queue-effect"]}, "Real Laravel queue work failed")
+    require(first["worker_exit"] == 0
+            and sorted(first["effects"]) == sorted(["synthetic-queue-effect"] + adapter.admitted_effects()),
+            "Real Laravel queue work failed")
     require(adapter.queue("work") == first and adapter.http()["pending"] == 0, "Queue duplicated or lost the effect")
     require(adapter.rows_mysql() == adapter.imported, "MySQL changed after the pre-write rollback")
     return {
         "result": "prewrite-rehearsal-passed", "release": adapter.identity().release_sha,
         "freeze_through_target_smoke_ms": round((adapter.prepared_at - adapter.closed_at) * 1000),
+        "hold_to_drained_ms": round((adapter.drained_at - adapter.closed_at) * 1000),
         "abort_to_sqlite_http_ms": round((after_reopen - before_abort) * 1000),
         "acknowledged_http_receipts": 1, "queue_effects": 1, "mysql_business_writes": 0,
         "offsite_gate_refused": True, "promotion_refused": True, "stale_boot_refused": True,
@@ -491,7 +531,7 @@ def load_pymysql():
 
 
 def main():
-    adapter = ContainerRehearsal(load_pymysql(), *sys.argv[1:])
+    adapter = ContainerRehearsal(load_pymysql(), *sys.argv[1:3])
     try:
         print(json.dumps(exercise(adapter), sort_keys=True))
     finally:

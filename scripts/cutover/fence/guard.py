@@ -22,6 +22,9 @@ EVIDENCE = Path("/run/repro-cutover-fence/verified-engine.json")
 ACTIVATION = Path("/run/repro-cutover-fence/verified-activation.json")
 MACHINE_ID = Path("/etc/machine-id")
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+# Controllers (runner, watchdog, refresh) serialize on this lock. Writers share WRITER_LOCK.
+CONTROLLER_LOCK = "controller.lock"
+WRITER_LOCK = "operator.lock"
 MAX_RECORD_BYTES = 1024 * 1024
 ACTIONS = ("deploy", "scheduler", "web-writer", "queue-worker")
 IDENTITY_FIELDS = {"run_id", "release_sha", "artifact_sha256", "source_sha256", "config_sha256", "target_uuid"}
@@ -240,20 +243,29 @@ def _publish(directory: int, record: bytes) -> None:
             pass
 
 
-def refresh_engine_evidence(observe: Callable[[str], HostAuthority]) -> None:
+def refresh_engine_evidence(observe: Callable[[str], HostAuthority],
+                            precondition: Callable[[], None] | None = None) -> None:
     """Refresh committed-journal authority while a trusted adapter has drained writers.
 
     The caller supplies a bounded read-only host probe. This entrypoint owns
     the exclusive flock and is separate from a runner's pending transition.
+    The optional precondition runs once both locks are held and before any
+    evidence is revoked, so its checks cannot race another controller; it
+    raises to leave the current proof untouched.
     """
     _require_root_installation()
     import fcntl
 
     require(ACTIVATION.parent == EVIDENCE.parent, "Evidence files must share a protected directory")
     check_chain(EVIDENCE.parent, directory=True)
-    lock_path = STATE / "operator.lock"
-    with open_protected(lock_path) as lock:
+    controller_path = STATE / CONTROLLER_LOCK
+    lock_path = STATE / WRITER_LOCK
+    # Same order as the runner: the controller lock first, then the writer lock.
+    with open_protected(controller_path) as controller, open_protected(lock_path) as lock:
+        fcntl.flock(controller, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if precondition is not None:
+            precondition()
         directory = os.open(EVIDENCE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             trusted(os.fstat(directory), directory=True)
@@ -289,6 +301,7 @@ def refresh_engine_evidence(observe: Callable[[str], HostAuthority]) -> None:
                     and boot_id == BOOT_ID.read_text(encoding="ascii").strip(),
                     "Authority inputs changed during the host probe")
             require(os.path.samestat(os.fstat(lock), lock_path.lstat())
+                    and os.path.samestat(os.fstat(controller), controller_path.lstat())
                     and os.path.samestat(os.fstat(directory), EVIDENCE.parent.lstat()),
                     "Authority paths changed during the host probe")
             _publish(directory, evidence_raw)
@@ -302,7 +315,9 @@ def admitted(action: str, expected_engine: str) -> Iterator[int]:
     _require_root_installation()
     import fcntl
 
-    with open_protected(STATE / "operator.lock") as lock:
+    # Shared lock first, then the journal: a writer that reads state after a
+    # hold is refused, and one admitted earlier holds the lock a drain waits for.
+    with open_protected(STATE / WRITER_LOCK) as lock:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         try:
             activation_raw = read_protected(ACTIVATION) if action == "deploy" else None

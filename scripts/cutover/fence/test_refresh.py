@@ -54,7 +54,8 @@ class AuthorityRefreshTests(unittest.TestCase):
         )
 
     def test_refresh_writes_private_evidence_and_holds_deploys_until_reverified(self):
-        self.runner.perform("freeze", self.runner.approval_request("freeze"))
+        self.runner.perform("hold", self.runner.approval_request("hold"))
+        self.runner.perform("freeze")
         self.runner.perform("prepare")
         self.runner.perform("promote", self.runner.approval_request("promote"))
         journal = self.journal.path.read_bytes()
@@ -79,9 +80,24 @@ class AuthorityRefreshTests(unittest.TestCase):
             guard.refresh_engine_evidence(self.observe)
         self.assertEqual(before, self.evidence.read_bytes())
 
+    def test_running_controller_blocks_refresh_and_leaves_evidence_untouched(self):
+        guard.refresh_engine_evidence(self.observe)
+        before = self.evidence.read_bytes()
+        with self.journal.acquire(), self.assertRaises(BlockingIOError):
+            guard.refresh_engine_evidence(self.observe)
+        self.assertEqual(before, self.evidence.read_bytes())
+
+    def test_holding_journal_revokes_old_evidence_without_probing(self):
+        guard.refresh_engine_evidence(self.observe)
+        self.runner.perform("hold", self.runner.approval_request("hold"))
+        with self.assertRaisesRegex(guard.Refused, "holds all admissions"):
+            guard.refresh_engine_evidence(lambda _engine: self.fail("holding journal reached host probe"))
+        self.assertFalse(self.evidence.exists())
+
     def test_frozen_journal_revokes_old_evidence_without_probing(self):
         guard.refresh_engine_evidence(self.observe)
-        self.runner.perform("freeze", self.runner.approval_request("freeze"))
+        self.runner.perform("hold", self.runner.approval_request("hold"))
+        self.runner.perform("freeze")
         with self.assertRaisesRegex(guard.Refused, "holds all admissions"):
             guard.refresh_engine_evidence(lambda _engine: self.fail("frozen journal reached host probe"))
         self.assertFalse(self.evidence.exists())

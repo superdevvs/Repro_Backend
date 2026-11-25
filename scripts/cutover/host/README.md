@@ -16,7 +16,7 @@ $params = @{
 The trial exercises these operations in order.
 
 1. Bootstrap Laravel from a private configuration cache. A fixture HTTP endpoint calls the real notification receipt service against SQLite. A Laravel database queue stores one synthetic job.
-2. Run the actual freeze transition. The application refuses a second HTTP write and a queue worker invocation. The fixture verifies a SQLite write fails and takes an integrity-checked SQLite snapshot.
+2. Run the approved hold, then the freeze. The hold is journaled first and starts the outage clock; closing admissions makes the application refuse a second HTTP write and a queue worker invocation. The freeze drains admitted writers, verifies a SQLite write fails and takes an integrity-checked SQLite snapshot.
 3. Transfer the four fixture tables into MySQL and independently compare the rows. Set MySQL super read-only, verify a direct write is refused, and read the matching application state through a restarted PHP server.
 4. Verify the runner refuses readiness and promotion when off-site backup evidence is unavailable.
 5. Run the pre-write abort. Restore the original Laravel cache and SQLite authority, test that wrong-engine and stale-boot evidence hold admission, then verify that HTTP reads work again and Laravel drains the queued job exactly once.
@@ -31,9 +31,17 @@ The scope covers a dedicated fixture HTTP route on PHP's CLI server and a one-sh
 
 Set `$params.Scenario = 'prewrite-fastcgi'` and a fresh evidence directory to run the same pre-write rehearsal through the pinned nginx and PHP-FPM binaries. nginx listens on a private Unix HTTP socket and forwards to a private FastCGI socket. Closing the fixture ingress denies a write with HTTP 503 before it reaches PHP-FPM, including after replacing both processes. An intentionally stale, open ingress marker exercises the PHP-FPM journal guard independently. Before each replacement the launcher sends `SIGQUIT`, waits for the master and observes the identified worker exit through its Linux pidfd. The dedicated smoke read and the one-shot queue use the same synthetic data and release cache.
 
+Both vhosts load the production server-level include `scripts/cutover/production/nginx/repro-cutover-hold.conf`, changed only in its marker path, so the hold covers every location. The legacy vhost also has a direct `~ \.php$` location for `/cubicasa_webhook.php` and `/iguide_webhook.php`. Those files answer 200 before Laravel boots, so the probe shows that a PHP-level hold acknowledges and drops them while nginx returns 503.
+
+Before the hold, the FastCGI scenario admits a slow SQLite write that keeps its shared lease across a 2.5-second pause. Both vhosts must return 503 right after the hold while it is still in flight. The runner's drain waits for it, and its effect must be in the snapshot exactly once. The report records `hold_to_drained_ms`.
+
 Two private vhosts represent the same-origin dashboard and legacy API ingress. Both test the CRM quote-view GET and Resend webhook POST route shapes with synthetic effects. Closed nginx returns HTTP 503 and `Retry-After` before FastCGI. The journal also refuses those routes when the edge marker is stale and open. Restored SQLite accepts the same fixture requests through both hosts and stores one effect per replayed identity. The fixtures use no provider and do not invoke the production quote or webhook controllers.
 
 For host acceptance, install the root-owned guard and evidence publisher in an isolated staging host with the deployed nginx vhosts, PHP-FPM service, scheduler supervisor, and worker launchers. Close ingress across every writing route before Laravel, including GET routes with side effects, and verify retry behavior through nginx. Drain the old FPM cohort and verify cgroup and service-manager state under the scheduler hold and exclusive journal lease. Restart nginx, FPM and each worker launcher while the durable journal holds admission, then verify only the journal's engine can open after the publisher verifies the current boot. The local run covers three synthetic routes and one FPM worker under the fixture account. Actual vhost mappings and systemd wiring remain staging acceptance work.
+
+## Hold recovery after a killed runner
+
+Set `$params.Scenario = 'prewrite-fastcgi-recovery'` with a fresh evidence directory. The run admits the slow writer, takes the hold, then starts the freeze in a forked runner and kills it with SIGKILL during the writer drain. nginx and PHP-FPM restart three times while held (the last behind a stale open marker, so the PHP journal gate must hold). An early watchdog tick must keep the hold. A tick at 45 minutes from the hold, with a shifted clock, must roll back to SQLite only. Every route is then replayed once and the slow write's effect appears once. Use `-ResourcePrefix` to name the owned containers and volume.
 
 ## Post-write failback fixture
 

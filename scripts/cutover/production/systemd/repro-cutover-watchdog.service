@@ -1,0 +1,19 @@
+[Unit]
+Description=RePro cutover watchdog tick (re-close admissions, roll back to SQLite at the deadline)
+Documentation=file:///opt/repro-cutover-fence/production/README.md
+# Only while a cutover journal exists on this host.
+ConditionPathExists=/var/lib/repro-cutover-fence/state.json
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# Root: the journal, guard records and service controls are root-only.
+ExecStart=/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py tick
+# A deadline tick runs the whole rollback. It may wait 50 s for another
+# controller, then gets up to 15 minutes (at least 10) to drain and publish
+# SQLite authority, plus one host command (at most 300 s). The runner bounds
+# every step itself; this is only a backstop for a hung tick. While a tick
+# runs, the timer's next start is merged into it, and an operator command is
+# refused with "Another host operator holds the cutover lock": retry it.
+TimeoutStartSec=25min
+UMask=0077

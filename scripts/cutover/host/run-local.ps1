@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$LockedVendorArchive,
     [Parameter(Mandatory = $true)][string]$PinnedPyMySqlWheel,
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
-    [ValidateSet('prewrite', 'prewrite-fastcgi', 'postwrite')][string]$Scenario = 'prewrite'
+    [ValidateSet('prewrite', 'prewrite-fastcgi', 'prewrite-fastcgi-recovery', 'postwrite')][string]$Scenario = 'prewrite',
+    [ValidatePattern('^[a-z][a-z0-9-]{2,30}$')][string]$ResourcePrefix = 'repro-dress'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,11 +32,11 @@ git -C $repo archive --format=tar --output=$archive $release
 if ($LASTEXITCODE -ne 0) { throw 'Could not archive the reviewed source' }
 $artifact = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
 $id = [Guid]::NewGuid().ToString('N').Substring(0, 10)
-$owner = "isolated-repro-dress-$id"
+$owner = "isolated-$ResourcePrefix-$id"
 $label = "purpose=$owner"
-$db = "repro-dress-db-$id"
-$app = "repro-dress-app-$id"
-$volume = "repro-dress-socket-$id"
+$db = "$ResourcePrefix-db-$id"
+$app = "$ResourcePrefix-app-$id"
+$volume = "$ResourcePrefix-socket-$id"
 $socket = "type=volume,source=$volume,target=/fixture-socket,volume-nocopy"
 $dbCommand = @'
 set -eu
@@ -58,11 +59,11 @@ python3 -c 'import json; lock=json.load(open("composer.lock")); installed=json.l
 php -l /host/probe.php >/dev/null
 case "$3" in
     prewrite) entrypoint=/host/rehearse.py ;;
-    prewrite-fastcgi) entrypoint=/host/prewrite-fastcgi.py ;;
+    prewrite-fastcgi|prewrite-fastcgi-recovery) entrypoint=/host/prewrite-fastcgi.py ;;
     postwrite) entrypoint=/host/postwrite.py ;;
     *) exit 3 ;;
 esac
-timeout -k 6 120 python3 -I -B -c 'import runpy,sys;sys.path[:0]=["/workspace","/host"];runpy.run_path(sys.argv.pop(1),run_name="__main__")' "$entrypoint" "$1" "$2"
+timeout -k 6 120 python3 -I -B -c 'import runpy,sys;sys.path[:0]=["/workspace","/host"];runpy.run_path(sys.argv.pop(1),run_name="__main__")' "$entrypoint" "$1" "$2" "$3"
 '@
 $dbCommand = $dbCommand.Replace([string][char]13, '')
 $appCommand = $appCommand.Replace([string][char]13, '')
