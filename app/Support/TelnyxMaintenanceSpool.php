@@ -103,9 +103,14 @@ final class TelnyxMaintenanceSpool
         return $id;
     }
 
-    public function hasPendingTexts(): bool
+    public function exists(): bool
     {
-        return $this->ids(self::TEXTS) !== [];
+        return is_dir($this->root);
+    }
+
+    public function root(): string
+    {
+        return $this->root;
     }
 
     /**
@@ -126,23 +131,27 @@ final class TelnyxMaintenanceSpool
         return $entries;
     }
 
+    /** Moves an entry and stamps its mtime, which marks when it was handled. */
     public function move(string $id, string $from, string $to): void
     {
         $this->assertEntry($id);
+        $target = $this->root.'/'.$to.'/'.$id;
         if (! in_array($from, self::FOLDERS, true) || ! in_array($to, self::FOLDERS, true)
-            || ! @rename($this->root.'/'.$from.'/'.$id, $this->root.'/'.$to.'/'.$id)) {
+            || ! @rename($this->root.'/'.$from.'/'.$id, $target)) {
             throw new RuntimeException('Cannot move a spool entry.');
         }
+        @touch($target, now()->getTimestamp());
         $this->syncDirectory($this->root.'/'.$to);
     }
 
-    /** Deletes entries in $folder that arrived before $cutoff. */
+    /** Deletes entries in $folder last handled (mtime) before $cutoff. */
     public function prune(string $folder, CarbonImmutable $cutoff): int
     {
-        $limit = $cutoff->utc()->format('Ymd\THisu\Z');
         $deleted = 0;
         foreach ($this->ids($folder) as $id) {
-            if (strcmp(substr($id, 0, 22), $limit) < 0 && @unlink($this->root.'/'.$folder.'/'.$id)) {
+            $path = $this->root.'/'.$folder.'/'.$id;
+            $modified = @filemtime($path);
+            if ($modified !== false && $modified < $cutoff->getTimestamp() && @unlink($path)) {
                 $deleted++;
             }
         }
