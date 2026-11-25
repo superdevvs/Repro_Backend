@@ -45,6 +45,15 @@ class AppServiceProvider extends ServiceProvider
             \Illuminate\Routing\Middleware\ThrottleRequests::class,
             \App\Http\Middleware\RetryDatabaseThrottleRequests::class,
         );
+
+        // Same timezone and mutex store as the framework's own binding; only
+        // adds the scheduler hold (config schedule.hold, off by default).
+        $this->app->singleton(\Illuminate\Console\Scheduling\Schedule::class, function ($app) {
+            $config = $app['config'];
+
+            return (new \App\Console\Scheduling\HoldAwareSchedule($config->get('app.schedule_timezone', $config->get('app.timezone'))))
+                ->useCache($config->get('cache.schedule_store', \Illuminate\Support\Env::get('SCHEDULE_CACHE_DRIVER', fn () => \Illuminate\Support\Env::get('SCHEDULE_CACHE_STORE'))));
+        });
     }
 
     /**

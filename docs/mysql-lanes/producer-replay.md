@@ -287,7 +287,9 @@ A read-only, service-role-only server route or SQL view that returns JSON for
 - New config file `config/producer_replay.php`; new keys in `config/crm.php`
   (`outbound_hold`).
 - `bootstrap/app.php` gains one `prepend(HoldProducerIngress)` line. The
-  Telnyx lane's receiver also belongs before maintenance; keep both first.
+  Telnyx lane's receiver also belongs before maintenance; keep both first,
+  the hold first and the capture second
+  (`tests/Feature/TelnyxCaptureProducerHoldOrderTest.php`).
 - `routes/crm-public.php`: `crm.enabled` becomes `crm.enabled:retry` on the
   careers route only.
 - Not held by this lane, in the app or at the edge: Telnyx (its own lane

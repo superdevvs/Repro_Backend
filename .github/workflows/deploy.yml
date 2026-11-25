@@ -32,6 +32,9 @@ jobs:
       - name: Test download TCP installer
         run: python3 scripts/deploy/test_install_download_tcp.py
 
+      - name: Test deploy maintenance window (scheduler hold, Telnyx replay)
+        run: python3 scripts/deploy/test_deploy_maintenance_window.py
+
       - name: Test database migration contracts
         run: |
           python3 -m unittest discover -s scripts/mysql

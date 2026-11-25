@@ -108,7 +108,15 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(\App\Http\Middleware\ServerMonitorTiming::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
         $middleware->prepend(\App\Http\Middleware\ListingStudioAdmissionCors::class);
+        // prepend() puts the last line first, so the stack runs HoldProducerIngress,
+        // then CaptureTelnyxDuringMaintenance, then everything above.
+        // The Telnyx capture must stay ahead of the maintenance check and of any
+        // middleware that touches the database. It answers Telnyx during maintenance.
+        $middleware->prepend(\App\Http\Middleware\CaptureTelnyxDuringMaintenance::class);
         // Producer replay hold: first in the stack, before anything that writes.
+        // It reads only config and the path, so the capture keeps its guarantee.
+        // Telnyx is not on its list. If an operator adds a Telnyx path, the hold
+        // also wins during maintenance (TelnyxCaptureProducerHoldOrderTest).
         $middleware->prepend(\App\Http\Middleware\HoldProducerIngress::class);
         $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustConfiguredProxies::class);
         $middleware->trustProxies(
