@@ -1,5 +1,319 @@
 # MySQL production readiness
 
+## November 25 lane integration
+
+**Hold.** Five lanes, each based on `a6e799bb`, were merged into the release
+candidate at `e9679aed` (draft PR 46). All lane work was local and offline.
+The lanes pushed nothing, and nothing was deployed, installed or run on
+production or Maverick. Production stays on SQLite. Each lane was tested on
+its own branch; the lane notes record no test run of the merged head.
+
+| Lane | Branch and merged head | Built | Tested | Review rounds | Still open |
+| --- | --- | --- | --- | --- | --- |
+| Writer policy (WP-1 to WP-9) | `claude/writer-policy-20261125` at `8b34c805` | One-writer token taken at BEGIN on the main `mysql` connection, on by default for MySQL, no effect on SQLite. Autocommit writes wrapped; implicit-commit, batch and raw transaction statements refused; poison guard; READ COMMITTED with 5 s lock waits; exempt writers limited to their own tables; worker cleanup of leftover transactions; `db:writer-policy-check` and `db:writer-token-holders`. Fixes for Telnyx first texts, B17 and B18. | Writer suite on MySQL 8.4.13: 95 tests, 1,344 assertions. WP-7 races with and without the token. Writer-token contracts in CI order. SQLite and MySQL profiles: only known fixture failures. Not run on GitHub. | Independent: 2 defects fixed. Codex 1: 4 findings fixed; 8 open review items: 5 fixed, 2 documented, 1 owner decision. Codex 2: 3 findings fixed; 3 rechecks hold or stay documented. | Owner: policy on by default, D1 to D6 and B1 to B18, B18's 30 minutes. CI run on GitHub (needs a push). Deploy check not in the deploy pipeline. Token, grants and monitor on the target. Week of transaction-length logging (Checkpoint 2). |
+| Writer hold (H1 to H7) | `claude/writer-hold-20261125` at `273aa827` | Approved `hold` as the first journaled step: it starts the outage clock and closes admissions, then `freeze` drains. Controller and writer locks. Watchdog `tick` re-closes after a crash or reboot and rolls back at 45 minutes. Production CLI, host adapter, systemd watchdog, admission wrapper, nginx server-level hold, deploy fence, SQLite seal. | Linux suites at `adabedee` in a network-less container: runner 43, guard 20, process contract 6, wrapper 6, fences 12, adapter and CLI 30, nginx 1, host replay 3, refresh 10. systemd 252 unit checks; nginx 1.22.1 hold test. Full SQLite suite: known four only. Host fixture (H5) not run. | Independent: 5 defects fixed. Codex 1: 6 findings (4 fixed, 2 already fixed); 7 open review items: 3 fixed, 1 not run (H5), 1 left to a MySQL adapter lane, 1 owner decision, 1 needs W1 and W2. Codex 2: 5 findings fixed; 3 rechecks hold. | H5 fixture runs. W1 install and W2 drill. Host identity, MySQL and live-config probes. Activation smoke command. Supervisor template reconcile. MySQL promotion and its reboot case. Owner: O1, O2. |
+| Producer replay (P2-03, P2-04, P2-06, P2-07, P2-08, P2-10, P2-11, P2-12) | `claude/producer-replay-20261125` at `9b37553b` | Recruiting replay identity: a divergent replay gets 409. Producer ingress hold in the app and at the nginx edge; careers and Resend inbound give 503 with CRM off. Website ledger tools, calendar reconcile, Stripe undelivered events, Aryeo record, pause and resume, CRM outbound hold with a release check and send dispositions. Flags off by default. | Lane PHP tests on both engines. MySQL profile for CRM and its neighbours: 311 tests, 1 skipped. Process, Python ledger and real-nginx hold tests. Full SQLite suite with a readable vendor copy: 9,626 tests, no failures. | Independent: 1 defect fixed, 1 doc fix. Codex 1: 4 findings (3 fixed, 1 already fixed); 6 open review items: 1 fixed, 1 dismissed with evidence, 2 documented, 1 left to owners, 1 by design, then reopened and fixed in round 2. Codex 2: 1 finding fixed, 1 documented (the Aryeo pause leaves sync writes on); rechecks hold. | Website changes P2-02, P2-05 and the P2-06 export not built. Aryeo 503 retry and Resend replay identity unconfirmed. Stripe restricted keys. nginx include line in both vhosts. Edge snippet width. MySQL schema dump not regenerated for the new migration. |
+| Nightly dress (N1, N2, D1, T1) | `claude/nightly-dress-20261125` at `86e7d9e5` | Nightly runner: dry run by default, approval file to execute, lock, guards, journal with resume, 12-minute budget fail-fast, durability-neutral tuning only. Nightly summary needs capture receipts. Draft review policy and dress host and workload profiles. Readiness checker applies the plan's dress marks. | Nightly 72, readiness 68 and cutover 41 tests on Windows and Linux. Mutation checks on the runner. Runner flags probed on a local MySQL 8.4.13. Full SQLite suite: known four only. No PHP changed. | Independent: 4 defects fixed. Codex 1: 4 findings fixed; 5 open review items: 4 fixed, 1 owner decision. Codex 2: no findings; one README wording fix; rechecks hold. | Five approved nights on the host. Finance step, reverse trigger helper, applicant files root, retention, busiest endpoints and identity (N7) unset. Dress rehearsals D2 to D4. Owner decisions 1 to 8. |
+| Off-site backups (B5 to B9) | `claude/offsite-backups-20261125` at `a5fcce5a` | Backup host installer (preview, apply, self-test, undo) and no-echo config entry. Alert bridge with heartbeat and forward timers. Twelve server-side detectors and one thresholds file. MySQL leg units and archive-aware binlog purge. Recovery kit and verifier. Seven-day observer and PITR drill runner. | Off-site tests: 202 on Linux, 116 on Windows. Real systemd 252 manager fixture: 23 of 23. Local MySQL 8.4.13 fixture 4 of 4 before the Codex rounds, focused native checks after each round. MySQL profile backup tests: 11 tests. Full SQLite suite: known four only. | Independent: 9 defects fixed. Codex 1: 10 findings (6 fixed, 4 already fixed); 7 open review items: 5 fixed in whole or part, 1 documented, 1 owner decision. Codex 2: 4 findings fixed; 4 rechecks hold, 1 note corrected. | Nothing installed on Maverick. Bucket, keys and passphrases. Derived upload credential helper not in the repo. MySQL leg apply (B1 e). Alert rounds (B14) and phone channel (B4). No 30-minute timer cadence run and no drill against a bucket. Owner decisions 1 to 6. |
+
+Not every review item was fixed or dismissed. Items marked documented,
+owner decision or left to another lane are still open and are listed in the
+last column, the cutover runbook or
+[Operational work still requiring approval](#operational-work-still-requiring-approval).
+Points found while folding the lanes are marked "Open:" in the
+[cutover runbook](mysql-production-cutover.md) and at the end of this file.
+`database/schema/mysql-schema.sql` has not been regenerated for the
+producer-replay migration `2026_11_25_140000`.
+
+Several lanes report the same four full-suite SQLite failures:
+`ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest`
+(`test_fpm_upload_and_separate_worker_can_share_private_files`),
+`WorkspacePhotoLogoPermissionsTest` and the `IguideLabImportTest` concurrent
+retry. They fail the same way on `a6e799bb` in the same containers, because
+they drop to a non-root user that cannot read the root-owned vendor copy.
+With the copy made readable, the producer-replay review ran the full suite
+with no failures. `DatabaseBackupTest` and `PointInTimeBackupTest` stop at
+their configuration stage in some lane fixtures, as on `a6e799bb` there; the
+nightly lane names a missing `mysqldump`. The off-site lane ran them green
+from a copy with a test `.env`, as CI writes one.
+
+### Writer policy
+
+The one-writer rule now runs in the application on the main `mysql`
+connection. It is on by default for MySQL and has no effect on SQLite. Every
+MySQL target the application writes needs the token row in
+`repro_mysql_control` first; without it every write stops. Design choices
+and behaviour changes are in the
+[known-differences register](mysql-known-differences.md) for owner sign-off.
+
+All runs were local and offline (`--network none`) on MySQL 8.4.13 (image
+`sha256:a81d0439…`) and PHP 8.3.33 (`repro-mysql-rehearsal-qa:20261122`),
+with synthetic data only. The first runs used relaxed flushing for speed;
+the review rounds used durable flushing on a socket-only fixture, as CI does.
+
+- Multi-process writer suite (`phpunit.mysql-writers.xml`) on a fresh
+  schema: 95 tests and 1,344 assertions after the second Codex round, about
+  7 minutes. It covers every autocommit write form, the token at BEGIN, reads
+  that never wait, refusals, a missing token row, the poison guard, lost
+  sessions at BEGIN, inside a transaction and at COMMIT, retry limits, queue
+  and cache exemptions, `LockedWrite` and rate-limiter retries, worker
+  rollback, the long-hold watchdog and the deploy check.
+- On the base code (`a6e799bb` plus only the new config and tests) the first
+  suite failed 51 of 63 tests, as expected without the runtime policy. Of the
+  12 that passed, the Google Routes race now fails without the token (a
+  test-only trigger holds each insert 0.5 s: 8 reservations without the
+  token, 1 with it). The twelve-worker queue run is relabelled: queue claims
+  skip the token by design, so it is not a serialization check.
+- WP-7 business races enter through the real HTTP kernel, invoice service or
+  Artisan command, one process per racer, with providers faked. With the
+  token each gives one effect. Without it, eight editing dispatches give
+  7 × 500, an empty-day booking gives 2 or 3 bookings, period invoices are
+  issued twice per client with a reused number, and a delayed writer's row is
+  skipped for good by the Aryeo cursor. Paths with their own guard (a booked
+  day, the full schedule guard, payout invoices, the Stripe payment event)
+  pass either way.
+- Real defects found and fixed test first: eight first texts from a new
+  number made eight SMS threads (the Telnyx inbound handler now looks for the
+  thread inside its transaction); a slow Stripe lookup inside the payment
+  transaction failed other writers (B17: Stripe is now asked before the
+  transaction opens); two overlapping weekly automation runs delivered twice
+  (B18: the period is claimed in one transaction, and a period another run
+  started less than 30 minutes ago is skipped). A stale "sent" status webhook
+  also overwrote a delivery on the base code; with the token the message ends
+  DELIVERED.
+- Writer-token contracts in the CI order: primitive 23, Laravel fixture 22,
+  Google Routes pilot 9, queue-worker pilot 9, scheduling-cache pilot 3, all
+  passing.
+- Full MySQL profile with the policy on (two shards as in CI, `185ed030`):
+  7,543 tests, 12 failures. Two were iGUIDE Lab tour snapshot tests, fixed in
+  `52da2771`. The other ten fail the same way on `a6e799bb` in that fixture.
+  After the review rounds the touched Feature files passed on a fresh schema
+  (118 tests, 1,688 assertions).
+- SQLite suite (two workers): 9,674 tests, 3 skipped, and the known four.
+- CI: shard 0 of `.github/workflows/mysql.yml` now runs every writer-token
+  contract, then the writer suite against a fresh schema; the main profile's
+  database gets the token row. It has not run on GitHub, because that needs
+  a push. Measured locally, the writer suite takes about 7 minutes.
+
+Each request that takes a database cache lock opens a second MySQL session
+(`mysql_cache_locks`); size `max_connections` for that. With the token taken
+at BEGIN, a long transaction holds every writer back from its start. The week
+of transaction-length logging on production (Checkpoint 2) is still the gate;
+the long-hold log gives the same signal on MySQL.
+
+Full detail: [writer-policy lane notes](mysql-lanes/writer-policy.md).
+
+### Writer hold
+
+The writer-hold status is in the
+[November 25 writer admission follow-up](#november-25-writer-admission-follow-up)
+below. All runs were local and offline. Linux tests ran as root in a
+disposable `repro-mysql-rehearsal-qa:20261122` container with
+`--network none`.
+
+- All Linux suites after Codex round 2 (`adabedee`), through
+  `scripts/cutover/run-linux-tests.sh`: runner 43, guard 20, process contract
+  6, admission wrapper 6, fences 12, adapter and CLI 30, nginx include 1, host
+  replay 3, root-only refresh 10. All passed.
+- The process-contract tests use real processes and flock. An
+  already-admitted writer drains after the hold while new admissions are
+  refused, and a runner killed with SIGKILL mid-drain is recovered by the
+  watchdog. With 1, 4 and 8 processes looping refused admission checks on
+  2 CPUs, the drain got the writer lock in 0 to 1 ms in every run.
+- Under systemd 252 (Debian 12, offline), `systemd-tmpfiles` created both
+  `/run` directories root-owned 0755, and `systemd-analyze verify` passed
+  both watchdog units (`OnCalendar=minutely`, a 25-minute start timeout). A
+  real timer firing after a skipped condition still needs W2.
+- Under nginx 1.22.1 the production include answered 503 with
+  `Retry-After: 30` on six routes on both vhosts, including the direct
+  `.php` webhook files, while the open marker was absent. They passed through
+  once it existed and closed again as soon as it was removed, with no reload.
+- Full SQLite suite (`695dcbef`, `memory_limit=1536M`): 9,589 tests,
+  3 skipped, and the known four. The lane changes no PHP application, test or
+  config file.
+- The new tests were written before the code and seen failing first. On the
+  base commit `hold` does not exist.
+
+The host fixture runs (H5) were not executed. `run-local.ps1` refused to
+start by its own free-memory guard while other lanes ran. Run the
+`prewrite-fastcgi` and `prewrite-fastcgi-recovery` scenarios from this
+branch with fresh evidence folders when the machine has headroom.
+
+Risks the lane records: Linux flock has no writer preference (the drain
+polls every 10 ms). Installing the wrappers changes how live workers start
+even in `planned`; a guard fault, or a reboot without `refresh`, holds every
+writer and the site, so it needs on-call cover. Root ignores file modes, so
+the SQLite seal refuses while any other process holds the database open for
+writing. Behind a stale open marker, the two direct webhook files answer 200
+before the PHP gate holds the write, so only the nginx server-level hold
+protects them.
+
+Full detail: [writer-hold lane notes](mysql-lanes/writer-hold.md).
+
+### Producer replay
+
+All runs were offline: Docker `--network none`, the pinned image (PHP 8.3.33)
+and, for MySQL, a disposable 8.4.13 server with its socket on a tmpfs volume.
+No provider, website or production system was contacted. Each new behaviour
+was seen failing first for the expected reason, then passing.
+
+- Lane PHP tests on SQLite (eight files): 40 tests, 286 assertions, at
+  `18b43feb`. After round 2, the ledger, Aryeo freeze and Aryeo integration
+  files gave 74 tests on SQLite and 74 on MySQL (1 skipped, SQLite copy only).
+- MySQL 8.4.13 profile after `migrate:fresh`: `tests/Feature/Crm` plus the
+  Aryeo, Stripe, Listing Studio, website email and external booking files,
+  311 tests, 2,183 assertions, 1 skipped.
+- MySQL process tests: two overlapping recruiting replays give one applicant
+  and one file. The website intake concurrency test passes.
+- Python ledger and replay tests and the producer hold with real nginx in the
+  Linux image: 10 tests OK. The hold test fails as expected when the snippet
+  returns 404 or drops `Retry-After`.
+- Full SQLite suite with the vendor copy made readable: 9,626 tests, 0
+  failures, 3 skipped.
+- A Stripe payment event sent 5 times gives one payment on both endpoints.
+  The same Aryeo event gives one webhook row and one reconcile job.
+
+Not verified with the real providers: Aryeo's retry window for 503, and
+whether a Resend dashboard replay keeps the `svix-id`, re-signs with a fresh
+timestamp and retries long enough to cover a 60-minute hold. The website
+changes P2-02, P2-05 and the P2-06 export are specified but not built. Once
+deployed, a divergent replay of a website application reference gets 409
+instead of a silent 201, and with `CRM_ENABLED=false` careers and Resend
+`email.received` get 503. A replay of a receipt written before this change
+gets 409 for staff review.
+
+Full detail: [producer-replay lane notes](mysql-lanes/producer-replay.md).
+
+### Nightly runner and dress-rehearsal gates
+
+A committed runner now produces every input for one qualifying night: the
+dated private capture, import with both forward verifications, reverse
+SQLite parity, finance parity, applicant files and the CRM review, bound to
+the snapshot, candidate release and reviewed scope
+([runner](../scripts/cutover/nightly/README.md)). It has only run against
+fakes. The streak count is still zero. Each night needs an approved run on
+the host, then review of its outputs.
+
+The nightly summary now refuses to run without the five dated capture
+receipts. Every manifest entry pins its capture.
+
+The readiness checker now tests the plan's pass marks in both dress
+rehearsals, in addition to the earlier engineering thresholds. Speed: none
+of the 50 busiest requests makes a layout lookup, at least 45 are within
+20 ms of SQLite at p95 and none is more than 100 ms slower. Stress and crash:
+ten minutes at 20 clients while workers shrink a queue backlog, with no
+server error, unhandled lock error, missing confirmed write or duplicate,
+then three mid-write MySQL kills each recovered within 60 seconds. Data:
+import and both verifications within 12 minutes, clean scan, zero errors,
+warnings, notes and unexplained differences. Way back: the exported SQLite
+file reproduces every value and the weekly money runs match on it. The
+critical-endpoint 10% p95 ratio and the write-improvement check remain.
+
+Draft host and workload profiles are committed for review
+([profile](../scripts/cutover/nightly/README.md#dress-rehearsal-profile)).
+The workload uses the observed rates (p95 minute 125, peak 237 requests),
+proposes a surge of twice the peak, and encodes the plan's stress and crash
+test. The 50 busiest endpoints must be ranked from the request traces on a
+private copy before the policy can be completed.
+
+Import plus both forward verifications, with durable full-row binary logs,
+measured 754.160 s (failed), 681.935 s, 593.230 s, 597.791 s, 700.066 s and
+596.7 s. Headroom on the latest run is 123 s (17%), smaller than the spread
+between runs. The runner stops before the import when the projection is over
+budget, kills a step that reaches the budget, and records each stage's time.
+It runs finance only after the disposable MySQL has stopped.
+
+Evidence, all offline: nightly tests 72 OK on Windows (9 Linux-only skipped)
+and in the pinned image as uid 1000; readiness tests 68 on both; the cutover
+tests 41 on Windows. On Linux as uid 1000 the cutover tests have one
+`test_final_backup_check` "unsafe path owner" error, which also occurs on
+`a6e799bb`. `policy.py check-drafts` reports `drafts-consistent`. On a local
+MySQL 8.4.13 server (socket only, no network) the runner's flags and
+identity probe returned exactly the tuple it requires, and the seal read
+back `1 1`. Removing each guard the lane lists (among them
+`--sync-binlog=1`, the import timeout, the MySQL stop before finance, the
+deploy lock check, the resume recheck and the post-import seal) made a test
+fail. Full SQLite suite: 9,589 tests and the known four.
+
+Full detail: [nightly-dress lane notes](mysql-lanes/nightly-dress.md).
+
+### Off-site backups and alerts
+
+Nothing was installed on production. Every test used fixtures, loopback
+services or disposable containers with no network. The operator steps are in
+the runbook's
+[off-site backups and alerts](mysql-production-cutover.md#off-site-backups-and-alerts).
+The repository now has an installer, an alert bridge, heartbeat and forward
+timers, a MySQL heartbeat unit and a seven-day observer. None is installed:
+the November 24 inventories that found no installed backup units still
+describe production, and the recovery heartbeat still has no production
+schema or timer.
+
+| Item | What exists now | Status |
+| --- | --- | --- |
+| B5 installer | `install_backup_host.py`: jobs `base-backup`, `alerts`, `recovery-kit` (preview, apply, self-test, undo) and `mysql-recovery` (preview only). The no-echo config entry is `enter_r2_config.py`. | Done and tested under a real systemd 252 manager. Not run on Maverick. |
+| B6 bridge and heartbeat | `alert_bridge.py`, the backup result units, and the heartbeat and forward timers. Backup and watchdog results start the bridge units. | Done. Phone delivery still needs B4 and B14. |
+| B7 detectors | `alert_probe.py` and `alert-conditions.json` (one file for every threshold). Twelve server-side detectors; `server_silent`, `backup_stale` and `site_unreachable` come from the heartbeat, the watchdog and the provider's website check. | Code done. Rounds still need the owner (B14). |
+| B8 MySQL units, purge, kit | One-minute heartbeat writer, two-minute rotation with archive dispatch and catch-up, hourly archive-aware purge, and the recovery kit with its verifier. | Code and units done; the purge ran on MySQL 8.4.13 in local containers. The MySQL leg install is preview only (needs B1 e). No 30-minute timer-driven cadence run yet. |
+| B9 observer and drill runner | `observe_backup_health.py` (seven-day observer and export) and `run_pitr_drill.py` (writes the `replay.json` set). | Done against synthetic inputs; the drill's load, replay and checks ran on MySQL 8.4.13 in local containers. No run against a bucket yet. |
+
+Risks fixed and limits found:
+
+- **Separate keys.** The config tool has upload and restore roles and refuses
+  to write the restore key into the server's backup state.
+- **Sandbox reads.** Under a real systemd 252 manager, with another user
+  holding WAL frames open, the producer as `repro-backup` under
+  `ProtectSystem=strict` copied all 45 committed rows.
+- **Limit: no open connection.** If every app connection has closed and
+  SQLite removed `-wal` and `-shm`, the read-only sandbox cannot create them
+  and the backup fails with exit 1 (no partial copy; `backup_failed`
+  alerts). Long-lived queue workers normally keep the WAL open. The probe no
+  longer pages in that case: it falls back to a guarded `immutable=1` read and
+  keeps the answer only if the file did not change during it.
+- **Limit: `.env` replaced by rename.** That drops the ACL. The next backup
+  and the kit fail loudly and the probe reports `wrong_database_engine`
+  within minutes. Re-run the base-backup apply to repair.
+- **Archive-aware purge** replaces unbounded binlog growth.
+- **Monthly reboot.** The backup moved to 03:30 UTC, clear of the 02:00
+  reboot on the 28th.
+- **Probe plan placement.** The real manager showed the probe could not read
+  a plan under `/etc/repro-alert`; it lives in `/etc/repro-backup`.
+- **Still limits after review:** the observer loses a minute on a failed run
+  that nothing retries; `wrong_database_engine` is a config check only; the
+  MySQL monitor account needs `PROCESS`.
+
+Evidence (Linux runs in the pinned QA image with `--network none`):
+
+- Off-site tests at the round-2 head: 202 OK on Linux as uid 1000 (1
+  skipped), 23 OK as root for the installer (1 skipped), 116 OK on Windows
+  (22 Linux- or root-only skipped).
+- `test_rotation_attempt` 6, `systemd/test_units.py` 8 and
+  `test_production_units` 12 tests OK. `run-fixture.ps1` verified 31 units
+  under systemd 252; it was not rerun in the Codex rounds, which changed no
+  unit file.
+- Real-manager fixture (systemd 252 in a disposable container with no
+  network): 23 of 23 checks. Preview changes nothing; base and alerts apply
+  with all self-tests passing; the producer in the unit sandbox copies
+  committed WAL rows; a watchdog failure reaches a loopback HTTPS provider as
+  a fail ping; no ping URL appears in the journal; only the bridge units have
+  network; undo restores the ACL bytes and leaves no files or accounts.
+- Local MySQL 8.4.13 fixture, 4 of 4 checks, before the Codex rounds: the
+  drill runner's load, checksum-verified replay across two binlog files,
+  recovery of rows 1 to 3 and exclusion of a planted later update and
+  insert; a purge account without `BINLOG_ADMIN` is refused; the purge stops
+  at the archive checkpoint. Retrieval through rclone, the chain verifier and
+  `heartbeat.py verify` were not part of it.
+- Focused MySQL 8.4.13 checks after the Codex rounds: the drill loads a dump
+  made with the producer's own arguments (ERROR 1046 before the fix) and
+  refuses a stalled load at its 5 s limit; a closed binlog's rotation time
+  equals the FLUSH second; `backup_lag` reads ok 13 s after a FLUSH and fails
+  at 301 s; `queue_stale` gives the expected results through the real client.
+- MySQL 8.4.13 profile: the three backup test files and
+  `RecoveryKitVerifierTest`, 11 tests, 111 assertions. Full SQLite suite at
+  `f6fac8c3`: 9,593 tests and the known four.
+
+Full detail: [off-site backups lane notes](mysql-lanes/offsite-backups.md).
+
 ## November 25 writer admission follow-up
 
 **Hold.** A fresh read-only inventory identified two enabled Dashboard
@@ -28,16 +342,20 @@ publishes the new evidence atomically. All 27 isolated Linux fence tests
 passed. The live adapter probes and publication for a pending service
 transition remain staging integration work.
 
-The Runner currently takes the exclusive operator lease before applying
-its freeze. Closing ingress separately causes its SQLite preflight to
-refuse. The regression fixture leaves the planned journal unchanged,
-including its unset outage clock. A later watchdog tick and pre-write
-abort cannot clear this external hold. A complete staging drill needs an
-authenticated, durable initial hold that stops new writer admissions while
-old leases drain, counts that elapsed time in the single outage clock,
-and supports watchdog recovery before and after journal handoff. Exercise
-this with an already-admitted writer and actual worker restarts. Keep
-production on SQLite until the integrated drill passes.
+**Writer hold: implemented and tested locally, not installed.** The
+approved hold is now the first journaled step and starts the outage clock.
+A second lock lets the runner journal it while earlier writers still hold
+their shared lease; the freeze then waits for them. The watchdog closes
+admissions again after a crash or reboot, before and after the handoff from
+`holding` to `frozen`, and rolls back to SQLite 45 minutes after the hold.
+An admission closed outside the journal is refused, not silently ignored.
+Local evidence: runner, guard and refresh tests, Linux process tests with a
+real already-admitted writer and a runner killed with SIGKILL, and the
+production nginx include under nginx 1.22.1 (results in
+[November 25 lane integration](#writer-hold)). The hold-first run of the
+private nginx/PHP-FPM fixture (H5) has not been executed. Production installation (W1)
+and a production or staging drill with real services and a reboot (W2)
+remain, each with its own approval. Keep production on SQLite.
 
 Nightly evidence assembly can verify all five pinned SQLite producer
 receipts alongside the report and CRM review for each UTC day. The fixture
@@ -1400,3 +1718,69 @@ restored SQLite authority and reopened admission.
 Reopening writes and eventual post-write rollback each require their own
 controlled validation; the old frozen SQLite file cannot retain later MySQL
 activity.
+
+The November 25 lanes add these owner decisions and production actions. None
+has been done. Each production step needs its own approval.
+
+- Writer policy: decide whether the policy stays on by default for MySQL
+  (`REPRO_MYSQL_WRITER_POLICY`), and sign off D1 to D6 and B1 to B18 in the
+  [known-differences register](mysql-known-differences.md), including B18's
+  30-minute window. It must exceed the longest weekly run on production.
+- Writer policy: provision the token schema, row and grants on the native
+  8.4.13 target, and give the monitor account its grants.
+- Writer policy: set `REPRO_MYSQL_*` in the rehearsal environment and run
+  representative load and the dress rehearsals with the policy on (WP-11,
+  WP-12).
+- Writer policy: approve the push that runs the shard-0 writer suite on
+  GitHub, and wire `db:writer-policy-check` into every deploy once MySQL is
+  live.
+- Writer hold: decide O1 (one approval for hold and freeze or two; an
+  external hold is refused, never adopted; who signs approvals) and O2
+  (long-job queues drained before the hold, 600-second drain limit). Reopen
+  after a reboot stays manual, and the nginx hold has no smoke-test bypass.
+- Writer hold: W1, install the guard, controller, wrappers, watchdog units,
+  `tmpfiles.d` entry, nginx include, sudoers, Supervisor and cron changes,
+  then observe 24 to 48 hours in `planned` (C1) with deploys held. Deploy
+  the candidate first, because W1 holds every deploy until the cutover ends.
+- Writer hold: W2, a drill with real services, an in-flight request and job,
+  restarts and a reboot.
+- Writer hold: after an aborted and reopened cutover, retire the installed
+  fences or start a new run before the next deploy.
+- Producer replay: publish the website changes P2-02, P2-05 and the P2-06
+  export, with their Supabase migration.
+- Producer replay: add the `repro-holds` include line to both Dashboard
+  vhosts in a reviewed deploy, and decide whether the edge snippet keeps all
+  of `/api/external/` or only the producer paths.
+- Producer replay: create two Stripe restricted keys with Events read only.
+  Confirm, read-only, Aryeo's 503 retry behaviour and Resend's replay
+  identity and retry window.
+- Producer replay: accept that a replay of a receipt written before the lane
+  gets 409 for staff review.
+- Nightly runs: decide owner items 1 to 8 (finance step, reverse trigger
+  helper, applicant files root, snapshot retention, budget tuning,
+  scheduling, dress profiles, extra dress gates).
+- Nightly runs: copy the candidate checkout and the pinned PyMySQL wheel
+  under `/home/maverick`, run at least five approved nights as `maverick`,
+  rank the 50 busiest endpoints on a private copy on the host, and set the
+  identity from the installed target's server UUID (N7). Deleting older
+  snapshots on the server needs its own approval.
+- Off-site: create the bucket, the read-only restore key, the upload key and
+  two passphrases, then the lock and lifecycle rules (owner checklist in the
+  [runbook](mysql-production-cutover.md#owner-checklist-bucket-two-keys-two-passphrases)).
+  Choose the upload key type; the derived credential needs one approved R2
+  test first.
+- Off-site: install `base-backup`, `alerts` and `recovery-kit` on Maverick
+  and enable their timers after review. Copy the `APP_KEY` line into the
+  password manager on the server.
+- Off-site: decide B1 e (the seven-day window and alert round 1 on the
+  native rehearsal instance), then meet the MySQL leg prerequisites before
+  its apply.
+- Off-site: confirm the monthly reboot's source and time zone and keep or
+  move the 03:30 UTC backup; choose the alert provider and phone channel (B4)
+  and `alert_fail_suffix`; decide on an app-side WAL keeper; supply the SQL
+  and baseline for the money check.
+
+Open: once the writer hold is installed, any reboot, including the monthly
+one on the 28th, leaves the site and every writer held until an operator runs
+`cli.py refresh` and `cli.py reopen`. Plan on-call cover or schedule around
+it.
