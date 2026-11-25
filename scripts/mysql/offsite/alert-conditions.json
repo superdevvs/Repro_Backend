@@ -1,6 +1,6 @@
 {
   "schema": "repro.alert.conditions.v1",
-  "note": "One file for every alert threshold. alert_probe.py reads it; tests check it against scripts/cutover/readiness/check.py.",
+  "note": "One file for every alert threshold. alert_probe.py reads it; tests check conditions against scripts/cutover/readiness/check.py and cutover_hold against scripts/cutover/runner.py. extra_conditions are outside the readiness gate.",
   "conditions": {
     "database_down": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
       "threshold": {"query_timeout_seconds": 10}},
@@ -35,6 +35,11 @@
   },
   "extra_conditions": {
     "backup_failed": {"class": "daytime", "delivery_limit_seconds": 300, "source": "backup-unit-result",
-      "threshold": {"expected_ping_every_seconds": 86400, "provider_grace_seconds": 7200}}
-  }
+      "threshold": {"expected_ping_every_seconds": 86400, "provider_grace_seconds": 7200}},
+    "site_held": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {}},
+    "writer_token_held_too_long": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"max_hold_seconds": 30}}
+  },
+  "cutover_hold": {"decision_deadline_seconds": 2700, "max_write_outage_seconds": 3600, "max_view_age_seconds": 150}
 }

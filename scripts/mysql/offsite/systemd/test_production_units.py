@@ -38,7 +38,8 @@ PINNED = {
     "repro-binlog-purge.service": "REVIEWED_PURGE_PLAN_SHA256",
 }
 NEW = BRIDGE_UNITS | set(PINNED) | set(TIMERS) | {
-    "repro-alert-probe.service", "repro-recovery-kit.service", "repro-recovery-kit.path"} - {"repro-backup.timer"}
+    "repro-alert-probe.service", "repro-alert-cutover-view.service", "repro-recovery-kit.service",
+    "repro-recovery-kit.path"} - {"repro-backup.timer"}
 
 
 def read(name: str) -> dict:
@@ -127,6 +128,27 @@ class ProductionUnitTests(unittest.TestCase):
         self.assertEqual(service["ReadWritePaths"], "/var/lib/repro-alert-inbox")
         self.assertEqual(shlex.split(service["ExecStart"]),
                          PYTHON + [TOOLS + "alert_probe.py", "run", "--plan", "/etc/repro-backup/alert-probe.json"])
+
+    def test_probe_starts_the_cutover_view_first(self):
+        unit = read("repro-alert-probe.service")["Unit"]
+        self.assertEqual(unit["Wants"], "repro-alert-cutover-view.service")
+        self.assertEqual(unit["After"], "repro-alert-cutover-view.service")
+
+    def test_cutover_view_is_root_without_capabilities_and_sees_only_the_journal(self):
+        # The journal is root-private (the guard refuses group or other access), so only its
+        # owner may read it. Without capabilities root has the owner's rights and nothing more;
+        # the empty /etc, /var, /run and /opt hide every other root-owned file.
+        service = read("repro-alert-cutover-view.service")["Service"]
+        self.assertEqual((service["User"], service["Group"]), ("root", "repro-backup"))
+        self.assertEqual((service["CapabilityBoundingSet"], service["AmbientCapabilities"]), ("", ""))
+        self.assertEqual(service["TemporaryFileSystem"], "/etc:ro /var:ro /run:ro /opt:ro")
+        self.assertEqual(service["BindReadOnlyPaths"], "/opt/repro-backup-tools -/var/lib/repro-cutover-fence")
+        self.assertEqual(service["BindPaths"], "/var/lib/repro-alert-cutover")
+        self.assertEqual(service["InaccessiblePaths"], "-/mnt -/media -/srv")
+        self.assertEqual(service["ProtectHome"], "yes")
+        self.assertEqual(service["UMask"], "0027")
+        self.assertNotIn("ReadWritePaths", service)
+        self.assertEqual(shlex.split(service["ExecStart"]), PYTHON + [TOOLS + "cutover_view.py"])
 
     def test_timers_follow_the_reviewed_cadence_and_catch_up_policy(self):
         for name, (calendar, persistent) in TIMERS.items():

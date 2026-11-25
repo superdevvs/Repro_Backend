@@ -1,0 +1,45 @@
+[Unit]
+Description=RePro alert probe: read-only view of the cutover journal (no network)
+
+[Service]
+Type=oneshot
+# The cutover journal is root-private: the guard refuses a journal folder that group or
+# others can read. Root without capabilities has only the owner's rights on it, and the
+# empty /etc, /var, /run and /opt below hide every other root-owned file. The view is
+# written root:repro-backup 0640 for the probe; the journal is never written or locked.
+User=root
+Group=repro-backup
+WorkingDirectory=/
+ExecStart=/usr/bin/python3 -I -B /opt/repro-backup-tools/cutover_view.py
+TimeoutStartSec=20s
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KillMode=control-group
+TimeoutStopSec=10s
+SendSIGKILL=yes
+Restart=no
+StandardOutput=journal
+StandardError=journal
+ProtectSystem=strict
+ProtectHome=yes
+TemporaryFileSystem=/etc:ro /var:ro /run:ro /opt:ro
+InaccessiblePaths=-/mnt -/media -/srv
+# A missing journal folder (no writer hold installed) is not an error: the view says absent.
+BindReadOnlyPaths=/opt/repro-backup-tools -/var/lib/repro-cutover-fence
+BindPaths=/var/lib/repro-alert-cutover
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+CPUQuota=10%
+MemoryMax=64M
+TasksMax=8
+SyslogIdentifier=repro-alert-cutover-view

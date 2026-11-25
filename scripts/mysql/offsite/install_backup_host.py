@@ -5,7 +5,8 @@ Jobs (each with its own preview, apply, self-test and undo):
   base-backup    repro-backup account, /opt/repro-backup-tools, /etc/repro-backup/plan.json,
                  /var/lib/repro-backup, read-only ACLs on .env and the WAL SQLite files,
                  the five base units (installed disabled) and the no-echo R2 config entry.
-  alerts         repro-alert account, bridge and probe configs, the inbox, ten alert units.
+  alerts         repro-alert account, bridge and probe configs, the inbox, eleven alert units
+                 (one is the read-only view of the cutover journal for the probe).
   recovery-kit   the kit producer, its plan and its three units.
   mysql-recovery preview only: the MySQL heartbeat, rotation, archive and purge units need
                  the owner's decision on the rehearsal instance and reviewed plan pins.
@@ -42,7 +43,7 @@ STATE = "/var/lib/repro-backup"
 ACCOUNT = "repro-backup"
 BASE_TOOLS = ("scheduled_backup.py", "prepare_sqlite_backup.py", "prepare_mysql_backup.py", "publish_backup.py",
               "check_backup_freshness.py", "enter_r2_config.py", "backup-database.php", "backup-sqlite.php")
-ALERT_TOOLS = ("alert_bridge.py", "alert_probe.py", "alert-conditions.json")
+ALERT_TOOLS = ("alert_bridge.py", "alert_probe.py", "alert-conditions.json", "cutover_view.py")
 KIT_TOOLS = ("produce_recovery_kit.py",)
 MYSQL_TOOLS = ("heartbeat.py", "rotate_closed_binlogs.py", "rotation_attempt.py", "archive_binlogs.py",
                "collect_closed_binlogs.py", "advance_binlog_checkpoint.py", "prepare_closed_binlogs.py",
@@ -52,7 +53,8 @@ BASE_UNITS = ("repro-backup.service", "repro-backup.timer", "repro-backup-watchd
 ALERT_UNITS = ("repro-alert-backup-ok.service", "repro-alert-backup-failed.service",
                "repro-alert-backup-fresh.service", "repro-alert-backup-stale.service",
                "repro-alert-heartbeat.service", "repro-alert-heartbeat.timer", "repro-alert-forward.service",
-               "repro-alert-forward.timer", "repro-alert-probe.service", "repro-alert-probe.timer")
+               "repro-alert-forward.timer", "repro-alert-probe.service", "repro-alert-probe.timer",
+               "repro-alert-cutover-view.service")
 KIT_UNITS = ("repro-recovery-kit.service", "repro-recovery-kit.timer", "repro-recovery-kit.path")
 MYSQL_UNITS = ("repro-mysql-heartbeat.service", "repro-mysql-heartbeat.timer", "repro-binlog-rotate.service",
                "repro-binlog-rotate.timer", "repro-binlog-archive.service", "repro-binlog-archive.timer",
@@ -65,7 +67,7 @@ SETTING_DEFAULTS = {
     "php": "/usr/bin/php8.3", "python": "/usr/bin/python3", "rclone": "/usr/bin/rclone",
     "upload_credential": "derived-no-delete", "alert_fail_suffix": "/fail",
     "probe_conditions": ["database_down", "wrong_database_engine", "disk_nearly_full", "server_error_rate",
-                         "queue_stale", "cache_write_failed"],
+                         "queue_stale", "cache_write_failed", "site_held"],
     "access_logs": ["/var/log/nginx/access.log"],
     "disks": [{"path": "/", "require_mount": True}, {"path": "/mnt/16tb", "require_mount": True}],
 }
@@ -279,7 +281,9 @@ def build_job(name: str, settings: dict) -> Job:
                            Directory("/var/lib/repro-alert", "repro-alert", "repro-alert", 0o700, remove_contents=True),
                            Directory("/var/lib/repro-alert-inbox", ACCOUNT, "repro-alert", 0o2750, remove_contents=True),
                            # The probe unit's StateDirectory=; created here so undo removes it with the account.
-                           Directory("/var/lib/repro-alert-probe", ACCOUNT, ACCOUNT, 0o700, remove_contents=True)]
+                           Directory("/var/lib/repro-alert-probe", ACCOUNT, ACCOUNT, 0o700, remove_contents=True),
+                           # repro-alert-cutover-view.service (root, no capabilities) writes the view here.
+                           Directory("/var/lib/repro-alert-cutover", "root", ACCOUNT, 0o750, remove_contents=True)]
         conditions = list(settings["probe_conditions"])
         bridge = {"version": 1, "urls_file": "/var/lib/repro-alert/ping-urls.json",
                   "inbox_dir": "/var/lib/repro-alert-inbox", "fail_suffix": settings["alert_fail_suffix"],
@@ -291,7 +295,10 @@ def build_job(name: str, settings: dict) -> Job:
                  "laravel_log": f"{app}/storage/logs/laravel.log",
                  "cache_dir": f"{app}/storage/framework/cache/data", "cache_group_writable": True,
                  "money_queries": None, "money_baseline_file": None, "binlog_checkpoint_file": None, "binlog_dir": None,
-                 "restore_receipts": None, "rehearsal_receipts": None}
+                 "restore_receipts": None, "rehearsal_receipts": None,
+                 # The nginx hold (scripts/cutover/production) reads the same open marker.
+                 "cutover": {"view_file": "/var/lib/repro-alert-cutover/view.json",
+                             "ingress_open": "/run/repro-cutover-ingress/open"}}
         job.files = tool_files(ALERT_TOOLS) + [
             FileItem("/etc/repro-alert/bridge.json", "root", "repro-alert", 0o640, json_bytes(bridge), "rendered config"),
             FileItem("/etc/repro-backup/alert-probe.json", "root", ACCOUNT, 0o640, json_bytes(probe), "rendered plan"),

@@ -350,13 +350,18 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    use a separate connection if layout changes need a longer metadata wait.
    Each request that takes a database cache lock opens a second MySQL session
    (`mysql_cache_locks`); size `max_connections` for that.
-6. Give the monitor account `PROCESS` and `SELECT` on `performance_schema`
-   and alert on `php artisan db:writer-token-holders --connection=<monitor>
-   --older-than=30` exiting 1. Daytime alert; the plan's threshold list owns
-   the number. The off-site alert probe's monitor account also needs
-   `PROCESS` (see [Alerts](#alerts-b6-b7)).
-   Open: the off-site alert conditions have no detector for long token
-   holders, so nothing sends this alert yet.
+6. Give the off-site alert probe's monitor account `PROCESS` and `SELECT ON
+   performance_schema.data_locks` (see [Alerts](#alerts-b6-b7)), and add
+   `writer_token_held_too_long` to the probe plan's conditions with its
+   `mysql` monitor section. This daytime alert fails when a session has held
+   the writer token for 30 s or more (`max_hold_seconds` in
+   `alert-conditions.json`). It runs the query of `php artisan
+   db:writer-token-holders` through the monitor's own socket login, so the
+   alert account never gets the app's database password, and only while the
+   cutover journal makes MySQL authoritative. On MySQL 8.4.13 these two
+   grants were enough: a 34 s holder was reported, and without either grant
+   the query was refused. To see which sessions hold the token, run
+   `db:writer-token-holders` as an administrator.
 7. Use the native bundle's matching 8.4 `mysql` and `mysqldump` by absolute path. Rehearse the candidate's
    `scripts/deploy/backup-database.php` and an independent full restore on the
    actual target. A successful dump alone is insufficient.
@@ -557,7 +562,7 @@ unreachable endpoint cannot use up the unit's 45 s limit.
 | backup_stale | daytime | watchdog result (OnSuccess / OnFailure) | point the plan at a stale receipt on a test host |
 | backup_failed (extra) | daytime | nightly backup and kit result | run the backup with a missing rclone config |
 | database_down | wake | probe | rename a fixture database / stop the rehearsal MySQL |
-| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan) | set the probe plan's expected engine to the other one |
+| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs the engine the cutover journal makes authoritative; the plan's value only with no writer hold) | set the probe plan's expected engine to the other one |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
 | backup_lag | wake | probe (newest archived binlog, the one before the checkpoint's `next_file`, last written over 300 s ago, two checks; needs `binlog_dir`) | pause the archive timer |
@@ -569,15 +574,22 @@ unreachable endpoint cannot use up the unit's 45 s limit.
 | mysql_restarted | daytime | probe (uptime under 15 min) | restart the rehearsal MySQL |
 | queue_stale | daytime | probe (oldest waiting job over 10 min; a reservation older than 7,260 s, the longest `retry_after`, counts as waiting since then) | insert a delayed job on a copy |
 | cache_write_failed | daytime | probe (cache root or a cache folder not group-writable, or a cache write error in the app log) | `chmod g-w` a fixture cache folder |
+| site_held (extra) | wake | probe (nginx open marker missing outside an approved cutover hold of this boot) | remove the open marker on a test host with a `planned` journal |
+| writer_token_held_too_long (extra) | daytime | probe, MySQL authoritative only (a session held the writer token 30 s or more) | hold the token in one session on the rehearsal MySQL |
+
+The two extra conditions are outside the readiness gate's fifteen cases.
+Adding them to an alert round is an owner decision.
 
 Provider setup: one check per row, period and grace from
 `alert-conditions.json`; for wake-me checks a 15-minute repeat and the second
-contact. The default probe plan enables only the six conditions that work on
-SQLite today. MySQL conditions need the `mysql` monitor section pointed at the
-rehearsal instance (owner decision on round 1). The money check needs reviewed
-queries and a baseline from `alert_probe.py money-digest`. The MySQL monitor
+contact. The default probe plan enables the six conditions that work on
+SQLite today and `site_held`. MySQL conditions need the `mysql` monitor
+section pointed at the rehearsal instance (owner decision on round 1). The
+money check needs reviewed queries and a baseline from
+`alert_probe.py money-digest`. The MySQL monitor
 account needs `PROCESS` (MySQL 8.4.13 refuses `INNODB_METRICS` without it) and
-`SELECT` on the app's `jobs` table and the money query tables. Without
+`SELECT` on the app's `jobs` table and the money query tables, plus `SELECT`
+on `performance_schema.data_locks` for `writer_token_held_too_long`. Without
 `PROCESS`, `database_contention` fails every minute.
 
 `backup_lag` measures the recovery point: the checkpoint's `next_file` says
@@ -592,10 +604,38 @@ because `Deploy-App` caches the config. With no cached config it reads
 long-lived worker on the old engine. A probe that cannot read `.env` or the
 cached config reports it as failed, a wake alert.
 
-Open: no lane says how these alerts behave on the cutover night. The hold's
-503s will trip `site_unreachable` and `server_error_rate`, and after a switch
-to MySQL `wrong_database_engine` pages until the probe plan's expected engine
-changes. Decide which checks to pause or update before the night.
+**Cutover night and held sites.** The probe reads the cutover journal
+through `repro-alert-cutover-view.service`, which the `alerts` job installs.
+That unit runs as root with no capabilities, so it can read the root-private
+journal folder and nothing else, and it has no network. It writes the run,
+phase, hold start and hold boot to `/var/lib/repro-alert-cutover/view.json`
+for the probe, and never locks or writes the journal. The probe also checks
+the nginx open marker. The limits are the plan's: 45 minutes from the hold
+in a held phase, 60 minutes of write outage after it (`cutover_hold` in
+`alert-conditions.json`).
+
+- Inside an approved hold of the current boot and within those limits, the
+  hold's own 503s do not count for `server_error_rate`, `site_held` reports
+  the hold as expected, and a switch of the app between SQLite and MySQL
+  does not page `wrong_database_engine`. Other errors still count.
+- `site_held` pages for every other held site: past a limit, a hold that
+  survived a reboot, a held site with no or an unreadable journal, or a
+  missing, stale or other-boot view.
+- `wrong_database_engine` and the database reads of `database_down`,
+  `queue_stale` and the money check follow the engine the journal makes
+  authoritative: SQLite until the promotion, MySQL after it. A missing
+  journal on a host with the writer hold, an unreadable journal or
+  `recovery_required` pages.
+- `site_unreachable` comes from the provider and cannot be silenced from
+  the host. `/up` stays behind the nginx hold. In this release `GET /up` runs
+  no query: it answered 200 with the database file missing. An exempt `/up`
+  would show the site as up while every other request gets 503, which hides
+  the held site this check must catch. The gate allows no exemption without
+  its own review (`repro-cutover-gate.conf`), and the freeze drains PHP-FPM
+  anyway. So the owner pauses that one check at the provider for the hold
+  ([Freeze all writers](#freeze-all-writers) step 4). Every other check
+  stays on, and `site_held` pages if the hold runs past its limits.
+- `queue_stale` (daytime) can still fire from the 9:20 pm queue pause.
 
 ### Timers and the monthly reboot
 
@@ -625,11 +665,14 @@ that night and during drills, and list them as "nothing due"
 ([Freeze all writers](#freeze-all-writers) step 4), or the owner picks
 another time.
 
-Open: once the writer hold is installed (W1), any reboot, the monthly one
+Once the writer hold is installed (W1), any reboot, the monthly one
 included, leaves the site and every writer held until an operator runs
-`cli.py refresh` and `cli.py reopen`. The off-site timers assume the host
-comes back by itself. Plan on-call cover for the reboot or schedule around
-it.
+`cli.py refresh` and `cli.py reopen`. That fails closed by design. The
+alert timers start by themselves after the boot, and `site_held` (wake)
+pages within minutes with "site held after a reboot or an unfinished
+reopen: run cli.py refresh, then cli.py reopen". The provider shows only
+the check name, so name that check with the remedy. Plan on-call cover for
+the 02:00 reboot on the 28th, or schedule around it.
 
 ### MySQL leg (B8)
 
@@ -771,6 +814,10 @@ failures recoverable; do not acknowledge events and drop them.
    hold `repro-backup.timer` and `repro-recovery-kit.timer` for the night and
    list them as "nothing due": the 03:30 UTC backup falls inside the outage
    (see [Timers and the monthly reboot](#timers-and-the-monthly-reboot)).
+   Owner, at the alert provider: give the `site_unreachable` check a
+   maintenance window that starts at the hold and ends by itself after 60
+   minutes, and end it early after `cli.py reopen`. Pause no other check
+   (see [Alerts](#alerts-b6-b7)).
 
 **The hold: the outage clock starts here.**
 
