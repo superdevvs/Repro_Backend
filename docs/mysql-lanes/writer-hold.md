@@ -77,7 +77,13 @@ hold, so the drain uses the same 60-minute outage budget.
 unseals SQLite and publishes boot-bound SQLite authority. `cli.py reopen`
 verifies that authority through the guard, resumes the queues, starts the
 workers, recreates the open marker, writes the activation receipt and lifts
-the deploy fence. After any reboot, run `cli.py refresh` first.
+the deploy fence. After any reboot, run `cli.py refresh` first, then
+`cli.py reopen`. `refresh` refuses while the open marker exists, because the
+guard revokes the current proof before it measures the host. After a reopened
+rollback, `refresh` publishes the deploy fence again before it measures;
+`reopen` lifts it once activation is verified. The watchdog keeps the
+completed SQLite rollback as it is after such a reboot; it does not escalate
+to recovery.
 
 ## Readiness text
 
@@ -101,9 +107,10 @@ All runs were local and offline. Linux tests ran as root in a disposable
 
 | Suite | Command | Result |
 | --- | --- | --- |
-| Runner state machine (Windows) | `python -B -m unittest discover -s scripts/cutover -p test_runner.py` | 42 passed |
+| Runner state machine (Windows) | `python -B -m unittest discover -s scripts/cutover -p test_runner.py` | 42 passed; 43 after the review |
 | Guard (Windows) | `python -B -m unittest discover -s scripts/cutover/fence -p test_guard.py` | 20 passed, 3 Linux-only skipped |
 | All Linux suites | `scripts/cutover/run-linux-tests.sh` in the container | runner 42, guard 20, process contract 6, admission wrapper 6, fences 7, adapter and CLI 14, root-only refresh 10; all passed, none skipped |
+| All Linux suites, after the review (`51db2739`) | same | runner 43, guard 20, process contract 6, admission wrapper 6, fences 7, adapter and CLI 20, nginx include 1, root-only refresh 10; all passed, none skipped |
 | Full SQLite PHPUnit suite (`git archive` of `6aebf499`, extracted in the container, shared read-only vendor volume, `php -d memory_limit=1536M`) | `vendor/bin/phpunit --no-progress` | 9,589 tests: 9,582 passed, 3 skipped, 2 errors and 2 failures. The same four fail identically on the base `a6e799bb` in the same setup (privilege-drop tests that cannot read the root-owned vendor volume as uid 33), so they are pre-existing. This lane changes no PHP application, test or config file, so the MySQL profile has no touched area. The default 512 MB PHP limit ends the whole run with a fatal in a GD image test; the bind-mounted run was stopped after 95 minutes of slow 9p file access. |
 | Production nginx include under nginx 1.22.1 | `test_nginx_hold.py` (also in the launcher) | passed: six routes on both vhosts, including the direct `.php` files, return 503 with `Retry-After: 30` while the marker is absent, pass through once it exists, and close again as soon as it is removed, with no reload |
 
@@ -151,6 +158,10 @@ none of them can pass there.
   and scheduler drain, a writer that never stops (hold kept, watchdog rolls
   back), abort and ordered reopen, reboot during hold, reboot in `planned`
   then `refresh` and `reopen`, CLI flows, unit files and example profiles.
+  Added in review: reboot after a reopened rollback (tick, `refresh`,
+  `reopen`), `refresh` on an open host keeps the proof, the CLI refuses marker
+  paths that nginx and Deploy-App do not read, Supervisor restarts a worker
+  that exits 0, and every installed user Supervisor program has a profile.
 
 Writer starvation under the polling exclusive lock, measured in
 `test_drain_under_refused_admission_load` on 2 CPUs: with 1, 4 and 8
@@ -206,6 +217,12 @@ The code implements the safe default and makes each a config value.
   check; add a smoke command before W2.
 - The Supervisor template must be reconciled with the live
   `laravel-worker.conf` and the user `supervisord.conf` before W1.
+- Install order for W1: the nginx include holds the site until the open
+  marker exists, and `cli.py init` needs a live SQLite route. Create the
+  marker by hand, run `init`, remove the marker, then `refresh` and `reopen`.
+- If the optional `repro-lab-tour` program is installed, add its queue
+  (`iguide-lab-tour`) to the host config and to the 9:20 pm pre-hold pause;
+  its jobs can run 600 s, the whole default drain limit.
 
 ## Risks
 
@@ -221,3 +238,38 @@ The code implements the safe default and makes each a config value.
 - `direct-webhook` evidence: behind a stale open marker, the PHP gate holds
   the write but the file has already answered 200, so the event is lost.
   Only the nginx server-level hold protects those two files.
+- After an aborted and reopened cutover, the policy still pins the old
+  release. A later deploy changes the observed release, so the next reboot's
+  `refresh` refuses and every writer stays held. Retire the installed fences
+  (or start a new run) before the next deploy.
+- The watchdog service stops after 55 s. A rollback whose drain needs longer
+  is killed and retried each minute; each step is idempotent, so it finishes
+  once the last writer exits, but the site stays held until then.
+
+## Independent review (25 November)
+
+A second session reviewed the branch diff against H1 to H7 and fixed these
+defects test-first, as new commits on this branch.
+
+| Defect | Effect before the fix | Fix and test |
+| --- | --- | --- |
+| After abort and `reopen`, a reboot closes ingress again (empty `/run`) while the deploy fence stays lifted. | The watchdog tick saw neither a sealed nor a live SQLite route and moved the journal to `recovery_required` with `writes_possible` set: every writer held until manual recovery. `refresh` also refused. | The runner accepts a held SQLite-only route for a completed SQLite rollback; production `refresh` publishes the deploy fence again before it measures. `test_reboot_after_reopened_rollback_keeps_sqlite_authority_for_the_watchdog`, `test_reboot_after_reopened_rollback_ticks_refreshes_and_reopens`. |
+| `cli.py refresh` on a live host. | The guard revoked the live proof first, then refused: the scheduler and every restarted worker were held. | `refresh` refuses while the open marker exists. `test_refresh_on_an_open_host_keeps_the_current_proof`. |
+| The CLI did not pin the nginx open marker and the deploy marker. | A host config naming other files made the hold remove or publish files nobody reads while the journal recorded admissions closed: fail open. | The CLI refuses any other path. `test_cli_refuses_marker_paths_that_nginx_and_deploys_do_not_read`, `test_cli_marker_paths_are_the_ones_nginx_and_deploys_read`. |
+| Supervisor template had `exitcodes=0,75` with `autorestart=unexpected`. | `queue:restart` (every deploy) and `--max-time` end `queue:work` with 0, so wrapped workers would have stayed down. | `exitcodes=75`. `test_supervisor_restarts_a_worker_that_exits_normally`. |
+| `install-studio-runtime.sh` can add `repro-lab-tour`, a queue writer with no profile. | It would have run unfenced. | `lab-tour` profile and sudoers entry. `test_every_installed_user_supervisor_program_has_a_wrapper_profile`. |
+
+Open notes, not changed:
+
+- The same reboot escalation exists for a completed MySQL promotion
+  (`mysql_authoritative` with ingress closed). This lane's adapter refuses
+  promotion, so it is not reachable here; the MySQL adapter lane must handle
+  it.
+- `OnUnitActiveSec` with a service whose `ConditionPathExists` fails at the
+  first boot tick was not checked against real systemd. Confirm in W2 that
+  the timer keeps ticking after `cli.py init` creates the journal, or switch
+  to `OnCalendar=minutely`.
+- `crontab.py` replaces the whole command of a matched line. A line that
+  chains other commands after the matched one would lose them; review its
+  output before installing.
+- H5 (host fixture runs) is still not executed; see above.
