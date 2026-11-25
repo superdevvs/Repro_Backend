@@ -141,13 +141,19 @@ What apply does for `base-backup`:
   `-wal` and `-shm`; and `--x` on any parent the account cannot traverse.
   Nothing is made writable. SQLite sets new `-wal`/`-shm` modes from the
   database file, so the app's own access does not change. One side effect: with
-  a default ACL on the database folder, other new files created directly in that
-  folder take their group and other bits from the folder's mode instead of the
-  creating process's umask. That matches umask 002; confirm the deploy user,
-  PHP-FPM and the queue workers use 002 before apply, because with a stricter
-  umask new files there would gain group bits. Undo removes the default entry; a `-wal` created
-  while it was present keeps a harmless entry for the removed account until
-  SQLite next recreates the file.
+  a default ACL on the database folder, the creating process's umask no longer
+  applies to new entries there; the folder's own bits do. Measured on a real
+  kernel with the installer's ACL on a 2775 folder: a file created with mode
+  0644 (as `rsync --no-perms` in `Deploy-App` creates code) stays 0644, a 0755
+  folder stays 0755, a 0600 file stays 0600 with no access for
+  `repro-backup`, and `-wal`/`-shm` get the database's 0664 with a second
+  worker account in the group still writing. Only a file opened with mode 0666
+  that relied on a umask (PHP `fopen` under PHP-FPM's 0022) comes out 0664
+  instead of 0644, never wider than the folder itself, whose group can already
+  replace it. A repo search found no app code that writes into the database
+  folder besides SQLite and the deploy's `rsync`. Undo
+  removes the default entry; a `-wal` created while it was present keeps a
+  harmless entry for the removed account until SQLite next recreates the file.
 - Installs the five base units **disabled** and runs `daemon-reload`.
 - Runs `enter_r2_config.py --role upload --prefix daily` as `repro-backup` for the
   no-echo prompts, unless `--skip-credentials`.
@@ -531,7 +537,7 @@ production or a provider.
 | reviewer#4 backup timer in the cutover outage | Owner decision 3 (unchanged). |
 | reviewer#5 PROCESS, reserved jobs, rotated log | Rotated log fixed `d5d0d2df`; dead-worker reservations fixed `cf595598`; the `PROCESS` grant is a documented setup step. |
 | reviewer#6 apply exits 0 / no ping URL check | Fixed `78162406`. |
-| reviewer#7 default ACL and umask | Documented (installer runbook): the default ACL mirrors the folder mode, so it matches umask 002; confirm the app's umask is 002 before apply. |
+| reviewer#7 default ACL and umask | Documented (installer runbook); the wording was corrected with a kernel measurement in round 2 below. |
 
 Re-runs at the round head (Linux runs in the pinned QA image, `--network none`,
 uid 1000 with a private `HOME` on a tmpfs, unless noted):
@@ -549,6 +555,35 @@ Not re-run in this round: `native-fixture/run.py` needs three containers at
 once and this round was limited to two (its dump argv changed to the
 producer's; the load it exercises was checked above); the PHP suites (no PHP
 changed); `run-fixture.ps1` (no unit file changed).
+
+### Round 2 (Codex review of the whole branch at `2f41e15d`)
+
+| Finding | Outcome |
+| --- | --- |
+| r2#1 (P1) `backup_lag` from the checkpoint's write time | Fixed `89fce496`: lag runs from the last write of the newest archived log (the one before the checkpoint's `next_file`); the probe plan gains `binlog_dir` (null by default). On MySQL 8.4.13 a closed log's mtime is the FLUSH second and stays so while the next log is written. |
+| r2#2 (P2) retry batch repeating published logs strands the chain | Fixed `4fd1f319`: the chain follows the ready batch that holds the next log and reaches furthest, in either listing order (both orders failed before). |
+| r2#3 (P2) drill load can hang while streaming the dump | Fixed `c3ab405f`: one deadline for the whole transfer kills and reaps the client; a stalled real 8.4.13 target is refused after 5.0 s with no client left. |
+| r2#4 (P2) a second apply re-runs the create-only credential entry | Fixed `ea01dcaf`: apply skips the entry when the values are already readable by their account; the self-test line still reports. |
+| Recheck offsite-backups#2 | Holds: an unchanged kit is republished once its last publication is 7 days old (also after a clock step back or a lost state file), so the daily timer keeps a kit at most 8 days old, inside the 31-day expiry. |
+| Recheck offsite-backups#3 | Holds for folders with no marker. The related case of a marker whose run failed before the checkpoint moved was r2#2. Residual: each abandoned folder costs one listing per run until the bucket expires it. |
+| Recheck offsite-backups#5 | Holds: `RealAclUndoTests` passes as root on the real kernel. |
+| Recheck offsite-backups#6 | Holds: `test_fewer_closed_files_than_the_minimum_count_are_all_kept` passes. |
+| Recheck reviewer#7 | Documented, wording corrected. The repo shows `Deploy-App` and PHP-FPM use umask 0022, so "confirm 002" could not be met. Measured: only a file opened 0666 under a umask gains group write; the deploy's `rsync`, explicit modes and SQLite files are unchanged. |
+
+Re-runs at the round-2 head (Linux runs as in round 1; MySQL 8.4.13 is the
+local untagged `mysql` image `a81d043930e5`, at most two containers, no network):
+
+| Command | Result |
+| --- | --- |
+| Windows: the eight lane test modules | 116 tests OK, 22 skipped (Linux or root only) |
+| Linux uid 1000: `discover -s scripts/mysql/offsite -p 'test_*.py'` | 202 tests OK, 1 skipped |
+| Linux root: `test_install_backup_host` | 23 tests OK, 1 skipped (non-root only) |
+| `manager-fixture/run.py` (real systemd 252) | passed: 23 of 23 checks, container removed |
+| MySQL 8.4.13 (server plus QA image) | `alert_probe.backup_lag` on the real data folder: ok 13 s after a FLUSH, fail at 301 s; `load_base` loads a producer-argv dump (rows 1,2,3) and refuses a stalled load at its 5 s limit |
+| Kernel ACL check (QA image, root, scratch script outside the repo) | the reviewer#7 measurements above |
+
+Not re-run in round 2: `native-fixture/run.py` (three containers), the PHP
+suites and `run-fixture.ps1` (no PHP or unit file changed).
 
 ## Owner decisions
 
