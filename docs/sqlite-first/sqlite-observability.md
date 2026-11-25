@@ -79,7 +79,7 @@ Every transaction over one second must then be fixed or signed off by name (plan
 
 All ok: it POSTs a short text summary to the ping address. Any failure: it POSTs to the fail address. If the server is down, nothing is sent and the alert service raises the alarm after its grace time.
 
-Before turning it on, run `php artisan ops:heartbeat --dry-run`. Every line should say `ok` or `skipped`. The scheduler runs as `www-data`, so the backup folder must be readable by `www-data`.
+Before turning it on, run `php artisan ops:heartbeat --dry-run` as the user that runs `schedule:run`. Every line should say `ok` or `skipped`. That user must be able to read the backup folder. Which user runs the scheduler has not been checked yet (root's crontab needs sudo), so the owner confirms it first.
 
 **Alert service setup (owner, in the provider's website, not code):**
 
