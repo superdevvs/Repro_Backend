@@ -739,9 +739,11 @@ def writer_token_held_too_long(context: Context) -> tuple[str, str]:
     limit = int(context.threshold("writer_token_held_too_long")["max_hold_seconds"])
     rows = mysql_rows(context, TOKEN_HOLDERS.format(limit=limit))
     count, oldest = int(rows[0][0]), int(rows[0][1])
+    # The query counts holders of {limit} seconds or more (>=), as the PHP watchdog does.
     if count:
-        return "fail", f"{count} session{'s' if count != 1 else ''} held the writer token over {limit} s (oldest {oldest} s)"
-    return "ok", f"no session held the writer token over {limit} s"
+        return "fail", (f"{count} session{'s' if count != 1 else ''} held the writer token for {limit} s or more "
+                        f"(oldest {oldest} s)")
+    return "ok", f"no session held the writer token for {limit} s or more"
 
 
 DETECTORS: dict[str, Callable[[Context], tuple[str, str]]] = {
