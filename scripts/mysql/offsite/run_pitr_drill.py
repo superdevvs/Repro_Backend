@@ -156,9 +156,19 @@ class StockSteps:
                 "--socket=" + target["socket"], "--batch", "--skip-column-names", *args]
 
     def load_base(self, plan, dump: Path) -> None:
+        # backup-database.php dumps one database without --databases, so the dump has no
+        # CREATE DATABASE or USE. Create it on the fresh target (refused if it already exists)
+        # and load into it.
+        database = plan["database"]
+        backup.need(isinstance(database, str) and chain.base_backup.DB_NAME.fullmatch(database) is not None,
+                    "invalid drill database name")
+        created = subprocess.run(self.mysql(f"--execute=CREATE DATABASE `{database}`"), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=backup.SAFE_ENV,
+                                 timeout=60, check=False)
+        backup.need(created.returncode == 0, "the drill database could not be created on the fresh target")
         with gzip.open(dump, "rb") as source:
-            process = subprocess.Popen(self.mysql(), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL, env=backup.SAFE_ENV)
+            process = subprocess.Popen(self.mysql("--database=" + database), stdin=subprocess.PIPE,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=backup.SAFE_ENV)
             shutil.copyfileobj(source, process.stdin, 1024 * 1024)
             process.stdin.close()
             backup.need(process.wait(timeout=plan["timeout_seconds"]) == 0, "base load refused")

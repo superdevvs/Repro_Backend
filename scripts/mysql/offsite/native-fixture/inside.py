@@ -96,8 +96,10 @@ def main():
     start = status(SOURCE)
     base = WORK / "bucket" / "base"
     (base / "artifacts").mkdir(parents=True)
+    # Same shape as scripts/deploy/backup-database.php: the database after "--" and no
+    # --databases, so the dump has no CREATE DATABASE or USE and the drill must select one.
     dump = subprocess.run([DUMP, "--no-defaults", "--protocol=SOCKET", f"--socket={SOURCE}", "--user=root",
-                           "--single-transaction", "--set-gtid-purged=OFF", "--databases", "repro_drill"],
+                           "--single-transaction", "--set-gtid-purged=OFF", "--", "repro_drill"],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=True).stdout
     with gzip.open(base / "artifacts/database.sql.gz", "wb") as stream:
         stream.write(dump)

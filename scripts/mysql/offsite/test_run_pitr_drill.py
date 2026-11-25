@@ -1,6 +1,7 @@
 """Point-in-time drill runner with fake steps; its outputs must satisfy summarize_point_in_time."""
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -158,6 +159,57 @@ class DrillTests(unittest.TestCase):
         result, out = self.run_drill("drill-b", FakeSteps(fail="replay"))
         self.assertEqual((result["result"], result["failed_step"]), ("native-mysql-replay-failed", "replay"))
         self.assertEqual(json.loads((out / "replay.json").read_bytes())["result"], "native-mysql-replay-failed")
+
+
+FAKE_CLIENT = """#!{python} -I
+import json, sys
+argv = sys.argv[1:]
+data = sys.stdin.buffer.read().decode()
+with open({log!r}, "a") as stream:
+    stream.write(json.dumps({{"argv": argv, "stdin": data}}) + "\\n")
+statement = next((item.split("=", 1)[1] for item in argv if item.startswith("--execute=")), "")
+selected = any(item.startswith("--database=") for item in argv) or "USE " in data
+# Like the real client: a CREATE TABLE with no selected database fails with ERROR 1046.
+sys.exit(1 if "CREATE TABLE" in data + statement and not selected else 0)
+"""
+
+
+@unittest.skipUnless(sys.platform == "linux", "runs a fake mysql client as a child process")
+class StockLoadTests(unittest.TestCase):
+    """The real backup-database.php dump names no database (no --databases), so the loader must select one."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        self.log = self.root / "client.log"
+        client = self.root / "mysql"
+        client.write_text(FAKE_CLIENT.format(python=sys.executable, log=str(self.log)))
+        client.chmod(0o700)
+        self.plan = {"database": "repro_dashboard", "timeout_seconds": 30,
+                     "target": {"client": str(client), "defaults_file": "/x/target.cnf", "socket": "/x/target.sock"}}
+        # The producer's mysqldump argv ends with "-- <database>", so the dump has no CREATE DATABASE or USE.
+        self.dump = self.root / "database.sql.gz"
+        with gzip.open(self.dump, "wb") as stream:
+            stream.write(b"/*!40101 SET NAMES utf8mb4 */;\nDROP TABLE IF EXISTS `markers`;\n"
+                         b"CREATE TABLE `markers` (`id` int NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n"
+                         b"INSERT INTO `markers` VALUES (1);\n")
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_load_base_creates_and_selects_the_plan_database_for_the_producer_dump(self):
+        drill.StockSteps(self.plan).load_base(self.plan, self.dump)
+        create, load = self.calls()
+        self.assertIn("--execute=CREATE DATABASE `repro_dashboard`", create["argv"])
+        self.assertIn("--database=repro_dashboard", load["argv"])
+        self.assertIn("CREATE TABLE `markers`", load["stdin"])
+
+    def test_load_base_refuses_a_database_name_it_cannot_quote_safely(self):
+        self.plan["database"] = "repro`; DROP DATABASE mysql; --"
+        with self.assertRaises(backup.Refusal):
+            drill.StockSteps(self.plan).load_base(self.plan, self.dump)
+        self.assertFalse(self.log.exists())
 
 
 if __name__ == "__main__":
