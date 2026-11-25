@@ -42,8 +42,12 @@ def crm_migrations(folder: Path) -> list[str]:
     """Every migration that names a CRM table anywhere, by the capture's rule for CRM tables (is_crm_table).
 
     Not only Schema::create/table calls: a DB::statement, DB::table or foreign key that names a CRM
-    table changes or depends on it too. A non-CRM migration that only adds a column such as
-    crm_contact_id is flagged as well; review it and list it rather than loosen this rule.
+    table changes or depends on it too. The rule also matches a column name such as crm_contact_id
+    in a migration that changes only a non-CRM table. Do not list such a migration in crm_migrations:
+    scripts/mysql/crm-rehearsal-fixture.php runs every migration its own copy of this rule matches,
+    against a database that has only the CRM tables, so it would fail. Give both rules the same
+    reviewed exception, with its reason, instead. CrmRehearsalFixtureTest checks that the fixture runs
+    exactly crm_migrations.
     """
     names = re.compile(r"\b[a-z][a-z0-9_]*\b")
     return sorted(path.stem for path in folder.glob("*.php")
