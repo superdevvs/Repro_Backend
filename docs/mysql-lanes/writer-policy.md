@@ -131,12 +131,13 @@ traffic":
 2. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
-3. After switching `.env` to MySQL, once the app account may write, and
-   before reopening, run as the application user: `php artisan
+3. After switching `.env` to MySQL, run `php artisan
    db:writer-policy-check`. It must print `"problems":[]` and exit 0. It
-   takes the token, so it fails while the cutover's MySQL write gate is
-   closed (runbook, MySQL adapter lane items 3 and 7). Add it to every
-   deploy once MySQL is live.
+   takes the token, so with the app account it fails while the cutover's
+   MySQL write gate is closed. On the cutover night run it before Approval
+   2 under a separately granted check account, not after `seal_mysql`:
+   from there a failure ends in `recovery_required` (runbook, MySQL adapter
+   lane items 3 and 7). Add it to every deploy once MySQL is live.
 4. Give the monitor account `PROCESS` and `SELECT ON
    performance_schema.data_locks`, and add `writer_token_held_too_long` to
    the off-site alert probe's plan. The probe runs the query of `php

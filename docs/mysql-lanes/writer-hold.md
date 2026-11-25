@@ -32,11 +32,15 @@ old order (drain, then pause, then stop, with no journal).
 **Before the hold, no outage.**
 
 1. 7:45 pm: pause Studio with its documented pause file; let its job finish.
-2. 9:20 pm: pause the long-job queues with `queue:pause`:
+2. 9:20 pm: pause the long-job queues with `queue:pause`, run as
+   `www-data` (`sudo /usr/sbin/runuser -u www-data -- /usr/bin/php
+   /var/www/backend/artisan queue:pause <connection:queue>`):
    `studio:studio`, `database:media-archives`, `database:default`,
-   `database:integrations`, `database:watermarks`. Wait for their running
-   jobs, then stop those workers. The hold refuses while a long-job worker
-   still runs (`require_long_job_predrain`, on by default).
+   `database:integrations`, `database:watermarks`. The flags are files in
+   the `file` cache under `www-data` 755 folders (measured 25 November),
+   which the deploy user cannot write and root would leave root-owned. Wait
+   for their running jobs, then stop those workers. The hold refuses while
+   a long-job worker still runs (`require_long_job_predrain`, on by default).
 3. 9:50 pm: preflight as before (no call in progress, Aryeo recorded and
    paused, no upload in flight).
 
@@ -238,10 +242,14 @@ The code implements the safe default and makes each a config value.
 - If the optional `repro-lab-tour` program is installed, add its queue as
   `iguide-lab-tour:iguide-lab-tour` (connection `iguide-lab-tour`, queue
   `iguide-lab-tour`) to the host config before `init` and to the 9:20 pm
-  pre-hold pause (`php artisan queue:pause iguide-lab-tour:iguide-lab-tour`;
-  the bare name would pause `database:iguide-lab-tour`). Its jobs can run
-  600 s, the whole default drain limit. The host-config check at `4e4a262d`
-  (`[a-z]+:[a-z0-9-]+`) refuses that name; the code-fix lane widens it.
+  pre-hold pause (`queue:pause iguide-lab-tour:iguide-lab-tour`, as
+  `www-data` like the other pauses; the bare name would pause
+  `database:iguide-lab-tour`). Its jobs can run 600 s, the whole default
+  drain limit. The host-config check at `4e4a262d` (`[a-z]+:[a-z0-9-]+`)
+  refuses that name; the code-fix lane (`71f7db04`) accepts it.
+- `queue_pause` and `queue_resume` in the host config must run as
+  `www-data` through `/usr/sbin/runuser -u www-data --` (runbook, Release
+  and target preparation step 10, and MySQL adapter lane item 17).
 
 ## Risks
 

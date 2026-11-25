@@ -212,7 +212,7 @@ later conditions are tried.
 | backup_stale | daytime | watchdog result (OnSuccess / OnFailure) | point the plan at a stale receipt on a test host |
 | backup_failed (extra) | daytime | nightly backup and kit result | run the backup with a missing rclone config |
 | database_down | wake | probe | rename a fixture database / stop the rehearsal MySQL |
-| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan; with the writer hold, vs the engine the cutover journal makes authoritative) | without the writer hold, set the probe plan's expected engine to the other one; with it the journal wins, so set the fixture's `DB_CONNECTION` to the other engine outside a hold |
+| wrong_database_engine | wake | probe (cached config's default driver, else `.env` DB_CONNECTION, vs plan; with the writer hold, vs the engine the cutover journal makes authoritative) | on a test host without the writer hold (no journal, no ingress folder), set the probe plan's expected engine to the other one; with the writer hold the journal wins, so outside a hold set the fixture's cached config driver, or `.env` `DB_CONNECTION` when there is no cached config, to the other engine |
 | site_unreachable | wake | provider's website check | provider-side check against a closed URL |
 | disk_nearly_full | wake | probe (10% or 20 GiB free; mounts checked) | probe a fixture path or an unmounted path |
 | backup_lag | wake | probe (newest archived binlog, the one before the checkpoint's `next_file`, last written over 300 s ago, two checks; needs `binlog_dir`) | pause the archive timer |
@@ -255,10 +255,11 @@ long-lived worker on the old engine. The plan's per-minute engine and server
 ID record, written by a scheduled command, is the real check; until it exists
 this detector is a config check only.
 
-A probe that cannot read `.env` (or a cached config it cannot read or parse)
-reports `wrong_database_engine` as failed. That is a wake alert, so a deploy
-that replaces `.env` by rename (see limits below) pages within minutes, not
-only at the next backup.
+A probe that cannot read or parse the cached config, or `.env` when there is
+no cached config, reports `wrong_database_engine` as failed. That is a wake
+alert. With a cached config, as on production, the probe never reads `.env`,
+so a deploy that replaces `.env` by rename (see limits below) does not page
+here; only the next backup and the kit fail.
 
 ## Timers and the monthly reboot
 
@@ -273,6 +274,10 @@ only at the next backup.
 | repro-binlog-archive (catch-up) | every 2 min at :30 on odd minutes | no |
 | repro-binlog-purge | hourly at :17 | no |
 
+Every `OnCalendar` line in `scripts/mysql/offsite/systemd/system/*.timer`
+names UTC, so the host's own zone (America/New_York, measured 25 November)
+does not move them. Host cron lines run on Eastern time.
+
 The backup moved from 02:30 to 03:30 UTC. That keeps 90 minutes clear of the
 monthly 02:00 reboot on the 28th whatever that reboot's time zone is (UTC, US or
 IST). The 26-hour freshness limit still covers 5 minutes of jitter and a
@@ -281,8 +286,9 @@ provider should see. A reboot longer than the 5-minute silence grace will page;
 measure the reboot once and raise the grace only if it is needed and still fits
 the 10-minute delivery limit.
 
-Cutover night: 03:30 UTC is 10:30 pm US Eastern in winter (EST), inside the
-planned Saturday 10 to 11 pm Eastern outage. The old 02:30 UTC (9:30 pm EST)
+Cutover night: the night falls in EST (UTC-5), so 10 pm Eastern is 03:00
+UTC. 03:30 UTC is 10:30 pm EST, inside the planned Saturday 10 to 11 pm
+Eastern outage. The old 02:30 UTC (9:30 pm EST)
 falls before the outage but would run during the 9:20 to 9:50 pm pre-hold
 steps. The cutover and drill runbooks must hold `repro-backup.timer`,
 `repro-recovery-kit.timer` and `repro-recovery-kit.path` (and list them as
@@ -339,7 +345,7 @@ Run on the recovery machine (Linux, WSL or a container) with the read-only key:
 python3 -I -B observe_backup_health.py observe --plan observer.json      # every minute
 python3 -I -B observe_backup_health.py export --plan observer.json --window-end END \
   --identity-sha256 H --destination-sha256 H --monitor-profile-sha256 H --output backup-health.jsonl
-python -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
+python3 -B -m scripts.cutover.readiness.summarize_backup_health --policy review-policy.json --observations backup-health.jsonl
 ```
 
 Use `interval_s` 60. The summarizer credits a slot only while lag stays within
@@ -416,9 +422,9 @@ hanging with no `replay.json`.
   fail; Laravel does not set it. The backup's limit is unchanged.
 - **Limit: `.env` replaced by rename.** `Deploy-App.ps1` rewrites `.env` by rename
   when it stores a new Stripe webhook secret. That drops the ACL; the next
-  backup fails loudly, the kit fails, and the probe reports
-  `wrong_database_engine` (a wake alert) within minutes. Re-run the base-backup
-  apply to repair.
+  backup fails loudly and the kit fails (`backup_failed`). The probe reports
+  `wrong_database_engine` for it only when no cached config exists, which is
+  not the case on production. Re-run the base-backup apply to repair.
 - **Archive-aware purge** replaces unbounded binlog growth.
 - **Persistent timers and the monthly 02:00 reboot on the 28th** are handled in "Timers and the monthly reboot".
 - **Probe plan placement.** The real manager showed the probe could not read a
@@ -602,7 +608,10 @@ suites and `run-fixture.ps1` (no PHP or unit file changed).
 2. Whether the 7-day window and alert round 1 run on the native rehearsal
    instance (B1 e). The `before_installer` round needs MySQL-only cases; the
    native service is already installed.
-3. The monthly reboot: confirm its source and time zone. The backup now runs at
+3. The monthly reboot: confirm its source and time zone. It is not in the
+   deploy user's crontab, and the host runs on America/New_York (25
+   November), so a host cron line or timer with no zone would reboot at
+   02:00 Eastern. The backup now runs at
    03:30 UTC; keep it, or move it back once the reboot is known. Either time
    falls in or next to the Saturday 10 to 11 pm Eastern cutover outage, so the
    cutover and drill runbooks hold the backup and kit timers that night.

@@ -21,19 +21,29 @@ approval gate. The previous Docker-based rehearsal is historical evidence.
 >
 > Until the [MySQL adapter lane](#mysql-adapter-lane-not-built) is built,
 > any run at this candidate is a SQLite dress rehearsal that ends in
-> `cli.py abort` and `cli.py reopen`. Even that has two conditions:
+> `cli.py abort` and `cli.py reopen`. Even that needs W1, and W1 waits for
+> these ([Release and target preparation](#release-and-target-preparation)
+> step 10):
 >
-> - It needs W1, and W1 needs the host identity and MySQL probes, which are
->   not written yet.
-> - The abort from `frozen` runs `queue_pause` for every queue (adapter
->   `close_admissions`) before it unseals SQLite (`Runner._rollback`). If
->   the queue pause flags live in the `database` cache store, the code
->   default, that write goes to the sealed SQLite file: as the deploy user
->   it fails on every watchdog tick and the site stays held; as root it
->   writes the sealed file. The abort is safe only once the read-only
->   cache-store check under "Read-only checks before the night" in
->   [Freeze all writers](#freeze-all-writers) shows `file`, or the rollback
->   order changes.
+> - The host identity and MySQL probes and the `drain_fpm` command. None is
+>   written.
+> - The lab-tour queue. At `4e4a262d` the host-config check refuses
+>   `iguide-lab-tour:iguide-lab-tour`. The code-fix lane (`71f7db04`)
+>   accepts it, so a host with the `repro-lab-tour` program needs that
+>   change before `cli.py init`.
+> - Queue commands as `www-data`. `queue_pause` and `queue_resume` in
+>   `host.json` must run through `runuser -u www-data`. The pause flags'
+>   cache folders on production are `www-data` 755, so the deploy user
+>   cannot write them: the hold, every abort and every watchdog rollback
+>   would fail at `close_admissions` and leave the site held. Run as root,
+>   they leave root-owned cache files and folders that the app cannot write.
+>
+> The cache store no longer blocks the abort. Production keeps the queue
+> pause flags in the `file` cache store (measured 25 November). So an abort
+> after the seal (from `frozen`, or from `holding` after a freeze that
+> failed once SQLite was sealed) runs `queue_pause` against
+> `storage/framework/cache`, not the sealed SQLite file, before
+> `seal_sqlite` unseals it.
 
 Use the separate native **MySQL 8.4.13** target from
 [`scripts/mysql/native`](../scripts/mysql/native/README.md). The existing 8.0.46
@@ -95,7 +105,7 @@ python3 scripts/mysql/migrate.py plan --snapshot "$snapshot" \
 
 Review the new exceptions and schema plan. Use the `import-empty` and `verify-fields.php` commands below with the same snapshot and their independently checked fingerprints. Keep the full private reports with the rehearsal. Production customer records never belong in the schema dump.
 
-To reproduce the small CRM conversion check, run `APP_ENV=testing php scripts/mysql/crm-rehearsal-fixture.php /tmp/crm-test.sqlite` with an unused filename. The fixture is created with mode 0600. Run the same checksum-bound plan, empty-target import and independent read as below against an isolated, socket-only MySQL 8.4.13 service. The fixture is synthetic and contains consent, a quote, Unicode JSON intake, an SMS request and the fixed campaign/event defaults. It applies all ten CRM migrations once the code-fix lane's fixture change is merged; before that it globbed only `2026_11_24_*` and lacked the two new columns. The November 24 run, with nine migrations, verified 37 tables, 48 rows and 462 fields with zero mismatches and zero MySQL warnings. Test the native Laravel migration path with `php vendor/bin/phpunit -c phpunit.mysql.xml tests/MySql/RecentFeatureMigrationCompatibilityTest.php` and `php vendor/bin/phpunit -c phpunit.mysql.xml tests/Feature/Crm` on the dedicated test database.
+To reproduce the small CRM conversion check, run `APP_ENV=testing php scripts/mysql/crm-rehearsal-fixture.php /tmp/crm-test.sqlite` with an unused filename. The fixture is created with mode 0600. Run the same checksum-bound plan, empty-target import and independent read as below against an isolated, socket-only MySQL 8.4.13 service. The fixture is synthetic and contains consent, a quote, Unicode JSON intake, an SMS request and the fixed campaign/event defaults. At `4e4a262d` it globs only `2026_11_24_*` and lacks the two new columns. The code-fix lane (`6fa0f78e`) makes it run every migration that creates or changes a CRM table (`crm_*`, `recruit_*`, `email_suppressions`), all ten, the same set as `crm_migrations` in the nightly config. The November 24 run, with nine migrations, verified 37 tables, 48 rows and 462 fields with zero mismatches and zero MySQL warnings. Test the native Laravel migration path with `php vendor/bin/phpunit -c phpunit.mysql.xml tests/MySql/RecentFeatureMigrationCompatibilityTest.php` and `php vendor/bin/phpunit -c phpunit.mysql.xml tests/Feature/Crm` on the dedicated test database.
 
 The release candidate containing backend 9487965492cc9b9575a951ff9a1e415986327b21 passed both suites on the restored MySQL baseline (100 tests, 861 assertions).
 
@@ -210,14 +220,23 @@ the night" in [Freeze all writers](#freeze-all-writers), then apply it:
 ```bash
 cd /var/www/backend
 php artisan config:cache
-sudo systemctl reload php8.3-fpm   # FPM may keep the old config in OPcache
-php artisan queue:restart          # only while workers run; they keep the config they started with
+sudo systemctl try-reload-or-restart php8.3-fpm   # OPcache rechecks files every 2 s; this makes it certain
+# Only while workers run; they keep the config they started with. As www-data, like queue:pause:
+sudo /usr/sbin/runuser -u www-data -- /usr/bin/php /var/www/backend/artisan queue:restart
 ```
 
+`try-reload-or-restart` reloads a running FPM and does nothing, with exit
+0, when the freeze has stopped it; plain `reload` fails on a stopped unit.
+`queue:restart` writes the cache key `illuminate:queue:restart` in the
+file cache (folder `storage/framework/cache/data/ee/2f`, not measured), so
+it runs as `www-data` for the same reason as the queue pause (see the
+9:20 pm step in [Freeze all writers](#freeze-all-writers)).
+
 Never run `php artisan optimize:clear` or `cache:clear` (Deploy-App runs
-`optimize:clear`): they empty the cache store, which may hold the queue
-pause flags. Each step that changes production needs its own approval.
-The times and the hold are the ones in [Freeze all writers](#freeze-all-writers).
+`optimize:clear`): they empty the cache store, which holds the queue pause
+flags (the `file` store, measured 25 November). Each step that changes
+production needs its own approval. The times and the hold are the ones in
+[Freeze all writers](#freeze-all-writers).
 
 Record the start of these CRM steps in UTC as `FREEZE_AT` before step 1,
 and keep it in the private ledger, because step 11 still needs it two hours
@@ -374,9 +393,9 @@ preflight)
     until none is left. `closed_locally` (done or missed follow-ups, which the
     sync leaves in Google on purpose) and `no_connection` (the rep
     disconnected Google) are listed for information and do not fail it.
-    When it exits 0, set `CRM_CALENDAR_SYNC_HOLD=false` and apply it (config
-    cache and FPM reload). The scheduler runs `crm:calendar-sync` again from
-    its next five-minute slot.
+    When it exits 0, set `CRM_CALENDAR_SYNC_HOLD=false` and apply it
+    (`config:cache` and `systemctl try-reload-or-restart php8.3-fpm`). The
+    scheduler runs `crm:calendar-sync` again from its next five-minute slot.
 
     A planned follow-up that shows `push_pending` clears when it is saved
     again in the CRM. A cancelled one clears only when the sync runs: the
@@ -385,7 +404,8 @@ preflight)
     retries its Google delete. While such a row exists, the reconcile cannot
     exit 0 with the hold on. Settle every other row, release `CRM_CALENDAR_SYNC_HOLD`,
     let one sync run, then rerun `crm:calendar-reconcile --dry-run`, which
-    must exit 0.
+    must exit 0. With the code-fix lane (`ca56f699`), a run of
+    `crm:calendar-sync` while the hold is on prints this guidance too.
 
     Until the release, `CRM_CALENDAR_SYNC_HOLD` from step 2 holds the job: the scheduler
     skips it and a manual run calls Google for nothing and writes nothing
@@ -422,7 +442,7 @@ Vapi (`/api/webhooks/vapi`). This candidate has no Telnyx capture route.
 It has two unbound building blocks: the database-independent spool
 `App\Support\TelnyxCutoverInbox`
 ([inbox README](../scripts/cutover/inbox/README.md)) and the standalone
-HTTP adapter `App\Support\TelnyxCutoverCapture`
+HTTP adapter `App\Support\TelnyxCutoverCapture` for all four Telnyx paths
 (`tests/Unit/TelnyxCutoverCaptureTest.php`), which no route, middleware or
 service activates. Neither is reviewed for activation. During the hold the
 writer hold answers all of them 503 at server level, including the two
@@ -546,11 +566,18 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
 
    On the production target this is not the whole story yet. The app
    account must stay unable to write until `seal_mysql` opens the MySQL
-   write gate, because `init` refuses while the MySQL probe reports
-   `writable`. Which grants the app account gets before the night depends
-   on the gate the adapter lane chooses (MySQL adapter lane item 3); with
-   the first candidate, the grant above goes to the maintenance account
-   only and `seal_mysql` gives it to the app account.
+   write gate. From `cli.py init` until the installed fences are retired,
+   the MySQL probe must never report `writable` or `business_activity`:
+   `init` refuses, and in every later phase, `planned` and a reopened
+   SQLite rollback included, the next watchdog tick records
+   `recovery_required` and the guard holds every wrapped writer (Freeze
+   all writers, step 9). So make the token row and grants on the probed
+   target before `init`, and run no import and change no grant on it
+   after `init` outside the night's frozen window. Which grants the app
+   account gets before the night depends on the gate the adapter lane
+   chooses (MySQL adapter lane item 3); with the first candidate, the
+   grant above goes to the maintenance account only and `seal_mysql`
+   gives it to the app account.
 5. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
@@ -619,7 +646,24 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
       host config that changed after `init`. Its `queues` are the nine
       queues plus `iguide-lab-tour:iguide-lab-tour` if the `repro-lab-tour`
       program is installed. At `4e4a262d` the host-config check
-      (`[a-z]+:[a-z0-9-]+`) refuses that name; the code-fix lane widens it.
+      (`[a-z]+:[a-z0-9-]+`) refuses that name; the code-fix lane
+      (`71f7db04`) accepts it (`[a-z][a-z0-9-]*:[a-z0-9-]+`). On a host
+      with the program, W1 must install an adapter that has that change.
+    - Make `queue_pause` and `queue_resume` run as `www-data`. The CLI runs
+      as root and appends one `connection:queue` to each:
+
+      ```json
+      "queue_pause": ["/usr/sbin/runuser", "-u", "www-data", "--", "/usr/bin/php", "/var/www/backend/artisan", "queue:pause"],
+      "queue_resume": ["/usr/sbin/runuser", "-u", "www-data", "--", "/usr/bin/php", "/var/www/backend/artisan", "queue:resume"]
+      ```
+
+      Production keeps the pause flags in the `file` cache, under
+      `storage/framework/cache/data`. The folders the pause keys hash to
+      are `www-data:www-data` 755 (measured 25 November), so the deploy
+      user cannot create the flag files there. Root can, but it leaves
+      root-owned files, and root-owned folders where none existed, which
+      the app's own cache writes then fail on. Host commands run as root,
+      so they need no `sudo`.
     - Set all four owner options in `host.json`. The adapter has no default
       for them and refuses a missing one. The plan's values:
       `"separate_freeze_approval": false`, `"adopt_external_hold": false`,
@@ -795,8 +839,11 @@ into the password manager yourself (checklist E.3), on the server, not
 through a session.
 
 `Deploy-App.ps1` rewrites `.env` by rename when it stores a new Stripe
-webhook secret. That drops the ACL: the next backup and the kit fail loudly,
-and the probe reports `wrong_database_engine` within minutes. Re-run the
+webhook secret. That drops the ACL: the next backup and the kit fail loudly
+(`backup_failed`, daytime). `wrong_database_engine` does not catch it on
+production: the probe reads the cached config first and reads `.env` only
+when `bootstrap/cache/config.php` is missing (`app_engine` in
+`alert_probe.py`), and production has a cached config. Re-run the
 base-backup apply to repair.
 
 ### Alerts (B6, B7)
@@ -852,8 +899,9 @@ MySQL when it rotated away from it. The probe plan needs
 `bootstrap/cache/config.php` first (a `DB_URL` scheme wins, as in Laravel),
 because `Deploy-App` caches the config. With no cached config it reads
 `DB_CONNECTION` in `.env`. It is a config check only: it does not see a
-long-lived worker on the old engine. A probe that cannot read `.env` or the
-cached config reports it as failed, a wake alert.
+long-lived worker on the old engine. A probe that cannot read the cached
+config, or `.env` when there is no cached config, reports it as failed, a
+wake alert.
 
 **Cutover night and held sites.** The probe reads the cutover journal
 through `repro-alert-cutover-view.service`, which the `alerts` job installs.
@@ -911,17 +959,28 @@ after it (`sqlite_authoritative`, `writes_possible`, `mysql_authoritative`)
 | repro-binlog-rotate | every 2 min at :00 | no |
 | repro-binlog-archive (catch-up) | every 2 min at :30 on odd minutes | no |
 | repro-binlog-purge | hourly at :17 | no |
+| repro-cutover-watchdog | every minute, first 30 s after boot | no |
+
+Every `OnCalendar` line in the off-site unit files
+(`scripts/mysql/offsite/systemd/system/*.timer`) names UTC, and the
+watchdog's `minutely` needs no zone, so the host's own zone
+(America/New_York, measured 25 November) does not move them. Host cron
+lines do run on Eastern time (see "Scheduled tasks inside the outage" in
+[Freeze all writers](#freeze-all-writers)).
 
 The backup moved from 02:30 to 03:30 UTC. That keeps 90 minutes clear of the
 monthly 02:00 reboot on the 28th whatever that reboot's time zone is (UTC, US
-or IST). The 26-hour freshness limit still covers 5 minutes of jitter and a
-30-minute run. Minute timers never catch up: a missed minute is what the
+or IST). Its source is still unknown: it is not in the deploy user's
+crontab. If it is a host cron line or timer with no zone, it runs at 02:00
+Eastern (07:00 UTC in winter). The 26-hour freshness limit still covers 5
+minutes of jitter and a 30-minute run. Minute timers never catch up: a missed minute is what the
 provider should see. A reboot longer than the 5-minute silence grace will
 page; measure the reboot once and raise the grace only if it is needed and
 still fits the 10-minute delivery limit.
 
-Cutover night: 03:30 UTC is 10:30 pm US Eastern in winter (EST), inside the
-planned Saturday 10 to 11 pm Eastern outage. The old 02:30 UTC (9:30 pm EST)
+Cutover night: the night falls in EST (UTC-5), so 10 pm Eastern is 03:00
+UTC. 03:30 UTC is 10:30 pm EST, inside the planned Saturday 10 to 11 pm
+Eastern outage. The old 02:30 UTC (9:30 pm EST)
 falls before the outage, but it would run during the 9:20 to 9:50 pm
 pre-hold steps. Hold `repro-backup.timer`, `repro-recovery-kit.timer` and
 `repro-recovery-kit.path` that night and during drills, and list them as
@@ -933,12 +992,19 @@ again after its time has passed.
 
 Once the writer hold is installed (W1), any reboot, the monthly one
 included, leaves the site and every writer held until an operator runs
-`cli.py refresh` and `cli.py reopen`. That fails closed by design. The
-alert timers start by themselves after the boot, and `site_held` (wake)
-pages within minutes with "site held after a reboot or an unfinished
-reopen: run cli.py refresh, then cli.py reopen". The provider shows only
-the check name, so name that check with the remedy. Plan on-call cover for
-the 02:00 reboot on the 28th, or schedule around it.
+`cli.py refresh` and `cli.py reopen`. That fails closed by design, on
+SQLite: in `planned` and after a completed SQLite rollback. The alert
+timers start by themselves after the boot, and `site_held` (wake) pages
+within minutes with "site held after a reboot or an unfinished reopen: run
+cli.py refresh, then cli.py reopen". The provider shows only the check
+name, so name that check with the remedy. Plan on-call cover for the 02:00
+reboot on the 28th, or schedule around it.
+
+On MySQL that remedy does not exist yet. As the runner stands, the first
+watchdog tick after any reboot that follows a MySQL reopen records
+`recovery_required`, which `refresh` and `reopen` cannot clear
+([MySQL adapter lane](#mysql-adapter-lane-not-built) item 18). The lane
+must build and drill that path before a night reaches MySQL.
 
 ### MySQL leg (B8)
 
@@ -1051,7 +1117,8 @@ November 5 found these independent worker owners:
 | `repro-media-archives.service`, user www-data | 1 | database: media-archives |
 
 The user Supervisor is started through cron. Inventory current processes again;
-PIDs and counts can change. There were also nine deployment-user cron entries.
+PIDs and counts can change. There were also nine deployment-user cron entries;
+on 25 November the deploy user's crontab had ten lines, on Eastern time.
 An administrator must account for other users' crontabs, timers, schedulers,
 manual commands, uploads, provider callbacks, active voice calls and integrations.
 Do not stop the whole system cron/Supervisor service to affect one application.
@@ -1066,31 +1133,66 @@ real services and a reboot (W2) each need their own approval. Keep webhook
 failures recoverable; do not acknowledge events and drop them.
 
 **Read-only checks before the night.** Each reads production and changes
-nothing; each still needs its own approval.
+nothing; each still needs its own approval. The lead session ran these on
+25 November at about 19:00 UTC. Repeat the first one on the day before the
+night.
 
-- Which cache store holds the queue pause flags (ordering M7):
-  `cd /var/www/backend && php artisan config:show cache.default` and
-  `grep -E '^(CACHE_STORE|CACHE_DRIVER)=' .env`. `config/cache.php` reads
-  `CACHE_STORE` and defaults to `database`; `.env.example` sets
-  `CACHE_DRIVER`, the Laravel 10 name, which this release never reads. If
-  the answer is `database`, the flags sit in the SQLite `cache` table.
-  Then a rollback from `frozen` runs `queue_pause` again (adapter
-  `close_admissions`) before it unseals SQLite, and so does a watchdog
-  re-close after a reboot while `frozen`. Run as the deploy user, that
-  write to the sealed file fails, on every watchdog tick; run as root, it
-  writes the sealed file. A switch of `DB_CONNECTION` also moves the
-  flags to MySQL, where the closed write gate refuses them (MySQL adapter
-  lane item 10). Open: confirm `file`, or change the store, or change the
-  rollback order, before W1. The SQLite dress rehearsal depends on it.
-- OPcache in FPM: `grep -rhE 'opcache\.(enable|validate_timestamps|revalidate_freq)' /etc/php/8.3/fpm/`
-  and the FPM unit name: `systemctl list-units --all 'php*-fpm*'`. This
-  runbook assumes `php8.3-fpm`; with `validate_timestamps=0` FPM keeps the
-  old config until it is reloaded.
-- The host clock's time zone for cron: `timedatectl show -p Timezone`.
+- Cache store (ordering M7, answered). Config is cached
+  (`bootstrap/cache/config.php` exists), and it sets `cache.default` to
+  `file` with driver `file`, `queue.default` to `database` and
+  `app.timezone` to `UTC`. So the queue pause flags
+  (`illuminate:queue:paused:{connection}:{queue}`) are files under
+  `storage/framework/cache/data`, not rows in SQLite. An abort after the
+  seal, the watchdog rollback and a re-close after a reboot while `frozen`
+  write them there, not into the sealed file, and a switch of
+  `DB_CONNECTION` does not move them to MySQL. The code default is still
+  `database` (`config/cache.php` reads `CACHE_STORE`; `.env.example` sets
+  `CACHE_DRIVER`, the Laravel 10 name, which this release never reads), so
+  check again with `cd /var/www/backend && php artisan config:show cache.default`.
+- Pause flag folders. The five keys measured hash to folders that exist:
+  `data/73/82` (`database:default`), `data/aa/99` (`database:mail`),
+  `data/86/52` (`database:integrations`), `data/7a/f7`
+  (`database:watermarks`) and `data/9c/90`
+  (`iguide-lab-tour:iguide-lab-tour`), all `www-data:www-data` 755 with no
+  pause file. Of the 256 top-level `data/` folders, 142 are 755, 114 are
+  775 and one is 3777; `cache` and `cache/data` are `www-data:www-data`
+  775. That is why every queue command runs as `www-data` (step 2 below,
+  and `host.json`). The other five queues' folders were not measured. To
+  list them all:
 
-**Scheduled tasks inside the outage.** The app time zone is UTC
-(`config/app.php`), so the Saturday 10 to 11 pm EST outage is 03:00 to
-04:00 UTC on Sunday. The guard refuses scheduler admission from the hold
+  ```bash
+  cd /var/www/backend/storage/framework/cache/data
+  for q in database:mail database:integrations database:default database:watermarks \
+      database:voice-realtime database:voice-notifications database:voice-transcripts \
+      studio:studio database:media-archives iguide-lab-tour:iguide-lab-tour; do
+    h=$(printf '%s' "illuminate:queue:paused:$q" | sha1sum | cut -c1-40)
+    stat -c "%U:%G %a %n $q" "${h:0:2}/${h:2:2}" 2>/dev/null || echo "absent ${h:0:2}/${h:2:2} $q"
+  done
+  ```
+
+  An absent folder is fine: `www-data` creates it at the first pause. A
+  root-owned one is not; stop and call the owner.
+- FPM. The unit is `php8.3-fpm.service`, active. No
+  `opcache.enable`, `opcache.validate_timestamps` or
+  `opcache.revalidate_freq` line was found under `/etc/php/8.3/fpm`, so
+  PHP's defaults apply (`validate_timestamps=1`, `revalidate_freq=2`) unless
+  they are set elsewhere: FPM sees a new `bootstrap/cache/config.php`
+  within about 2 s. The runbook still reloads it after each
+  `config:cache`, with `systemctl try-reload-or-restart php8.3-fpm`. A
+  `grep -r` does not follow the `conf.d` symlinks into
+  `/etc/php/8.3/mods-available`; to rule that out, read the effective
+  values, for example
+  `php-fpm8.3 -i | grep -E '^opcache\.(enable|validate_timestamps|revalidate_freq) '`.
+- Time zone. The host runs on America/New_York (`timedatectl`). The deploy
+  user's crontab has no `CRON_TZ` line, so its lines run on Eastern time.
+  The Laravel scheduler uses `app.timezone` (UTC) unless a task sets
+  `->timezone()`, and the repository's systemd timers name UTC.
+
+**Scheduled tasks inside the outage.** The night falls in EST (UTC-5), so
+10 pm Eastern is 03:00 UTC. The app time zone is UTC (`config/app.php`),
+so the Saturday 10 to 11 pm EST outage is 03:00 to 04:00 UTC on Sunday for
+the Laravel scheduler and the systemd timers. Host cron lines run on the
+host's Eastern time instead. The guard refuses scheduler admission from the hold
 (`guard.authority` admits only `planned` and the two terminal phases)
 until authority is published again, and there is no catch-up. An abort
 that completes before 03:15 admits the scheduler in time for that slot,
@@ -1105,14 +1207,18 @@ so check which slots were really skipped.
 | Hourly and every-few-minutes tasks | each slot | skipped while held | None: each runs at its next slot. |
 | `repro-backup.timer` | 03:30 UTC, up to 5 min jitter | held (step 4) | Start it in the undo list; it runs once right away. |
 | `repro-recovery-kit.timer` and `.path` | 04:15 UTC and every `.env` change | held (step 4) | Start them in the undo list and run the kit once. |
-| Deploy-backup retention cron (`deployment-storage.py scheduled-retention`) | `47 3 * * *` host time | runs if the host clock is UTC; it is not wrapped and takes both deploy locks for its run | Leave it. A controller step that needs the deploy locks waits for them within its deadline. |
+| Deploy-backup retention cron (`deployment-storage.py scheduled-retention`) | `47 3 * * *`, host time: 03:47 Eastern (08:47 UTC) | outside: it runs about 4 hours 45 minutes after the outage ends. It is not wrapped and takes both deploy locks for its run | None. |
+| The deploy user's `35 3 * * *` cron line (its command is not recorded here) | 03:35 Eastern (08:35 UTC) | outside | None. |
+| The deploy user's other cron lines (`@reboot`, three every minute, `17 * * * *`, two `*/5`, `7,37 * * * *`) | each slot, host time | lines that W1's cron rules wrap are refused while held | None: each runs at its next slot. |
 | `telnyx:prune-webhook-events` | 02:30 UTC (9:30 pm EST) | before the hold | None. |
 | `crm:follow-up-digest` | weekdays 07:00 Eastern | not on a Saturday night | None. |
 
 **Editing `.env` on the night.** Every edit must keep the file's inode. An
 editor or `sed -i` that saves by rename drops the `repro-backup` ACL, and
-then the backup, the kit and `wrong_database_engine` fail. Edit a private
-copy and copy it back over the file:
+then the next backup and the kit fail (`backup_failed`, daytime).
+`wrong_database_engine` does not notice: with a cached config, as on
+production, the probe never reads `.env`. Edit a private copy and copy it
+back over the file:
 
 ```bash
 cd /var/www/backend
@@ -1136,21 +1242,32 @@ undo list no longer needs it.
 1. 7:45 pm: pause Studio with its documented pause file, as `maverick`:
    `touch ~/.local/share/repro-studio/paused`. `worker.sh` refuses to start
    while it exists; let the running job finish.
-2. 9:20 pm: pause the long-job queues, from `/var/www/backend`:
+2. 9:20 pm: pause the long-job queues as `www-data`, the same command as
+   `queue_pause` in `host.json`. As the deploy user `queue:pause` fails on
+   the `www-data` 755 cache folders; as root it leaves root-owned files and
+   folders that the app's cache writes then fail on (see "Read-only checks
+   before the night" above):
 
    ```bash
+   www_artisan() { sudo /usr/sbin/runuser -u www-data -- /usr/bin/php /var/www/backend/artisan "$@"; }
    for q in studio:studio database:media-archives database:default \
        database:integrations database:watermarks; do
-     php artisan queue:pause "$q"
+     www_artisan queue:pause "$q"
    done
    # Only if the repro-lab-tour program is installed. "iguide-lab-tour" alone
    # would pause database:iguide-lab-tour, the wrong connection.
-   php artisan queue:pause iguide-lab-tour:iguide-lab-tour
+   www_artisan queue:pause iguide-lab-tour:iguide-lab-tour
+   # Each flag is a www-data file; workers of both owners read it.
+   for q in studio:studio database:media-archives database:default \
+       database:integrations database:watermarks; do
+     h=$(printf '%s' "illuminate:queue:paused:$q" | sha1sum | cut -c1-40)
+     stat -c "%U %a $q" "/var/www/backend/storage/framework/cache/data/${h:0:2}/${h:2:2}/$h"
+   done
    ```
 
-   Use the normal shared cache context and confirm both Unix owners see the
-   pause flags. Wait for their running jobs, then stop the workers that the
-   `long_job_processes` patterns in `host.json` match (for example
+   Every line must show `www-data` (add the lab-tour queue to the check if
+   you paused it). Wait for their running jobs, then stop the workers that
+   the `long_job_processes` patterns in `host.json` match (for example
    `repro-studio` and `repro-lab-tour` in the user Supervisor, and
    `repro-media-archives.service`). The hold refuses while one still runs,
    because `host.json` sets `require_long_job_predrain: true`. Identify stale reservations
@@ -1163,8 +1280,9 @@ undo list no longer needs it.
    [Freeze and replay steps](#freeze-and-replay-steps): record and pause
    Aryeo, hold CRM outbound sends, reply forwarding and calendar sync, hold
    the website recruiting scheduler (not built). Apply the flags with
-   `config:cache`, an FPM reload and `queue:restart`; never clear the cache,
-   which can erase the queue pause flags from step 2.
+   `config:cache`, `systemctl try-reload-or-restart php8.3-fpm` and
+   `queue:restart` as `www-data`; never clear the cache, which erases the
+   queue pause flags from step 2.
 4. 9:50 pm: preflight as before (no call in progress, Aryeo recorded and
    paused, no upload in flight). Once the off-site units are installed, also
    hold the backup and kit units for the night and list them as "nothing
@@ -1249,11 +1367,20 @@ undo list no longer needs it.
    Not a path to MySQL at this candidate: the adapter refuses `prepare` and
    `promote` and covers the hold, the freeze and the pre-write rollback
    only. A SQLite dress rehearsal goes from step 8 to `cli.py abort` and the
-   undo list. Do not import into a target that the MySQL probe watches
-   while a run is held: if the probe reports the import as `writable` or
-   `business_activity`, the journal goes to `recovery_required`, and neither
-   `abort` nor the watchdog rolls back (ordering H3). Run import rehearsals
-   in the nightly runner's disposable MySQL instead.
+   undo list.
+
+   From `cli.py init` until the installed fences are retired, the MySQL
+   probe must never report `writable` or `business_activity`, in any phase.
+   `Runner.perform` checks the probe before anything else, before a
+   `planned` tick returns, so a tick in `planned` (C1, and every day until
+   the night) or after a reopened SQLite rollback that sees either value
+   records `recovery_required`. The guard then refuses every wrapped writer
+   (`guard.authority` admits only `planned` and the two terminal phases):
+   workers that restart, the scheduler and the wrapped cron lines stop while
+   the web keeps writing SQLite. Neither `abort` nor the watchdog rolls back
+   from there (ordering H3). So run no import and change no grant on the
+   probed target outside the night's frozen window, and run import
+   rehearsals in the nightly runner's disposable MySQL.
 
 **Watchdog.** `repro-cutover-watchdog.timer` runs `cli.py tick` every minute
 from boot (`OnCalendar=minutely`). In a held phase it closes admissions again
@@ -1280,10 +1407,10 @@ the MySQL adapter lane exists:
 | `import-empty` plus `verify-fields` (measured 593 to 754 s) | 12, hard limit 20 | 12 |
 | Migrations, `complete-schema`, final schema check | none | 3-5 |
 | Final SQLite and MySQL backups off-site (both required by `Evidence`) | none | 5 |
-| Read-only smoke | none | 5 |
-| `cli.py prepare`: `.env` switch with the write gate closed, config cache, FPM reload, evidence | none | 2 |
+| `cli.py prepare`: `.env` switch with the write gate closed, `config:cache`, `systemctl try-reload-or-restart php8.3-fpm` | none | 2 |
+| Still inside `prepare`: read-only smoke on the switched config and the writer-policy check (lane item 7), then `evidence()` (`Runner._prepare` collects it after `adapter.prepare`) | none | 5 |
 | Approval 2, accepted before 0:45 | 5 | 2-5 |
-| Promote (`seal_mysql` opens the gate, `db:writer-policy-check`), reopen, queues, workers, scheduler | none (not built) | 3 |
+| Promote (`seal_mysql` opens the gate), reopen, queues, workers, scheduler | none (not built) | 3 |
 
 - Expected total: about 43 to 50 minutes. The go point falls at about 0:40
   to 0:47, marginal against the 0:45 watchdog. With the stated maximums
@@ -1365,10 +1492,15 @@ the journal; call the owner.
 
 **Undo list, after an abort or a reopen.** Every hold the night sets, in the
 order to undo it. It applies after `cli.py abort` or the watchdog on
-SQLite. Once the adapter lane exists it also applies after a MySQL
-reopen: then step 1 expects `mysql_authoritative`, and steps 2 and 4 do
-not apply, because the MySQL reopen has already resumed the queues and
-started the workers.
+SQLite. Once the adapter lane exists it also applies to a MySQL reopen:
+step 3 then runs before that reopen too, step 1 expects
+`mysql_authoritative` after it, and steps 2 and 4 do not apply, because
+the MySQL reopen resumes the queues and starts the workers itself. Step 3
+comes before any reopen because Studio's `worker.sh` refuses to start
+while the pause file exists (`scripts/install-studio-runtime.sh`; the
+lab-tour worker checks the same file). If that makes a `start_workers`
+command exit non-zero, the reopen fails: adapter `reopen` raises at the
+first host command that does.
 
 1. `cli.py status` shows `sqlite_authoritative` (after an abort) or
    `mysql_authoritative` (after a MySQL reopen). If it shows
@@ -1378,12 +1510,13 @@ started the workers.
    reopen` that `php artisan config:show database.default` prints
    `sqlite`. If it does not, stop and call the owner. Nothing to do at
    this candidate, which never switches them.
-3. Studio pause file, before `cli.py reopen`, as `maverick`:
+3. Studio pause file, before any reopen (SQLite or MySQL), as `maverick`:
    `rm ~/.local/share/repro-studio/paused` (and `paused-lab-tour` if set),
    so the Studio program starts with the others. If it already went FATAL:
    `supervisorctl -c ~/.local/share/repro-studio/supervisord.conf start repro-studio`.
-4. `cli.py reopen`. It resumes every queue in `host.json`, the long-job
-   queues paused at 9:20 pm included, starts the worker groups, recreates
+4. `cli.py reopen`. It resumes every queue in `host.json` through
+   `queue_resume`, as `www-data`, the long-job queues paused at 9:20 pm
+   included, starts the worker groups, recreates
    the open marker and, after an abort, lifts the deploy fence. Check
    `sudo supervisorctl status`, the user Supervisor's `status` and
    `systemctl status repro-media-archives.service`.
@@ -1424,7 +1557,8 @@ no-go before 10 pm), undo the pre-hold steps:
 
 1. Cancel the `site_unreachable` maintenance window at the provider.
 2. Remove the Studio pause file and start Studio (as in step 3 above).
-3. Resume the long-job queues: `php artisan queue:resume <connection:queue>`
+3. Resume the long-job queues as `www-data`, like the pause:
+   `sudo /usr/sbin/runuser -u www-data -- /usr/bin/php /var/www/backend/artisan queue:resume <connection:queue>`
    for each queue paused at 9:20 pm, then start the stopped workers through
    their Supervisor or systemd. The guard admits them in `planned`.
 4. CRM steps 8 to 10 in order (Resend and reply forwarding, the outbound
@@ -1441,8 +1575,9 @@ This candidate stops at the SQLite hold, freeze and pre-write rollback. The
 next lane must build and test everything below before a night can reach
 MySQL. The list comes from the two runbook reviews of 25 November
 (executability findings 1, 2, 3, 13 and 15; ordering findings H1 to H4, M2
-to M4 and M8). Each item is a requirement for that lane, not a step to run
-now.
+to M4 and M8), the verifier rounds after them and the production facts
+measured that day. Each item is a requirement for that lane, not a step to
+run now.
 
 **Host probes.** These are needed for W1, so even a SQLite dress rehearsal
 waits for items 1 to 3.
@@ -1455,10 +1590,14 @@ waits for items 1 to 3.
 2. The identity probe prints the six `Identity` fields as JSON (`run_id`,
    `release_sha`, `artifact_sha256`, `source_sha256`, `config_sha256`,
    `target_uuid`), measured on the host, not copied from the policy. The
-   runner compares it with the pinned identity before `init`, `hold`,
+   runner compares all six with the pinned identity before `init`, `hold`,
    `freeze`, `abort` and every watchdog `tick`
-   (`Runner._verify_identity`), and `refresh` reads it too. A mismatch
-   refuses all of them, the automatic rollback included. So
+   (`Runner._verify_identity`), and `hold` also compares the preflight
+   digest, which includes them. A mismatch refuses all of them, the
+   automatic rollback included. `refresh` reads the probe too, but compares
+   only `source_sha256`, `release_sha` and `artifact_sha256` with the
+   policy (adapter `host_authority`, `guard.verify`), so a different
+   `config_sha256` does not stop it. So
    `config_sha256` must leave out the flags the night changes after
    `init`: `CRM_OUTBOUND_HOLD`, `CRM_DEFER_REPLY_FORWARDING`,
    `CRM_CALENDAR_SYNC_HOLD`, `PRODUCER_INGRESS_HOLD`, and the database
@@ -1499,10 +1638,12 @@ waits for items 1 to 3.
    the migrations, which run while the run is `frozen` and the probe must
    report `writable` false.
 
-   Why it matters: `init` needs both false, and once either is true the
-   runner records `recovery_required` and refuses `abort` and the 45-minute
-   rollback with "MySQL writes may exist. Use separately verified recovery"
-   (`Runner._rollback`, `Runner.perform`). The site then stays held. W2 must
+   Why it matters: `init` needs both false, and once either is true, in any
+   phase from `init` on (`planned` and a reopened SQLite rollback
+   included), the runner records `recovery_required` and refuses `abort`
+   and the 45-minute rollback with "MySQL writes may exist. Use separately
+   verified recovery" (`Runner._rollback`, `Runner.perform`). The guard
+   then holds every wrapped writer (Freeze all writers, step 9). W2 must
    prove that the token row, the import, `php artisan migrate`,
    `complete-schema.php` and `prepare` keep both false, that `seal_mysql`
    turns `writable` true, and that `seal_sqlite` turns it false again
@@ -1518,7 +1659,12 @@ waits for items 1 to 3.
    it matches the engine the journal makes authoritative. Without it, a
    reopen after a no-go whose configuration was not restored starts
    workers, the scheduler and FPM on MySQL while the journal says SQLite
-   (ordering H2).
+   (ordering H2). Once measured, the live config hash must still equal the
+   policy's single `sqlite_live_config_sha256` (`guard.verify`) after the
+   night has changed the CRM and producer flags, which stay changed through
+   an abort. So it must leave out the same flags as item 2, or the policy
+   must pin both SQLite configurations, which the guard does not support
+   today.
 5. The activation receipt sets `application_verified` without any
    application check. Add the smoke command from item 11.
 
@@ -1540,27 +1686,35 @@ waits for items 1 to 3.
      forward parity, final schema, read-only smoke and both off-site
      backups (final SQLite and MySQL).
    - `seal_mysql` opens the write gate. Afterwards `sealed("mysql")` must
-     hold: engine `mysql`, MySQL writable, SQLite not writable, admissions
-     closed, workers stopped.
-   - `seal_sqlite`, which today only unseals the SQLite file, must also
-     check that the write gate is closed and undo the switch of item 10.
-     Afterwards `sealed("sqlite")` must hold, engine `sqlite` included, or
-     `publish_authority("sqlite")` refuses and the rollback fails on every
-     tick.
+     hold: engine `mysql`, MySQL writable, SQLite not writable, no
+     business activity, admissions closed, workers stopped and deploys
+     fenced (`Observation.sealed`).
+   - `seal_sqlite`, which today unseals the SQLite file and removes the
+     open marker, must also check that the write gate is closed and undo
+     the switch of item 10. Afterwards `sealed("sqlite")` must hold, engine
+     `sqlite` included, or `publish_authority("sqlite")` refuses and the
+     rollback fails on every tick.
 
    `db:writer-policy-check` takes the writer token in an empty
    transaction. An account with only `SELECT` on the token table cannot
    take it (the "readonly account" case in
    `tests/MySql/contracts/MySqlWriterTokenContract.php`), and a locked
    account cannot connect, so with either gate candidate the check reports
-   a problem while the gate is closed. Run it after `seal_mysql` opens the
-   gate and before authority is published, or split its token step out;
-   this is open.
+   a problem while the gate is closed. Do not run it after `seal_mysql`:
+   `_promote` sets `writes_possible` before it calls `seal_mysql`, so any
+   failure from there records `recovery_required`, and no rollback runs.
+   Prefer running its token step during `prepare`, as part of the evidence
+   before Approval 2, under a separately granted check account (for
+   example through a staged config cache, as for `php artisan migrate` in
+   [Import into the empty target](#import-into-the-empty-target)). A
+   failure there stops before the point of no return. This is open.
 8. A MySQL `reopen`: verify the `mysql_authoritative` proof through the
    guard, resume the queues, start the workers, create the open marker and
    write an activation receipt for engine `mysql`. In
    `mysql_authoritative` the runner refuses everything but `tick`, so this
-   reopen is the only way forward.
+   reopen is the only way forward. Remove the Studio pause file first (undo
+   list step 3); otherwise Studio cannot start and the reopen can fail with
+   it.
 9. MySQL writer profiles. Every profile in `wrappers.json` says `"engine":
    "sqlite"`, so the guard refuses every wrapped writer on MySQL until the
    profiles change at promotion.
@@ -1573,14 +1727,24 @@ waits for items 1 to 3.
     - `prepare` keeps a copy of the SQLite `.env`, writes the MySQL keys
       in place (ACL kept, see "Editing `.env` on the night" in
       [Freeze all writers](#freeze-all-writers)), runs `php artisan
-      config:cache` and `sudo systemctl reload php8.3-fpm`. The write gate
-      stays closed, so the observed engine is `mysql` while nothing can
-      write MySQL.
+      config:cache` and `/usr/bin/systemctl try-reload-or-restart
+      php8.3-fpm`. The write gate stays closed, so the observed engine is
+      `mysql` while nothing can write MySQL.
     - `seal_sqlite` copies the saved `.env` back in place, runs
-      `config:cache` and reloads FPM, so `cli.py abort` and the unattended
-      45-minute watchdog undo the switch with no operator. `cli.py reopen`
-      then needs no manual step, and item 4 makes it refuse if the restore
-      did not happen.
+      `config:cache` and the same `try-reload-or-restart`, so `cli.py abort`
+      and the unattended 45-minute watchdog undo the switch with no
+      operator. `cli.py reopen` then needs no manual step, and item 4 makes
+      it refuse if the restore did not happen.
+
+    Not `systemctl reload`: the freeze's `drain_fpm` may have stopped FPM,
+    and `reload` exits 1 on a stopped unit ("is not active, cannot
+    reload"), while `try-reload-or-restart` exits 0 and leaves it stopped
+    (both checked under systemd 252 in the QA image). The adapter's `_run`
+    raises on a non-zero exit, and `_rollback` calls `seal_sqlite` before
+    it publishes authority, so a plain `reload` would fail the watchdog
+    rollback on every tick. A stopped FPM reads the restored config when
+    `start_workers` starts it. The controller runs as root, so these
+    commands take no `sudo`; operator shells as `maverick` do.
 
     Ruled out: a switch made by hand before Approval 2. Once item 4
     measures `engine`, an unattended watchdog rollback would find `mysql`,
@@ -1589,11 +1753,12 @@ waits for items 1 to 3.
     unless the engine is `mysql` after `prepare`, and `Runner._promote`
     refuses unless it is `mysql` before.
 
-    With the `database` cache store, a rollback after `prepare` runs
-    `queue_pause` (`close_admissions`) while the default connection is
-    MySQL and the gate is closed, so it fails before `seal_sqlite` can
-    restore anything. That is one more reason the cache-store check must
-    show `file`, or the rollback order must change.
+    A rollback after `prepare` runs `queue_pause` (`close_admissions`)
+    while the default connection is MySQL and the gate is closed. With the
+    `file` cache store measured on 25 November the flag goes to
+    `storage/framework/cache`, not a database table. With the `database`
+    store it would go to MySQL and fail before `seal_sqlite`; recheck the
+    store before the night. W2 must prove a rollback after `prepare`.
 
     The keys the switch sets are in
     [Validate before reopening traffic](#validate-before-reopening-traffic).
@@ -1640,7 +1805,8 @@ waits for items 1 to 3.
 14. `host.json` complete before `init` (ordering M4): `hold` refuses a
     changed host config (`preflight_sha256` includes it) and `init` cannot
     run twice. That includes the lab-tour queue
-    (`iguide-lab-tour:iguide-lab-tour`) when the program is installed.
+    (`iguide-lab-tour:iguide-lab-tour`) when the program is installed, which
+    the host-config check accepts from the code-fix lane on (`71f7db04`).
 15. The scheduler starts at authority publication, before `reopen`, on both
     paths (ordering M2). `crm:calendar-sync` is held by
     `CRM_CALENDAR_SYNC_HOLD` until CRM step 10. Any other task that must
@@ -1654,14 +1820,50 @@ waits for items 1 to 3.
     - an exempt nginx location for the Telnyx text paths, served by a
       capture that needs no database and is not drained (a reviewed gate
       exemption). The candidate already has the unbound pieces:
-      `TelnyxCutoverCapture` (a standalone HTTP adapter for the
-      messaging, status and voice paths, not `/shared-mms/{uuid}`) on top
-      of the file spool `TelnyxCutoverInbox`. Neither is reviewed for
+      `TelnyxCutoverCapture` (a standalone HTTP adapter for all four Telnyx
+      paths: messaging, status, voice and `/shared-mms/{uuid}`, which it
+      stores as `shared-mms:<uuid>`; `tests/Unit/TelnyxCutoverCaptureTest.php`
+      covers each) on top of the file spool `TelnyxCutoverInbox`, which
+      accepts the same four destinations. Neither is reviewed for
       activation, and no entry point serves them yet;
     - a Telnyx failover URL on a separate host that captures to a spool for
       replay after the hold.
 
     Open: no option is chosen or built.
+
+**Host commands and reboots.**
+
+17. Queue commands as `www-data`. The adapter must refuse a `host.json`
+    whose `queue_pause` or `queue_resume` does not run as `www-data` (for
+    example, anything but the `/usr/sbin/runuser -u www-data --` prefix in
+    [Release and target preparation](#release-and-target-preparation)
+    step 10). Today `load_config` checks only that each is an absolute
+    argument list. The pause flags live in the `file` cache in `www-data`
+    755 folders, so the deploy user's pause fails and the hold, abort and
+    rollback fail with it; root's pause leaves root-owned files and
+    folders that the app's cache writes then fail on.
+18. A MySQL reboot and re-close path. `Runner.perform` keeps
+    `mysql_authoritative` only while the host shows `sealed("mysql")` or
+    `mysql_live()`. After a reboot that follows the MySQL reopen, `/run` is
+    empty, so admissions are closed and `mysql_live()` is false.
+    `sealed("mysql")` needs `business_activity` false, which item 3
+    defines as no application rows changed after the import, so it stays
+    true once traffic has run. There is no MySQL counterpart of
+    `externally_held()`, and `refresh` re-publishes the deploy fence only
+    in `planned` and `sqlite_authoritative` (adapter `refresh`). So the
+    first watchdog tick after any such reboot, the monthly 02:00 reboot
+    included, records `recovery_required`, and `refresh` and `reopen`
+    cannot clear it. Removing the open marker by hand (item 12, step 1)
+    has the same effect at the next tick, and item 12 must expect that.
+    The lane needs:
+    - a MySQL counterpart of `externally_held()` (MySQL the only writable
+      engine, admissions closed), or a `business_activity` meaning that
+      does not count writes made under MySQL authority;
+    - `refresh` in `mysql_authoritative` that publishes the deploy fence
+      again before it measures the host, as it does for
+      `sqlite_authoritative`;
+    - a W2 test: reboot after the MySQL reopen, then `refresh` and the
+      MySQL `reopen` (item 8), with no `recovery_required`.
 
 **Other branches the night depends on.** None is in this candidate.
 
@@ -1679,7 +1881,8 @@ waits for items 1 to 3.
   The way back restores it. Its database-backed `/up` and `ops:heartbeat`
   also page during the hold; add both to the alert plan for the night.
 - `claude/sqlite-backups-billing-20261125`: the nightly SQLite copy at
-  01:40 server time. Its cron line matches no rule in
+  01:40 server time (Eastern: 06:40 UTC in winter, outside the outage).
+  Its cron line matches no rule in
   `cron-rules.example.json`, so `crontab.py` refuses it at W1, and a copy
   still running at `freeze` can hold `-shm` open, which makes the seal
   refuse. It also brings the
@@ -1847,11 +2050,22 @@ disposable socket-only MySQL 8.4.13 for about 10 to 16 minutes. It needs
 present the runner never sets it true, because it has no target-side
 comparison or access check. `busiest_endpoints` in
 `review-policy.draft.json` is also `null`, so the readiness check cannot
-pass. The committed `crm_migrations` list names the nine migrations of 24
-November; the code-fix lane adds the tenth. `reviewed_schema_sha256` was
-pinned before that migration added two columns, so the first night after it
-is deployed will most likely stop at `plan` until the new layout is reviewed
-and pinned (not proven without a snapshot). If the pinned finance command
+pass. At `4e4a262d` the committed `crm_migrations` list names the nine
+migrations of 24 November. The code-fix lane (`6fa0f78e`) adds the tenth,
+`2026_11_25_140000_add_replay_identity_to_recruit_application_receipts`,
+and a test that fails when a migration creating or changing a CRM table is
+missing from the list. The capture stops (`crm-ledger-differs`) unless the
+live ledger has every listed migration, so with that list no night can run
+before the candidate is deployed. `reviewed_schema_sha256` was pinned
+while the live ledger had nine CRM migrations; the tenth adds two columns,
+so the first night after the candidate is deployed will most likely stop
+at `plan` (`reviewed-layout-differs`) until the digest is re-pinned (not
+proven without a snapshot). `migrate.py plan` computes it from the
+captured live file, so only a production snapshot can re-pin it; the
+[nightly runner README](../scripts/cutover/nightly/README.md#configuration)
+has the re-pin steps once the code-fix lane adds them. The order "deploy
+the candidate, re-pin `reviewed_schema_sha256` from a production snapshot,
+then start the five-night streak" is a decision for the owner. If the pinned finance command
 writes through the application on a MySQL copy, provision the writer token
 there first ([Release and target preparation](#release-and-target-preparation)
 step 4).
@@ -1929,15 +2143,17 @@ approved socket-only server". Keep the optional MySQL pilots
 (`REPRO_MYSQL_QUEUE_WORKER`, `REPRO_MYSQL_STUDIO_QUEUE_WORKER`,
 `REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER`, `REPRO_MYSQL_SCHEDULING_CACHE`,
 `REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN`) off unless they are approved
-separately. Then apply it with `php artisan config:cache` and
-`sudo systemctl reload php8.3-fpm` (never `optimize:clear`), and verify FPM
-and both worker owners resolve the same driver, database and server UUID.
+separately. `prepare` then applies it with `php artisan config:cache` and
+`systemctl try-reload-or-restart php8.3-fpm` (never `optimize:clear`; as
+root, so no `sudo`), and verify FPM and both worker owners resolve the same
+driver, database and server UUID.
 Open: nothing shows FPM's effective config while the hold is in force (see
-the [MySQL adapter lane](#mysql-adapter-lane-not-built) item 11). Once the
-write gate is open, run `php artisan db:writer-policy-check` as the
-application user. It must print `"problems":[]` and exit 0. It takes the
-writer token, so it cannot pass while the gate is closed (lane item 7).
-Add it to every deploy once MySQL is live. Every
+the [MySQL adapter lane](#mysql-adapter-lane-not-built) item 11).
+`php artisan db:writer-policy-check` must print `"problems":[]` and exit
+0. It takes the writer token, so with the app account it cannot pass while
+the gate is closed. Run it before Approval 2 under a separately granted
+check account, not after `seal_mysql`, where a failure ends in
+`recovery_required` (lane item 7). Add it to every deploy once MySQL is live. Every
 process must run the same release: a process without the policy would write
 without the token. The engine check in the drill covers this for workers.
 The writer-hold controller does not promote MySQL or reopen on it; the
@@ -1958,8 +2174,9 @@ close admissions again, unseal SQLite and reopen it. At this candidate
 nothing switches the database settings, so there is nothing else to
 restore. Once the adapter lane exists, `prepare` makes the switch with the
 MySQL write gate closed, and the rollback's `seal_sqlite` restores the
-saved `.env` in place, runs `php artisan config:cache` and reloads FPM
-before SQLite authority is published, so the unattended watchdog undoes
+saved `.env` in place, runs `php artisan config:cache` and
+`systemctl try-reload-or-restart php8.3-fpm` before SQLite authority is
+published, so the unattended watchdog undoes
 it too. The live config probe then makes `reopen` refuse if the restore
 did not happen ([MySQL adapter lane](#mysql-adapter-lane-not-built) items
 4 and 10). Then follow the undo list in
