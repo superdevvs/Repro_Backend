@@ -11,7 +11,9 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 import publish_backup as backup
 
@@ -97,6 +99,31 @@ class RecoveryKitTests(unittest.TestCase):
         self.cnf.write_text("[mysqld]\nserver-id=64085\n")
         self.assertEqual(self.run_kit()[0]["result"], "recovery-kit-published")
         self.assertEqual(len(self.published), 2)
+
+    def test_an_unchanged_kit_is_republished_before_the_bucket_expires_it(self):
+        # The kit lives under daily/, whose lifecycle rule deletes objects after 31
+        # days. Publishing only on change would leave no kit once .env sat unchanged
+        # for a month, so an unchanged kit is published again every week.
+        import install_backup_host as installer
+
+        self.run_kit()
+        start = time.time()
+        with patch.object(self.kit.time, "time", return_value=start + 6 * 86400):
+            self.assertEqual(self.run_kit()[0]["result"], "recovery-kit-unchanged")
+        with patch.object(self.kit.time, "time", return_value=start + 8 * 86400):
+            self.assertEqual(self.run_kit()[0]["result"], "recovery-kit-published")
+        self.assertEqual(len(self.published), 2)
+        prefix = self.plan_for_installer()["destination"].split("/", 1)[1] + "/"
+        self.assertLessEqual(4 * self.kit.REPUBLISH_AFTER_SECONDS, installer.RETENTION_DAYS[prefix] * 86400)
+
+    def plan_for_installer(self):
+        import install_backup_host as installer
+
+        settings = installer.parse_settings(json.dumps({
+            "version": 1, "release": "a" * 40, "identity": "repro-sqlite-maverick", "bucket": "repro-db-backups",
+            "endpoint": "https://" + "5" * 32 + ".r2.cloudflarestorage.com"}).encode())
+        job = installer.build_job("recovery-kit", settings)
+        return json.loads(next(item.data for item in job.files if item.path.endswith("recovery-kit.json")))
 
     def test_env_without_app_key_is_refused(self):
         self.env.write_text("APP_NAME=Repro\nAPP_KEY=\n")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the application recovery kit (.env with APP_KEY, MySQL settings) when it changes.
+"""Publish the application recovery kit (.env with APP_KEY, MySQL settings) when it changes, and weekly.
 
 The kit is encrypted by the reviewed rclone crypt remote under the application
 scope. Nothing here prints a file's content, the APP_KEY or any .env value;
@@ -33,6 +33,9 @@ NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 PLAN_FIELDS = {"version", "release", "identity", "state_dir", "files", "rclone_config", "rclone", "crypt_remote",
                "destination", "transfer_timeout_seconds", "run_timeout_seconds"}
 APP_KEY = re.compile(rb"^APP_KEY=[\"']?base64:[A-Za-z0-9+/]{43}=[\"']?\r?$", re.MULTILINE)
+# The kit lives under daily/, whose bucket rule deletes objects after 31 days.
+# An unchanged kit is published again weekly so the bucket always holds one.
+REPUBLISH_AFTER_SECONDS = 7 * 86400
 
 
 def parse_plan(raw: bytes) -> dict:
@@ -125,7 +128,9 @@ def run(plan: dict, *, publish: Callable[[Path, str], dict]) -> dict:
         batch = Path(name)
         files_sha256, manifest_sha256 = build(plan, batch, now)
         last = previous(state_dir)
-        if last is not None and last.get("files_sha256") == files_sha256:
+        published = last.get("published_unix_s") if last is not None else None
+        recent = type(published) is int and 0 <= time.time() - published < REPUBLISH_AFTER_SECONDS
+        if last is not None and last.get("files_sha256") == files_sha256 and recent:
             return {"result": "recovery-kit-unchanged", "files_sha256": files_sha256,
                     "backup_id": last.get("backup_id")}
         receipt = publish(batch, manifest_sha256)
