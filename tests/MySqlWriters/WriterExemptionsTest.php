@@ -90,12 +90,11 @@ final class WriterExemptionsTest extends TestCase
 
     public function test_queue_bookkeeping_may_write_only_the_jobs_table(): void
     {
-        try {
-            DB::connection('mysql')->withoutWriterToken(['jobs'],
-                fn ($db) => $db->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 9]));
-            $this->fail('Bookkeeping without the token must not reach business tables.');
-        } catch (LogicException) {
-        }
+        $error = $this->failureOf(fn () => DB::connection('mysql')->withoutWriterToken(['jobs'],
+            fn ($db) => $db->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 9])));
+
+        $this->assertInstanceOf(LogicException::class, $error, 'Bookkeeping without the token must not reach business tables.');
+        $this->assertStringContainsString('may only write jobs', $error->getMessage());
         $this->assertSame(0, $this->counter());
     }
 
@@ -130,15 +129,13 @@ final class WriterExemptionsTest extends TestCase
 
     public function test_the_cache_lock_session_may_write_only_cache_locks(): void
     {
-        try {
-            DB::connection('mysql_cache_locks')->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 9]);
-            $this->fail('The token-free lock session must not reach business tables.');
-        } catch (LogicException) {
-        }
-        try {
-            DB::connection('mysql_cache_locks')->table('cache')->insert(['key' => 'x', 'value' => 'y', 'expiration' => 1]);
-            $this->fail('The lock session must not write cache values either.');
-        } catch (LogicException) {
+        foreach ([
+            'business tables' => fn () => DB::connection('mysql_cache_locks')->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 9]),
+            'cache values' => fn () => DB::connection('mysql_cache_locks')->table('cache')->insert(['key' => 'x', 'value' => 'y', 'expiration' => 1]),
+        ] as $what => $write) {
+            $error = $this->failureOf($write);
+            $this->assertInstanceOf(LogicException::class, $error, "The token-free lock session must not write {$what}.");
+            $this->assertStringContainsString('may only write cache_locks', $error->getMessage());
         }
         $this->assertSame(0, $this->counter());
         $this->assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM cache')->fetchColumn());
