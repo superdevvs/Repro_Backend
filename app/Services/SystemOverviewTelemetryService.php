@@ -116,7 +116,9 @@ class SystemOverviewTelemetryService
 
         $traceId = $this->resolveTraceId($request);
         $startedAt = (float) ($request->attributes->get('system_overview.started_at') ?? microtime(true));
-        $durationMs = max(0, (int) round((microtime(true) - $startedAt) * 1000));
+        // The middleware notes when the response was ready; recording may happen later.
+        $finishedAt = (float) ($request->attributes->get('system_overview.finished_at') ?? microtime(true));
+        $durationMs = max(0, (int) round(($finishedAt - $startedAt) * 1000));
         $session = $this->upsertSessionFromRequest($request);
         $blocker = $this->classifyBlocker($request, $response->getStatusCode(), $durationMs);
 
