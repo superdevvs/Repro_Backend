@@ -324,11 +324,19 @@ def server_error_rate(context: Context) -> tuple[str, str]:
     start = context.now - limits["window_seconds"]
     total = errors = 0
     for name in context.plan["access_logs"]:
-        for match in ACCESS_LINE.finditer(tail(Path(name), limits["max_read_bytes"])):
-            moment = dt.datetime.strptime(match.group(1).decode(), "%d/%b/%Y:%H:%M:%S %z").timestamp()
-            if start <= moment <= context.now + 60:
-                total += 1
-                errors += 500 <= int(match.group(2)) <= 599
+        # After logrotate the window also spans the previous file (delaycompress keeps it plain).
+        for path, rotated in ((Path(name + ".1"), True), (Path(name), False)):
+            try:
+                chunk = tail(path, limits["max_read_bytes"])
+            except FileNotFoundError:
+                if rotated:
+                    continue
+                raise
+            for match in ACCESS_LINE.finditer(chunk):
+                moment = dt.datetime.strptime(match.group(1).decode(), "%d/%b/%Y:%H:%M:%S %z").timestamp()
+                if start <= moment <= context.now + 60:
+                    total += 1
+                    errors += 500 <= int(match.group(2)) <= 599
     detail = f"{errors} of {total} requests failed in {limits['window_seconds'] // 60} min"
     if total >= limits["min_requests"] and errors * 100 > limits["max_percent"] * total:
         return "fail", detail

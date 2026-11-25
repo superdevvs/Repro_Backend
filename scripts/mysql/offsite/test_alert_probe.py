@@ -342,6 +342,16 @@ class DetectorTests(unittest.TestCase):
         self.write_access(100, 30, minutes_ago=40)
         self.assertEqual(self.run_probe()["server_error_rate"]["state"], "ok")
 
+    def test_server_error_rate_counts_the_log_rotated_away_within_the_window(self):
+        # logrotate moves access.log to access.log.1 (delaycompress keeps it plain). For the
+        # next 30 minutes the window spans both files; reading only the new one undercounted.
+        self.baseline()
+        self.write_access(100, 3, minutes_ago=10)
+        self.access.rename(str(self.access) + ".1")
+        self.access.write_text("")
+        status = self.run_probe()["server_error_rate"]
+        self.assertEqual((status["state"], status["detail"]), ("fail", "3 of 100 requests failed in 30 min"))
+
     def test_historical_money_totals_changed(self):
         def change():
             with closing(sqlite3.connect(self.database)) as db, db:
