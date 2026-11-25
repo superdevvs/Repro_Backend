@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\ShootCompensation;
 use App\Models\User;
 use App\Services\InvoiceService;
+use App\Services\PayoutReportService;
 use App\Support\ReadOnlyDatabase;
 use Carbon\Carbon;
 use Illuminate\Database\QueryException;
@@ -73,6 +74,9 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $expected = collect(['datetime_first_day', 'bare_mid_week', 'bare_last_day', 'datetime_last_day'])
             ->map(fn (string $label) => $shoots[$label]->id)->sort()->values()->all();
         $this->assertSame($expected, $billed);
+        // The weekly payout report misses the same shoot.
+        $summary = app(PayoutReportService::class)->buildSalesRepSummaries(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10'));
+        $this->assertSame(4, $summary->sole()['shoot_count']);
     }
 
     public function test_lists_compensations_whose_stored_earned_date_the_text_comparison_skipped(): void
@@ -123,6 +127,12 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $skipped = collect($report['skipped'])->firstWhere('selection', 'complimentary_reshoot_report');
         $this->assertSame($lastDay->id, $skipped['shoot_id']);
         $this->assertNull($skipped['billed_invoice_ids'], 'A report-only selection has no invoice to look for.');
+        // The real report counts only the shoot stored as a bare date.
+        $summary = app(PayoutReportService::class)->buildComplimentaryReshootSummary(
+            Carbon::parse('2026-10-04')->startOfDay(),
+            Carbon::parse('2026-10-10')->endOfDay(),
+        );
+        $this->assertSame(1, $summary['shoot_count']);
     }
 
     public function test_marks_a_skipped_shoot_that_was_billed_on_another_invoice(): void
