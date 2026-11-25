@@ -80,6 +80,22 @@ $result = match ($mode) {
 
         return $controller->messaging($request)->getData(true)['status'] ?? null;
     })(),
+    // One Telnyx status event for an existing outbound message: "<event type>:<final state>:<occurred at>".
+    'telnyx-status' => (function () use ($mark, $await, $arguments) {
+        Illuminate\Support\Facades\Queue::fake();
+        config(['services.telnyx.public_key' => '']);
+        [$slot, $event] = $arguments;
+        [$type, $state, $occurredAt] = explode('|', $event);
+        $payload = ['data' => ['id' => 'writer-policy-status-'.$slot, 'event_type' => $type, 'occurred_at' => $occurredAt,
+            'payload' => ['id' => 'writer-policy-outbound', 'to' => [['phone_number' => '+12025550188', 'status' => $state]]]]];
+        $request = Illuminate\Http\Request::create('/api/webhooks/telnyx/messaging', 'POST', server: ['CONTENT_TYPE' => 'application/json'],
+            content: json_encode($payload, JSON_THROW_ON_ERROR));
+        $controller = app(App\Http\Controllers\API\Messaging\TelnyxWebhookController::class);
+        $mark('ready-'.$slot);
+        $await('go', 150);
+
+        return $controller->messaging($request)->getData(true)['status'] ?? null;
+    })(),
     default => throw new RuntimeException('Unknown worker mode.'),
 };
 

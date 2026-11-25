@@ -13,7 +13,7 @@ transaction, which would hold the writer token for the whole test.
 | `WriterExemptionsTest.php` | Queue claim and delete skip the token while enqueue waits for it. Cache locks never wait for their own caller. Each token-free session may write only its own tables. `LockedWrite` and the rate limiter retry once and run their callback once. |
 | `WorkerHygieneTest.php` | A worker rolls back a transaction a job left open and carries on. `db:writer-token-holders` reports an old holder. |
 | `WriterPolicyCheckTest.php` | `db:writer-policy-check` passes on a provisioned server and fails on a missing token row, a policy that is off, or a second token connection. |
-| `WriterBusinessPathsTest.php` | Eight processes racing for the last Google Routes quota unit reserve it once. Twelve queue workers run 1,000 jobs, each exactly once. |
+| `WriterBusinessPathsTest.php` | Eight processes racing for the last Google Routes quota unit reserve it once. Eight first texts from a new number give one contact, one thread and eight messages. Six status webhooks for one message, sent at once in random order, keep the final delivered status. Twelve queue workers run 1,000 jobs, each exactly once. |
 
 ## Running it
 

@@ -79,6 +79,40 @@ final class WriterBusinessPathsTest extends TestCase
         $this->assertFalse($this->tokenIsHeld());
     }
 
+    public function test_status_webhooks_in_random_order_keep_the_final_status(): void
+    {
+        $this->admin->exec("DELETE FROM messages WHERE provider_message_id = 'writer-policy-outbound'");
+        $message = \App\Models\Message::create([
+            'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX',
+            'provider_message_id' => 'writer-policy-outbound', 'from_address' => '+12025550102',
+            'to_address' => '+12025550188', 'body_text' => 'Probe', 'status' => 'QUEUED',
+        ]);
+        // Earlier carrier events arrive at the same moment as the final delivery.
+        $events = [
+            'message.sent||2026-11-25T10:00:01Z', 'message.sent||2026-11-25T10:00:01Z',
+            'message.sent||2026-11-25T10:00:02Z', 'message.finalized|delivered|2026-11-25T10:00:05Z',
+            'message.finalized|delivery_unconfirmed|2026-11-25T10:00:04Z', 'message.sent||2026-11-25T10:00:03Z',
+        ];
+        shuffle($events);
+        $senders = [];
+        foreach ($events as $slot => $event) {
+            $senders[] = $this->worker('telnyx-status', [(string) $slot, $event], 240);
+        }
+        foreach (array_keys($events) as $slot) {
+            $this->awaitMarker('ready-'.$slot, 120);
+        }
+        $this->mark('go');
+
+        foreach ($senders as $sender) {
+            $this->assertSame('updated', $this->workerResult($sender)['result']);
+        }
+        $final = $this->admin->query('SELECT status, delivered_at, metadata FROM messages WHERE id = '.(int) $message->id)->fetch(\PDO::FETCH_ASSOC);
+        $this->assertSame('DELIVERED', $final['status']);
+        $this->assertNotNull($final['delivered_at']);
+        $this->assertSame('2026-11-25T10:00:05Z', json_decode($final['metadata'], true)['telnyx_status_occurred_at']);
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
     public function test_twelve_workers_take_a_thousand_jobs_and_each_runs_exactly_once(): void
     {
         $queue = app('queue')->connection('database');
