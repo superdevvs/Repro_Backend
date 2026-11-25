@@ -1,0 +1,22 @@
+# Template only. Nothing installs this file. See docs/sqlite-first/sqlite-backups-billing.md.
+# Nightly compact copy of the live SQLite database to the second disk.
+[Unit]
+Description=ReProDashboard nightly SQLite copy (VACUUM INTO) to /mnt/16tb
+RequiresMountsFor=/mnt/16tb /var/www/backend/database
+
+[Service]
+Type=oneshot
+User=maverick
+# New -wal/-shm files take this group; PHP-FPM must still be able to write them.
+Group=www-data
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+ExecStart=/usr/bin/php /var/www/backend/scripts/backup/sqlite-nightly-copy.php /var/www/backend/database/database.sqlite /mnt/16tb/repro-db-backups --keep=7
+TimeoutStartSec=2h
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/16tb/repro-db-backups /var/www/backend/database

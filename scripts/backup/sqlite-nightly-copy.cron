@@ -1,0 +1,4 @@
+# Template only. Nothing installs this line. See docs/sqlite-first/sqlite-backups-billing.md.
+# Use this OR the systemd timer, never both. Add to the maverick crontab after approval.
+# sg runs the copy with the www-data group so new -wal/-shm files stay writable by PHP-FPM.
+40 1 * * * sg www-data -c "nice -n 10 ionice -c2 -n7 /usr/bin/php /var/www/backend/scripts/backup/sqlite-nightly-copy.php /var/www/backend/database/database.sqlite /mnt/16tb/repro-db-backups --keep=7" >/dev/null 2>&1 # repro-sqlite-nightly-copy
