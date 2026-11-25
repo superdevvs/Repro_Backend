@@ -778,7 +778,9 @@ def bundle_is_protected() -> bool:
     names = set(BASE_TOOLS + ALERT_TOOLS + KIT_TOOLS + MYSQL_TOOLS)
     sources = [folder / name for folder in (HERE, DEPLOY, HERE / "systemd" / "binlog-fixture")
                for name in names if (folder / name).is_file()]
-    paths = [HERE, *HERE.parents, DEPLOY, UNITS, Path(__file__), *sources, *UNITS.iterdir()]
+    files = [Path(__file__), *sources, *UNITS.iterdir()]
+    # Every folder on the way to every file, so no account can swap a file through a writable folder.
+    paths = files + sorted({folder for path in files for folder in path.parents})
     return all(os.lstat(path).st_uid == 0 and not os.lstat(path).st_mode & 0o022 for path in paths)
 
 

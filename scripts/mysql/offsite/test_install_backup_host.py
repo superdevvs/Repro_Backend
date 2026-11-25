@@ -351,3 +351,34 @@ class BundleOwnershipTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(installer.main(["--job", "base-backup", "--undo"]), 1)
         self.assertIn("FAIL", output.getvalue())
+
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0 and os.path.isdir("/opt"),
+                         "needs root to build a root-owned bundle")
+    def test_a_writable_folder_between_the_bundle_and_a_source_is_refused(self):
+        import shutil
+        import subprocess
+
+        folder = Path(tempfile.mkdtemp(dir="/opt", prefix="repro-bundle-check-"))
+        self.addCleanup(shutil.rmtree, folder)
+        os.chmod(folder, 0o755)
+        shutil.copytree(OFFSITE.parents[1], folder / "scripts")
+        for root, dirs, files in os.walk(folder):
+            os.chown(root, 0, 0)
+            os.chmod(root, 0o755)
+            for name in files:
+                os.chown(os.path.join(root, name), 0, 0)
+                os.chmod(os.path.join(root, name), 0o644)
+        offsite = folder / "scripts" / "mysql" / "offsite"
+        probe = ("import sys; sys.path.insert(0, sys.argv[1]); import install_backup_host as i; "
+                 "print(i.bundle_is_protected())")
+
+        def protected():
+            done = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(offsite)], capture_output=True)
+            return done.stdout.strip().decode()
+
+        self.assertEqual(protected(), "True")
+        # Another account could swap the units or the rotation wrapper through these folders.
+        for middle in (offsite / "systemd", offsite / "systemd" / "binlog-fixture"):
+            os.chmod(middle, 0o775)
+            self.assertEqual(protected(), "False", middle)
+            os.chmod(middle, 0o755)
