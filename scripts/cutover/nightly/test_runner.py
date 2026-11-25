@@ -95,6 +95,7 @@ class FakeHost:
         self.free = 500 * 10**9
         self.mem_kib = 30 * 1024**2
         self.deploying = False
+        self.deploying_after_capture = False
         self.durations = {"import": 400.0, "verify": 150.0}
         self.fail = set()
         self.live = root / "live" / "database.sqlite"
@@ -131,7 +132,8 @@ class FakeHost:
         return self.candidate
 
     def deploy_lock_free(self):
-        return not self.deploying
+        copied = any("backup-sqlite.php" in " ".join(call) for call in self.calls)
+        return not (self.deploying or (self.deploying_after_capture and copied))
 
     def native_binaries_verified(self):
         return True
@@ -591,6 +593,16 @@ class NightlyRunnerTests(unittest.TestCase):
         receipt = self.run_night()
         self.assertEqual(receipt["reason"], "release-changed-during-capture")
         self.assertFalse((self.outputs() / "copy-receipt.json").exists())
+
+    def test_a_deploy_that_takes_the_lock_during_the_copy_stops_the_night(self):
+        # The deploy holds its lock from the start; deploy-meta.json is rewritten only at the end.
+        self.host.deploying_after_capture = True
+        receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                         ("stopped", "capture", "deploy-started-during-capture"))
+        self.assertFalse((self.outputs() / "snapshot.sqlite").exists())
+        self.assertFalse((self.outputs() / "copy-receipt.json").exists())
+        self.assertNotIn("scope-audit.py", self.host.events)
 
     def test_capture_refuses_a_copy_without_the_reviewed_crm_release(self):
         cases = (("crm_migrations", [*CRM_MIGRATIONS, "2026_11_25_000000_unreviewed_crm_change"]),

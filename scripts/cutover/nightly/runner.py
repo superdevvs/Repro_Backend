@@ -785,6 +785,10 @@ class NightlyRunner:
                 raise Stop("source-changed-during-capture")
             if host.deployed_release() != live_release:
                 raise Stop("release-changed-during-capture")
+            # A deploy holds its lock from the start but rewrites deploy-meta.json only at the
+            # end, so one that began during the copy is still holding the lock now.
+            if not host.deploy_lock_free():
+                raise Stop("deploy-started-during-capture")
             if os.name == "posix" and stat.S_IMODE(snapshot.stat().st_mode) != 0o600:
                 raise Stop("snapshot-not-private")
             if any(os.path.lexists(f"{snapshot}{suffix}") for suffix in ("-wal", "-shm", "-journal")):

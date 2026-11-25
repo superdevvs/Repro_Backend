@@ -41,7 +41,12 @@ data directory and the recovered SQLite copy are never kept. The receipt's
 The night's `release_sha` is the commit of the clean candidate checkout whose
 tools ran. The capture's `release` is the live backend commit read from
 `deploy-meta.json` at run time, before and after the copy. A deploy during the
-copy stops the night.
+copy stops the night: the deploy lock is probed before and again after the
+copy (a deploy holds it from the start but rewrites `deploy-meta.json` only at
+the end), and a changed `deploy-meta.json` is refused. The runner does not
+hold the deploy lock during the copy, so it never delays or refuses a deploy.
+A deploy that took and released the lock entirely within the copy without
+finishing leaves a changed layout that the reviewed-layout pin refuses.
 
 ## Safety
 
