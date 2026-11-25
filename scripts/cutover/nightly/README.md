@@ -144,12 +144,65 @@ python3 -B -m scripts.cutover.nightly.runner check-config --config scripts/cutov
 | --- | --- | --- |
 | `candidate_root` | `/home/maverick/repro-nightly-candidate` | A clean checkout of the candidate release. |
 | `scope` | `database/schema/migration-scope.json`, `a3807732…` | Re-pin after any reviewed scope change. |
-| `reviewed_schema_sha256` | `87e79c75…` | The reviewed converted layout. A schema change stops the night until it is reviewed. `migrate.py plan` computes it from the captured live file, so only a production snapshot can re-pin it: a fresh build has 321 tables, not 328, and another digest. It was pinned while the live ledger had nine CRM migrations. The tenth adds two `recruit_application_receipts` columns, which change the digest, so a night after the candidate is deployed stops at `plan` (`reviewed-layout-differs`) until it is re-pinned from such a snapshot. |
+| `reviewed_schema_sha256` | `87e79c75…` | The reviewed converted layout. A schema change stops the night until it is reviewed. `migrate.py plan` computes it from the captured live file, so only a production snapshot can re-pin it: a fresh build has 321 tables, not 328, and another digest. It was pinned while the live ledger had nine CRM migrations. The tenth adds two `recruit_application_receipts` columns, which change the digest, so a night after the candidate is deployed stops at `plan` (`reviewed-layout-differs`) until it is re-pinned from such a snapshot. See [Re-pin the reviewed layout](#re-pin-the-reviewed-layout). |
 | `crm_migrations` | the ten CRM migrations | Every migration that creates or changes a CRM table (`crm_*`, `recruit_*`, `email_suppressions`). The capture stops (`crm-ledger-differs`) unless the live ledger has all of them, so nights before the candidate is deployed stop there. `test_committed_config_lists_every_crm_migration` fails when one is missing; `scripts/mysql/crm-rehearsal-fixture.php` runs the same set. |
 | `reverse_triggers` | `null` | The reviewed trigger helper is not committed yet. Pin its path and digest here. |
 | `finance` | `null` | The finance rehearsal needs an administrator sandbox. Until a step is configured, `invoice_and_payout_parity_verified` is false and the night cannot qualify. |
 | `applicant_files_root` | `null` | Set to the private disk root to read applicant files read-only. |
 | `retain_snapshots` | `null` | Keep every snapshot. A number keeps only that many of the newest runner snapshots; receipts are always kept. |
+
+## Re-pin the reviewed layout
+
+No night can count until the candidate is deployed and `reviewed_schema_sha256`
+is re-pinned:
+
+- Before the deploy, every night stops at `capture` (`crm-ledger-differs`).
+  `crm_migrations` lists ten CRM migrations and the live ledger has nine.
+  `crm-snapshot-audit.py` also requires all ten.
+- After the deploy, every night stops at `plan` (`reviewed-layout-differs`).
+  The tenth migration adds `payload_sha256` and `attachment_sha256s` to
+  `recruit_application_receipts`, which changes the digest.
+
+So the order is: deploy the candidate, re-pin, then start the five-night
+streak. That order needs the owner's yes. The deploy is a server action, and
+the re-pin changes the config digest, so the owner approves a new approval
+file.
+
+To re-pin, as the deploy user, from the clean candidate checkout:
+
+1. After the deploy, run one night with an owner approval for the current
+   config (`run … --execute --approval …`). It stops at `plan` with
+   `reviewed-layout-differs`. Its folder
+   `<state-dir>/<day>/` keeps the dated capture (`snapshot.sqlite`,
+   `copy-receipt.json`) and the runner's own plan output in `forward-plan/`.
+2. Run the plan again on that capture, into a folder that does not exist
+   yet (its parent must). It writes `schema-plan.json`,
+   `exceptions-private.json` and `result.json`, all mode 0600, and never
+   changes the snapshot. On the full snapshot it can take many minutes; the
+   runner allows it 30.
+
+   ```sh
+   /usr/bin/python3 -B scripts/mysql/migrate.py plan \
+     --snapshot <state-dir>/<day>/snapshot.sqlite \
+     --snapshot-sha256 <snapshot_sha256 from copy-receipt.json> \
+     --output <state-dir>/repin-<day>
+   ```
+
+3. Review `<state-dir>/repin-<day>/schema-plan.json`. It must equal
+   `<state-dir>/<day>/forward-plan/schema-plan.json`. Compared with the
+   layout pinned before, the only change should be the two new
+   `recruit_application_receipts` columns. Ignore `maximum_characters`:
+   those are observed lengths and not part of the digest. The runner does
+   not keep the earlier layout, so take it from an earlier reviewed run's
+   `schema-plan.json`, or read the whole file.
+4. Copy `schema_sha256` from `<state-dir>/repin-<day>/result.json` into
+   `reviewed_schema_sha256` of the config the runner uses. If that is the
+   committed `nightly-config.json`, commit the change and update the
+   candidate checkout: the runner refuses a dirty checkout.
+5. Run `check-config` and give the owner the new `config_sha256` for a new
+   approval file.
+6. Start the streak on the next night. The stopped night cannot be resumed
+   under the new config (`config-changed-for-this-night`).
 
 ## Commands
 
