@@ -183,6 +183,30 @@ class SqliteNightlyCopyTest extends TestCase
         $this->assertSame(['database-20260101-010000.sqlite', 'database-20251231-010000.sqlite'], $status['removed']);
     }
 
+    public function test_a_copy_still_linked_to_its_partial_name_rejoins_the_rotation(): void
+    {
+        $this->requireLinuxHost();
+        // A run stopped between link() and unlink() leaves the copy under both
+        // names (link count 2). The partial name is dropped so the copy counts
+        // as a copy without a checksum file and ages out like any other.
+        $this->createSource(rows: 10);
+        file_put_contents($this->destination.'/database-20260104-010000.sqlite', 'copy whose publish was cut off');
+        link($this->destination.'/database-20260104-010000.sqlite', $this->destination.'/.partial-20260104-010000-0123abcd.sqlite');
+        // A partial name linked to anything else is left alone.
+        file_put_contents($this->directory.'/outside.sqlite', 'not ours to delete');
+        link($this->directory.'/outside.sqlite', $this->destination.'/.partial-20260105-010000-89abcdef.sqlite');
+
+        $process = $this->runCopy(['--keep=1']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertFileDoesNotExist($this->destination.'/.partial-20260104-010000-0123abcd.sqlite');
+        $this->assertFileDoesNotExist($this->destination.'/database-20260104-010000.sqlite');
+        $status = json_decode(file_get_contents($this->destination.'/last-run.json'), true);
+        $this->assertSame(['database-20260104-010000.sqlite'], $status['removed']);
+        $this->assertFileExists($this->destination.'/.partial-20260105-010000-89abcdef.sqlite');
+        $this->assertSame('not ours to delete', file_get_contents($this->directory.'/outside.sqlite'));
+    }
+
     public function test_a_rollback_journal_source_is_refused_because_it_would_block_writers(): void
     {
         $this->requireLinuxHost();

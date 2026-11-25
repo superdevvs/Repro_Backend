@@ -41,6 +41,21 @@ function nightlyOwnedRegularFile(string $path): bool
         && (! function_exists('posix_geteuid') || $info['uid'] === posix_geteuid());
 }
 
+// A run stopped between link() and unlink() leaves the published copy under
+// its partial name too (link count 2). True when $name is that second name.
+function nightlyPartialOfPublishedCopy(string $directory, string $name): bool
+{
+    if (! preg_match('/\A\.partial-(\d{8}-\d{6})-[0-9a-f]{8}\.sqlite\z/', $name, $match)) {
+        return false;
+    }
+    $partial = @lstat($directory.'/'.$name);
+    $published = @lstat($directory.'/database-'.$match[1].'.sqlite');
+
+    return $partial !== false && $published !== false && ($partial['mode'] & 0170000) === 0100000
+        && $partial['nlink'] === 2 && $partial['uid'] === posix_geteuid()
+        && $partial['dev'] === $published['dev'] && $partial['ino'] === $published['ino'];
+}
+
 function nightlyFsync(string $path): void
 {
     $handle = fopen($path, 'r+');
@@ -106,9 +121,11 @@ try {
     }
 
     // A crashed earlier run may have left a partial file. We hold the lock, so
-    // any partial file now is stale.
+    // any partial file now is stale. Dropping the second name of a published
+    // copy leaves that copy without a checksum file; rotation handles it.
     foreach (scandir($destination) ?: [] as $name) {
-        if (preg_match(PARTIAL_PATTERN, $name) && nightlyOwnedRegularFile($destination.'/'.$name)) {
+        if (preg_match(PARTIAL_PATTERN, $name) && (nightlyOwnedRegularFile($destination.'/'.$name)
+            || nightlyPartialOfPublishedCopy($destination, $name))) {
             unlink($destination.'/'.$name);
         }
     }
