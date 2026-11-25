@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "contract": [
+    "Shared by scripts/cutover/probe/fpm-engine.php, php artisan cutover:smoke --engine-only --json and the controller's Python live config module.",
+    "PHP prints route_values raw; Python builds the same values from bootstrap/cache/config.php and computes route_sha256. PHP never computes the route hash.",
+    "Engine: the url scheme of the default connection when url is a non-empty string (aliases mysql2, postgres, postgresql, sqlite3, mssql), else its driver.",
+    "Allowlist: database.default; database.connections holds the default connection and, when the engine is mysql, mysql_cache_locks, mysql_queue_worker and mysql_scheduling_cache (null when absent); database.repro_leftover_transactions; cache.default; cache.stores.default (the default store); cache.stores.scheduling; queue.default; driver, connection and table of every queue connection (only the keys present); app.key_sha256 (lowercase hex SHA-256 of the UTF-8 key, null when the key is null). A missing value is null.",
+    "Passwords: every key named exactly password, at any depth, is replaced by password_set, which is false for null or the empty string and true otherwise. A map holding both password and password_set is refused. A url that carries a password is refused by the PHP probes.",
+    "Canonical form: every array is an object with string keys (a JSON list becomes the object of its indexes); JSON with sorted keys, separators , and :, ASCII escapes, no NaN or infinity; route_sha256 is the lowercase hex SHA-256 of those bytes.",
+    "On the lane this file belongs at scripts/cutover/production/testdata/route-hash-vectors.json; on the release D branch it lives here."
+  ],
+  "vectors": [
+    {
+      "name": "sqlite-production-shape",
+      "engine": "sqlite",
+      "config": {
+        "app": {"name": "Repro", "env": "production", "key": "base64:c21va2UtdmVjdG9yLW9uZS1rZXktbm90LXJlYWwtMzI=", "timezone": "UTC"},
+        "database": {
+          "default": "sqlite",
+          "connections": {
+            "sqlite": {"driver": "sqlite", "url": null, "database": "/var/www/backend/database/database.sqlite", "prefix": "", "foreign_key_constraints": true, "busy_timeout": null, "journal_mode": null, "synchronous": null},
+            "mysql": {"driver": "mysql", "url": null, "host": "127.0.0.1", "port": "3306", "database": "laravel", "username": "root", "password": "", "unix_socket": "", "charset": "utf8mb4", "collation": "utf8mb4_unicode_ci", "prefix": "", "prefix_indexes": true, "strict": true, "engine": null, "options": []}
+          },
+          "migrations": {"table": "migrations", "update_date_on_publish": true},
+          "redis": {"client": "phpredis", "default": {"host": "127.0.0.1", "password": null, "port": "6379", "database": "0"}}
+        },
+        "cache": {
+          "default": "file",
+          "stores": {
+            "array": {"driver": "array", "serialize": false},
+            "scheduling": {"driver": "database", "connection": null, "table": "cache", "lock_connection": null, "lock_table": "cache_locks"},
+            "database": {"driver": "database", "connection": null, "table": "cache", "lock_connection": null, "lock_table": null},
+            "file": {"driver": "file", "path": "/var/www/backend/storage/framework/cache/data", "lock_path": "/var/www/backend/storage/framework/cache/data"}
+          },
+          "prefix": "repro-cache-"
+        },
+        "queue": {
+          "default": "database",
+          "connections": {
+            "sync": {"driver": "sync"},
+            "database": {"driver": "database", "connection": null, "table": "jobs", "queue": "default", "retry_after": 90, "after_commit": false},
+            "studio": {"driver": "database", "connection": null, "table": "jobs", "queue": "studio", "retry_after": 7200, "after_commit": false},
+            "redis": {"driver": "redis", "connection": "default", "queue": "default", "retry_after": 90, "block_for": null, "after_commit": false}
+          },
+          "batching": {"database": "sqlite", "table": "job_batches"},
+          "failed": {"driver": "database-uuids", "database": "sqlite", "table": "failed_jobs"}
+        },
+        "crm": {"outbound_hold": false}
+      },
+      "route_values": {
+        "app.key_sha256": "2e92857949dec51e136372f517dc1464c6685ce840986370500bcd826b33b9c5",
+        "cache.default": "file",
+        "cache.stores.default": {"driver": "file", "path": "/var/www/backend/storage/framework/cache/data", "lock_path": "/var/www/backend/storage/framework/cache/data"},
+        "cache.stores.scheduling": {"driver": "database", "connection": null, "table": "cache", "lock_connection": null, "lock_table": "cache_locks"},
+        "database.connections": {
+          "sqlite": {"driver": "sqlite", "url": null, "database": "/var/www/backend/database/database.sqlite", "prefix": "", "foreign_key_constraints": true, "busy_timeout": null, "journal_mode": null, "synchronous": null}
+        },
+        "database.default": "sqlite",
+        "database.repro_leftover_transactions": null,
+        "queue.connections": {
+          "sync": {"driver": "sync"},
+          "database": {"driver": "database", "connection": null, "table": "jobs"},
+          "studio": {"driver": "database", "connection": null, "table": "jobs"},
+          "redis": {"driver": "redis", "connection": "default"}
+        },
+        "queue.default": "database"
+      },
+      "route_sha256": "40dc23c2d43f402270beb6cf252281c4f4261bda0ec51084adc770f383d9e26d"
+    },
+    {
+      "name": "mysql-socket-with-extras",
+      "engine": "mysql",
+      "config": {
+        "app": {"key": "base64:bXlzcWwtdmVjdG9yLWtleS1ub3QtcmVhbC0zMi1ieXRlcw=="},
+        "database": {
+          "default": "mysql",
+          "repro_leftover_transactions": "rollback",
+          "connections": {
+            "sqlite": {"driver": "sqlite", "url": null, "database": "/var/www/backend/database/database.sqlite", "prefix": "", "foreign_key_constraints": true, "busy_timeout": null, "journal_mode": null, "synchronous": null},
+            "mysql": {"driver": "mysql", "url": null, "host": "127.0.0.1", "port": "3306", "database": "repro_dashboard", "username": "repro_app", "password": "vector-app-password", "unix_socket": "/run/repro-mysql84-native/mysql.sock", "charset": "utf8mb4", "collation": "utf8mb4_0900_bin", "prefix": "", "prefix_indexes": true, "strict": true, "engine": null, "options": [], "repro_require_server_identity": true, "repro_expected_server_uuid": "ec219d68-61fd-4a9e-ba98-43ddb4008383", "repro_writer_policy": true},
+            "mysql_queue_worker": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": null, "password": null, "unix_socket": "/run/repro-mysql84-native/mysql.sock", "repro_writer_policy": false, "repro_writer_exempt_tables": ["jobs"]},
+            "mysql_scheduling_cache": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": null, "password": null, "unix_socket": "/run/repro-mysql84-native/mysql.sock", "repro_scheduling_cache_only": true, "repro_writer_exempt_tables": ["cache", "cache_locks"]},
+            "mysql_cache_locks": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": "repro_app", "password": "vector-app-password", "unix_socket": "/run/repro-mysql84-native/mysql.sock", "repro_writer_policy": false, "repro_writer_exempt_tables": ["cache_locks"]}
+          }
+        },
+        "cache": {
+          "default": "file",
+          "stores": {
+            "file": {"driver": "file", "path": "/var/www/backend/storage/framework/cache/data", "lock_path": "/var/www/backend/storage/framework/cache/data"},
+            "scheduling": {"driver": "database", "connection": "mysql_scheduling_cache", "table": "cache", "lock_connection": "mysql_scheduling_cache", "lock_table": "cache_locks"},
+            "database": {"driver": "database", "connection": null, "table": "cache", "lock_connection": "mysql_cache_locks", "lock_table": null}
+          }
+        },
+        "queue": {
+          "default": "database",
+          "connections": {
+            "database": {"driver": "database", "connection": "mysql_queue_worker", "table": "jobs", "queue": "default", "retry_after": 90, "after_commit": false},
+            "sync": {"driver": "sync"}
+          }
+        }
+      },
+      "route_values": {
+        "app.key_sha256": "26ebaca7c8e2e3263f327ea89b29fbf567d71deec869ca19010de971585e84d2",
+        "cache.default": "file",
+        "cache.stores.default": {"driver": "file", "path": "/var/www/backend/storage/framework/cache/data", "lock_path": "/var/www/backend/storage/framework/cache/data"},
+        "cache.stores.scheduling": {"driver": "database", "connection": "mysql_scheduling_cache", "table": "cache", "lock_connection": "mysql_scheduling_cache", "lock_table": "cache_locks"},
+        "database.connections": {
+          "mysql": {"driver": "mysql", "url": null, "host": "127.0.0.1", "port": "3306", "database": "repro_dashboard", "username": "repro_app", "password_set": true, "unix_socket": "/run/repro-mysql84-native/mysql.sock", "charset": "utf8mb4", "collation": "utf8mb4_0900_bin", "prefix": "", "prefix_indexes": true, "strict": true, "engine": null, "options": {}, "repro_require_server_identity": true, "repro_expected_server_uuid": "ec219d68-61fd-4a9e-ba98-43ddb4008383", "repro_writer_policy": true},
+          "mysql_cache_locks": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": "repro_app", "password_set": true, "unix_socket": "/run/repro-mysql84-native/mysql.sock", "repro_writer_policy": false, "repro_writer_exempt_tables": {"0": "cache_locks"}},
+          "mysql_queue_worker": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": null, "password_set": false, "unix_socket": "/run/repro-mysql84-native/mysql.sock", "repro_writer_policy": false, "repro_writer_exempt_tables": {"0": "jobs"}},
+          "mysql_scheduling_cache": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": null, "password_set": false, "unix_socket": "/run/repro-mysql84-native/mysql.sock", "repro_scheduling_cache_only": true, "repro_writer_exempt_tables": {"0": "cache", "1": "cache_locks"}}
+        },
+        "database.default": "mysql",
+        "database.repro_leftover_transactions": "rollback",
+        "queue.connections": {
+          "database": {"driver": "database", "connection": "mysql_queue_worker", "table": "jobs"},
+          "sync": {"driver": "sync"}
+        },
+        "queue.default": "database"
+      },
+      "route_sha256": "91af03c2c9868e3105032a3dfb96c6859264bb047e1b17837d7b5169a6dac1a8"
+    },
+    {
+      "name": "mysql-without-extras-or-key",
+      "engine": "mysql",
+      "config": {
+        "app": {"key": null},
+        "database": {
+          "default": "mysql",
+          "connections": {
+            "mysql": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": "repro_app", "password": "", "unix_socket": "/run/repro-mysql84-native/mysql.sock"}
+          }
+        },
+        "cache": {"default": "array", "stores": {"array": {"driver": "array", "serialize": false}}},
+        "queue": {"default": "sync", "connections": {"sync": {"driver": "sync"}}}
+      },
+      "route_values": {
+        "app.key_sha256": null,
+        "cache.default": "array",
+        "cache.stores.default": {"driver": "array", "serialize": false},
+        "cache.stores.scheduling": null,
+        "database.connections": {
+          "mysql": {"driver": "mysql", "url": null, "database": "repro_dashboard", "username": "repro_app", "password_set": false, "unix_socket": "/run/repro-mysql84-native/mysql.sock"},
+          "mysql_cache_locks": null,
+          "mysql_queue_worker": null,
+          "mysql_scheduling_cache": null
+        },
+        "database.default": "mysql",
+        "database.repro_leftover_transactions": null,
+        "queue.connections": {"sync": {"driver": "sync"}},
+        "queue.default": "sync"
+      },
+      "route_sha256": "c11de542d2b09bd3e3e13163b0463de94d39ac21720f57524c1012c09c5f1684"
+    },
+    {
+      "name": "url-scheme-wins-over-driver",
+      "engine": "mysql",
+      "config": {
+        "app": {"key": "base64:dXJsLXZlY3Rvci1rZXktbm90LXJlYWw="},
+        "database": {
+          "default": "primary",
+          "connections": {
+            "primary": {"driver": "sqlite", "url": "MySQL2://repro_app@localhost/repro_dashboard?unix_socket=%2Frun%2Frepro-mysql84-native%2Fmysql.sock", "database": "/tmp/ignored.sqlite", "prefix": ""}
+          }
+        },
+        "cache": {"default": "file", "stores": {"file": {"driver": "file", "path": "/srv/cache"}}},
+        "queue": {"default": "database", "connections": {"database": {"driver": "database", "table": "jobs", "queue": "default"}}}
+      },
+      "route_values": {
+        "app.key_sha256": "8b579f8c832ae9c6192737d2527613db7b6e73f8b5675fc827ee60d26c33f1e9",
+        "cache.default": "file",
+        "cache.stores.default": {"driver": "file", "path": "/srv/cache"},
+        "cache.stores.scheduling": null,
+        "database.connections": {
+          "primary": {"driver": "sqlite", "url": "MySQL2://repro_app@localhost/repro_dashboard?unix_socket=%2Frun%2Frepro-mysql84-native%2Fmysql.sock", "database": "/tmp/ignored.sqlite", "prefix": ""},
+          "mysql_cache_locks": null,
+          "mysql_queue_worker": null,
+          "mysql_scheduling_cache": null
+        },
+        "database.default": "primary",
+        "database.repro_leftover_transactions": null,
+        "queue.connections": {"database": {"driver": "database", "table": "jobs"}},
+        "queue.default": "database"
+      },
+      "route_sha256": "9d42a44861e6e08a659aa2058ac88c8335118be7586323229a6063771ff8afc6"
+    },
+    {
+      "name": "nested-passwords-lists-floats-and-unicode",
+      "engine": "sqlite",
+      "config": {
+        "app": {"key": "base64:dW5pY29kZS12ZWN0b3Ita2V5LW5vdC1yZWFs"},
+        "database": {
+          "default": "sqlite",
+          "repro_leftover_transactions": "log",
+          "connections": {
+            "sqlite": {"driver": "sqlite", "url": "", "database": "/srv/données/app.sqlite", "prefix": "", "busy_timeout": 5000, "timeout": 2.0, "options": {"password": "nested-secret", "deeper": {"password": null, "list": [1, 2.5, true, null]}}}
+          }
+        },
+        "cache": {
+          "default": "redis",
+          "stores": {
+            "redis": {"driver": "redis", "connection": "cache", "lock_connection": "default", "password": "store-secret", "lock_lottery": [2, 100]}
+          }
+        },
+        "queue": {
+          "default": "database",
+          "connections": {
+            "database": {"driver": "database", "connection": null, "table": "jobs", "queue": "default"},
+            "beanstalkd": {"driver": "beanstalkd", "host": "localhost", "queue": "default", "retry_after": 90}
+          }
+        }
+      },
+      "route_values": {
+        "app.key_sha256": "a5047e41c2429827bb6ab0424b9ce40c2a5274ee2a8d719347a7494542c15de0",
+        "cache.default": "redis",
+        "cache.stores.default": {"driver": "redis", "connection": "cache", "lock_connection": "default", "password_set": true, "lock_lottery": {"0": 2, "1": 100}},
+        "cache.stores.scheduling": null,
+        "database.connections": {
+          "sqlite": {"driver": "sqlite", "url": "", "database": "/srv/données/app.sqlite", "prefix": "", "busy_timeout": 5000, "timeout": 2.0, "options": {"password_set": true, "deeper": {"password_set": false, "list": {"0": 1, "1": 2.5, "2": true, "3": null}}}}
+        },
+        "database.default": "sqlite",
+        "database.repro_leftover_transactions": "log",
+        "queue.connections": {
+          "database": {"driver": "database", "connection": null, "table": "jobs"},
+          "beanstalkd": {"driver": "beanstalkd"}
+        },
+        "queue.default": "database"
+      },
+      "route_sha256": "17701c6b35225757d36629afcb6ad13b88e63bd4c9be9f061623c4b144eb0279"
+    }
+  ]
+}
