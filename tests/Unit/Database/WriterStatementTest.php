@@ -83,6 +83,17 @@ class WriterStatementTest extends TestCase
             'procedure body' => ['CREATE PROCEDURE p() BEGIN UPDATE t SET a = 1; SELECT 1; END', WriterStatement::DDL],
             'trigger body with definer' => ["CREATE DEFINER=`a`@`localhost` TRIGGER t BEFORE DELETE ON x FOR EACH ROW BEGIN\n DELETE FROM y WHERE id = OLD.id;\nEND", WriterStatement::DDL],
 
+            // MySQL runs the text of /*! ... */ and /*!NNNNN ... */, so the scan reads it as SQL.
+            'executable comment write' => ['/*!80000 UPDATE users SET name = 1 */', WriterStatement::WRITE],
+            'versionless executable comment' => ['/*! DELETE FROM users */', WriterStatement::WRITE],
+            'executable comment commit' => ['/*!COMMIT*/', WriterStatement::TRANSACTION_CONTROL],
+            'executable comment locking clause' => ['SELECT * FROM t /*!80000 FOR UPDATE */', WriterStatement::LOCKING_READ],
+            'executable comment second statement' => ['SELECT 1 /*!80000 ; UPDATE users SET name = 1 */', WriterStatement::MULTIPLE],
+            'optimizer hint is a comment' => ['SELECT /*+ MAX_EXECUTION_TIME(1000) */ * FROM t', WriterStatement::READ],
+            'ordinary comment hides nothing' => ['/* UPDATE users SET name = 1 */ SELECT 1', WriterStatement::READ],
+            // A prepared statement's text is a string the scan cannot see: executing it takes the token.
+            'execute a prepared statement' => ['EXECUTE stmt', WriterStatement::WRITE],
+
             'empty' => ['   ', WriterStatement::OTHER],
             'analyze' => ['ANALYZE TABLE t', WriterStatement::OTHER],
         ];
@@ -109,6 +120,9 @@ class WriterStatementTest extends TestCase
             ['delete from `cache_locks` where `key` = ?;', 'cache_locks'],
             ['insert into `cache_locks` (`key`) values (?); update `users` set `name` = ?', null],
             ['delete from cache_locks; delete from users', null],
+            ['/*!80000 DELETE FROM users */ insert into cache_locks (`key`) values (1)', null],
+            ['insert into cache_locks (`key`) values (1) /*!80000 ; delete from users */', null],
+            ['EXECUTE stmt', null],
         ];
     }
 

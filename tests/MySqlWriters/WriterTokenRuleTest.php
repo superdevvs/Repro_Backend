@@ -112,6 +112,12 @@ final class WriterTokenRuleTest extends TestCase
             'raw statement' => [static fn ($db) => $db->statement('INSERT INTO _writer_policy_probe (counter) VALUES (?)', [7]), 3, 7],
             'raw unprepared' => [static fn ($db) => $db->unprepared('REPLACE INTO _writer_policy_probe (id, counter) VALUES (3, 7)'), 3, 7],
             'raw insert' => [static fn ($db) => $db->insert('INSERT INTO _writer_policy_probe (counter) VALUES (?)', [7]), 3, 7],
+            'executable comment' => [static fn ($db) => $db->unprepared('/*!80000 UPDATE _writer_policy_probe SET counter = 7 WHERE id = 1 */'), 1, 7],
+            'prepared statement' => [static function ($db) {
+                $db->unprepared("PREPARE writer_policy_probe FROM 'UPDATE _writer_policy_probe SET counter = 7 WHERE id = 1'");
+
+                return $db->unprepared('EXECUTE writer_policy_probe');
+            }, 1, 7],
         ];
     }
 
@@ -244,7 +250,8 @@ final class WriterTokenRuleTest extends TestCase
 
     public static function transactionControl(): array
     {
-        return [['BEGIN'], ['COMMIT'], ['ROLLBACK'], ['START TRANSACTION'], ['SAVEPOINT x'], ['LOCK TABLES _writer_policy_probe WRITE']];
+        return [['BEGIN'], ['COMMIT'], ['ROLLBACK'], ['START TRANSACTION'], ['SAVEPOINT x'], ['LOCK TABLES _writer_policy_probe WRITE'],
+            ['/*!80000 COMMIT */']];
     }
 
     #[DataProvider('transactionControl')]

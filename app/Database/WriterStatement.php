@@ -7,9 +7,11 @@ namespace App\Database;
  *
  * Writes at transaction level 0 run as BEGIN, token, statement, COMMIT. DDL,
  * session statements and reads are never wrapped. The scan ignores quoted text
- * and comments; anything it cannot place is OTHER and runs unchanged. Text after
- * a statement's semicolon is a second statement (MULTIPLE), except inside a
- * stored-program body, which MySQL parses as one statement.
+ * and comments, except MySQL's executable comments ("/*!"), which the server
+ * runs and the scan reads as SQL. Anything it cannot place is OTHER and runs
+ * unchanged. Text after a statement's semicolon is a second statement
+ * (MULTIPLE), except inside a stored-program body, which MySQL parses as one
+ * statement.
  */
 final class WriterStatement
 {
@@ -32,7 +34,8 @@ final class WriterStatement
     /** More than one statement in one call. The writer connection refuses it. */
     public const MULTIPLE = 'multiple';
 
-    private const WRITES = ['insert', 'update', 'delete', 'replace', 'call', 'load'];
+    // EXECUTE runs a prepared statement whose text the scan never sees, so it is a write.
+    private const WRITES = ['insert', 'update', 'delete', 'replace', 'call', 'load', 'execute'];
 
     private const READS = ['select', 'show', 'explain', 'describe', 'desc', 'table', 'values'];
 
@@ -175,11 +178,28 @@ final class WriterStatement
         $leading = true;
         $ended = false;
         $more = false;
+        $executable = false;
         for ($i = 0; $i < $length;) {
             $char = $sql[$i];
             if ($char === '-' && ($sql[$i + 1] ?? '') === '-' && self::startsDashComment($sql, $i) || $char === '#') {
                 $end = strpos($sql, "\n", $i);
                 $i = $end === false ? $length : $end + 1;
+
+                continue;
+            }
+            if ($char === '/' && ($sql[$i + 1] ?? '') === '*' && ($sql[$i + 2] ?? '') === '!') {
+                // MySQL runs the text of /*! ... */ and /*!NNNNN ... */: scan it as SQL.
+                $i += 3;
+                while ($i < $length && ctype_digit($sql[$i])) {
+                    $i++;
+                }
+                $executable = true;
+
+                continue;
+            }
+            if ($executable && $char === '*' && ($sql[$i + 1] ?? '') === '/') {
+                $executable = false;
+                $i += 2;
 
                 continue;
             }
@@ -272,6 +292,6 @@ final class WriterStatement
 
     private static function stripLeadingComments(string $sql): string
     {
-        return (string) preg_replace('~\A(?:\s+|--(?=[\s\x00-\x1f]|\z)[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z)|/\*.*?\*/)*~s', '', $sql);
+        return (string) preg_replace('~\A(?:\s+|--(?=[\s\x00-\x1f]|\z)[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z)|/\*(?!!).*?\*/)*~s', '', $sql);
     }
 }
