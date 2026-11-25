@@ -35,10 +35,18 @@ class CrmWebsiteLedgerTest extends CrmTestCase
     private function seedLedger(): array
     {
         $refs = ['confirmed' => (string) Str::uuid(), 'missing' => (string) Str::uuid(), 'reserved' => (string) Str::uuid(),
-            'uncertain' => (string) Str::uuid(), 'unreceived' => (string) Str::uuid(), 'failed' => (string) Str::uuid()];
+            'uncertain' => (string) Str::uuid(), 'unreceived' => (string) Str::uuid(), 'failed' => (string) Str::uuid(),
+            'elsewhere' => (string) Str::uuid()];
+        // Booking identity is (source, external_reference): another integration may hold the same reference.
+        $partner = Shoot::factory()->create(['external_booking_payload' => ['source' => 'partner.example', 'external_reference' => $refs['confirmed']]]);
+        $partnerOnly = Shoot::factory()->create(['external_booking_payload' => ['source' => 'partner.example', 'external_reference' => $refs['elsewhere']]]);
         $shoot = Shoot::factory()->create(['external_booking_payload' => ['source' => 'reprophotos.com', 'external_reference' => $refs['confirmed']]]);
         $orphan = Shoot::factory()->create(['external_booking_payload' => ['source' => 'reprophotos.com']]);
         DB::table('external_booking_submissions')->insert([
+            ['source' => 'partner.example', 'external_reference' => $refs['confirmed'], 'request_hash' => str_repeat('f', 64),
+                'shoot_id' => $partner->id, 'response_payload' => '{"shoot_id":'.$partner->id.'}', 'created_at' => now(), 'updated_at' => now()],
+            ['source' => 'partner.example', 'external_reference' => $refs['elsewhere'], 'request_hash' => str_repeat('0', 64),
+                'shoot_id' => $partnerOnly->id, 'response_payload' => '{"shoot_id":'.$partnerOnly->id.'}', 'created_at' => now(), 'updated_at' => now()],
             ['source' => 'reprophotos.com', 'external_reference' => $refs['confirmed'], 'request_hash' => str_repeat('a', 64),
                 'shoot_id' => $shoot->id, 'response_payload' => '{"shoot_id":'.$shoot->id.'}', 'created_at' => now(), 'updated_at' => now()],
             ['source' => 'reprophotos.com', 'external_reference' => $refs['reserved'], 'request_hash' => str_repeat('b', 64),
@@ -86,6 +94,7 @@ class CrmWebsiteLedgerTest extends CrmTestCase
             ['producer' => 'booking', 'reference' => $refs['confirmed']],
             ['producer' => 'booking', 'reference' => strtoupper($refs['missing'])],
             ['producer' => 'booking', 'reference' => $refs['reserved']],
+            ['producer' => 'booking', 'reference' => $refs['elsewhere']],
             ['producer' => 'contact', 'reference' => $refs['uncertain']],
             ['producer' => 'contact', 'reference' => $refs['unreceived']],
             ['producer' => 'contact', 'reference' => $refs['failed']],
@@ -105,13 +114,16 @@ class CrmWebsiteLedgerTest extends CrmTestCase
         $this->assertSame('completed', $row('confirmed')['crm_receipt']);
         $this->assertSame('not_in_dashboard', $row('missing')['disposition']);
         $this->assertSame('submission_without_shoot', $row('reserved')['disposition']);
+        // Only another integration holds this reference: neither confirmed nor safe to replay blindly.
+        $this->assertSame('other_source_only', $row('elsewhere')['disposition']);
+        $this->assertNull($row('elsewhere')['shoot_id']);
         $this->assertSame('uncertain', $row('uncertain')['disposition']);
         $this->assertSame('pending', $row('uncertain')['crm_receipt']);
         $this->assertSame('not_received', $row('unreceived')['disposition']);
         $this->assertSame('not_delivered', $row('failed')['disposition']);
         $this->assertSame([$orphan->id], array_column($report['manual_reconciliation'], 'shoot_id'));
         $this->assertSame(['in_dashboard' => 1, 'not_delivered' => 1, 'not_in_dashboard' => 1, 'not_received' => 1,
-            'submission_without_shoot' => 1, 'uncertain' => 1], $report['counts']);
+            'other_source_only' => 1, 'submission_without_shoot' => 1, 'uncertain' => 1], $report['counts']);
         $this->assertArrayNotHasKey('reference', $row('confirmed'));
     }
 

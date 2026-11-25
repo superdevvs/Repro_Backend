@@ -21,6 +21,9 @@ class CrmWebsiteLedger extends Command
 {
     private const SOURCE = 'producer_replay_ledger_source';
 
+    /** The booking source the website sends; booking identity is (source, external_reference). */
+    private const WEBSITE = 'reprophotos.com';
+
     private const SETTLED = ['in_dashboard', 'delivered'];
 
     protected $signature = 'crm:website-ledger
@@ -131,12 +134,15 @@ class CrmWebsiteLedger extends Command
 
     private function booking(ConnectionInterface $db, string $reference): array
     {
-        $submission = $db->table('external_booking_submissions')->whereRaw('lower(external_reference) = ?', [$reference])->first();
-        $shootId = $submission?->shoot_id
-            ?? $db->table('shoots')->where('external_booking_payload->external_reference', $reference)->value('id');
+        $submissions = $db->table('external_booking_submissions')->whereRaw('lower(external_reference) = ?', [$reference]);
+        $shoots = $db->table('shoots')->where('external_booking_payload->external_reference', $reference);
+        $submission = (clone $submissions)->where('source', self::WEBSITE)->first();
+        $shootId = $submission?->shoot_id ?? (clone $shoots)->where('external_booking_payload->source', self::WEBSITE)->value('id');
         $disposition = match (true) {
             $shootId !== null => 'in_dashboard',
             $submission !== null => 'submission_without_shoot',
+            // Another integration holds this reference: not this booking, and a replay needs a person.
+            $submissions->exists() || $shoots->exists() => 'other_source_only',
             default => 'not_in_dashboard',
         };
 
@@ -177,7 +183,7 @@ class CrmWebsiteLedger extends Command
         $fromReceipts = $db->table('crm_website_intake_receipts')->where('kind', 'booking')->where('reference', 'like', 'shoot-%')
             ->when($since, fn ($q) => $q->where('created_at', '>=', $since))->pluck('reference')
             ->map(fn ($reference) => (int) substr((string) $reference, 6));
-        $fromShoots = $db->table('shoots')->where('external_booking_payload->source', 'reprophotos.com')
+        $fromShoots = $db->table('shoots')->where('external_booking_payload->source', self::WEBSITE)
             ->whereNull('external_booking_payload->external_reference')
             ->when($since, fn ($q) => $q->where('created_at', '>=', $since))->pluck('id')->map(fn ($id) => (int) $id);
 
