@@ -27,8 +27,8 @@ use Tests\TestCase;
  * cutover:smoke and scripts/cutover/probe/fpm-engine.php (design v2, 5.3 and 1.3).
  *
  * Both print the raw route values of the live config; Python canonicalises and
- * hashes them. scripts/cutover/probe/route-hash-vectors.json is shared with
- * scripts/cutover/probe/test_route_hash_vectors.py.
+ * hashes them. scripts/cutover/production/testdata/route-hash-vectors.json is
+ * shared with scripts/cutover/probe/test_route_hash_vectors.py.
  */
 class CutoverSmokeTest extends TestCase
 {
@@ -36,7 +36,7 @@ class CutoverSmokeTest extends TestCase
     use CutoverTableSnapshots;
     use RefreshDatabase;
 
-    private const VECTORS = 'scripts/cutover/probe/route-hash-vectors.json';
+    private const VECTORS = 'scripts/cutover/production/testdata/route-hash-vectors.json';
 
     private const ROUTE_KEYS = ['database.default', 'database.connections', 'cache.default', 'cache.stores', 'queue.default', 'queue.connections'];
 

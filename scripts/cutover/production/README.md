@@ -12,6 +12,7 @@ approval for each action (handoff item W1).
 | `../runner.py` | `/opt/repro-cutover-fence/runner.py` | Journal and state machine |
 | `cli.py`, `adapter.py`, `admit.py`, `deploy_marker.py`, `sqlite_seal.py`, `mysql_probe.py` | `/opt/repro-cutover-fence/production/` | Controller, host adapter, writer wrapper, fences, MySQL probe |
 | `mysql/accounts.sql`, `mysql/fixture.sh` | run once by the administrator (session A1): `fixture.sh render` fills the passwords | The eight MySQL accounts; the probe account's defaults file goes to `/etc/repro-cutover-fence/mysql-probe.cnf` (root 0600) |
+| `testdata/route-hash-vectors.json` | not installed (test data) | The route-hash contract and vectors shared by the PHP probes (`../probe/`), the live config module (D03) and its tests (D08) |
 | `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.json` | Writer profiles: user, command, action, engine |
 | host config (see below) | `/etc/repro-cutover-fence/host.json` | Paths, queues, host commands, owner options |
 | `identity.example.json` | `/etc/repro-cutover-fence/identity.json` (root 0644, with the run's policy) | The identity probe's inputs and the `.env` denylist |

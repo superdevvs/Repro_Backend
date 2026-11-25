@@ -19,7 +19,7 @@
  * It prints one JSON object: the engine, the database, the server identity,
  * the raw route values of the live config (the same as
  * `php artisan cutover:smoke --engine-only --json`; Python hashes them, see
- * route-hash-vectors.json next to this file), the OPcache state and any
+ * scripts/cutover/production/testdata/route-hash-vectors.json), the OPcache state and any
  * problems. HTTP status 200 when ok, 500 otherwise; exit code 0 or 1 on the CLI.
  */
 

@@ -62,12 +62,13 @@ available afterwards, only 4.2. Ask the owner before running them there.
 
 ## Route values and the shared vectors
 
-PHP prints the route values raw; Python hashes them. `route-hash-vectors.json`
-holds the contract and the vectors both sides test: the allowlist, the
-`password` to `password_set` rule, the url scheme rule and the canonical JSON
-form. On the lane the file belongs at
-`scripts/cutover/production/testdata/route-hash-vectors.json`; on the release D
-branch it lives here.
+PHP prints the route values raw; Python hashes them.
+`scripts/cutover/production/testdata/route-hash-vectors.json` holds the
+contract and the vectors both sides test: the allowlist, the `password` to
+`password_set` rule, the url scheme rule and the canonical JSON form. It is
+the one copy: the controller's live config module (D03) and its route-hash
+tests (D08) read the same file. The release D branch kept it in this folder;
+the lane moved it.
 
 ## Tests
 

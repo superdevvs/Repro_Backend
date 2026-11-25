@@ -8,7 +8,8 @@ it parses and never executes, and hashes them. PHP never computes the route hash
 This file checks the vectors against an independent stdlib reference of the
 allowlist, the password rule and the canonical form. The PHP side checks the same
 vectors in tests/Feature/CutoverSmokeTest.php. Changing either side means
-changing route-hash-vectors.json, which both read.
+changing scripts/cutover/production/testdata/route-hash-vectors.json, which both
+read.
 
 Run from the app root: python3 -B -m unittest discover -s scripts/cutover/probe
 """
@@ -20,7 +21,10 @@ import json
 import unittest
 from pathlib import Path
 
-VECTORS = Path(__file__).with_name("route-hash-vectors.json")
+APP = Path(__file__).resolve().parents[3]
+# The one shared copy (build plan addenda, review B5): D03's live_config and D08's
+# test_route_hash_vectors read the same file.
+VECTORS = APP / "scripts" / "cutover" / "production" / "testdata" / "route-hash-vectors.json"
 
 # Laravel's ConfigurationUrlParser driver aliases (same table as alert_probe.URL_DRIVERS).
 URL_DRIVERS = {"mysql2": "mysql", "postgres": "pgsql", "postgresql": "pgsql", "sqlite3": "sqlite", "mssql": "sqlsrv"}
@@ -117,6 +121,12 @@ class RouteHashVectorsTest(unittest.TestCase):
     def setUpClass(cls):
         cls.document = json.loads(VECTORS.read_text(encoding="utf-8"))
         cls.vectors = cls.document["vectors"]
+
+    def test_contract_names_this_one_copy(self):
+        # The contract says where the vectors live, and no second copy can drift next to the probe.
+        self.assertIn(VECTORS.relative_to(APP).as_posix(), " ".join(self.document["contract"]))
+        self.assertFalse(Path(__file__).with_name("route-hash-vectors.json").exists(),
+                         "A second copy of the vectors sits next to the probe")
 
     def test_document_shape(self):
         self.assertEqual(self.document["version"], 1)

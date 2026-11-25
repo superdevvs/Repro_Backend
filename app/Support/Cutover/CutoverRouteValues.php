@@ -12,7 +12,8 @@ use UnexpectedValueException;
  * these values raw. The controller's Python live config module builds the same
  * values from bootstrap/cache/config.php and hashes them; PHP never computes the
  * route hash. The allowlist, the password rule and the canonical form are pinned
- * by scripts/cutover/probe/route-hash-vectors.json, which both sides test.
+ * by scripts/cutover/production/testdata/route-hash-vectors.json, which both
+ * sides test.
  */
 final class CutoverRouteValues
 {

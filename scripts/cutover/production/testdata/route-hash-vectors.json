@@ -7,7 +7,7 @@
     "Allowlist: database.default; database.connections holds the default connection and, when the engine is mysql, mysql_cache_locks, mysql_queue_worker and mysql_scheduling_cache (null when absent); database.repro_leftover_transactions; cache.default; cache.stores.default (the default store); cache.stores.scheduling; queue.default; driver, connection and table of every queue connection (only the keys present); app.key_sha256 (lowercase hex SHA-256 of the UTF-8 key, null when the key is null). A missing value is null.",
     "Passwords: every key named exactly password, at any depth, is replaced by password_set, which is false for null or the empty string and true otherwise. A map holding both password and password_set is refused. A url that carries a password is refused by the PHP probes.",
     "Canonical form: every array is an object with string keys (a JSON list becomes the object of its indexes); JSON with sorted keys, separators , and :, ASCII escapes, no NaN or infinity; route_sha256 is the lowercase hex SHA-256 of those bytes.",
-    "On the lane this file belongs at scripts/cutover/production/testdata/route-hash-vectors.json; on the release D branch it lives here."
+    "This file lives at scripts/cutover/production/testdata/route-hash-vectors.json, the one copy the PHP probes' tests, the controller's live config module (D03) and its route-hash tests (D08) read. The release D branch kept it at scripts/cutover/probe/route-hash-vectors.json."
   ],
   "vectors": [
     {
