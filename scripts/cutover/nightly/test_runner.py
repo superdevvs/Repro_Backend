@@ -506,6 +506,42 @@ class NightlyRunnerTests(unittest.TestCase):
         self.assertFalse(crm["crm_applicant_file_parity_verified"])
         self.assertIn("did not pass", receipt["draft_gate"])
 
+    def test_applicant_files_on_disk_alone_do_not_prove_parity(self):
+        # The verifier checks the snapshot against the private disk. The proof also
+        # needs a target-side comparison and permitted and denied access checks on
+        # the isolated target, which the runner does not perform.
+        source_only = self.host.on_applicants
+
+        def two_files(argv, timeout_s, _input):
+            record = json.loads(source_only(argv, timeout_s, _input).stdout)
+            return nightly.Completed(0, json.dumps(record | {"files": 2, "bytes_verified": 10}) + "\n", "")
+
+        self.host.on_applicants = two_files
+        receipt = self.run_night()
+        self.assertEqual(receipt["status"], "reviewer-inputs-ready")
+        crm = json.loads((self.outputs() / "crm-review.json").read_bytes())
+        self.assertFalse(crm["crm_applicant_file_parity_verified"])
+        self.assertFalse(receipt["qualifying_draft"])
+        journal = json.loads((self.outputs() / "journal.json").read_bytes())
+        self.assertEqual(journal["stages"]["applicant_files"]["result"],
+                         {"status": "source-verified-target-checks-missing", "verified": False, "files": 2})
+
+    def test_applicant_file_record_must_be_for_this_snapshot(self):
+        for name, value in (("snapshot_sha256", "0" * 64), ("files", "2")):
+            with self.subTest(name=name):
+                host = FakeHost(self.root / f"applicants-{name}")
+                source_only = host.on_applicants
+
+                def altered(argv, timeout_s, _input, source_only=source_only, name=name, value=value):
+                    record = json.loads(source_only(argv, timeout_s, _input).stdout)
+                    return nightly.Completed(0, json.dumps(record | {name: value}) + "\n", "")
+
+                host.on_applicants = altered
+                receipt = self.run_night(host=host)
+                self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                                 ("stopped", "applicant_files", "applicant-files-refused"))
+                shutil.rmtree(self.outputs())
+
     # Ordering, isolation and safety ------------------------------------
     def test_finance_runs_after_reverse_with_the_disposable_mysql_stopped(self):
         self.run_night()

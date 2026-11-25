@@ -20,7 +20,7 @@ The runner works in `<state-dir>/<YYYY-MM-DD>/`, a private directory (mode 0700)
 | `import_and_verify` | `migrate.py import-empty` (import and checksum verification), then the independent PHP reader. Timed against the budget. | `forward-import-result.json`, `forward-fields-private.jsonl` |
 | `reverse` | Optional reviewed trigger helper, export back to SQLite, PHP verification of the export and the CRM relationship audit. The disposable MySQL is then stopped. | `reverse-export-result.json`, `reverse-fields-private.jsonl`, `crm-audit-private.json` |
 | `finance` | The configured finance step, after the reverse step. Its receipt is checked like the reviewed finance verifier. | `finance-proof.json` |
-| `applicant_files` | `verify-crm-applicant-files.py` against the configured private disk. | `applicant-files.json` |
+| `applicant_files` | `verify-crm-applicant-files.py` against the configured private disk. Only an empty inventory counts as applicant-file parity: with files present the runner has no target-side comparison or permitted and denied access checks, so `crm_applicant_file_parity_verified` stays false. | `applicant-files.json` |
 | `crm_review` | Draft CRM review and its evidence index. | `crm-review.json`, `crm-parity-evidence.json` |
 | `report` | Draft nightly report and manifest entry, checked with `verify_nightly_capture` and the per-night gate. | `night.json`, `manifest-entry.json` |
 

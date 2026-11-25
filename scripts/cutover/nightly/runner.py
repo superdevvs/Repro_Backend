@@ -1011,10 +1011,20 @@ class NightlyRunner:
             record = self.tool("applicant_files", self.values(journal), timeout_s=1800, reason="applicant-files-refused")
         finally:
             key.unlink(missing_ok=True)
-        if record.get("result") != "verified":
+        files = record.get("files")
+        if (record.get("result") != "verified" or type(files) is not int or files < 0
+                or record.get("snapshot_sha256") != self.done(journal, "capture")["snapshot_sha256"]):
             raise Stop("applicant-files-refused")
         write_bytes(self.run_dir / "applicant-files.json", record["_stdout"].encode("utf-8"))
-        return {"status": "verified", "verified": True, "files": record.get("files")}, ["applicant-files.json"]
+        if files:
+            # The verifier compared the snapshot with the private disk only. The
+            # proof also needs a target-side comparison and permitted and denied
+            # access checks on the isolated target, which this runner does not do.
+            return {"status": "source-verified-target-checks-missing", "verified": False, "files": files}, \
+                ["applicant-files.json"]
+        # An empty inventory is recorded as the review policy asks; the field
+        # verifiers already compared the empty applicant-file table on both engines.
+        return {"status": "verified", "verified": True, "files": 0}, ["applicant-files.json"]
 
     def stage_crm_review(self, journal: dict) -> tuple[dict, list[str]]:
         scope_crm = self.scope_crm_tables()
