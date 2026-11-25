@@ -310,6 +310,23 @@ class PreviewAndApplyTests(unittest.TestCase):
         self.assertIn("FAIL", output.getvalue())
         self.assertIn("--undo --job base-backup", output.getvalue())
 
+    def test_undo_removes_the_probe_state_folder(self):
+        # repro-alert-probe.service keeps its memory in StateDirectory=repro-alert-probe.
+        # Left behind, it would outlive the account and pass to whoever gets the uid next.
+        system = FakeSystem()
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name in ("base-backup", "alerts"):
+                self.assertEqual(installer.apply(installer.build_job(name, self.settings), system, self.settings,
+                                                 enter_credentials=False), 0)
+        uid, gid = system.user_id("repro-backup"), system.group_id("repro-backup")
+        system.dirs.setdefault("/var/lib/repro-alert-probe", (uid, gid, 0o700))
+        system.files["/var/lib/repro-alert-probe/memory.json"] = (b"{}", uid, gid, 0o600)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(installer.undo("alerts", system), 0)
+            self.assertEqual(installer.undo("base-backup", system), 0)
+        self.assertNotIn("/var/lib/repro-alert-probe", system.dirs)
+        self.assertNotIn("/var/lib/repro-alert-probe/memory.json", system.files)
+
     def test_alerts_job_requires_the_base_job(self):
         system = FakeSystem()
         output = io.StringIO()

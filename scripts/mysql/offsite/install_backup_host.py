@@ -277,7 +277,9 @@ def build_job(name: str, settings: dict) -> Job:
         job = Job(name, accounts=[Account("repro-alert")])
         job.directories = [Directory("/etc/repro-alert", "root", "repro-alert", 0o750),
                            Directory("/var/lib/repro-alert", "repro-alert", "repro-alert", 0o700, remove_contents=True),
-                           Directory("/var/lib/repro-alert-inbox", ACCOUNT, "repro-alert", 0o2750, remove_contents=True)]
+                           Directory("/var/lib/repro-alert-inbox", ACCOUNT, "repro-alert", 0o2750, remove_contents=True),
+                           # The probe unit's StateDirectory=; created here so undo removes it with the account.
+                           Directory("/var/lib/repro-alert-probe", ACCOUNT, ACCOUNT, 0o700, remove_contents=True)]
         conditions = list(settings["probe_conditions"])
         bridge = {"version": 1, "urls_file": "/var/lib/repro-alert/ping-urls.json",
                   "inbox_dir": "/var/lib/repro-alert-inbox", "fail_suffix": settings["alert_fail_suffix"],

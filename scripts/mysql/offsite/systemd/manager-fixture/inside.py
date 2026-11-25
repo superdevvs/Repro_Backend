@@ -182,6 +182,7 @@ def main():
     watched = [str(APP), str(APP / ".env"), str(APP / "database"), str(DATABASE), str(DATABASE) + "-wal",
                str(DATABASE) + "-shm", str(APP / "storage/logs"), str(APP / "storage/logs/laravel.log")]
     before = acl_snapshot(watched)
+    modes_before = {path: oct(os.lstat(path).st_mode) for path in watched if os.path.exists(path)}
     config = settings()
     shutil.copy(config, "/tmp/settings.json")
     os.chmod("/tmp/settings.json", 0o644)
@@ -286,8 +287,12 @@ def main():
     after = acl_snapshot([path for path in watched if os.path.exists(path)])
     record("acl_bytes_restored", all(after[key] == before[key] for key in after), {k: (before[k], after[k])
            for k in after if after[k] != before[k]})
+    modes_after = {path: oct(os.lstat(path).st_mode) for path in watched if os.path.exists(path)}
+    record("modes_restored", all(modes_after[key] == modes_before.get(key, modes_after[key]) for key in modes_after),
+           {key: (modes_before.get(key), value) for key, value in modes_after.items() if modes_before.get(key) != value})
     leftovers = [path for path in ("/opt/repro-backup-tools", "/etc/repro-backup", "/etc/repro-alert", "/var/lib/repro-backup",
-                                   "/var/lib/repro-alert", "/var/lib/repro-alert-inbox", "/var/lib/repro-backup-installer",
+                                   "/var/lib/repro-alert", "/var/lib/repro-alert-inbox", "/var/lib/repro-alert-probe",
+                                   "/var/lib/repro-backup-installer",
                                    "/etc/systemd/system/repro-backup.service", "/etc/systemd/system/repro-alert-heartbeat.timer")
                  if os.path.lexists(path)]
     accounts = [name for name in ("repro-backup", "repro-alert") if run(["id", name], check=False).returncode == 0]
