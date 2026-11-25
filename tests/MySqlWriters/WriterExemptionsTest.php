@@ -7,6 +7,7 @@ use App\Http\Middleware\RetryDatabaseThrottleRequests;
 use App\Queue\MySqlDatabaseQueue;
 use App\Support\LockedWrite;
 use Illuminate\Cache\RateLimiter;
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobFailed;
@@ -266,6 +267,39 @@ final class WriterExemptionsTest extends TestCase
         $this->assertSame('4', $response->headers->get('X-RateLimit-Remaining'));
         $this->assertSame(1, $calls);
         $this->assertGreaterThanOrEqual(4.5, microtime(true) - $started);
+        $this->assertSame('held', $this->workerResult($holder)['result']);
+    }
+
+    public function test_a_limiter_hit_whose_final_write_waits_for_the_token_counts_once(): void
+    {
+        $limiter = new RateLimiter(Cache::store('database'));
+        $middleware = new RetryDatabaseThrottleRequests($limiter);
+        $request = Request::create('/api/writer-policy-probe', 'POST', server: ['REMOTE_ADDR' => '203.0.113.8']);
+        $request->setRouteResolver(fn () => (new Route('POST', '/api/writer-policy-probe', []))->bind($request));
+        // A counter left at 0, as by an earlier request whose increment never got the token.
+        $key = $limiter->cleanRateLimiterKey(sha1('|203.0.113.8'));
+        Cache::store('database')->put($key, 0, 60);
+        // Laravel's hit commits its increment, then rewrites the counter with a put. Right
+        // after that commit another writer takes the token for six seconds.
+        $holder = null;
+        Event::listen(TransactionCommitted::class, function () use (&$holder) {
+            if ($holder === null) {
+                $holder = $this->worker('hold', ['6']);
+                $this->awaitMarker('acquired');
+            }
+        });
+        $calls = 0;
+
+        $response = $middleware->handle($request, function () use (&$calls) {
+            $calls++;
+
+            return response('ok');
+        }, 5, 1);
+
+        $this->assertNotNull($holder);
+        $this->assertSame(1, $calls);
+        $this->assertSame('4', $response->headers->get('X-RateLimit-Remaining'), 'One request must be one hit, not a replayed hit.');
+        $this->assertSame(1, (int) $limiter->attempts($key));
         $this->assertSame('held', $this->workerResult($holder)['result']);
     }
 }
