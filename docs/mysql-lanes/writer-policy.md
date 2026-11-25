@@ -200,6 +200,22 @@ fixed two defects, each test first:
   refusal swallowed. Only the claim transaction skips the token now. Proof:
   `WriterExemptionsTest::test_a_job_that_cannot_be_claimed_is_failed_and_recorded_with_the_token`.
 
+Review runs, all local and offline, MySQL 8.4.13 with durable flushing:
+
+- Writer suite on `80521e0d` before the fixes: 65 tests passed. After them:
+  67 tests, 876 assertions, all passing.
+- The CI script's contract stages, in its order: primitive 23, Laravel
+  fixture 22, Google Routes pilot 9, queue-worker pilot 9, scheduling-cache
+  pilot 3, all passing.
+- MySQL profile for the touched areas (the lane's Feature tests, the Telnyx,
+  contention, schedule-guard, Google Calendar and iGUIDE Lab tour files, and
+  all of `tests/MySql`): 176 tests, 4 failures. All 4 are in
+  `DatabaseBackupTest` and `PointInTimeBackupTest`, stop at their
+  configuration stage in this fixture, and fail the same way on `a6e799bb`.
+- SQLite suite (two workers): 9,674 tests, 3 skipped (no ClamAV), 2 failures
+  and 2 errors: the same four the lane reported, which also fail on
+  `a6e799bb` in this container.
+
 Notes for the integrator, not fixed here:
 
 - The open item asked for the policy "behind a default-off flag". The lane
