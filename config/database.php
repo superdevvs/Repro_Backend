@@ -151,6 +151,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Schema lookup cache (App\Support\SchemaFacts)
+    |--------------------------------------------------------------------------
+    |
+    | Lets per-request code skip asking the database whether a table or column
+    | exists. "It exists" is kept for ttl seconds; "missing" only for
+    | negative_ttl seconds (0 never keeps it). The release key defaults to a
+    | fingerprint of the migration file names, so config:cache in each deploy
+    | freezes a new key whenever the migration set changes. Off by default.
+    |
+    */
+
+    'schema_cache' => [
+        'enabled' => (bool) env('SCHEMA_CACHE_ENABLED', false),
+        'store' => env('SCHEMA_CACHE_STORE', 'file'),
+        'ttl' => (int) env('SCHEMA_CACHE_TTL', 86400),
+        'negative_ttl' => (int) env('SCHEMA_CACHE_NEGATIVE_TTL', 60),
+        'release' => env('SCHEMA_CACHE_RELEASE') ?: hash('xxh128', implode("\n", array_map(
+            'basename', glob(database_path('migrations/*.php')) ?: []
+        ))),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Redis Databases
     |--------------------------------------------------------------------------
     |

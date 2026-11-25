@@ -7,6 +7,7 @@ use App\Models\SystemOverviewErrorEvent;
 use App\Models\SystemOverviewRequestTrace;
 use App\Models\SystemOverviewRouteEvent;
 use App\Models\SystemOverviewSession;
+use App\Support\SchemaFacts;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,7 +15,6 @@ use Illuminate\Routing\Route;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Route as RouteFacade;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
@@ -97,7 +97,7 @@ class SystemOverviewTelemetryService
 
         try {
             foreach (self::REQUIRED_TABLES as $table) {
-                if (! Schema::hasTable($table)) {
+                if (! SchemaFacts::hasTable($table)) {
                     return $this->telemetryAvailableCache = false;
                 }
             }
