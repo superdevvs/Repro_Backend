@@ -77,7 +77,7 @@ secret and application encryption key in protected storage.
 | Staff, FPM and queued jobs | Close admission before Laravel. Include CRM staff routes, shoot observer writes, public quote views and opt-out actions. Hold and drain scheduler, the named `crm:website-intake` task, the four scheduled CRM Artisan commands, all workers and manual imports. | Reconcile the captured work against the authoritative engine. Keep campaign and drip claims held until replies, bounces and opt-outs are applied and uncertain sends have a reviewed disposition. |
 | Website inquiries, bookings and careers | Preserve the producer's original reference and its durable retry or outbox record. Hold the recruiting outbox runner. Require a durable receipt before acknowledging any submission that cannot be retried. | Reapply the same reference, payload and recruiting attachments. Confirm one business effect per reference and reconcile any partial attachment replay. |
 | Shared Resend webhook | Hold at ingress and return a retryable failure until an approved retry or capture path is proven. The edge snippet and `PRODUCER_INGRESS_HOLD` answer 503 with `Retry-After`. Turning off CRM leaves delivery events and public opt-outs able to write, so it is not a freeze control. Before the producer-replay lane it also acknowledged an inbound reply without processing it; `email.received` now gets 503. | Use fresh provider-signed redelivery under the original provider event identity (`svix-id`). The webhook applies it once and refuses a stale signature. Verify required received email content is recoverable. Check forwarding effects before retrying any ambiguous send. Not verified on Resend yet: that a dashboard replay keeps the `svix-id`, re-signs with a fresh timestamp, and retries long enough to cover a 60-minute hold. |
-| Google Calendar | Hold the OAuth callback and poller. Preserve existing mappings and pending pushes. | Reconcile changes made directly in Calendar before releasing sync. Restart an expired OAuth flow from the application. |
+| Google Calendar | Hold the OAuth callback and the poller (`CRM_CALENDAR_SYNC_HOLD`, step 2 below). Preserve existing mappings and pending pushes. | Reconcile changes made directly in Calendar before releasing sync. Restart an expired OAuth flow from the application. |
 | Aryeo API webhook (`/api/integrations/aryeo/webhooks/{installation}`) | Held with 503 and `Retry-After` at the edge and in the app. Signatures expire after 300 s, so only a fresh delivery from Aryeo can be accepted. Deduplicated by `event_id` with a body hash. | Aryeo retries or redelivers. The same event gives one `aryeo_api_webhooks` row and one `ReconcileAryeoWebhook` job (tested). Aryeo's retry window is not confirmed: ask Aryeo or read their docs before a real freeze. If Aryeo does not retry, held deliveries need a manual redelivery request. |
 
 Maintain a private ledger of each original identity, payload or attachment
@@ -179,8 +179,10 @@ preflight)
    they are safe before the copy. During the hold, admission closed before
    Laravel stops every HTTP write, these included. Then check that no Aryeo
    job is still leased (Tours panel).
-2. Set `CRM_OUTBOUND_HOLD=true` and `CRM_DEFER_REPLY_FORWARDING=true`, rebuild
-   the config cache, and confirm both booleans in the effective config.
+2. Set `CRM_OUTBOUND_HOLD=true`, `CRM_DEFER_REPLY_FORWARDING=true` and
+   `CRM_CALENDAR_SYNC_HOLD=true`, rebuild the config cache, and confirm the
+   three booleans in the effective config. Keep `CRM_CALENDAR_SYNC_HOLD` in
+   the environment that reopens; step 10 releases it.
 3. Hold the website recruiting scheduler with the `worker_paused` switch from
    website change P2-05 ([spec](mysql-lanes/producer-replay.md#p2-05-a-scheduler-hold-that-keeps-capture-on);
    not built yet). Do not turn off `recruiting_forwarding_settings.enabled`:
@@ -260,11 +262,18 @@ preflight)
     until none is left. `closed_locally` (done or missed follow-ups, which the
     sync leaves in Google on purpose) and `no_connection` (the rep
     disconnected Google) are listed for information and do not fail it. Then
-    release `crm:calendar-sync`.
-    Open: no lane says how `crm:calendar-sync` is held until this step. The
-    scheduler starts again at reopening and runs it every five minutes.
-    `CRM_GOOGLE_SYNC=false` switches it off, but no lane tested that as the
-    hold.
+    set `CRM_CALENDAR_SYNC_HOLD=false` and rebuild the config cache. The
+    scheduler runs `crm:calendar-sync` again from its next five-minute slot.
+    Until then `CRM_CALENDAR_SYNC_HOLD` from step 2 holds it: the scheduler
+    skips it and a manual run calls Google for nothing and writes nothing
+    (`tests/Feature/Crm/CrmCalendarSyncHoldTest.php`). Run before this step,
+    it pushes pending CRM times over changes made in Google, moves CRM
+    follow-ups to Google's time, unlinks follow-ups deleted in Google and may
+    refresh tokens. This reconcile then exits 0 with nothing left to decide.
+    Do not use `CRM_GOOGLE_SYNC=false` as the hold: it also stops saves from
+    pushing and nothing pushes them later, so a follow-up created or
+    cancelled meanwhile does not reach Google. The hold covers only this job.
+    A follow-up saved in the CRM after reopening is still pushed at once.
 11. Stripe at +30 minutes and +2 hours:
     `php artisan stripe:undelivered-events --since=$FREEZE_AT --json` and the
     same with `--account=listing-studio`. They use the restricted Events-read
@@ -754,9 +763,9 @@ failures recoverable; do not acknowledge events and drop them.
    and to this pause; its jobs can run 600 s, the whole default drain limit.
 3. Before 9:50 pm: CRM steps 1 to 3 in
    [Freeze and replay steps](#freeze-and-replay-steps): record and pause
-   Aryeo, hold CRM outbound sends and reply forwarding, hold the website
-   recruiting scheduler. Rebuild only the config cache; cache clearing can
-   erase the queue pause flags from step 2.
+   Aryeo, hold CRM outbound sends, reply forwarding and calendar sync, hold
+   the website recruiting scheduler. Rebuild only the config cache; cache
+   clearing can erase the queue pause flags from step 2.
 4. 9:50 pm: preflight as before (no call in progress, Aryeo recorded and
    paused, no upload in flight). Once the off-site units are installed, also
    hold `repro-backup.timer` and `repro-recovery-kit.timer` for the night and
