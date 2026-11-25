@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Logging\SharedGroupRotatingFileHandler;
 use App\Providers\TransactionTimingServiceProvider;
 use App\Support\TransactionTimingLog;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Monolog\Level;
+use Monolog\LogRecord;
 use Tests\TestCase;
 
 class TransactionTimingLogTest extends TestCase
@@ -253,6 +256,41 @@ class TransactionTimingLogTest extends TestCase
         $this->assertSame(0660, fileperms($files[0]) & 0777);
     }
 
+    public function test_the_next_day_file_of_a_long_running_process_joins_the_log_directory_group(): void
+    {
+        if (! function_exists('posix_geteuid')) {
+            $this->markTestSkipped('POSIX file ownership only.');
+        }
+        $group = $this->groupOtherThanOurs();
+        if ($group === null || ! @chgrp($this->logDirectory, $group)) {
+            clearstatcache();
+            $group = filegroup($this->logDirectory);
+        }
+        $today = $this->logDirectory.'/transactions-'.date('Y-m-d').'.log';
+        $yesterday = $this->logDirectory.'/transactions-'.date('Y-m-d', strtotime('-1 day')).'.log';
+        $handler = new SharedGroupRotatingFileHandler($this->logDirectory.'/transactions.log', 14, Level::Info, true, 0660);
+
+        // A queue worker writes twice, so its stream to the day file stays open.
+        $handler->handle($this->timingRecord());
+        $handler->handle($this->timingRecord());
+        // Midnight passes: the open file becomes yesterday's and the next
+        // record makes this process create a new day file. The handler only
+        // sees it because Monolog re-enters write() when the inode changes.
+        rename($today, $yesterday);
+        $nextRotation = new \DateTimeImmutable('-1 minute');
+        (function () use ($yesterday, $nextRotation) {
+            $this->url = $yesterday;
+            $this->nextRotation = $nextRotation;
+        })->call($handler);
+        $handler->handle($this->timingRecord());
+        $handler->close();
+
+        clearstatcache();
+        $this->assertFileExists($today);
+        $this->assertSame($group, filegroup($today), 'Web workers in the directory group must be able to append.');
+        $this->assertSame(0660, fileperms($today) & 0777);
+    }
+
     public function test_production_records_pass_the_privacy_filter_with_their_timings(): void
     {
         $this->app['env'] = 'production';
@@ -306,6 +344,11 @@ class TransactionTimingLogTest extends TestCase
         }
 
         return $records;
+    }
+
+    private function timingRecord(): LogRecord
+    {
+        return new LogRecord(new \DateTimeImmutable, 'testing', Level::Info, 'slow_transaction', ['duration_ms' => 1.0]);
     }
 
     private function groupOtherThanOurs(): ?int
