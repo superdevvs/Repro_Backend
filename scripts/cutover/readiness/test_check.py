@@ -15,8 +15,10 @@ def readiness_fixture():
     identity = asdict(Identity("review-fixture", "a" * 40, "b" * 64, "c" * 64,
                                "d" * 64, "f1d53bff-40ce-46ba-a35b-4591b2be65b7"))
     last_night = date(1970, 1, 1) + timedelta(days=1_800_000_000 // 86400)
+    busiest = [f"GET /api/busy-{index:02d}" for index in range(check.SPEED_ENDPOINT_COUNT)]
     policy = {
         "version": 1, "identity": identity, "critical_endpoints": ["book", "invoice"],
+        "busiest_endpoints": busiest,
         "host_profile_sha256": "e" * 64, "workload_sha256": "f" * 64,
         "operations": {
             "destination_sha256": "5" * 64, "monitor_profile_sha256": "6" * 64,
@@ -115,6 +117,31 @@ def readiness_fixture():
                 },
                 "sqlite_writes": {"attempts": 100, "contended_attempts": 10, "p95_us": 1_000},
                 "mysql_writes": {"attempts": 200, "contended_attempts": 10, "p95_us": 900},
+                # Inclusive plan boundaries: 45 endpoints exactly 20 ms slower
+                # and the other five exactly 100 ms slower.
+                "busiest_p95_us": {
+                    label: {"sqlite": 10_000,
+                            "mysql": 10_000 + (check.SPEED_WITHIN_US if position < check.SPEED_MIN_WITHIN
+                                               else check.SPEED_MAX_SLOWER_US),
+                            "mysql_layout_lookups": 0}
+                    for position, label in enumerate(busiest)
+                },
+                "stress": {
+                    "duration_ms": check.STRESS_MIN_MS, "parallel_clients": check.STRESS_MIN_CLIENTS,
+                    "backlog_start_depth": 40, "backlog_end_depth": 0,
+                    **dict.fromkeys(check.STRESS_ZERO_COUNTS, 0),
+                },
+                "mysql_kills": [
+                    {"killed_during_write": True, "recovery_ms": check.CRASH_RECOVERY_MS,
+                     "confirmed_writes_missing": 0, "duplicate_business_effects": 0}
+                    for _ in range(check.CRASH_KILL_COUNT)
+                ],
+                "data": {
+                    "snapshot_sha256": str(index + 2) * 64,
+                    "import_and_verify_ms": 12 * check.MINUTE,
+                    **dict.fromkeys(check.NIGHTLY_COUNTERS, 0), **dict.fromkeys(check.DRESS_DATA_PROOFS, True),
+                },
+                "way_back": dict.fromkeys(check.DRESS_WAY_BACK_PROOFS, True),
             }
             for index in (3, 4)
         ],
@@ -195,6 +222,111 @@ class ReadinessTests(unittest.TestCase):
         # absolute contention counts are higher than SQLite.
         self.first["mysql_writes"]["contended_attempts"] = 15
         self.assert_gate("repeatable_write_improvement", "passed")
+
+    def test_absent_dress_rehearsals_are_missing_not_malformed(self):
+        del self.receipt["dress_rehearsals"]
+        self.assert_gate("distinct_dress_rehearsals", "missing")
+
+    def test_plan_speed_mark_counts_the_fifty_busiest_requests(self):
+        self.assert_gate("dress_rehearsal_1.speed", "passed")
+        busy = self.first["busiest_p95_us"]
+        labels = self.policy["busiest_endpoints"]
+        # A 46th endpoint more than 20 ms slower leaves only 44 within the mark.
+        busy[labels[0]]["mysql"] += 1
+        self.assert_gate("dress_rehearsal_1.speed", "failed")
+        busy[labels[0]]["mysql"] -= 1
+        # No endpoint may be more than 100 ms slower.
+        busy[labels[-1]]["mysql"] += 1
+        self.assert_gate("dress_rehearsal_1.speed", "failed")
+        busy[labels[-1]]["mysql"] -= 1
+        # None of the busiest requests may make a layout lookup on MySQL.
+        busy[labels[3]]["mysql_layout_lookups"] = 1
+        self.assert_gate("dress_rehearsal_1.speed", "failed")
+        busy[labels[3]]["mysql_layout_lookups"] = 0
+        self.assert_gate("dress_rehearsal_1.speed", "passed")
+
+    def test_plan_speed_mark_requires_the_pinned_fifty_endpoints(self):
+        busy = self.first["busiest_p95_us"]
+        label = self.policy["busiest_endpoints"][7]
+        removed = busy.pop(label)
+        self.assert_gate("dress_rehearsal_1.speed", "missing")
+        busy[label] = removed
+        busy["GET /api/unlisted"] = removed
+        self.assert_gate("dress_rehearsal_1.speed", "failed")
+        del busy["GET /api/unlisted"]
+        self.policy["busiest_endpoints"] = self.policy["busiest_endpoints"][:-1]
+        self.receipt["policy_sha256"] = digest(self.policy)
+        self.assert_gate("dress_rehearsal_1.speed", "failed")
+        del self.policy["busiest_endpoints"]
+        self.receipt["policy_sha256"] = digest(self.policy)
+        self.assert_gate("dress_rehearsal_1.speed", "missing")
+        self.assert_gate("dress_rehearsal_1.critical_p95", "passed")
+
+    def test_plan_stress_and_crash_mark(self):
+        self.assert_gate("dress_rehearsal_2.stress_and_crash", "passed")
+        stress = self.second["stress"]
+        for name, delta in (("duration_ms", -1), ("parallel_clients", -1), ("server_errors", 1),
+                            ("unhandled_lock_errors", 1), ("confirmed_writes_missing", 1),
+                            ("duplicate_business_effects", 1)):
+            with self.subTest(name=name):
+                stress[name] += delta
+                self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
+                stress[name] -= delta
+        # Workers must clear the backlog: an unchanged or growing backlog fails.
+        for end in (40, 41):
+            with self.subTest(backlog_end_depth=end):
+                stress["backlog_end_depth"] = end
+                self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
+        stress["backlog_end_depth"] = 39
+        self.assert_gate("dress_rehearsal_2.stress_and_crash", "passed")
+        stress["backlog_start_depth"] = stress["backlog_end_depth"] = 0
+        self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
+        stress["backlog_start_depth"], stress["backlog_end_depth"] = 40, 0
+        kills = self.second["mysql_kills"]
+        for name, value in (("recovery_ms", check.CRASH_RECOVERY_MS + 1), ("killed_during_write", False),
+                            ("confirmed_writes_missing", 1), ("duplicate_business_effects", 1)):
+            with self.subTest(name=name):
+                original, kills[1][name] = kills[1][name], value
+                self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
+                kills[1][name] = original
+        kills.pop()
+        self.assert_gate("dress_rehearsal_2.stress_and_crash", "failed")
+        del self.second["mysql_kills"]
+        self.assert_gate("dress_rehearsal_2.stress_and_crash", "missing")
+
+    def test_plan_data_mark_applies_to_the_rehearsal_import(self):
+        self.assert_gate("dress_rehearsal_1.data", "passed")
+        data = self.first["data"]
+        for name, value in (("import_and_verify_ms", 12 * check.MINUTE + 1), ("errors", 1), ("warnings", 1),
+                            ("notes", 1), ("unexpected_field_differences", 1),
+                            *((proof, False) for proof in check.DRESS_DATA_PROOFS)):
+            with self.subTest(name=name):
+                original, data[name] = data[name], value
+                self.assert_gate("dress_rehearsal_1.data", "failed")
+                data[name] = original
+        del self.first["data"]
+        self.assert_gate("dress_rehearsal_1.data", "missing")
+
+    def test_plan_data_mark_is_bound_to_the_rehearsal_snapshot(self):
+        data = self.first["data"]
+        data["snapshot_sha256"] = self.second["snapshot_sha256"]  # an import of another rehearsal's copy
+        self.assert_gate("dress_rehearsal_1.data", "failed")
+        data["snapshot_sha256"] = "not a digest"
+        self.assert_gate("dress_rehearsal_1.data", "failed")
+        del data["snapshot_sha256"]
+        self.assert_gate("dress_rehearsal_1.data", "missing")
+        data["snapshot_sha256"] = self.first["snapshot_sha256"]
+        self.assert_gate("dress_rehearsal_1.data", "passed")
+
+    def test_plan_way_back_mark_requires_reverse_and_money_parity(self):
+        self.assert_gate("dress_rehearsal_1.way_back", "passed")
+        for proof in check.DRESS_WAY_BACK_PROOFS:
+            with self.subTest(proof=proof):
+                self.first["way_back"][proof] = False
+                self.assert_gate("dress_rehearsal_1.way_back", "failed")
+                self.first["way_back"][proof] = True
+        del self.first["way_back"]
+        self.assert_gate("dress_rehearsal_1.way_back", "missing")
 
     def test_missing_prerequisites_and_measured_recovery_fail_closed(self):
         del self.receipt["prerequisites"]["mysql_ci_passed"]
