@@ -1,0 +1,6 @@
+#!/bin/sh
+# Bound read-only over systemctl, systemd-run, supervisorctl and service inside
+# the cutover sandbox (run-sandbox.sh). Nothing in the sandbox may reach the
+# host's systemd or Supervisor; sandbox services are started by sandbox scripts.
+echo "repro-cutover-sandbox: refused: $0 $*: no host service manager inside the sandbox" >&2
+exit 97
