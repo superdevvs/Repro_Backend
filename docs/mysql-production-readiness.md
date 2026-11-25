@@ -22,8 +22,9 @@ last column, the cutover runbook or
 [Operational work still requiring approval](#operational-work-still-requiring-approval).
 Points found while folding the lanes are marked "Open:" in the
 [cutover runbook](mysql-production-cutover.md) and at the end of this file.
-`database/schema/mysql-schema.sql` has not been regenerated for the
-producer-replay migration `2026_11_25_140000`.
+`database/schema/mysql-schema.sql` was regenerated on MySQL 8.4.13 with the
+45 migrations it lacked, `2026_11_25_140000` included. `migrate:fresh` now
+runs no migration after loading it.
 
 Several lanes report the same four full-suite SQLite failures:
 `ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest`

@@ -399,6 +399,259 @@ CREATE TABLE `ai_video_vertical_variants` (
   CONSTRAINT `fk_ai_video_vertical_variants_0_2bc56ced80fa` FOREIGN KEY (`video_generation_job_id`) REFERENCES `ai_video_generation_jobs` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_alerts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_alerts` (
+  `key` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `export_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `owner` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `message` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `created_at` timestamp NOT NULL,
+  `acknowledged_at` timestamp NULL DEFAULT NULL,
+  `acknowledged_by` bigint unsigned DEFAULT NULL,
+  PRIMARY KEY (`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_assets`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_assets` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `export_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_key` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source` json NOT NULL,
+  `ingest_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_asset_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `place_asset_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `ownership` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'unresolved',
+  `presentation` json DEFAULT NULL,
+  `source_url` text COLLATE utf8mb4_0900_bin,
+  `grant_hash` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `grant_expires_at` timestamp NULL DEFAULT NULL,
+  `grant_revoked_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `aryeo_api_assets_export_id_source_key_unique` (`export_id`,`source_key`),
+  UNIQUE KEY `aryeo_api_assets_grant_hash_unique` (`grant_hash`),
+  KEY `aryeo_api_assets_export_id_index` (`export_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_attempts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_attempts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `export_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `blocker` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NOT NULL,
+  `finished_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `aryeo_api_attempts_export_id_index` (`export_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_cases`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_cases` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `export_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `kind` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'open',
+  `reason` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `owner` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'Shubham',
+  `next_action` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'Reconcile provider state before further writes',
+  `resolution_url` varchar(2048) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `resolution` json DEFAULT NULL,
+  `escalate_at` timestamp NOT NULL,
+  `resolved_at` timestamp NULL DEFAULT NULL,
+  `created_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `aryeo_api_cases_export_id_index` (`export_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_destinations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_destinations` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `installation_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `shoot_id` bigint unsigned NOT NULL,
+  `unit_id` bigint unsigned DEFAULT NULL,
+  `client_id` bigint unsigned NOT NULL,
+  `request_record_id` bigint unsigned DEFAULT NULL,
+  `workflow` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `binding_key` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `provider_job_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_place_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `legacy_listing_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `listing_url` varchar(2048) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `identity` json NOT NULL,
+  `recipients` json NOT NULL,
+  `address` json NOT NULL,
+  `requirements` json NOT NULL,
+  `consent` json NOT NULL,
+  `on_hold` tinyint(1) NOT NULL DEFAULT '0',
+  `superseded_at` timestamp NULL DEFAULT NULL,
+  `association_status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'awaiting_listing',
+  `active_export_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `executor` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `executor_token` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `executor_expires_at` timestamp NULL DEFAULT NULL,
+  `verified_by` bigint unsigned NOT NULL,
+  `verified_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `aryeo_api_destinations_binding_key_unique` (`binding_key`),
+  KEY `aryeo_api_destinations_installation_id_index` (`installation_id`),
+  KEY `aryeo_api_destinations_shoot_id_index` (`shoot_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_evidence`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_evidence` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `export_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `feature` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `listing_url` varchar(2048) COLLATE utf8mb4_0900_bin NOT NULL,
+  `evidence_url` varchar(2048) COLLATE utf8mb4_0900_bin NOT NULL,
+  `revision` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `verified_by` bigint unsigned NOT NULL,
+  `observed_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `aryeo_api_evidence_export_id_index` (`export_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_exports`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_exports` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `destination_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `revision` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `snapshot` json NOT NULL,
+  `remote_baseline` json DEFAULT NULL,
+  `status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'draft',
+  `phase` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'review',
+  `outcomes` json NOT NULL,
+  `blocker` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_delivery_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `receipt` json DEFAULT NULL,
+  `metrics` json DEFAULT NULL,
+  `created_by` bigint unsigned NOT NULL,
+  `approved_by` bigint unsigned DEFAULT NULL,
+  `approved_at` timestamp NULL DEFAULT NULL,
+  `editing_window_until` timestamp NULL DEFAULT NULL,
+  `submitted_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `cancelled_at` timestamp NULL DEFAULT NULL,
+  `attempts` int unsigned NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `aryeo_api_exports_destination_id_revision_index` (`destination_id`,`revision`),
+  KEY `aryeo_api_exports_destination_id_index` (`destination_id`),
+  KEY `aryeo_api_exports_status_index` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_installations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_installations` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `environment` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `company_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `provider_installation_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `name` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'disconnected',
+  `paused` tinyint(1) NOT NULL DEFAULT '1',
+  `paused_workflows` json DEFAULT NULL,
+  `enrolled` tinyint(1) NOT NULL DEFAULT '0',
+  `allowed_client_ids` json DEFAULT NULL,
+  `allowed_shoot_ids` json DEFAULT NULL,
+  `requirements` json DEFAULT NULL,
+  `capabilities` json DEFAULT NULL,
+  `credentials` text COLLATE utf8mb4_0900_bin,
+  `token_expires_at` timestamp NULL DEFAULT NULL,
+  `refresh_started_at` timestamp NULL DEFAULT NULL,
+  `verified_at` timestamp NULL DEFAULT NULL,
+  `authorization_generation` int unsigned NOT NULL DEFAULT '0',
+  `updated_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `aryeo_api_installations_environment_company_id_unique` (`environment`,`company_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_oauth_states`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_oauth_states` (
+  `state_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `installation_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `actor_id` bigint unsigned NOT NULL,
+  `browser_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `kind` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'delegate',
+  `auth_token_id` bigint unsigned DEFAULT NULL,
+  `verifier` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `expires_at` timestamp NOT NULL,
+  `consumed_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`state_hash`),
+  KEY `aryeo_api_oauth_states_installation_id_index` (`installation_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_operations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_operations` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `export_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `operation_key` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `method` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `path` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `baseline` text COLLATE utf8mb4_0900_bin,
+  `result` text COLLATE utf8mb4_0900_bin,
+  `status` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'prepared',
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `http_status` smallint unsigned DEFAULT NULL,
+  `error_code` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `sent_at` timestamp NULL DEFAULT NULL,
+  `resolved_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `aryeo_api_operations_export_id_operation_key_unique` (`export_id`,`operation_key`),
+  KEY `aryeo_api_operations_export_id_index` (`export_id`),
+  KEY `aryeo_api_operations_status_index` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `aryeo_api_webhooks`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `aryeo_api_webhooks` (
+  `event_id` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `installation_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `type` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `body_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `payload` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `received_at` timestamp NOT NULL,
+  `processed_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`event_id`),
+  KEY `aryeo_api_webhooks_installation_id_index` (`installation_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `aryeo_changes`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -1130,14 +1383,17 @@ CREATE TABLE `editor_payouts` (
   `created_at` datetime(6) DEFAULT NULL,
   `updated_at` datetime(6) DEFAULT NULL,
   `shoot_service_id` bigint DEFAULT NULL,
+  `removed_shoot_service_id` bigint unsigned DEFAULT NULL,
+  `service_removed_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `editor_payouts_execution_unique` (`editor_id`,`shoot_id`,`service_id`,(coalesce(`shoot_service_id`,0))),
+  UNIQUE KEY `editor_payouts_execution_unique` (`editor_id`,`shoot_id`,`service_id`,(coalesce(`shoot_service_id`,`removed_shoot_service_id`,0))),
   KEY `editor_payouts_editor_paid_completed_idx` (`editor_id`,`is_paid`,`completed_at`),
   KEY `editor_payouts_batch_idx` (`payout_batch_id`),
   KEY `fk_editor_payouts_0_846c116f1a89` (`shoot_service_id`),
   KEY `fk_editor_payouts_2_f9001f786278` (`shoot_id`),
   KEY `fk_editor_payouts_3_ae6032862b35` (`service_id`),
   KEY `fk_editor_payouts_4_7603e09befd9` (`paid_by`),
+  KEY `editor_payouts_removed_shoot_service_id_index` (`removed_shoot_service_id`),
   CONSTRAINT `fk_editor_payouts_0_846c116f1a89` FOREIGN KEY (`shoot_service_id`) REFERENCES `shoot_service` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `fk_editor_payouts_1_90e76b95ce01` FOREIGN KEY (`editor_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_editor_payouts_2_f9001f786278` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE,
@@ -1446,6 +1702,1053 @@ CREATE TABLE `historical_nocharge_releases` (
   UNIQUE KEY `unique_historical_nocharge_releases_invoice_id_444d7e6f6104` (`invoice_id`),
   UNIQUE KEY `unique_historical_nocharge_releases_shoot_id_4e42f03d1296` (`shoot_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_analyses`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_analyses` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `settings` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `data` longtext COLLATE utf8mb4_0900_bin,
+  `proposal` longtext COLLATE utf8mb4_0900_bin,
+  `proposal_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `duration_ms` int unsigned DEFAULT NULL,
+  `error` text COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_analyses_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_analyses_case_id_foreign` (`case_id`),
+  CONSTRAINT `iguide_lab_analyses_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_analyses_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_cases`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_cases` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `label` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `room_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `pano_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `tour_url` text COLLATE utf8mb4_0900_bin,
+  `projection` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `width` int unsigned NOT NULL,
+  `height` int unsigned NOT NULL,
+  `source_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_path` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_mime` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `metadata` longtext COLLATE utf8mb4_0900_bin,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `native_source` longtext COLLATE utf8mb4_0900_bin,
+  PRIMARY KEY (`id`),
+  KEY `iguide_lab_cases_project_id_foreign` (`project_id`),
+  CONSTRAINT `iguide_lab_cases_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_composite_reviews`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_composite_reviews` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `public_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `composite_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `verdict` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `checks` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `notes` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `pipeline` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL,
+  `scope` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL,
+  `batch_id` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `metrics` longtext COLLATE utf8mb4_0900_bin,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_composite_reviews_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_composite_reviews_public_id_unique` (`public_id`),
+  KEY `iguide_lab_composite_reviews_composite_id_id_index` (`composite_id`,`id`),
+  CONSTRAINT `iguide_lab_composite_reviews_composite_id_foreign` FOREIGN KEY (`composite_id`) REFERENCES `iguide_lab_composites` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_composite_reviews_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_composites`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_composites` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `label` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'completed',
+  `preview_path` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `native_path` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `manifest` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_composites_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_composites_case_id_foreign` (`case_id`),
+  CONSTRAINT `iguide_lab_composites_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_composites_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_compositions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_compositions` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `target_kind` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `target_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `run_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `mask_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `composite_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `error` text COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_compositions_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_compositions_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_compositions_run_id_foreign` (`run_id`),
+  KEY `iguide_lab_compositions_mask_id_foreign` (`mask_id`),
+  KEY `iguide_lab_compositions_composite_id_foreign` (`composite_id`),
+  CONSTRAINT `iguide_lab_compositions_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_compositions_composite_id_foreign` FOREIGN KEY (`composite_id`) REFERENCES `iguide_lab_composites` (`id`),
+  CONSTRAINT `iguide_lab_compositions_mask_id_foreign` FOREIGN KEY (`mask_id`) REFERENCES `iguide_lab_masks` (`id`),
+  CONSTRAINT `iguide_lab_compositions_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_compositions_run_id_foreign` FOREIGN KEY (`run_id`) REFERENCES `iguide_lab_runs` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_declutter_removal_plans`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_declutter_removal_plans` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_declutter_removal_plans_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_declutter_removal_plans_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_declutter_removal_plans_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_declutter_removal_plans_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_display_metadata`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_display_metadata` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `public_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `composite_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `label` varchar(160) COLLATE utf8mb4_0900_bin NOT NULL,
+  `generated_detail_description` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `reason` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_display_metadata_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_display_metadata_public_id_unique` (`public_id`),
+  KEY `iguide_lab_display_metadata_composite_id_foreign` (`composite_id`),
+  CONSTRAINT `iguide_lab_display_metadata_composite_id_foreign` FOREIGN KEY (`composite_id`) REFERENCES `iguide_lab_composites` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_display_metadata_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_grass_assessments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_grass_assessments` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_grass_assessments_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_grass_assessments_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_grass_assessments_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_grass_assessments_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_grass_source_admissions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_grass_source_admissions` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_grass_source_admissions_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_grass_source_admissions_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_grass_source_admissions_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_grass_source_admissions_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_import_uploads`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_import_uploads` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `import_request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `filename` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `size_bytes` bigint unsigned NOT NULL,
+  `sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `metadata_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `status` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'uploading',
+  `chunks` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `error` text COLLATE utf8mb4_0900_bin,
+  `import_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `expires_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_import_uploads_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_import_uploads_project_id_import_request_id_unique` (`project_id`,`import_request_id`),
+  CONSTRAINT `iguide_lab_import_uploads_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_imports`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_imports` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_kind` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL,
+  `private_input` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `error` text COLLATE utf8mb4_0900_bin,
+  `audit` longtext COLLATE utf8mb4_0900_bin,
+  `sources` longtext COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_imports_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_imports_project_id_status_index` (`project_id`,`status`),
+  CONSTRAINT `iguide_lab_imports_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_interior_assessments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_interior_assessments` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `phase` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_interior_assessments_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_interior_assessments_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_interior_assessments_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_interior_assessments_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_lifestyle_assessments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_lifestyle_assessments` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_lifestyle_assessments_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_lifestyle_assessments_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_lifestyle_assessments_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_lifestyle_assessments_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_lifestyle_framings`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_lifestyle_framings` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_lifestyle_framings_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_lifestyle_framings_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_lifestyle_framings_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_lifestyle_framings_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_machine_segmentations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_machine_segmentations` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `error` text COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_machine_segmentations_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_machine_segmentations_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_machine_segmentations_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_machine_segmentations_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_masks`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_masks` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `target_kind` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `target_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `uploaded_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `path` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `provider_path` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `width` int unsigned NOT NULL,
+  `height` int unsigned NOT NULL,
+  `statistics` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `reviewed_at` timestamp NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_masks_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_masks_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_masks_target_kind_target_id_index` (`target_kind`,`target_id`),
+  CONSTRAINT `iguide_lab_masks_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_masks_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_pipelines`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_pipelines` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `child_run_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `composite_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `support_request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `support_status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `support_provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `support_metadata` longtext COLLATE utf8mb4_0900_bin,
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `error` text COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_pipelines_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_pipelines_support_request_id_unique` (`support_request_id`),
+  KEY `iguide_lab_pipelines_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_pipelines_child_run_id_foreign` (`child_run_id`),
+  KEY `iguide_lab_pipelines_composite_id_foreign` (`composite_id`),
+  CONSTRAINT `iguide_lab_pipelines_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_pipelines_child_run_id_foreign` FOREIGN KEY (`child_run_id`) REFERENCES `iguide_lab_runs` (`id`),
+  CONSTRAINT `iguide_lab_pipelines_composite_id_foreign` FOREIGN KEY (`composite_id`) REFERENCES `iguide_lab_composites` (`id`),
+  CONSTRAINT `iguide_lab_pipelines_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_projects`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_projects` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `name` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `token_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `expires_at` timestamp NOT NULL,
+  `max_runs` int unsigned NOT NULL DEFAULT '60',
+  `used_runs` int unsigned NOT NULL DEFAULT '0',
+  `revoked_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `max_cases` int unsigned NOT NULL DEFAULT '80',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_projects_token_hash_unique` (`token_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!50003 SET @saved_cs_client      = @@character_set_client */ ;
+/*!50003 SET @saved_cs_results     = @@character_set_results */ ;
+/*!50003 SET @saved_col_connection = @@collation_connection */ ;
+/*!50003 SET character_set_client  = utf8mb4 */ ;
+/*!50003 SET character_set_results = utf8mb4 */ ;
+/*!50003 SET collation_connection  = utf8mb4_bin */ ;
+/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50003 TRIGGER `iguide_lab_project_delete_dependencies` BEFORE DELETE ON `iguide_lab_projects` FOR EACH ROW BEGIN DELETE FROM iguide_lab_compositions WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_pipelines WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_masks WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_sections WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_workflow_items WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_tour_run_targets WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_tour_captures WHERE project_id = OLD.id;
+DELETE FROM iguide_lab_tour_surveys WHERE project_id = OLD.id; END */;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+/*!50003 SET character_set_client  = @saved_cs_client */ ;
+/*!50003 SET character_set_results = @saved_cs_results */ ;
+/*!50003 SET collation_connection  = @saved_col_connection */ ;
+DROP TABLE IF EXISTS `iguide_lab_reviews`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_reviews` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `public_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `run_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `verdict` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `checks` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `notes` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `pipeline` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL,
+  `scope` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL,
+  `batch_id` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `metrics` longtext COLLATE utf8mb4_0900_bin,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_reviews_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_reviews_public_id_unique` (`public_id`),
+  KEY `iguide_lab_reviews_run_id_id_index` (`run_id`,`id`),
+  CONSTRAINT `iguide_lab_reviews_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_reviews_run_id_foreign` FOREIGN KEY (`run_id`) REFERENCES `iguide_lab_runs` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_room_assessments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_room_assessments` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `phase` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_room_assessments_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_room_assessments_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_room_assessments_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_room_assessments_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_runs`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_runs` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `model_id` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `provider` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `preset` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL,
+  `style` varchar(30) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `prompt` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `options` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `output_path` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `output_width` int unsigned DEFAULT NULL,
+  `output_height` int unsigned DEFAULT NULL,
+  `error` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `duration_ms` int unsigned DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `output_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_runs_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_runs_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_runs_project_id_created_at_index` (`project_id`,`created_at`),
+  CONSTRAINT `iguide_lab_runs_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_runs_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_sections`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_sections` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `derived_case_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `view` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `data` longtext COLLATE utf8mb4_0900_bin,
+  `status` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `error` text COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_sections_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_sections_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_sections_derived_case_id_foreign` (`derived_case_id`),
+  CONSTRAINT `iguide_lab_sections_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_sections_derived_case_id_foreign` FOREIGN KEY (`derived_case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_sections_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_staging_assessments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_staging_assessments` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_staging_assessments_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_staging_assessments_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_staging_assessments_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_staging_assessments_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_staging_framings`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_staging_framings` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error_code` varchar(100) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_staging_framings_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_staging_framings_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_staging_framings_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_staging_framings_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_analyses`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_analyses` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `import_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `priority_preset` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `record_revision` int unsigned NOT NULL DEFAULT '0',
+  `selections` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `monitor_heartbeat_at` timestamp NULL DEFAULT NULL,
+  `monitor_token` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `monitor_seq` int unsigned NOT NULL DEFAULT '0',
+  `monitor_idle` tinyint(1) NOT NULL DEFAULT '0',
+  `cancelled_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_analyses_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_tour_analyses_project_id_import_id_unique` (`project_id`,`import_id`),
+  KEY `iguide_lab_tour_analyses_import_id_foreign` (`import_id`),
+  KEY `iguide_lab_tour_analyses_project_id_created_at_index` (`project_id`,`created_at`),
+  KEY `iguide_lab_tour_analyses_status_index` (`status`),
+  CONSTRAINT `iguide_lab_tour_analyses_import_id_foreign` FOREIGN KEY (`import_id`) REFERENCES `iguide_lab_imports` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_analyses_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_analysis_requests`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_analysis_requests` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `analysis_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_analysis_requests_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_tour_analysis_requests_analysis_id_index` (`analysis_id`),
+  CONSTRAINT `iguide_lab_tour_analysis_requests_analysis_id_foreign` FOREIGN KEY (`analysis_id`) REFERENCES `iguide_lab_tour_analyses` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_analysis_requests_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_budgets`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_budgets` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `max_items` int unsigned NOT NULL,
+  `reserved_items` int unsigned NOT NULL DEFAULT '0',
+  `limits` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `reserved` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `authority_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `expires_at` timestamp NOT NULL,
+  `revoked_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `iguide_lab_tour_budgets_project_id_expires_at_index` (`project_id`,`expires_at`),
+  CONSTRAINT `iguide_lab_tour_budgets_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_captures`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_captures` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `analysis_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `position` smallint unsigned NOT NULL,
+  `room_name` varchar(200) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `floor_name` varchar(200) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `source_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `preview_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `exterior_hint` tinyint(1) NOT NULL DEFAULT '0',
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `error_code` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `survey_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `dispatch_allowed` tinyint(1) NOT NULL DEFAULT '1',
+  `paid_survey_requests` tinyint unsigned NOT NULL DEFAULT '0',
+  `survey` longtext COLLATE utf8mb4_0900_bin,
+  `applicability` longtext COLLATE utf8mb4_0900_bin,
+  `candidates` longtext COLLATE utf8mb4_0900_bin,
+  `defaults_version` varchar(24) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `defaults_flags` longtext COLLATE utf8mb4_0900_bin,
+  `surveyed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_captures_analysis_id_case_id_unique` (`analysis_id`,`case_id`),
+  UNIQUE KEY `iguide_lab_tour_captures_analysis_id_position_unique` (`analysis_id`,`position`),
+  KEY `iguide_lab_tour_captures_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_tour_captures_survey_id_index` (`survey_id`),
+  KEY `iguide_lab_tour_captures_project_id_case_id_index` (`project_id`,`case_id`),
+  CONSTRAINT `iguide_lab_tour_captures_analysis_id_foreign` FOREIGN KEY (`analysis_id`) REFERENCES `iguide_lab_tour_analyses` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_captures_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_tour_captures_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_run_chunks`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_run_chunks` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `run_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `position` tinyint unsigned NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_ids` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'reserved',
+  `workflow_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `start_attempts` tinyint unsigned NOT NULL DEFAULT '0',
+  `error_code` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `diagnostic` longtext COLLATE utf8mb4_0900_bin,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_run_chunks_run_id_position_unique` (`run_id`,`position`),
+  UNIQUE KEY `iguide_lab_tour_run_chunks_project_id_request_id_unique` (`project_id`,`request_id`),
+  CONSTRAINT `iguide_lab_tour_run_chunks_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_run_chunks_run_id_foreign` FOREIGN KEY (`run_id`) REFERENCES `iguide_lab_tour_runs` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_run_targets`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_run_targets` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `run_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `position` smallint unsigned NOT NULL,
+  `candidate_ids` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `state` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `chunk_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `workflow_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `workflow_item_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `has_attempt` tinyint(1) NOT NULL DEFAULT '0',
+  `reasons` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `accepted_at` timestamp NULL DEFAULT NULL,
+  `acceptance_log` longtext COLLATE utf8mb4_0900_bin NOT NULL DEFAULT (_utf8mb4'[]'),
+  `synced_fingerprint` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_run_targets_run_id_case_id_unique` (`run_id`,`case_id`),
+  KEY `iguide_lab_tour_run_targets_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_tour_run_targets_project_id_case_id_state_index` (`project_id`,`case_id`,`state`),
+  KEY `iguide_lab_tour_run_targets_workflow_item_id_index` (`workflow_item_id`),
+  CONSTRAINT `iguide_lab_tour_run_targets_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_tour_run_targets_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_run_targets_run_id_foreign` FOREIGN KEY (`run_id`) REFERENCES `iguide_lab_tour_runs` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_runs`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_runs` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `analysis_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `preset` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'creating',
+  `selection_revision` int unsigned NOT NULL,
+  `selection_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `estimate` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `chunk_size` tinyint unsigned NOT NULL,
+  `error_code` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `consecutive_chunk_failures` tinyint unsigned NOT NULL DEFAULT '0',
+  `not_ready_ticks` smallint unsigned NOT NULL DEFAULT '0',
+  `monitor_heartbeat_at` timestamp NULL DEFAULT NULL,
+  `monitor_token` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `monitor_seq` int unsigned NOT NULL DEFAULT '0',
+  `cancelled_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_runs_project_id_request_id_unique` (`project_id`,`request_id`),
+  KEY `iguide_lab_tour_runs_analysis_id_preset_status_index` (`analysis_id`,`preset`,`status`),
+  KEY `iguide_lab_tour_runs_project_id_status_index` (`project_id`,`status`),
+  KEY `iguide_lab_tour_runs_status_index` (`status`),
+  CONSTRAINT `iguide_lab_tour_runs_analysis_id_foreign` FOREIGN KEY (`analysis_id`) REFERENCES `iguide_lab_tour_analyses` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_runs_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_survey_attempts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_survey_attempts` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `survey_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `attempt_index` tinyint unsigned NOT NULL,
+  `credential_source` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `requested_model` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'submitting',
+  `http_status` smallint unsigned DEFAULT NULL,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `duration_ms` int unsigned DEFAULT NULL,
+  `started_at` timestamp NOT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_survey_attempts_survey_id_attempt_index_unique` (`survey_id`,`attempt_index`),
+  KEY `iguide_lab_tour_survey_attempts_project_id_index` (`project_id`),
+  KEY `iguide_lab_tour_survey_attempts_started_at_index` (`started_at`),
+  CONSTRAINT `iguide_lab_tour_survey_attempts_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_tour_survey_attempts_survey_id_foreign` FOREIGN KEY (`survey_id`) REFERENCES `iguide_lab_tour_surveys` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_tour_surveys`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_tour_surveys` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source_import_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_source_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `preview_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `survey_version` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL,
+  `generation` tinyint unsigned NOT NULL DEFAULT '1',
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `error_code` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `parse_error` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `protocol` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `result_sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `parser_version` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `dispatch_count` smallint unsigned NOT NULL DEFAULT '0',
+  `dispatched_at` timestamp NULL DEFAULT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_tour_surveys_identity_unique` (`project_id`,`case_id`,`preview_sha256`,`survey_version`,`generation`),
+  KEY `iguide_lab_tour_surveys_case_id_foreign` (`case_id`),
+  KEY `iguide_lab_tour_surveys_status_dispatched_at_index` (`status`,`dispatched_at`),
+  KEY `iguide_lab_tour_surveys_project_id_case_id_index` (`project_id`,`case_id`),
+  CONSTRAINT `iguide_lab_tour_surveys_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_tour_surveys_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_workflow_evaluations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_workflow_evaluations` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` longtext COLLATE utf8mb4_0900_bin,
+  `provider_attempts` longtext COLLATE utf8mb4_0900_bin,
+  `provider_request_id` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `usage` longtext COLLATE utf8mb4_0900_bin,
+  `error` text COLLATE utf8mb4_0900_bin,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_workflow_evaluations_project_id_request_id_unique` (`project_id`,`request_id`),
+  UNIQUE KEY `iguide_lab_workflow_evaluations_step_id_unique` (`step_id`),
+  CONSTRAINT `iguide_lab_workflow_evaluations_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_workflow_evaluations_step_id_foreign` FOREIGN KEY (`step_id`) REFERENCES `iguide_lab_workflow_steps` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_workflow_items`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_workflow_items` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `workflow_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `case_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `position` smallint unsigned NOT NULL,
+  `preset` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `style` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `instructions` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `source` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `attempt_count` tinyint unsigned NOT NULL DEFAULT '0',
+  `data` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `scheduler` longtext COLLATE utf8mb4_0900_bin,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_workflow_items_workflow_id_position_unique` (`workflow_id`,`position`),
+  KEY `iguide_lab_workflow_items_project_id_foreign` (`project_id`),
+  KEY `iguide_lab_workflow_items_case_id_foreign` (`case_id`),
+  CONSTRAINT `iguide_lab_workflow_items_case_id_foreign` FOREIGN KEY (`case_id`) REFERENCES `iguide_lab_cases` (`id`),
+  CONSTRAINT `iguide_lab_workflow_items_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_workflow_items_workflow_id_foreign` FOREIGN KEY (`workflow_id`) REFERENCES `iguide_lab_workflows` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_workflow_steps`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_workflow_steps` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `item_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `step_key` varchar(80) COLLATE utf8mb4_0900_bin NOT NULL,
+  `kind` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'reserved',
+  `child_id` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `input` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `input_sha256` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `data` longtext COLLATE utf8mb4_0900_bin,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_workflow_steps_item_id_step_key_unique` (`item_id`,`step_key`),
+  UNIQUE KEY `iguide_lab_workflow_steps_project_id_request_id_unique` (`project_id`,`request_id`),
+  CONSTRAINT `iguide_lab_workflow_steps_item_id_foreign` FOREIGN KEY (`item_id`) REFERENCES `iguide_lab_workflow_items` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `iguide_lab_workflow_steps_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `iguide_lab_workflows`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `iguide_lab_workflows` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `project_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `policy` longtext COLLATE utf8mb4_0900_bin NOT NULL,
+  `cancelled_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `iguide_lab_workflows_project_id_request_id_unique` (`project_id`,`request_id`),
+  CONSTRAINT `iguide_lab_workflows_project_id_foreign` FOREIGN KEY (`project_id`) REFERENCES `iguide_lab_projects` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `iguide_offline_upload_chunks`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -2613,6 +3916,70 @@ CREATE TABLE `message_channels` (
   KEY `message_channels_type_owner_scope_owner_id_index` (`type`,`owner_scope`,`owner_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `message_media`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `message_media` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `user_id` bigint DEFAULT NULL,
+  `channel` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `name` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL,
+  `mime_type` varchar(255) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'application/octet-stream',
+  `size` bigint unsigned NOT NULL,
+  `received_bytes` bigint unsigned NOT NULL DEFAULT '0',
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'uploading',
+  `sha256` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `message_kind` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `message_id` varchar(40) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `send_request_key` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `source_key` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `source_url` text COLLATE utf8mb4_0900_bin,
+  `expires_at` timestamp NOT NULL,
+  `share_expires_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `message_media_source_key_unique` (`source_key`),
+  KEY `message_media_message_kind_message_id_index` (`message_kind`,`message_id`),
+  KEY `message_media_user_id_status_index` (`user_id`,`status`),
+  CONSTRAINT `message_media_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `message_reactions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `message_reactions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `message_kind` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `message_id` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `user_id` bigint NOT NULL,
+  `emoji` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `message_reactions_message_kind_message_id_user_id_unique` (`message_kind`,`message_id`,`user_id`),
+  KEY `message_reactions_user_id_foreign` (`user_id`),
+  CONSTRAINT `message_reactions_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `message_send_receipts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `message_send_receipts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint NOT NULL,
+  `request_key` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `fingerprint` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'sending',
+  `response` json DEFAULT NULL,
+  `http_status` smallint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `message_send_receipts_user_id_request_key_unique` (`user_id`,`request_key`),
+  CONSTRAINT `message_send_receipts_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `message_templates`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -2787,6 +4154,49 @@ CREATE TABLE `mmm_punchout_sessions` (
   CONSTRAINT `fk_mmm_punchout_sessions_0_7e219f05ce90` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_mmm_punchout_sessions_1_515e522d13b4` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `mobile_assistant_actions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `mobile_assistant_actions` (
+  `id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `user_id` bigint NOT NULL,
+  `request_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `action` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `state` varchar(24) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'prepared',
+  `request_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `scope_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `target_version` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `proposal` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `result` text COLLATE utf8mb4_0900_bin,
+  `expires_at` timestamp NOT NULL,
+  `started_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `mobile_assistant_actions_user_id_request_id_unique` (`user_id`,`request_id`),
+  KEY `mobile_assistant_actions_user_id_state_created_at_index` (`user_id`,`state`,`created_at`),
+  CONSTRAINT `mobile_assistant_actions_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `mobile_device_preferences`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `mobile_device_preferences` (
+  `personal_access_token_id` bigint NOT NULL,
+  `user_id` bigint NOT NULL,
+  `installation_id` char(36) COLLATE utf8mb4_0900_bin NOT NULL,
+  `sequence` bigint unsigned NOT NULL,
+  `preferences` json NOT NULL,
+  `enabled_after` json NOT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`personal_access_token_id`),
+  KEY `mobile_device_preferences_user_id_foreign` (`user_id`),
+  CONSTRAINT `mobile_device_preferences_personal_access_token_id_foreign` FOREIGN KEY (`personal_access_token_id`) REFERENCES `personal_access_tokens` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `mobile_device_preferences_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `mobile_notification_deliveries`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -3365,6 +4775,30 @@ CREATE TABLE `projects` (
   CONSTRAINT `fk_projects_2_1a188d29afc0` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `provider_asset_recovery_attempts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `provider_asset_recovery_attempts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `scope_key` varchar(120) COLLATE utf8mb4_0900_bin NOT NULL,
+  `channel` varchar(32) COLLATE utf8mb4_0900_bin NOT NULL,
+  `shoot_id` bigint unsigned NOT NULL,
+  `shoot_service_id` bigint unsigned DEFAULT NULL,
+  `fingerprint` char(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `attempts` int unsigned NOT NULL,
+  `first_attempt_at` timestamp NOT NULL,
+  `last_attempt_at` timestamp NOT NULL,
+  `next_attempt_at` timestamp NOT NULL,
+  `gave_up_at` timestamp NULL DEFAULT NULL,
+  `outcome` varchar(32) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `provider_asset_recovery_attempts_scope_key_unique` (`scope_key`),
+  KEY `provider_asset_recovery_attempts_channel_next_attempt_at_index` (`channel`,`next_attempt_at`),
+  KEY `provider_asset_recovery_attempts_shoot_id_index` (`shoot_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `public_payment_access_tokens`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -3617,6 +5051,7 @@ CREATE TABLE `services` (
   `is_migration_only` bigint NOT NULL DEFAULT '0',
   `shoot_duration_minutes` bigint DEFAULT NULL,
   `included_components` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
+  `financial_only` tinyint(1) NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `services_is_migration_only_index` (`is_migration_only`),
   KEY `services_upload_intake_type_index` (`upload_intake_type`),
@@ -3784,6 +5219,59 @@ CREATE TABLE `shoot_compensations` (
   CONSTRAINT `fk_shoot_compensations_5_8248647651de` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_shoot_compensations_6_510d96b9f071` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `shoot_delivery_notification_outbox`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `shoot_delivery_notification_outbox` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `shoot_id` bigint NOT NULL,
+  `deduplication_key` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `operation_key` varchar(100) COLLATE utf8mb4_0900_bin NOT NULL,
+  `cycle_key` varchar(100) COLLATE utf8mb4_0900_bin NOT NULL,
+  `is_full_order_delivery` tinyint(1) NOT NULL,
+  `service_item_ids` json NOT NULL,
+  `status` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'pending',
+  `attempt_count` int unsigned NOT NULL DEFAULT '0',
+  `available_at` timestamp NULL DEFAULT NULL,
+  `attempted_at` timestamp NULL DEFAULT NULL,
+  `completed_at` timestamp NULL DEFAULT NULL,
+  `last_error` text COLLATE utf8mb4_0900_bin,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `shoot_delivery_notification_outbox_deduplication_key_unique` (`deduplication_key`),
+  KEY `shoot_delivery_notification_outbox_shoot_id_foreign` (`shoot_id`),
+  KEY `shoot_delivery_notification_outbox_status_available_at_index` (`status`,`available_at`),
+  CONSTRAINT `shoot_delivery_notification_outbox_shoot_id_foreign` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `shoot_delivery_receipts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `shoot_delivery_receipts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `shoot_id` bigint NOT NULL,
+  `shoot_service_id` bigint NOT NULL,
+  `component_key` varchar(80) COLLATE utf8mb4_0900_bin NOT NULL,
+  `execution_key` varchar(100) COLLATE utf8mb4_0900_bin NOT NULL,
+  `method` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `evidence` json NOT NULL,
+  `actor_id` bigint DEFAULT NULL,
+  `reason` text COLLATE utf8mb4_0900_bin,
+  `plan_revision` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `operation_key` varchar(100) COLLATE utf8mb4_0900_bin NOT NULL,
+  `delivered_at` timestamp NOT NULL,
+  `revoked_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `delivery_component_operation_unique` (`shoot_service_id`,`component_key`,`execution_key`,`operation_key`),
+  KEY `shoot_delivery_receipts_actor_id_foreign` (`actor_id`),
+  KEY `shoot_delivery_receipts_shoot_id_shoot_service_id_index` (`shoot_id`,`shoot_service_id`),
+  KEY `shoot_delivery_receipts_operation_key_index` (`operation_key`),
+  CONSTRAINT `shoot_delivery_receipts_actor_id_foreign` FOREIGN KEY (`actor_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `shoot_delivery_receipts_shoot_id_foreign` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `shoot_delivery_receipts_shoot_service_id_foreign` FOREIGN KEY (`shoot_service_id`) REFERENCES `shoot_service` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `shoot_editing_dispatch_items`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -3954,6 +5442,9 @@ CREATE TABLE `shoot_files` (
   `watermarked_web_path` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
   `watermarked_placeholder_path` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
   `is_hidden` bigint NOT NULL DEFAULT '0',
+  `is_client_hidden` tinyint(1) NOT NULL DEFAULT '0',
+  `client_hidden_at` timestamp NULL DEFAULT NULL,
+  `client_hidden_by` bigint unsigned DEFAULT NULL,
   `shoot_service_id` bigint DEFAULT NULL,
   `is_extra` bigint NOT NULL DEFAULT '0',
   `required_for_editing` bigint NOT NULL DEFAULT '0',
@@ -3977,6 +5468,7 @@ CREATE TABLE `shoot_files` (
   KEY `fk_shoot_files_2_1c4b7165af49` (`album_id`),
   KEY `fk_shoot_files_4_3ce44fcbad75` (`uploaded_by`),
   KEY `fk_shoot_files_5_7f2f4e6cd3e4` (`verified_by`),
+  KEY `shoot_files_shoot_client_hidden_index` (`shoot_id`,`is_client_hidden`),
   CONSTRAINT `fk_shoot_files_0_d2f44c2560fb` FOREIGN KEY (`raw_upload_batch_id`) REFERENCES `shoot_raw_upload_batches` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_shoot_files_1_cba8c7e433a5` FOREIGN KEY (`ai_editing_job_id`) REFERENCES `ai_editing_jobs` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_shoot_files_2_1c4b7165af49` FOREIGN KEY (`album_id`) REFERENCES `shoot_media_albums` (`id`) ON DELETE SET NULL,
@@ -4062,6 +5554,36 @@ CREATE TABLE `shoot_ghost_users` (
   CONSTRAINT `fk_shoot_ghost_users_1_ffd82820d093` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `shoot_guest_shares`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `shoot_guest_shares` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `shoot_id` bigint NOT NULL,
+  `created_by` bigint NOT NULL,
+  `email` varchar(254) COLLATE utf8mb4_0900_bin NOT NULL,
+  `token_hash` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `expires_at` timestamp NOT NULL,
+  `revoked_at` timestamp NULL DEFAULT NULL,
+  `code_hash` varchar(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `code_expires_at` timestamp NULL DEFAULT NULL,
+  `code_sent_at` timestamp NULL DEFAULT NULL,
+  `code_attempts` smallint unsigned NOT NULL DEFAULT '0',
+  `last_verified_at` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  `token_encrypted` text COLLATE utf8mb4_0900_bin,
+  `invitation_status` varchar(16) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `invitation_attempted_at` timestamp NULL DEFAULT NULL,
+  `invitation_sent_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `shoot_guest_shares_token_hash_unique` (`token_hash`),
+  KEY `shoot_guest_shares_created_by_foreign` (`created_by`),
+  KEY `shoot_guest_shares_recipient_index` (`shoot_id`,`email`),
+  CONSTRAINT `shoot_guest_shares_created_by_foreign` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `shoot_guest_shares_shoot_id_foreign` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `shoot_media_albums`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -4146,6 +5668,28 @@ CREATE TABLE `shoot_notes` (
   CONSTRAINT `fk_shoot_notes_1_243f36df002c` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE,
   CONSTRAINT `ck_shoot_notes_0_98fe07e7be2e` CHECK ((`type` in (_utf8mb4'shoot',_utf8mb4'company',_utf8mb4'photographer',_utf8mb4'editing',_utf8mb4'approval')))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `shoot_provider_delivery_verifications`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `shoot_provider_delivery_verifications` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `shoot_id` bigint NOT NULL,
+  `shoot_service_id` bigint NOT NULL,
+  `provider` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `execution_key` varchar(100) COLLATE utf8mb4_0900_bin NOT NULL,
+  `identity_key` varchar(200) COLLATE utf8mb4_0900_bin NOT NULL,
+  `state` varchar(20) COLLATE utf8mb4_0900_bin NOT NULL,
+  `source` varchar(40) COLLATE utf8mb4_0900_bin NOT NULL,
+  `event_fingerprint` varchar(64) COLLATE utf8mb4_0900_bin NOT NULL,
+  `evidence` json NOT NULL,
+  `verified_at` timestamp NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `provider_verification_event_unique` (`shoot_service_id`,`provider`,`event_fingerprint`),
+  KEY `provider_verification_execution_index` (`shoot_id`,`shoot_service_id`,`execution_key`),
+  CONSTRAINT `shoot_provider_delivery_verifications_shoot_id_foreign` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `shoot_provider_delivery_verifications_shoot_service_id_foreign` FOREIGN KEY (`shoot_service_id`) REFERENCES `shoot_service` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `shoot_raw_upload_batch_slots`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -4264,6 +5808,7 @@ CREATE TABLE `shoot_service` (
   `contracted_photo_count` bigint DEFAULT NULL,
   `payout_snapshot` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
   `active_work_link_output` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
+  `delivery_requirements` json DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `shoot_service_unit_catalog_unique` (`shoot_id`,`service_id`,(coalesce(`shoot_unit_id`,0))),
   UNIQUE KEY `shoot_service_client_key_unique` (`shoot_id`,`client_key`),
@@ -4365,6 +5910,32 @@ DELIMITER ;
 /*!50003 SET character_set_client  = @saved_cs_client */ ;
 /*!50003 SET character_set_results = @saved_cs_results */ ;
 /*!50003 SET collation_connection  = @saved_col_connection */ ;
+DROP TABLE IF EXISTS `shoot_service_earning_snapshots`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `shoot_service_earning_snapshots` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `shoot_id` bigint NOT NULL,
+  `shoot_service_id` bigint unsigned NOT NULL,
+  `recipient_id` bigint NOT NULL,
+  `scheduled_date` date NOT NULL,
+  `earned_at` timestamp NOT NULL,
+  `amount` decimal(12,2) NOT NULL,
+  `snapshot` json NOT NULL,
+  `removed_by` bigint DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `service_earned_pay_once` (`shoot_service_id`),
+  KEY `shoot_service_earning_snapshots_shoot_id_foreign` (`shoot_id`),
+  KEY `shoot_service_earning_snapshots_recipient_id_foreign` (`recipient_id`),
+  KEY `shoot_service_earning_snapshots_removed_by_foreign` (`removed_by`),
+  KEY `shoot_service_earning_snapshots_scheduled_date_index` (`scheduled_date`),
+  CONSTRAINT `shoot_service_earning_snapshots_recipient_id_foreign` FOREIGN KEY (`recipient_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `shoot_service_earning_snapshots_removed_by_foreign` FOREIGN KEY (`removed_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `shoot_service_earning_snapshots_shoot_id_foreign` FOREIGN KEY (`shoot_id`) REFERENCES `shoots` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `shoot_share_links`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -4738,6 +6309,11 @@ CREATE TABLE `shoots` (
   `active_work_at` datetime(6) DEFAULT NULL,
   `active_work_date` date DEFAULT NULL,
   `active_work_time` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
+  `active_work_is_reopened` tinyint(1) DEFAULT NULL,
+  `auto_delivery_enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `active_work_cycle_key` char(36) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `standing_editor_notes_hidden` tinyint(1) NOT NULL DEFAULT '0',
+  `standing_editor_notes_snapshot` json DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `shoots_copilot_operation_id_unique` (`copilot_operation_id`),
   UNIQUE KEY `shoots_comp_reshoot_idempotency_unique` (`complimentary_reshoot_idempotency_key`),
@@ -5057,6 +6633,25 @@ CREATE TABLE `sms_shared_webhook_events` (
   KEY `fk_sms_shared_webhook_events_0_d69b0bc12f97` (`message_id`),
   CONSTRAINT `fk_sms_shared_webhook_events_0_d69b0bc12f97` FOREIGN KEY (`message_id`) REFERENCES `sms_shared_messages` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `standing_editor_notes`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `standing_editor_notes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `scope` varchar(16) COLLATE utf8mb4_0900_bin NOT NULL,
+  `client_id` bigint unsigned DEFAULT NULL,
+  `company_match` varchar(120) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `content` text COLLATE utf8mb4_0900_bin NOT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `created_by` bigint unsigned DEFAULT NULL,
+  `updated_by` bigint unsigned DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `standing_editor_notes_client_id_unique` (`client_id`),
+  KEY `standing_editor_notes_scope_active_index` (`scope`,`is_active`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `stripe_checkout_attempt_items`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -6599,7 +8194,7 @@ DROP TABLE IF EXISTS `workflow_logs`;
 CREATE TABLE `workflow_logs` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `shoot_id` bigint NOT NULL,
-  `user_id` bigint NOT NULL,
+  `user_id` bigint DEFAULT NULL,
   `action` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
   `details` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
   `metadata` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
@@ -7691,6 +9286,8 @@ CREATE TABLE `recruit_application_receipts` (
   `applicant_id` bigint unsigned DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
+  `payload_sha256` char(64) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `attachment_sha256s` text COLLATE utf8mb4_0900_bin,
   PRIMARY KEY (`reference`),
   KEY `recruit_application_receipts_applicant_id_index` (`applicant_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
@@ -7826,4 +9423,49 @@ INSERT INTO `migrations` (`id`,`migration`,`batch`) VALUES
 (380,'2026_11_24_150000_create_crm_feature_tables',195),
 (381,'2026_11_24_160000_create_crm_intake_receipts',195),
 (382,'2026_11_24_161000_add_booking_details_to_crm_quotes',195),
-(383,'2026_11_24_180000_add_crm_communication_receipts',195);
+(383,'2026_11_24_180000_add_crm_communication_receipts',195),
+(384,'2026_10_25_143000_brand_stock_operational_sms',196),
+(385,'2026_11_05_190000_add_component_delivery_ledger',196),
+(386,'2026_11_06_000001_add_provider_auto_delivery',196),
+(387,'2026_11_06_000002_create_shoot_delivery_notification_outbox',196),
+(388,'2026_11_06_150000_classify_reviewed_travel_fees_as_financial',196),
+(389,'2026_11_10_150000_create_aryeo_api_tables',196),
+(390,'2026_11_11_150000_preserve_earned_pay_on_unpaid_service_removal',196),
+(391,'2026_11_11_173000_preserve_editor_payouts_on_service_removal',196),
+(392,'2026_11_12_120000_create_mobile_assistant_actions_table',196),
+(393,'2026_11_13_040000_create_mobile_device_preferences_table',196),
+(394,'2026_11_13_180000_create_iguide_lab_tables',196),
+(395,'2026_11_13_193000_create_iguide_lab_reviews_table',196),
+(396,'2026_11_14_010000_create_messaging_media_tables',196),
+(397,'2026_11_14_030000_create_iguide_lab_composites',196),
+(398,'2026_11_14_040000_create_iguide_lab_pipelines',196),
+(399,'2026_11_14_050000_create_iguide_lab_analyses',196),
+(400,'2026_11_14_060000_create_iguide_lab_sections',196),
+(401,'2026_11_14_070000_add_case_limit_to_iguide_lab_projects',196),
+(402,'2026_11_14_070100_add_output_digest_to_iguide_lab_runs',196),
+(403,'2026_11_14_100000_create_iguide_lab_workflows',196),
+(404,'2026_11_14_110000_create_iguide_lab_imports',196),
+(405,'2026_11_14_120000_create_iguide_lab_machine_segmentations',196),
+(406,'2026_11_14_130000_create_iguide_lab_staging_assessments',196),
+(407,'2026_11_14_140000_create_iguide_lab_grass_assessments',196),
+(408,'2026_11_14_150000_create_iguide_lab_declutter_removal_plans',196),
+(409,'2026_11_14_150000_create_shoot_guest_shares_table',196),
+(410,'2026_11_14_160000_create_iguide_lab_staging_framings',196),
+(411,'2026_11_14_170000_create_iguide_lab_grass_source_admissions',196),
+(412,'2026_11_14_180000_add_management_fields_to_shoot_guest_shares_table',196),
+(413,'2026_11_14_180000_create_iguide_lab_lifestyle_framings',196),
+(414,'2026_11_14_190000_add_scheduler_to_iguide_lab_workflow_items',196),
+(415,'2026_11_14_190000_create_iguide_lab_interior_assessments',196),
+(416,'2026_11_15_200000_create_iguide_lab_room_assessments',196),
+(417,'2026_11_15_210000_create_iguide_lab_tour_budgets',196),
+(418,'2026_11_16_100000_create_iguide_lab_tour_surveys',196),
+(419,'2026_11_16_100100_create_iguide_lab_tour_analyses',196),
+(420,'2026_11_16_100200_create_iguide_lab_tour_captures',196),
+(421,'2026_11_16_100300_create_iguide_lab_tour_runs',196),
+(422,'2026_11_16_120000_create_provider_asset_recovery_attempts_table',196),
+(423,'2026_11_16_140000_add_outcome_to_provider_asset_recovery_attempts',196),
+(424,'2026_11_19_120000_add_client_hidden_to_shoot_files',196),
+(425,'2026_11_21_100000_create_standing_editor_notes_table',196),
+(426,'2026_11_22_120200_preserve_iguide_lab_project_deletion',196),
+(427,'2026_11_22_180000_preserve_full_iguide_case_labels',196),
+(428,'2026_11_25_140000_add_replay_identity_to_recruit_application_receipts',196);
