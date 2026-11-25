@@ -18,6 +18,9 @@ class AryeoConnectionCommand extends Command
     /** Connection settings a freeze records and a resume restores. */
     private const RECORDED = ['enabled', 'processing_enabled', 'discover_all_clients', 'delivery_shoot_ids', 'client_ids'];
 
+    /** The settings --pause turns off, and so the only ones a resume turns back on. */
+    private const PAUSED = ['processing_enabled', 'discover_all_clients'];
+
     public function handle(): int
     {
         $connection = AryeoConnection::where('name', $this->argument('name'))->first();
@@ -130,7 +133,10 @@ class AryeoConnectionCommand extends Command
         return self::SUCCESS;
     }
 
-    /** Resume: restore exactly what was recorded, for the same connection, from an unedited file. */
+    /**
+     * Resume: restore exactly what was recorded, for the same connection, from an
+     * unedited file, and only when nothing but the paused settings changed since.
+     */
     private function resume(?AryeoConnection $connection, string $path): int
     {
         $state = is_file($path) ? json_decode((string) file_get_contents($path), true) : null;
@@ -144,6 +150,15 @@ class AryeoConnectionCommand extends Command
             return self::FAILURE;
         }
         $before = $connection->only(self::RECORDED);
+        // Turn back on only what the pause turned off. Anything else changed since
+        // the recording (a revoked credential, a narrowed scope) was deliberate.
+        $changed = array_filter(self::RECORDED, fn (string $key) => $before[$key] !== $settings[$key]
+            && ! (in_array($key, self::PAUSED, true) && $before[$key] === false));
+        if ($changed !== []) {
+            $this->error('The connection changed after the recording ('.implode(', ', $changed).'). Nothing was changed; restore it by hand.');
+
+            return self::FAILURE;
+        }
         $connection->forceFill($settings)->save();
         if ($connection->fresh()->only(self::RECORDED) !== $settings) {
             $this->error('The restored settings differ from the recorded ones. Check the connection now.');

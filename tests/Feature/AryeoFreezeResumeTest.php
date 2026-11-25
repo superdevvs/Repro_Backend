@@ -103,6 +103,29 @@ class AryeoFreezeResumeTest extends TestCase
         $this->assertSame($paused, $this->flags());
     }
 
+    /**
+     * A resume only turns back on what the pause turned off. A credential
+     * revoked, or a scope narrowed, during the freeze must not come back.
+     */
+    public function test_resume_refuses_a_connection_changed_during_the_freeze(): void
+    {
+        $changes = [
+            'revoked' => fn () => $this->artisan('aryeo:connection', ['name' => 'Studio Mac', '--revoke' => true])->assertSuccessful(),
+            'narrowed' => fn () => $this->connection->fresh()->forceFill(['delivery_shoot_ids' => []])->save(),
+        ];
+        $original = $this->flags();
+        foreach ($changes as $name => $change) {
+            $this->connection->fresh()->forceFill($original)->save();
+            $file = $this->directory.'/aryeo-'.$name.'.json';
+            $this->artisan('aryeo:connection', ['name' => 'Studio Mac', '--record-state' => $file, '--pause' => true])->assertSuccessful();
+            $change();
+            $changed = $this->flags();
+
+            $this->artisan('aryeo:connection', ['name' => 'Studio Mac', '--resume-processing' => $file])->assertFailed();
+            $this->assertSame($changed, $this->flags(), $name.': nothing may change');
+        }
+    }
+
     public function test_api_webhook_redelivered_with_a_fresh_signature_is_recorded_once(): void
     {
         $client = User::factory()->create(['role' => 'client']);

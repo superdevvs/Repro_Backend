@@ -140,10 +140,10 @@ production needs its own approval.
 12. Resume Aryeo last:
     `php artisan aryeo:connection "<name>" --resume-processing=/private/aryeo-<date>.json`.
     It refuses a file for another connection or an edited file, prints what
-    it changed, and the agent should be seen again within a minute. It
-    restores `enabled` as well, exactly as recorded: if the connection was
-    disabled on purpose during the freeze (a revoked credential, say), do not
-    resume it; re-enable it by hand once that is settled.
+    it changed, and the agent should be seen again within a minute. It turns
+    back on only what the pause turned off: if anything else changed after
+    the recording (a credential revoked, client or shoot scope narrowed), it
+    refuses, names the settings and changes nothing. Settle those by hand.
 
 **Provider table rows to add**
 
