@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Shoot;
 use App\Services\IguideService;
+use App\Services\Shoots\IguideServiceOwnership;
 use App\Services\Shoots\ProviderFloorplanRecovery;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -92,6 +93,9 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
             $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
             if (!empty($floorplans)) {
                 if ($this->scheduledRecovery) {
+                    // Recovery counts unscoped files as present, so first move legacy unscoped
+                    // iGUIDE files onto the booked iGUIDE line, as the full-manifest ingest did.
+                    $this->adoptUnscopedFloorplans($shoot, $floorplans);
                     // The sweep may have already queued these assets before metadata was refreshed.
                     app(ProviderFloorplanRecovery::class)->recover('iguide', 1, $shoot->id);
                 } else {
@@ -112,6 +116,25 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
             ]);
 
             throw $e;
+        }
+    }
+
+    /**
+     * IngestIguideAssetsJob adopts unscoped files for a whole-shoot iGUIDE line. Scheduled
+     * recovery queues only missing assets, so a shoot whose files are all present but still
+     * unscoped would never reach that step.
+     */
+    private function adoptUnscopedFloorplans(Shoot $shoot, array $floorplans): void
+    {
+        if ($this->shootServiceId) {
+            return;
+        }
+        $keys = array_values(array_filter(array_column($floorplans, 'asset_key'),
+            static fn ($key) => is_string($key) && $key !== ''));
+        $ownership = app(IguideServiceOwnership::class);
+        $owner = $keys === [] ? null : $ownership->resolve($shoot->fresh());
+        if ($owner) {
+            $ownership->adoptUnscoped($shoot, (int) $owner->id, $keys);
         }
     }
 }
