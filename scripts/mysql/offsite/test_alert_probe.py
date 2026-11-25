@@ -71,6 +71,7 @@ class DetectorTests(unittest.TestCase):
         self.inbox.mkdir()
         self.cache = self.root / "app" / "storage" / "framework" / "cache" / "data"
         self.cache.mkdir(parents=True)
+        self.cache.chmod(0o2775)  # As on the server: app writers share the group.
         self.access = self.root / "access.log"
         self.access.write_text("")
         self.plan = {
@@ -231,6 +232,19 @@ class DetectorTests(unittest.TestCase):
         self.addCleanup(self.cache.chmod, 0o775)
         self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "fail")
         self.cache.chmod(0o775)
+        self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "ok")
+
+    @unittest.skipUnless(os.name == "posix", "the cache folder mode check runs on Linux")
+    def test_cache_root_that_is_not_group_writable_is_a_failure(self):
+        # Laravel creates each new cache folder in the root, so group writers need write
+        # there too; checking only the existing subfolders missed it.
+        self.baseline()
+        self.write_access(100, 1)
+        (self.cache / "ab").mkdir()
+        (self.cache / "ab").chmod(0o2775)
+        self.cache.chmod(0o2755)
+        self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "fail")
+        self.cache.chmod(0o2775)
         self.assertEqual(self.run_probe()["cache_write_failed"]["state"], "ok")
 
     def test_mysql_restarted(self):

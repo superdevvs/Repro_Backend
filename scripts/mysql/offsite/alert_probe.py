@@ -235,6 +235,13 @@ def cache_write_failed(context: Context) -> tuple[str, str]:
             # os.walk skips what it cannot list; a missing or unreadable folder is not a clean one.
             raise DetectorError("cache folder could not be read")
 
+        try:
+            root = os.stat(context.plan["cache_dir"])
+        except OSError:
+            unreadable(None)
+        # Laravel creates each new cache folder in the root, so group writers need write there too.
+        if not root.st_mode & stat.S_IWGRP:
+            problems.append("the cache folder is not group-writable")
         for directory, folders, _ in os.walk(context.plan["cache_dir"], onerror=unreadable):
             for name in folders:
                 seen += 1
