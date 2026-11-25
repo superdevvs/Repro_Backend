@@ -58,7 +58,14 @@ boot IDs, ingress open marker, deploy marker, scheduler hold, seal record),
 `commands` (identity probe, MySQL probe, queue pause and resume prefixes, stop
 and start worker commands, FPM drain), process patterns (`writer_processes`,
 `long_job_processes`, `scheduler_processes`), `command_seconds` and the owner
-`options`. `test_adapter.py` builds a complete example. The CLI refuses a
+`options`. `test_adapter.py` builds a complete example. Each queue is one
+`connection:queue` argument for `queue:pause` and `queue:resume`: the nine are
+`database:` mail, integrations, default, watermarks, voice-realtime,
+voice-notifications, voice-transcripts and media-archives, plus
+`studio:studio`. If the optional lab-tour worker is installed, add
+`iguide-lab-tour:iguide-lab-tour` (connection and queue share the name) before
+`cli.py init`, because `hold` refuses a host config that changed after `init`.
+Lower case only; the connection starts with a letter. The CLI refuses a
 config whose guard paths differ from the installed guard's, or whose
 `ingress_open` and `deploy_marker` are not `/run/repro-cutover-ingress/open`
 (read by the nginx include) and `/etc/repro-database-cutover/active` (read by
