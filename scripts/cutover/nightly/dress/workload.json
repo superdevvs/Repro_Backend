@@ -1,0 +1,46 @@
+{
+  "schema": "repro.dress-rehearsal.workload.v1",
+  "status": "draft-for-owner-review",
+  "observed": {
+    "snapshot_sha256": "9db47294c239c6c784803f41ec3026e7ce707c38cdce59ea3559909130211d98",
+    "window_hours": 24,
+    "requests": 77937,
+    "staff_crm_requests": 296,
+    "p95_requests_per_active_minute": 125,
+    "peak_requests_per_minute": 237,
+    "known_gaps": ["public webhooks", "write-on-read routes"]
+  },
+  "phases": {
+    "warmup": {"duration_ms": 120000, "requests_per_minute": 125},
+    "peak": {"duration_ms": 600000, "requests_per_minute": 237},
+    "surge": {"duration_ms": 300000, "requests_per_minute": 474}
+  },
+  "stress": {
+    "duration_ms": 600000,
+    "parallel_clients": 20,
+    "queue_backlog_jobs": 200
+  },
+  "crash": {
+    "mysql_kills": 3,
+    "kill_during": "acknowledged business write",
+    "recovery_limit_ms": 60000
+  },
+  "roles": ["superadmin", "admin", "salesRep", "client", "photographer", "editor"],
+  "write_workflows": ["booking", "reschedule", "upload", "delivery", "invoice", "payment", "payout", "message"],
+  "critical_endpoints": [
+    "write:booking",
+    "write:reschedule",
+    "write:upload",
+    "write:delivery",
+    "write:invoice",
+    "write:payment",
+    "write:payout",
+    "write:message",
+    "read:invoice-list",
+    "read:payout-report",
+    "read:past-due",
+    "read:crm-contact-search"
+  ],
+  "busiest_endpoints": null,
+  "busiest_endpoints_report_sha256": null
+}
