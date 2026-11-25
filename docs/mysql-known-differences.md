@@ -1,0 +1,72 @@
+# MySQL known differences
+
+Status: **draft, not signed.** The owner signs this list before cutover.
+
+Each entry says what a user or operator may notice, which engine is right,
+and the test that proves the behaviour. An entry without a linked test is
+not proven yet and says so.
+
+## Writer policy: choices for owner sign-off
+
+The plan says MySQL keeps SQLite's rule that one writer goes at a time. The
+application now does this on the main `mysql` connection, on by default for
+MySQL. It has no effect on SQLite. Set `REPRO_MYSQL_WRITER_POLICY=false` to
+turn it off.
+
+How it works: every transaction locks one fixed token row straight after
+BEGIN. Every INSERT, UPDATE, DELETE or REPLACE outside a transaction runs as
+BEGIN, token, statement, COMMIT. Plain reads never wait.
+
+Unless a heading says otherwise, the proof is in `tests/MySqlWriters`, run
+with `phpunit.mysql-writers.xml`.
+
+### Where the plan and the code differ
+
+| # | Plan | Code | Why it cannot let business writes overlap or deadlock against their caller | Proof |
+| --- | --- | --- | --- | --- |
+| D1 | Token row created by the earliest migration, inside the application schema. | Token row in a separate schema, `repro_mysql_control.writer_token` (id 1, bound to the application database name). | Every writer still locks the same row, so the schema it lives in does not matter. Application tables stay byte-identical for import, verify and reverse export. Cost: the schema, row and grants must be provisioned on every fresh, imported or restored server. If the row is missing, every write stops. | `WriterTokenRuleTest::test_missing_token_row_stops_every_write_but_not_reads`; `WriterPolicyCheckTest` |
+| D2 | Database cache locks get their own connection. | `mysql_cache_locks`: same account, separate session, no token. The application lets it write `cache_locks` only. Cache values stay on `mysql` and wait for the token. | It writes no business table, so it cannot overlap a business write. It never waits for the token, so a process that holds the token can still take or release a lock. The table limit is enforced by the application, not by database grants. | `WriterExemptionsTest::test_a_cache_lock_never_waits_for_its_own_callers_token`, `..._the_cache_lock_session_may_write_only_cache_locks`, `..._cache_values_are_writes_and_wait_for_the_token` |
+| D3 | Queue claim, finish and release skip the token on the same connection. | As the plan, by default (`App\Queue\MySqlDatabaseQueue`). The candidate's separate jobs-only account (`REPRO_MYSQL_QUEUE_WORKER`) stays as an opt-in pilot, off by default. | Bookkeeping may write `jobs` only. Enqueue is a business write: it waits for the token and rolls back with the transaction that dispatched it. | `WriterExemptionsTest::test_queue_claim_and_delete_skip_the_token_while_enqueue_waits_for_it`, `..._a_job_dispatched_inside_a_transaction_rolls_back_with_it`, `..._queue_bookkeeping_may_write_only_the_jobs_table`; `WriterBusinessPathsTest::test_twelve_workers_take_a_thousand_jobs_and_each_runs_exactly_once`; pilot: `tests/MySql/contracts/MySqlQueueWorkerContract.php` |
+| D4 | Exactly one connection carries the token. | Holds: only `mysql` carries it. The scheduling-cache pilot (`REPRO_MYSQL_SCHEDULING_CACHE`, off by default) and the queue-worker pilot use their own accounts, limited by grants and by the application. | Each token-free connection is limited to bookkeeping tables. The deploy check fails if a second MySQL connection carries the token or has no table limit. | `tests/Unit/Database/MySqlWriterPolicyConfigTest.php`; `WriterPolicyCheckTest::test_fails_when_another_mysql_connection_carries_the_token_or_writes_freely`; `tests/MySql/contracts/MySqlSchedulingCacheContract.php` |
+| D5 | Not covered. | Listing Studio rejection counters use their own raw session without the token, with a one-second lock wait, best effort. | They write telemetry counters only, never business rows. A counter session that waited for the token would block its own caller. | `tests/MySql/TrialMonitoringIsolationTest.php` (MySQL profile). Not re-proved by a multi-process test in this lane. |
+| D6 | Not covered. | The Google Routes pilot (`REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN`) is superseded. With the policy on, the reservation is an ordinary autocommit write. The pilot path runs only when the policy is off. | The general rule covers the same statement. | `WriterBusinessPathsTest::test_eight_processes_racing_for_the_last_route_unit_reserve_it_once`; pilot: `tests/MySql/contracts/GoogleRoutesBudgetWriterTokenContract.php` |
+
+### Behaviour that changes with the policy
+
+| # | What may be noticed | Which is right | Proof |
+| --- | --- | --- | --- |
+| B1 | A write waits up to five seconds for the token. If the token is still busy, the caller gets `WriterTokenTimeout` and nothing was written. On SQLite the same wait ends in "database is locked". | Both refuse after the wait; MySQL never writes from stale data. | `WriterTokenRuleTest::test_each_autocommit_write_waits_for_the_token_and_commits_once_after_release` |
+| B2 | `LockedWrite` runs its callback once, at the caller's own transaction depth, as on SQLite. While it runs, each writer-token wait inside it may wait again in place, up to four waits (about 20 seconds), before its BEGIN or statement does anything. A MySQL lock timeout or deadlock after the token is held is never retried, so the callback is never replayed for it. SQLite's "database is locked" still gets its old bounded retry; it cannot happen on MySQL. | MySQL: no replay of business code; SQLite replayed the whole callback on its lock error. | `tests/Feature/WriterTokenRetryLayersTest.php`; `WriterExemptionsTest::test_locked_write_*` |
+| B3 | `DB::transaction($callback, 3)` retries only the token wait at BEGIN, in place, before the callback runs. A deadlock or lock timeout after the token is held is never retried. Laravel retries those on other databases. | The plan's rule: no business callback is ever replayed. | `WriterTokenRuleTest::test_transaction_retries_only_its_own_acquisition_timeout_before_the_callback`, `..._a_swallowed_lock_timeout_after_the_token_cannot_commit` |
+| B4 | After a lock error or a lost session inside a transaction, the connection refuses every statement until the transaction is rolled back, even if the code caught the error. | The half-finished work cannot be committed. | `WriterTokenRuleTest::test_a_swallowed_lock_timeout_after_the_token_cannot_commit`, `..._lost_connection_inside_a_transaction_never_replays_and_refuses_until_rollback` |
+| B5 | A lost connection at BEGIN fails that call. Laravel would reconnect and begin again. The next call reconnects. A long-idle worker whose session was dropped sees one failed write and Laravel's worker restart, as it does today for lost connections. | Fail closed: nothing is assumed about an uncertain session. | `WriterTokenRuleTest::test_lost_connection_at_begin_runs_no_business_and_the_next_call_reconnects` |
+| B6 | If a COMMIT is not acknowledged, the call fails, no after-commit or rollback callback runs, and the write is not repeated. The row may or may not exist. | The outcome is unknown; it is reconciled, never replayed. | `WriterTokenRuleTest::test_lost_commit_acknowledgement_is_reported_once_without_callbacks_or_replay` |
+| B7 | DDL or TRUNCATE inside a transaction is refused. MySQL would commit the transaction implicitly. Raw BEGIN, COMMIT, ROLLBACK, SAVEPOINT and LOCK TABLES on the writer connection are refused. Temporary tables are allowed. In tests only, DDL inside nothing but RefreshDatabase's wrapper commits that wrapper, as MySQL always did, and the test carries on exactly as before. | MySQL with the guard; SQLite allows DDL inside a transaction. | `WriterTokenRuleTest::test_ddl_inside_a_transaction_is_refused_before_it_can_commit_implicitly`, `..._raw_transaction_control_is_refused` |
+| B8 | A row lock (`lockForUpdate`, `sharedLock`) outside a transaction is an error in tests and a warning log elsewhere (`REPRO_MYSQL_LEVEL0_LOCK_GUARD`). Outside a transaction it protects nothing on either engine. | Neither; the code must move into a transaction. | `WriterTokenRuleTest::test_locking_read_outside_a_transaction_is_refused` |
+| B9 | Every MySQL session is READ COMMITTED with five-second row and metadata lock waits. A migration that waits longer than five seconds for a table lock fails instead of queueing behind it. Code that changes the session isolation makes the next write fail closed. | The plan: fixed settings, never a tuning knob. | `WriterTokenRuleTest::test_fresh_application_connection_has_the_fixed_session_settings`, `..._changed_session_isolation_fails_closed_at_the_next_write` |
+| B10 | A queue worker rolls back a transaction a job left open (`REPRO_DB_LEFTOVER_TRANSACTIONS`: `rollback` on MySQL, `log` on SQLite). The job's own delete rolls back too, so the job runs again after `retry_after`. | At-least-once, never a token held until the worker dies. | `WorkerHygieneTest::test_a_worker_rolls_back_a_transaction_a_job_left_open_and_carries_on`; `tests/Feature/LeftoverTransactionCleanupTest.php` |
+| B11 | Token holds over one second are logged (`REPRO_MYSQL_WRITER_LONG_HOLD_MS`). `php artisan db:writer-token-holders --older-than=N` lists holders and exits 1 if any. | Operational only. | `WriterTokenRuleTest::test_a_long_token_hold_is_reported`; `WorkerHygieneTest::test_the_watchdog_reports_a_token_holder_older_than_the_limit` |
+| B12 | Each autocommit write costs about six extra round trips to MySQL (session check, BEGIN, token lock, table check, COMMIT). Writes from different processes take turns, as on SQLite. | Measured cost only; see the lane notes. | Twelve workers drained 1,000 jobs in 11 to 53 seconds in the local fixture, depending on host load (`WriterBusinessPathsTest`). Not a production measurement. |
+| B13 | `tests/MySql/WriteConcurrencyTest.php` shows a second raw PDO writer committing while the first holds a row lock. That is raw PDO without the token. Application writers take turns. | Both tests are right about what they test. | `WriterTokenRuleTest::test_a_laravel_transaction_holds_the_token_from_begin_until_commit` |
+| B14 | Eight concurrent first texts from a new number now share one SMS thread. Before the fix they made one contact and up to eight threads on MySQL with the token. | One thread is right. | `WriterBusinessPathsTest::test_eight_first_texts_from_a_new_number_give_one_contact_one_thread_and_eight_messages` |
+| B15 | Under READ COMMITTED each statement sees the latest commits. Code that reads several tables inside `DB::transaction()` to get one consistent view (for example the iGUIDE Lab tour loader) relies on the token for that: its transaction takes the token, so no business writer can commit between its queries. Token-free sessions (queue bookkeeping on `jobs`, cache locks, Listing Studio counters) can still change their own tables meanwhile. SQLite and MySQL's old REPEATABLE READ default gave a snapshot instead. Such read transactions now also wait for, and hold, the token. | Same answers for business tables; reads that need a snapshot of `jobs` or `cache_locks` would need review. | `tests/Feature/IguideLabTourEndToEndTest.php`, `tests/Feature/IguideLabTourHttpTest.php` (their second, token-free test connection uses a snapshot read to stand in for the token) |
+
+## Answers that can differ (from the plan)
+
+These come from the original plan. This lane did not write or verify their
+tests. Each needs a proving test that passes on both engines before signing.
+
+| # | What a user may notice | Which is right | Proof |
+| --- | --- | --- | --- |
+| A1 | A whole amount shows as "371.0" instead of "371" in a few uncast fields. | Same value; the money fields without a cast need one. | None linked yet. |
+| A2 | Totals over whole-number columns arrive as text numbers unless the code converts them. | Same value. | None linked yet. |
+| A3 | Lists with tied sort values may order ties differently. | Neither; the order is undefined without a unique last column. | None linked yet. |
+| A4 | A search containing a backslash. | Both treat it as a literal character. | `tests/Feature/EmailSearchTest.php::test_percent_underscore_and_backslash_are_literal_search_characters` (runs on both engines; not re-run in this lane) |
+| A5 | A value that is too long, or not valid text, is refused instead of stored. | MySQL. | None linked yet. |
+| A6 | The Aryeo feed gains the events it is missing today, if the owner approves. | Owner decision. | None linked yet. |
+
+## Sign-off
+
+- [ ] D1 to D6 accepted, or the plan's design chosen instead.
+- [ ] B1 to B15 accepted.
+- [ ] A1 to A6 each have a proving test, then accepted.
