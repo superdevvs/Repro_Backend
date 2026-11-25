@@ -180,6 +180,11 @@ class TelnyxWebhookController extends Controller
                 $message->created_at = $at;
             }
             $message->save();
+            if ($receivedAt !== null) {
+                // Saving marked the thread as needing a reply; a newer staff
+                // reply must keep it answered.
+                app(\App\Services\Messaging\SmsInboxPolicy::class)->recordBackdated($message);
+            }
 
             app(\App\Services\Messaging\MessageMediaService::class)->incoming('sms', (string) $message->id, (array) data_get($payload, 'data.payload.media', []));
             // A replayed text keeps its arrival time, so it must not move the

@@ -96,6 +96,35 @@ class TelnyxWebhookArrivalTimeTest extends TestCase
         $this->assertSame('msg_client_newer', $thread->latestSmsMessage->provider_message_id);
     }
 
+    public function test_a_replayed_older_text_keeps_a_newer_staff_reply_answered(): void
+    {
+        // Staff replied at 15:04:05; the customer's text from 15:00:05 is
+        // replayed at 15:09. The reply is still the latest word.
+        Carbon::setTestNow($this->arrivedAt->addMinutes(4));
+        $contact = Contact::create(['name' => 'Reply state fixture', 'phone' => '+12025550171', 'type' => 'other']);
+        $thread = MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => now()]);
+        Message::create([
+            'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX', 'provider_message_id' => 'msg_staff_reply',
+            'from_address' => '+18883426998', 'to_address' => '+12025550171', 'body_text' => 'See you at noon',
+            'status' => 'SENT', 'thread_id' => $thread->id, 'metadata' => ['sms_inbox' => ['kind' => 'manual']],
+        ]);
+        $this->assertFalse($thread->fresh()->sms_needs_reply);
+        Carbon::setTestNow('2026-11-25 15:09:00');
+
+        $this->controller()->replayVerified('messaging', null, $this->inboundPayload('evt_reply_older', 'msg_reply_older', 'Older text'), $this->arrivedAt);
+
+        $this->assertSame($thread->id, Message::where('provider_message_id', 'msg_reply_older')->sole()->thread_id);
+        $thread->refresh();
+        $this->assertTrue($thread->sms_inbox_active);
+        // What filter=unanswered lists, and the thread's needsReply.
+        $this->assertFalse($thread->sms_needs_reply);
+
+        // A replayed text newer than the reply still needs one.
+        $this->controller()->replayVerified('messaging', null, $this->inboundPayload('evt_reply_newer', 'msg_reply_newer', 'Newer text'), $this->arrivedAt->addMinutes(6));
+
+        $this->assertTrue($thread->fresh()->sms_needs_reply);
+    }
+
     public function test_replayed_delivery_status_is_stored_at_its_arrival_time(): void
     {
         $message = $this->outboundMessage('msg_arrival_outbound');
