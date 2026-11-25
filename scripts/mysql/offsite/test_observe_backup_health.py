@@ -41,6 +41,7 @@ class FakeBucket:
         self.objects = {}
         self.ids = {}
         self.reads = 0
+        self.uploading = {}  # identity -> backup IDs whose folder is listed before completion.json exists
 
     def publish(self, identity: str, created: int, artifacts: dict, *, delay: int = 30) -> None:
         backup_id = str(uuid.UUID(int=len(self.objects) + 1))
@@ -58,9 +59,11 @@ class FakeBucket:
         items = self.visible.get(identity, [])
         if len(self.ids.get(identity, ())) != len(items):
             self.ids[identity] = [backup_id for _, backup_id in items]
-        return self.ids[identity][:bisect.bisect_right(items, (now, "~"))]
+        return self.ids[identity][:bisect.bisect_right(items, (now, "~"))] + self.uploading.get(identity, [])
 
-    def completion(self, identity: str, backup_id: str) -> bytes:
+    def completion(self, identity: str, backup_id: str) -> bytes | None:
+        if backup_id in self.uploading.get(identity, []):
+            return None  # The publisher writes completion.json last.
         self.reads += 1
         return self.objects[(identity, backup_id)][0]
 
@@ -152,6 +155,46 @@ class ObserverTests(unittest.TestCase):
         self.assertLessEqual(first["recoverable_through_unix_s"], slot)
         raw = (self.root / "samples" / f"{slot}.json").read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(), first["sample_sha256"])
+
+    def test_a_publication_without_its_completion_marker_is_skipped_until_the_marker_lands(self):
+        # The publisher uploads artifacts first and completion.json last, so every
+        # base upload and every binlog batch is listed for a while without a marker.
+        # An abandoned publication keeps no marker at all. Neither may cost a slot.
+        self.history()
+        uploading = "99999999-9999-4999-8999-999999999999"
+        self.bucket.uploading = {SOURCE: [uploading], ARCHIVE: [uploading]}
+        state = observer.State.load(self.plan)
+        slot = START + 3 * 3600 + 1800
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        self.assertIsNotNone(row)
+        self.assertGreater(row["newest_verified_base_unix_s"], 0)
+        self.assertIsNotNone(row["recoverable_through_unix_s"])
+        self.assertNotIn(uploading, state.cache["bases"])
+        self.assertNotIn(uploading, state.cache["binlogs"])
+        self.assertIsNotNone(observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state))
+
+    def test_rclone_bucket_reports_a_missing_marker_without_reading_it(self):
+        class Remote:
+            def __init__(self, names):
+                self.names, self.calls = names, []
+
+            def run(self, action, *args, absent_ok=False):
+                self.calls.append((action, args[0]))
+                if action == "lsjson":
+                    return json.dumps([{"Name": name, "IsDir": False} for name in self.names]).encode()
+                if "completion.json" not in self.names:
+                    raise backup.Refusal("rclone operation failed: cat")
+                return b'{"marker": true}'
+
+        bucket = observer.RcloneBucket.__new__(observer.RcloneBucket)
+        bucket.crypt = "repro_encrypted"
+        bucket.remotes = {SOURCE: Remote(["input-manifest.json"])}
+        self.assertIsNone(bucket.completion(SOURCE, "b1"))
+        self.assertEqual([action for action, _ in bucket.remotes[SOURCE].calls], ["lsjson"])
+        bucket.remotes = {SOURCE: Remote(["input-manifest.json", "completion.json"])}
+        self.assertEqual(bucket.completion(SOURCE, "b1"), b'{"marker": true}')
+        self.assertEqual(bucket.remotes[SOURCE].calls[-1],
+                         ("cat", f"repro_encrypted:database/{SOURCE}/b1/completion.json"))
 
     def test_sqlite_only_source_has_no_recoverable_through(self):
         self.history()

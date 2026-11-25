@@ -6,6 +6,8 @@ READ-ONLY restore key. Each run records, as of the start of the current slot:
 the newest base backup with a completion marker, and how far a contiguous
 binlog chain from that base is published (the chain's last batch seal time).
 The raw sample is kept beside the journal and pinned by its SHA-256.
+A publication folder without completion.json (still uploading, or abandoned)
+is skipped and looked at again on the next run; it never costs a slot.
 `export` writes the repro.backup-health.observations.v1 file that
 scripts/cutover/readiness/summarize_backup_health.py reads.
 
@@ -90,7 +92,10 @@ class State:
 def refresh(bucket, state: State, now: int) -> None:
     plan = state.plan
     for backup_id in sorted(set(bucket.list_backups(plan["database_identity"], now)).difference(state.cache["bases"])):
-        item = parse_completion(bucket.completion(plan["database_identity"], backup_id), plan["database_identity"])
+        raw = bucket.completion(plan["database_identity"], backup_id)
+        if raw is None:
+            continue  # Still uploading (the marker is written last) or abandoned; look again next run.
+        item = parse_completion(raw, plan["database_identity"])
         item["start"] = None
         if plan["binlog_identity"] and "database-backup.json" in item["names"]:
             receipt = json.loads(bucket.artifact(plan["database_identity"], backup_id, "database-backup.json"))
@@ -101,7 +106,10 @@ def refresh(bucket, state: State, now: int) -> None:
     if plan["binlog_identity"]:
         listing = set(bucket.list_backups(plan["binlog_identity"], now)).difference(state.cache["binlogs"])
         for backup_id in sorted(listing):
-            item = parse_completion(bucket.completion(plan["binlog_identity"], backup_id), plan["binlog_identity"])
+            raw = bucket.completion(plan["binlog_identity"], backup_id)
+            if raw is None:
+                continue
+            item = parse_completion(raw, plan["binlog_identity"])
             state.cache["binlogs"][backup_id] = item
             state.index(backup_id, item)
 
@@ -193,8 +201,13 @@ class RcloneBucket:
                                                         "--dirs-only", absent_ok=True))
         return [item["Name"] for item in listing if isinstance(item, dict) and item.get("IsDir")]
 
-    def completion(self, identity: str, backup_id: str) -> bytes:
-        return self.remotes[identity].run("cat", f"{self.crypt}:database/{identity}/{backup_id}/completion.json")
+    def completion(self, identity: str, backup_id: str) -> bytes | None:
+        """The marker's bytes, or None while the publication has no marker (uploading or abandoned)."""
+        folder = f"{self.crypt}:database/{identity}/{backup_id}"
+        listing = json.loads(self.remotes[identity].run("lsjson", folder, "--files-only", absent_ok=True))
+        if not any(isinstance(item, dict) and item.get("Name") == "completion.json" for item in listing):
+            return None
+        return self.remotes[identity].run("cat", folder + "/completion.json")
 
     def artifact(self, identity: str, backup_id: str, path: str) -> bytes:
         return self.remotes[identity].run("cat", f"{self.crypt}:database/{identity}/{backup_id}/artifacts/{path}")
