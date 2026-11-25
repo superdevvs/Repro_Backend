@@ -6,7 +6,7 @@ use App\Models\{Payment, PaymentServiceAllocation, Service, Shoot, ShootFile, Sh
 use App\Services\Invoices\PhotographerPayoutBasis;
 use App\Services\Shoots\{ShootActiveWorkLifecycle, ShootAuthorizationSupport};
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\{Http, Mail, Notification, Queue, Storage};
+use Illuminate\Support\Facades\{DB, Http, Mail, Notification, Queue, Storage};
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -44,6 +44,16 @@ class ShootActiveWorkLifecycleTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $done->service_id], ['id' => $service->id]],
             'service_change_intent' => $intent, 'notify_client' => false, 'notify_photographer' => false])->assertOk();
         return $shoot->serviceItems()->where('service_id', $service->id)->sole();
+    }
+
+    private function scheduledService(Shoot $shoot, string $scheduledAt): ShootService
+    {
+        return $shoot->serviceItems()->create([
+            'service_id' => Service::factory()->videoIntake()->create()->id,
+            'photographer_id' => $shoot->photographer_id, 'price' => 35, 'quantity' => 1,
+            'is_deliverable' => true, 'workflow_status' => 'scheduled', 'delivery_status' => 'not_started',
+            'scheduled_at' => $scheduledAt,
+        ]);
     }
 
     public function test_new_service_reactivates_the_order_and_preserves_prior_delivery_and_appointment(): void
@@ -97,6 +107,97 @@ class ShootActiveWorkLifecycleTest extends TestCase
         Sanctum::actingAs($rep);
         $this->getJson('/api/shoots?tab=delivered&no_cache=1')->assertOk()->assertJsonPath('meta.count', 0);
         $this->getJson('/api/shoots?tab=completed&statuses[]=active&no_cache=1')->assertOk()->assertJsonPath('meta.count', 1);
+    }
+
+    public function test_scheduled_active_service_takes_precedence_over_older_unscheduled_work(): void
+    {
+        [$shoot, $done] = $this->fixture();
+        $original = $shoot->getRawOriginal();
+        $oldLine = $done->getRawOriginal();
+        $unscheduled = $this->addService($shoot, $done);
+        $this->assertNull($unscheduled->scheduled_at);
+        $later = $this->scheduledService($shoot, '2026-11-09 16:00:00');
+        $earlier = $this->scheduledService($shoot, '2026-11-08 01:30:00');
+
+        $shoot->refresh();
+        $this->assertSame('2026-11-08 01:30:00', $shoot->active_work_at->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-11-07', $shoot->active_work_date);
+        $this->assertSame('20:30', $shoot->active_work_time);
+        $this->getJson('/api/shoots/'.$shoot->id)->assertOk()
+            ->assertJsonPath('data.active_work_date', '2026-11-07')
+            ->assertJsonPath('data.active_work_time', '20:30');
+        foreach (['scheduled_date', 'scheduled_at', 'time', 'photographer_id', 'admin_verified_at', 'completed_at'] as $field) {
+            $this->assertSame($original[$field], $shoot->getRawOriginal($field));
+        }
+        $this->assertSame($oldLine, $done->fresh()->getRawOriginal());
+
+        $earlier->forceFill(['workflow_status' => 'cancelled', 'delivery_status' => 'cancelled', 'cancelled_at' => now()])->save();
+        $this->assertSame('11:00', $shoot->fresh()->active_work_time);
+        $this->assertSame($later->scheduled_at->format('Y-m-d H:i:s'), $shoot->fresh()->active_work_at->format('Y-m-d H:i:s'));
+    }
+
+    public function test_existing_active_cycle_reads_the_service_clock_without_mutating_its_queue_date(): void
+    {
+        [$shoot, $done] = $this->fixture();
+        $pending = $this->addService($shoot, $done);
+        // Simulate an existing cycle whose cached anchor predates its service
+        // appointment, without firing reconciliation as a normal edit would.
+        DB::table('shoot_service')->where('id', $pending->id)->update(['scheduled_at' => '2026-11-08 01:30:00']);
+        $shoot->refresh();
+        $original = $shoot->getRawOriginal();
+        $serviceBefore = $pending->fresh()->getRawOriginal();
+        $this->assertNull($shoot->active_work_time);
+        $presentation = app(ShootActiveWorkLifecycle::class)->presentation($shoot);
+        $this->assertSame('20:30', $presentation['active_work_time']);
+        $this->assertSame('2026-11-06', $presentation['active_work_date']);
+        $this->assertSame($shoot->active_work_at->toIso8601String(), $presentation['active_work_at']);
+        $this->assertSame($original, $shoot->getRawOriginal());
+        $this->getJson('/api/shoots/'.$shoot->id)->assertOk()->assertJsonPath('data.active_work_time', '20:30');
+        $this->assertSame($original, $shoot->fresh()->getRawOriginal());
+        $this->assertSame($serviceBefore, $pending->fresh()->getRawOriginal());
+    }
+
+    public function test_unscheduled_active_work_ignores_a_stale_clock_and_preserves_the_original_booking(): void
+    {
+        [$shoot, $done] = $this->fixture();
+        $this->addService($shoot, $done);
+        $cancelled = $this->scheduledService($shoot, '2026-11-08 01:30:00');
+        DB::table('shoot_service')->where('id', $cancelled->id)->update([
+            'workflow_status' => 'cancelled', 'delivery_status' => 'cancelled', 'cancelled_at' => now(),
+        ]);
+        $shoot->refresh();
+        $original = $shoot->getRawOriginal();
+        $this->assertSame('20:30', $shoot->active_work_time);
+        $lifecycle = app(ShootActiveWorkLifecycle::class);
+        $this->assertNull($lifecycle->presentation($shoot)['active_work_time']);
+        $this->getJson('/api/shoots/'.$shoot->id)->assertOk()->assertJsonPath('data.active_work_time', null)
+            ->assertJsonPath('data.time', '10:00');
+        $this->assertSame($original, $shoot->fresh()->getRawOriginal());
+        $lifecycle->reconcile($shoot);
+        $this->assertNull($shoot->fresh()->active_work_time);
+        $this->assertSame('10:00', $shoot->fresh()->time);
+        $this->assertSame('2026-11-03 15:00:00', $shoot->fresh()->scheduled_at->format('Y-m-d H:i:s'));
+    }
+
+    public function test_inactive_and_suspended_presentations_do_not_query_service_appointments(): void
+    {
+        [$shoot, $done] = $this->fixture();
+        $lifecycle = app(ShootActiveWorkLifecycle::class);
+        DB::enableQueryLog();
+        try {
+            DB::flushQueryLog();
+            $this->assertNull($lifecycle->presentation($shoot)['active_work_time']);
+            $this->assertSame([], DB::getQueryLog());
+            DB::disableQueryLog();
+            $this->addService($shoot, $done);
+            $shoot->refresh()->forceFill(['status' => 'on_hold', 'workflow_status' => 'on_hold']);
+            DB::enableQueryLog();
+            DB::flushQueryLog();
+            $this->assertNull($lifecycle->presentation($shoot)['active_work_time']);
+            $this->assertSame([], DB::getQueryLog());
+        } finally {
+            DB::disableQueryLog();
+        }
     }
 
     public function test_completion_requires_the_new_line_and_preserves_the_first_delivery_time(): void

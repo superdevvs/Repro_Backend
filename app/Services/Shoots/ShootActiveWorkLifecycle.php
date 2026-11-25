@@ -5,6 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Services\Schedule\ScheduleInstantResolver;
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
 /** Additional production work has its own cycle; the original delivery is immutable. */
@@ -102,13 +103,14 @@ class ShootActiveWorkLifecycle
             $shoot->delivery_status = ShootService::DELIVERY_DELIVERED;
         } else {
             $resolver = app(ScheduleInstantResolver::class);
-            $anchors = $pending->map(fn ($item) => ['at' => $item->scheduled_at ? $resolver->forServiceItem($shoot, $item)?->utc() : ($item->created_at ?? $shoot->active_work_started_at), 'scheduled' => (bool) $item->scheduled_at])
-                ->filter(fn ($anchor) => $anchor['at'])->sortBy(fn ($anchor) => $anchor['at']->getTimestamp());
-            $anchor = $anchors->first();
-            $shoot->active_work_at = $anchor['at'] ?? $shoot->active_work_started_at;
+            $appointment = $this->earliestScheduledPendingAt($shoot, $pending);
+            // Unscheduled added work must not hide a real appointment merely
+            // because it was created before the scheduled service.
+            $shoot->active_work_at = $appointment ?? $pending->map(fn ($item) => $item->created_at ?? $shoot->active_work_started_at)
+                ->filter()->sortBy(fn ($at) => $at->getTimestamp())->first() ?? $shoot->active_work_started_at;
             $shoot->active_work_date = $shoot->active_work_at->copy()
                 ->setTimezone($shoot->timezone ?: $resolver->timezoneForShoot($shoot))->toDateString();
-            $shoot->active_work_time = ($anchor['scheduled'] ?? false)
+            $shoot->active_work_time = $appointment
                 ? $shoot->active_work_at->copy()->setTimezone($shoot->timezone ?: $resolver->timezoneForShoot($shoot))->format('H:i') : null;
             $shoot->status = Shoot::STATUS_ACTIVE;
             if (in_array($shoot->workflow_status, ['delivered', 'ready_for_client', 'admin_verified'], true)) {
@@ -125,6 +127,11 @@ class ShootActiveWorkLifecycle
         $active = $this->hasActiveWork($shoot) && ! $this->isSuspended($shoot);
         $at = $shoot->active_work_at;
         $zone = $shoot->timezone ?: app(ScheduleInstantResolver::class)->timezoneForShoot($shoot);
+        // Existing cycles can still have the old created-at anchor. Read the
+        // actual appointment clock without moving persisted queue dates on GET.
+        // No appointment means no active clock; the UI can show the original
+        // booking time rather than a stale appointment or the work-added time.
+        $appointment = $active ? $this->earliestScheduledPendingAt($shoot, $this->outstandingItems($shoot)) : null;
         return [
             'has_active_work' => $active,
             'display_status' => $active ? Shoot::STATUS_ACTIVE : (($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_ACTIVE ? Shoot::STATUS_EDITING : ($shoot->workflow_status ?: $shoot->status)),
@@ -132,8 +139,16 @@ class ShootActiveWorkLifecycle
             'active_work_completed_at' => $shoot->active_work_completed_at?->toIso8601String(),
             'active_work_at' => $at?->toIso8601String(),
             'active_work_date' => $active ? $at?->copy()->setTimezone($zone)->toDateString() : null,
-            'active_work_time' => $active ? $shoot->active_work_time : null,
+            'active_work_time' => $appointment?->copy()->setTimezone($zone)->format('H:i'),
         ];
+    }
+
+    private function earliestScheduledPendingAt(Shoot $shoot, Collection $pending): ?Carbon
+    {
+        $resolver = app(ScheduleInstantResolver::class);
+        return $pending->filter(fn (ShootService $item) => $item->scheduled_at !== null)
+            ->map(fn (ShootService $item) => $resolver->forServiceItem($shoot, $item)?->utc())
+            ->filter()->sortBy(fn (Carbon $at) => $at->getTimestamp())->first();
     }
 
     private function isSuspended(Shoot $shoot): bool
