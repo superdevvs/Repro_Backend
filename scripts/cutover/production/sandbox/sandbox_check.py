@@ -3,12 +3,15 @@
 run-sandbox.sh calls this module; nobody else should:
 
     prepare --root ROOT                  host namespace: validate the sandbox root, lay it out
-    arm --root ROOT [--reboot]           host namespace, under the launch lock: boot ID, canaries,
-                                         host facts; prints the launch token
+                                         (refusing any symbolic link or file in the layout)
+    arm --root ROOT [--reboot]           host namespace, under the launch lock: layout again, boot ID,
+                                         the checker copy ROOT/sync/sandbox_check.py, canaries, host
+                                         facts; prints the launch token and the copy's sha256
     outside --root ROOT --token T        host namespace, while the sandbox waits: the canary check
-                                         from outside; writes go or stop
-    init --root ROOT --token T -- CMD    PID 1 inside the new namespaces: the inside checks, then
-                                         CMD as a child; reaps orphans; stops everything at the end
+                                         from outside; writes go (exit 0) or stop
+    init --root ROOT --token T -- CMD    PID 1 inside the new namespaces, run from the checker copy:
+                                         the inside checks, then CMD as a child; reaps orphans;
+                                         stops everything at the end
 
 The controller's fixed paths (cli.py, the guard, admit.py) and its /proc scans
 mean a "sandbox with private paths" would act on production (critic HO-H2).
@@ -21,17 +24,23 @@ sandbox's own:
 - inside then writes a second canary at each fixed path; outside must find it
   in the sandbox directory and nowhere on the host path;
 - PID 1 inside is this init, the PID, network and mount namespaces differ from
-  the host's, /run and /tmp are private, /etc, /var, /opt and /home are
-  copy-on-write views, the boot ID is the sandbox's, the service managers are
-  the refusing shim, and the only network interface is loopback.
+  the host's, /run, /tmp and /dev/shm are private, /etc, /var, /opt, /home and
+  /root are copy-on-write views, /, /usr and /boot are read-only, ROOT's
+  top-level directory shows only the path to ROOT, the boot ID is the
+  sandbox's, the service managers are the refusing shim, and the only network
+  interface is loopback.
 
-Any failure stops the run with exit 96 before the command starts.
+Any failure stops the run with exit 96 before the command starts. PID 1 runs
+the copy arm wrote for this launch (the launcher checks its sha256 first), so
+a file left in a copy-on-write layer never replaces these checks; and the
+launcher counts a run only when `outside` gave its go.
 Standard library only; runs as /usr/bin/python3 -I -S as root.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -72,11 +81,16 @@ RUNTIME = tuple(path for path in DIRECTORIES if path.startswith("/run/"))
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 SHIMS = ("/usr/bin/systemctl", "/usr/bin/systemd-run", "/usr/bin/supervisorctl", "/usr/sbin/service")
 # Host trees seen copy-on-write inside, so a missing fixed directory gets its mount point in the
-# sandbox and a stray write (app tree, deploy locks, Studio files) never reaches the host.
-COPY_ON_WRITE = ("/etc", "/var", "/opt", "/home")
+# sandbox and a stray write (app tree, deploy locks, Studio files, root's dot files) never reaches
+# the host.
+COPY_ON_WRITE = ("/etc", "/var", "/opt", "/home", "/root")
 # Fresh per launch: host unix sockets (systemd, D-Bus, Supervisor, PHP-FPM, MySQL) live here and
-# a network namespace does not hide a socket that has a path.
-PRIVATE = ("/run", "/tmp")
+# a network namespace does not hide a socket that has a path; /dev/shm is POSIX shared memory.
+PRIVATE = ("/run", "/tmp", "/dev/shm")
+# Read-only inside: the root file system (top-level directories, /mnt, /srv, /media, merged /bin
+# and /lib) and /usr and /boot, which may be file systems of their own. W1 installs into
+# /usr/local/sbin; a drill script must never change those files on the host.
+READ_ONLY = ("/", "/usr", "/boot")
 SYSTEM = ("/proc", "/sys", "/dev", "/usr", "/boot", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
 CANARY = ".repro-sandbox-canary"
 CANARY_IN = ".repro-sandbox-canary-in"
@@ -152,6 +166,9 @@ def source(root: Path, target: str) -> Path:
 def validate_root(value: str) -> Path:
     require(re.fullmatch(r"(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)+", value) is not None,
             f"The sandbox root {value!r} must be a plain absolute path", USAGE)
+    # Inside, ROOT's top-level directory shows only the path to ROOT.
+    require(value.count("/") >= 2,
+            "The sandbox root must lie below a top-level directory, for example /srv/repro-cutover-sandbox", USAGE)
     for tree in COPY_ON_WRITE + PRIVATE + SYSTEM:
         require(not _inside_tree(value, tree),
                 f"The sandbox root must lie outside {tree}, which the sandbox replaces or shares", USAGE)
@@ -171,31 +188,83 @@ def validate_root(value: str) -> Path:
     return root
 
 
+def _directory(root: Path, relative: str, mode: int) -> tuple[int, bool]:
+    """A descriptor for the directory ROOT/relative and whether its last component was created.
+
+    Missing components are created with `mode`. The root is writable from inside the sandbox, so
+    a symbolic link or anything but a directory at any component is refused: every component is
+    opened with O_NOFOLLOW relative to its parent, and callers change owner and mode through the
+    descriptor, never through a path."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor, created, walked = os.open(root, flags), False, root
+    try:
+        for name in Path(relative).parts:
+            walked = walked / name
+            try:
+                os.mkdir(name, mode, dir_fd=descriptor)
+                created = True
+            except FileExistsError:
+                created = False
+            try:
+                child = os.open(name, flags, dir_fd=descriptor)
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise Refused(f"{walked} must be a directory, not a symbolic link or another file") from None
+                raise
+            os.close(descriptor)
+            descriptor = child
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, created
+
+
 def prepare(root: Path) -> None:
-    """Lay out the sandbox root. Idempotent; never touches a host path."""
+    """Lay out the sandbox root. Idempotent; never touches a host path, never follows a link."""
     for tree in COPY_ON_WRITE + PRIVATE:
         require(os.path.isdir(tree) and not os.path.islink(tree), f"The host has no directory {tree}")
     for folder in ("binds", "cow", "cow/upper", "cow/work", "boot", "shims", "sync"):
-        (root / folder).mkdir(mode=0o700, exist_ok=True)
+        os.close(_directory(root, folder, 0o700)[0])
     for target, mode in DIRECTORIES.items():
-        directory = source(root, target)
-        if not os.path.lexists(directory):
-            directory.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-            directory.mkdir(mode=mode)
-            os.chmod(directory, mode)
-        require(directory.is_dir() and not directory.is_symlink(), f"{directory} must be a directory")
+        descriptor, created = _directory(root, str(source(root, target).relative_to(root)), 0o755)
+        try:
+            if created:
+                os.fchmod(descriptor, mode)
+        finally:
+            os.close(descriptor)
     for tree in COPY_ON_WRITE:
-        upper, work = root / "cow" / "upper" / tree.lstrip("/"), root / "cow" / "work" / tree.lstrip("/")
-        upper.mkdir(mode=0o755, exist_ok=True)
-        work.mkdir(mode=0o700, exist_ok=True)
-        # The merged directory shows the upper directory's owner and mode; the guard checks them.
-        host = os.stat(tree)
-        os.chown(upper, host.st_uid, host.st_gid)
-        os.chmod(upper, stat.S_IMODE(host.st_mode))
+        upper = _directory(root, f"cow/upper{tree}", 0o755)[0]
+        try:
+            # The merged directory shows the upper directory's owner and mode; the guard checks them.
+            host = os.stat(tree)
+            os.fchown(upper, host.st_uid, host.st_gid)
+            os.fchmod(upper, stat.S_IMODE(host.st_mode))
+        finally:
+            os.close(upper)
+        os.close(_directory(root, f"cow/work{tree}", 0o700)[0])
+
+
+def _shadow(root: Path) -> Path | None:
+    """The copy-on-write entry that would hide the launcher's own files inside, if any."""
+    for tree in COPY_ON_WRITE:
+        if _inside_tree(str(HERE), tree):
+            entry = root / "cow" / "upper" / str(HERE).lstrip("/")
+            return entry if os.path.lexists(entry) else None
+    return None
 
 
 def arm(root: Path, reboot: bool) -> str:
-    """Per-launch state under the launch lock: boot ID, canaries and the host facts."""
+    """Per-launch state under the launch lock: boot ID, the checker copy, canaries and the host facts.
+
+    Prints the launch token and the sha256 of the checker copy that PID 1 must run."""
+    # prepare ran before the launch lock was taken, perhaps while an earlier sandbox could still
+    # write into the root; check the layout again now that none can.
+    prepare(root)
+    # Installed under /opt (README), the launcher's files are seen through the sandbox's /opt
+    # overlay; a write there inside one launch stays in the upper layer for every later one.
+    shadow = _shadow(root)
+    require(shadow is None, f"The sandbox's copy-on-write layer holds {shadow}, which shadows the launcher's own "
+                            f"files at {HERE} inside; inspect it and remove it from the sandbox root")
     boot = root / "boot" / "boot_id"
     if reboot or not boot.exists():
         _write_atomic(boot, f"{uuid.uuid4()}\n".encode("ascii"), 0o444)
@@ -212,6 +281,9 @@ def arm(root: Path, reboot: bool) -> str:
     _write_atomic(root / "shims" / "refuse", refuse_raw, 0o755)
     for name in ("ready", "go", "stop", "launch.json"):
         (root / "sync" / name).unlink(missing_ok=True)
+    # PID 1 runs this copy, read here in the host namespace, never the file under an overlay.
+    checker_raw = (HERE / "sandbox_check.py").read_bytes()
+    _write_atomic(root / "sync" / "sandbox_check.py", checker_raw, 0o600)
     token = uuid.uuid4().hex
     for target in DIRECTORIES:
         directory = source(root, target)
@@ -221,12 +293,13 @@ def arm(root: Path, reboot: bool) -> str:
         "boot_id": BOOT_ID.read_text(encoding="ascii").strip(),
         "namespaces": {name: os.readlink(f"/proc/self/ns/{name}") for name in ("pid", "net", "mnt")},
         "devices": {tree: [os.stat(tree).st_dev, os.stat(tree).st_ino] for tree in COPY_ON_WRITE + PRIVATE},
+        "root": [os.stat(root).st_dev, os.stat(root).st_ino],
         "shims": {path: (sha256(Path(path).read_bytes()) if os.path.exists(path) else None) for path in SHIMS},
     }
     launch = {"version": 1, "token": token, "root": str(root), "boot_id": boot.read_text(encoding="ascii").strip(),
-              "refuse_sha256": sha256(refuse_raw), "host": host}
+              "refuse_sha256": sha256(refuse_raw), "checker_sha256": sha256(checker_raw), "host": host}
     _write_atomic(root / "sync" / "launch.json", (json.dumps(launch, sort_keys=True) + "\n").encode("utf-8"), 0o600)
-    return token
+    return f"{token} {launch['checker_sha256']}"
 
 
 def read_launch(root: Path, token: str) -> dict:
@@ -319,6 +392,16 @@ def inside_checks(root: Path, token: str, launch: dict) -> list[str]:
         info = os.stat(tree)
         if mounts.get(tree, ("",))[0] != "tmpfs" or [info.st_dev, info.st_ino] == host["devices"][tree]:
             failures.append(f"{tree} is not private to the sandbox")
+    for tree in READ_ONLY:
+        if os.path.isdir(tree) and not os.statvfs(tree).f_flag & os.ST_RDONLY:
+            failures.append(f"{tree} is writable inside")
+    parts = root.parts[1:]
+    top = "/" + parts[0]
+    listing = [sorted(os.listdir("/" + "/".join(parts[:depth]))) for depth in range(1, len(parts))]
+    info = os.stat(root)
+    if mounts.get(top, ("",))[0] != "tmpfs" or not os.statvfs(top).f_flag & os.ST_RDONLY \
+            or listing != [[part] for part in parts[1:]] or [info.st_dev, info.st_ino] != host["root"]:
+        failures.append(f"{top} does not show only the path to the sandbox root")
     for target in DIRECTORIES:
         if _read(Path(target) / CANARY) != f"out:{token}\n".encode("ascii"):
             failures.append(f"canary missing at {target}: its sandbox bind is missing")

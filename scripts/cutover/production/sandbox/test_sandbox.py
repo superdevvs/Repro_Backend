@@ -4,7 +4,9 @@ The launcher tests need a disposable PRIVILEGED container. They install fake
 production paths at the real fixed paths (/etc/repro-cutover-fence,
 /var/lib/repro-cutover-fence, /run/repro-cutover-ingress, ...), fake
 systemctl, systemd-run, supervisorctl and service binaries that log every
-call, a fake production worker and a host listener, then prove that nothing
+call, a fake production worker and a host listener, bind /usr and /boot onto
+themselves (hosts where they are file systems of their own) and, for one test,
+install the launcher under /opt/repro-cutover-sandbox, then prove that nothing
 inside the sandbox reaches any of them. Never run them on a real host.
 
     docker run --rm --pull never --privileged --network none --cpus 2 --memory 2g \
@@ -69,8 +71,10 @@ MISSING_ON_HOST = ("/var/lib/repro-cutover-archive", "/var/lib/repro-cutover-kee
 SHIMMED = ("/usr/bin/systemctl", "/usr/bin/systemd-run", "/usr/bin/supervisorctl", "/usr/sbin/service")
 TREES = ("/etc/repro-cutover-fence", "/var/lib/repro-cutover-fence", "/run/repro-cutover-fence",
          "/run/repro-cutover-ingress", "/etc/repro-database-cutover", "/opt/repro-cutover-fence",
-         "/var/www/backend", "/home/maverick", str(HOST_LOG_DIRECTORY))
-SHALLOW = ("/etc", "/var", "/var/lib", "/var/www", "/run", "/opt", "/home", "/usr/bin", "/usr/sbin", "/tmp", "/srv")
+         "/var/www/backend", "/home/maverick", str(HOST_LOG_DIRECTORY),
+         "/usr/local/sbin", "/root", "/mnt", "/boot", "/dev/shm")
+SHALLOW = ("/", "/etc", "/var", "/var/lib", "/var/www", "/run", "/opt", "/home", "/usr/bin", "/usr/sbin", "/usr/lib",
+           "/tmp", "/srv")
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 FAKE_BINARY = f"#!/bin/sh\necho \"$0 $*\" >> {HOST_CALLS}\nexit 0\n"
 
@@ -137,6 +141,11 @@ class SandboxLauncherTests(unittest.TestCase):
         if not os.path.ismount(SANDBOX_MOUNT):
             subprocess.run(["mount", "-t", "tmpfs", "-o", "mode=0755,size=512m", "tmpfs", str(SANDBOX_MOUNT)],
                            check=True)
+        # /usr and /boot as file systems of their own, as on many hosts, so that the read-only root
+        # file system inside does not already cover them.
+        for tree in ("/usr", "/boot"):
+            if not os.path.ismount(tree):
+                subprocess.run(["mount", "--bind", tree, tree], check=True)
         # A host interface other than loopback, so 'only loopback inside' is not an artefact of
         # the container's own --network none.
         if subprocess.run(["ip", "link", "show", DUMMY_INTERFACE], capture_output=True).returncode != 0:
@@ -212,8 +221,9 @@ class SandboxLauncherTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         return json.loads(result.stdout)
 
-    def mutant(self, *lines: str) -> Path:
-        """A container-local copy of the sandbox files with the given launcher lines deleted."""
+    def mutant(self, *lines: str, replace: dict[str, str] | None = None) -> Path:
+        """A container-local copy of the sandbox files with the given launcher lines deleted, and
+        the one line starting with each key of `replace` replaced by its value."""
         copy = SANDBOX_MOUNT / "mutants" / uuid.uuid4().hex[:8]
         shutil.copytree(HERE, copy, ignore=shutil.ignore_patterns("__pycache__"))
         launcher = copy / "run-sandbox.sh"
@@ -222,8 +232,26 @@ class SandboxLauncherTests(unittest.TestCase):
             matching = [number for number, existing in enumerate(text) if existing.strip() == line]
             self.assertEqual(1, len(matching), f"Expected exactly one launcher line {line!r}")
             del text[matching[0]]
+        for start, replacement in (replace or {}).items():
+            matching = [number for number, existing in enumerate(text) if existing.strip().startswith(start)]
+            self.assertEqual(1, len(matching), f"Expected exactly one launcher line starting {start!r}")
+            text[matching[0]] = replacement + "\n"
         launcher.write_text("".join(text), encoding="utf-8")
         return launcher
+
+    def install_under_opt(self) -> Path:
+        """The README's installation: the sandbox files in /opt/repro-cutover-sandbox."""
+        installed = Path("/opt/repro-cutover-sandbox")
+        self.assertFalse(os.path.lexists(installed), "A previous test left the installed launcher behind")
+        (installed / "shims").mkdir(mode=0o755, parents=True)
+        os.chmod(installed, 0o755)
+        for name in ("sandbox_check.py", "make_config.py", "run-sandbox.sh", "shims/refuse"):
+            shutil.copyfile(HERE / name, installed / name)
+            os.chmod(installed / name, 0o755 if name.startswith("shims/") else 0o644)
+        self.addCleanup(shutil.rmtree, installed)
+        # The installation is part of this test's fake host.
+        self.before = host_snapshot()
+        return installed
 
     def assertNoSandboxProcesses(self):
         deadline = time.monotonic() + 5
@@ -288,7 +316,9 @@ class SandboxLauncherTests(unittest.TestCase):
         self.assertNotEqual(host_init, observed["init"])
         arguments = observed["init"].split("\0")
         self.assertEqual(PYTHON, arguments[0])
-        self.assertTrue(arguments[3].endswith("/sandbox_check.py") and arguments[4] == "init", observed["init"])
+        # PID 1 runs the per-launch copy of the checks that arm wrote outside every overlay.
+        self.assertEqual([str(self.root / "sync" / "sandbox_check.py"), "init"], arguments[3:5], observed["init"])
+        self.assertEqual((HERE / "sandbox_check.py").read_bytes(), (self.root / "sync" / "sandbox_check.py").read_bytes())
         self.assertNotEqual(os.readlink("/proc/self/ns/pid"), observed["pid_ns"])
         self.assertNotEqual(1, observed["pid"])
         self.assertEqual([], observed["tagged"], "A host process is visible inside")
@@ -431,7 +461,9 @@ class SandboxLauncherTests(unittest.TestCase):
         self.assertEqual(127, missing.returncode, missing.stderr)
 
     def test_refuses_a_root_inside_a_copied_private_or_system_tree(self):
-        for parent in ("/var/lib", "/etc", "/opt", "/home", "/run", "/tmp", "/usr/local"):
+        # "/": the sandbox shows only the path to ROOT inside ROOT's top-level directory, so ROOT
+        # must lie below one (for example /srv/repro-cutover-sandbox).
+        for parent in ("/var/lib", "/etc", "/opt", "/home", "/root", "/run", "/tmp", "/dev/shm", "/usr/local", "/"):
             with self.subTest(parent=parent):
                 root = Path(tempfile.mkdtemp(prefix="repro-sandbox-bad-", dir=parent))
                 try:
@@ -471,7 +503,7 @@ class SandboxLauncherTests(unittest.TestCase):
         self.assertEqual(0, prepared.returncode, prepared.stderr)
         armed = subprocess.run(check + ["arm", "--root", str(self.root)], capture_output=True, text=True)
         self.assertEqual(0, armed.returncode, armed.stderr)
-        token = armed.stdout.strip()
+        token = armed.stdout.split()[0]
         leaked = Path("/etc/repro-cutover-fence/.repro-sandbox-canary-in")
         for target in BOUND:
             (self.root / "binds" / target.lstrip("/") / ".repro-sandbox-canary-in").write_text(f"in:{token}\n")
@@ -486,6 +518,200 @@ class SandboxLauncherTests(unittest.TestCase):
         self.assertFalse(leaked.exists(), "The leaked canary must be removed from the host path")
         # Planting and removing the canary changed the directory's modification time.
         self.before = host_snapshot()
+
+    # Review C (26 Nov).
+
+    def test_checker_planted_in_the_opt_overlay_never_runs_as_pid_one(self):
+        # C1: installed as the README says, the launcher's own files lie under /opt, which the
+        # sandbox sees copy-on-write. A copy of the checks left in ROOT/cow/upper/opt by one launch
+        # must never become PID 1 of a later launch on the same root.
+        installed = self.install_under_opt()
+        launcher = installed / "run-sandbox.sh"
+        genuine = (installed / "sandbox_check.py").read_bytes()
+        stub = "import sys\nprint('SUBVERTED INIT, no checks')\nsys.exit(0)\n"
+        planted = self.launch("/bin/sh", "-c", 'printf "%s" "$1" > "$2"', "plant", stub,
+                              str(installed / "sandbox_check.py"), launcher=launcher)
+        self.assertEqual(0, planted.returncode, planted.stderr)
+        self.assertEqual(genuine, (installed / "sandbox_check.py").read_bytes(), "The host copy changed")
+        upper = self.root / "cow" / "upper" / "opt" / "repro-cutover-sandbox" / "sandbox_check.py"
+        self.assertEqual(stub.encode("ascii"), upper.read_bytes())
+        marker = self.root / "command-ran"
+        second = self.launch("/bin/sh", "-c", f"echo ran > {marker}", launcher=launcher)
+        self.assertNotIn("SUBVERTED", second.stdout + second.stderr)
+        self.assertEqual(REFUSED, second.returncode, second.stdout + second.stderr)
+        self.assertIn(f"shadows the launcher's own files at {installed}", second.stderr)
+        self.assertFalse(marker.exists(), "The command ran although the launcher's files were shadowed")
+
+    def test_success_requires_the_outside_checkers_go(self):
+        # C1: whatever PID 1 inside does, the launcher reports success only when the checker
+        # waiting in the host namespace gave its go. Here the inside half never starts the checks.
+        marker = self.root / "command-ran"
+        launcher = self.mutant(replace={'exec "$python"': f"echo ran > {marker}; exit 0"})
+        started = time.monotonic()
+        result = self.launch("/bin/true", launcher=launcher)
+        self.assertTrue(marker.exists(), "The stand-in for an unchecked init did not run")
+        self.assertEqual(REFUSED, result.returncode, result.stderr)
+        self.assertIn("no go from the outside check", result.stderr)
+        self.assertFalse((self.root / "sync" / "go").exists())
+        self.assertLess(time.monotonic() - started, 30, "The launcher waited for the outside checker's timeout")
+
+    def test_go_written_from_inside_does_not_count(self):
+        # C1: ROOT/sync is visible inside, so the go file alone proves nothing; the checker's exit
+        # status in the host namespace does. This stand-in init forges go and a bad ready report.
+        launcher = self.mutant(replace={'exec "$python"': 'echo go > "$root/sync/go"; '
+                                        'echo \'{"version": 1, "token": "forged"}\' > "$root/sync/ready"; exit 0'})
+        started = time.monotonic()
+        result = self.launch("/bin/true", launcher=launcher)
+        self.assertTrue((self.root / "sync" / "go").exists(), "The stand-in did not forge the go file")
+        self.assertEqual(REFUSED, result.returncode, result.stderr)
+        self.assertIn("no go from the outside check", result.stderr)
+        self.assertLess(time.monotonic() - started, 30)
+
+    def test_checker_copy_written_from_inside_is_replaced_at_the_next_launch(self):
+        # C1: a command can write ROOT/sync/sandbox_check.py; arm writes a fresh copy every launch.
+        stub = "import sys\nprint('SUBVERTED INIT, no checks')\nsys.exit(0)\n"
+        copy = self.root / "sync" / "sandbox_check.py"
+        planted = self.launch("/bin/sh", "-c", 'printf "%s" "$1" > "$2"', "plant", stub, str(copy))
+        self.assertEqual(0, planted.returncode, planted.stderr)
+        self.assertEqual(stub.encode("ascii"), copy.read_bytes())
+        marker = self.root / "command-ran"
+        second = self.launch("/bin/sh", "-c", f"echo ran > {marker}")
+        self.assertNotIn("SUBVERTED", second.stdout + second.stderr)
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertTrue(marker.exists())
+        self.assertEqual((HERE / "sandbox_check.py").read_bytes(), copy.read_bytes())
+
+    def test_inside_runs_only_the_checker_copy_recorded_at_arm(self):
+        # C1: arm records the sha256 of the checker copy it writes into ROOT/sync; the inside half
+        # refuses to start PID 1 from a copy that differs. Drive the inside half by hand.
+        check = [PYTHON, "-I", "-S", str(HERE / "sandbox_check.py")]
+        prepared = subprocess.run(check + ["prepare", "--root", str(self.root)], capture_output=True, text=True)
+        self.assertEqual(0, prepared.returncode, prepared.stderr)
+        armed = subprocess.run(check + ["arm", "--root", str(self.root)], capture_output=True, text=True)
+        self.assertEqual(0, armed.returncode, armed.stderr)
+        token, digest = armed.stdout.split()
+        copy = self.root / "sync" / "sandbox_check.py"
+        self.assertEqual((HERE / "sandbox_check.py").read_bytes(), copy.read_bytes())
+        self.assertEqual(hashlib.sha256(copy.read_bytes()).hexdigest(), digest)
+        launch = json.loads((self.root / "sync" / "launch.json").read_text(encoding="utf-8"))
+        self.assertEqual(digest, launch["checker_sha256"])
+        copy.write_text("import sys\nprint('SUBVERTED INIT, no checks')\nsys.exit(0)\n", encoding="ascii")
+        marker = self.root / "command-ran"
+        result = subprocess.run(
+            ["unshare", "--mount", "--pid", "--net", "--fork", "--kill-child", "--mount-proc", "--propagation",
+             "private", "--", "/bin/sh", str(LAUNCHER), "--inside", str(self.root), token, digest, "--",
+             "/bin/sh", "-c", f"echo ran > {marker}"],
+            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertNotIn("SUBVERTED", result.stdout + result.stderr)
+        self.assertEqual(REFUSED, result.returncode, result.stderr)
+        self.assertIn("checker copy differs from the launch record", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_prepare_never_follows_a_link_left_in_the_root_layout(self):
+        # C3: the root is writable from inside, and prepare runs in the host namespace. A symbolic
+        # link (or a file) left where prepare expects a directory is refused; nothing is changed
+        # through it. The first case is the reviewer's.
+        for relative, kind in (("cow/upper/home", "link"), ("cow/work/etc", "link"), ("cow", "link"),
+                               ("binds/var", "link"), ("sync", "link"), ("cow/upper/var", "file")):
+            with self.subTest(relative=relative, kind=kind):
+                root = SANDBOX_MOUNT / f"root-{uuid.uuid4().hex[:8]}"
+                root.mkdir(mode=0o700)
+                self.assertEqual(0, self.launch("/bin/true", root=root).returncode)
+                victim = SANDBOX_MOUNT / f"victim-{uuid.uuid4().hex[:8]}"
+                victim.mkdir(mode=0o700)
+                os.chown(victim, 1000, 1000)
+                planted = root / relative
+                shutil.rmtree(planted)
+                if kind == "link":
+                    planted.symlink_to(victim)
+                else:
+                    planted.write_text("not a directory\n", encoding="ascii")
+                marker = root / "command-ran"
+                result = self.launch("/bin/sh", "-c", f"echo ran > {marker}", root=root)
+                self.assertEqual(REFUSED, result.returncode, result.stderr)
+                self.assertIn(f"{planted} must be a directory, not a symbolic link or another file", result.stderr)
+                self.assertFalse(marker.exists())
+                # arm runs under the launch lock after prepare ran outside it: it checks again.
+                armed = subprocess.run([PYTHON, "-I", "-S", str(HERE / "sandbox_check.py"), "arm", "--root", str(root)],
+                                       capture_output=True, text=True)
+                self.assertEqual(REFUSED, armed.returncode, armed.stderr)
+                self.assertIn(f"{planted} must be a directory", armed.stderr)
+                info = os.lstat(victim)
+                self.assertEqual((1000, 1000, 0o700, []),
+                                 (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), os.listdir(victim)))
+
+    def test_writes_outside_the_copied_trees_never_reach_the_host(self):
+        # C2: the reviewer's probe. /usr, /boot and the rest of / are read-only inside, /root is
+        # copy-on-write, /dev/shm is private, and ROOT's top-level directory shows only the path
+        # to ROOT (a host socket beside the root is out of reach).
+        name = f"sandbox-probe-{self.tag}"
+        paths = [f"{tree}/{name}" for tree in ("/usr/local/sbin", "/usr/lib", "/root", "/mnt", "/boot", "/dev/shm",
+                                               "/srv", "")]
+        for path in paths:
+            # Only for the red run: never leave a probe file on the container's host paths.
+            self.addCleanup(lambda path=path: os.path.lexists(path) and os.unlink(path))
+        beside = SANDBOX_MOUNT / f"host-{self.tag}.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(beside.unlink, missing_ok=True)
+        self.addCleanup(listener.close)
+        listener.bind(str(beside))
+        listener.listen(1)
+        observed = self.inside(
+            "import errno, json, os, socket, sys\n"
+            "paths, beside, root = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]\n"
+            "result = {}\n"
+            "for path in paths:\n"
+            "    try:\n"
+            "        with open(path, 'w') as stream:\n"
+            "            stream.write('written inside the sandbox\\n')\n"
+            "        result[path] = 'ok'\n"
+            "    except OSError as error:\n"
+            "        result[path] = errno.errorcode[error.errno]\n"
+            "try:\n"
+            "    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).connect(beside)\n"
+            "    result['beside'] = 'connected'\n"
+            "except OSError as error:\n"
+            "    result['beside'] = errno.errorcode[error.errno]\n"
+            "parts = root.strip('/').split('/')\n"
+            "result['listing'] = [sorted(os.listdir('/' + '/'.join(parts[:depth]))) for depth in range(1, len(parts))]\n"
+            "print(json.dumps(result))\n",
+            json.dumps(paths), str(beside), str(self.root))
+        for path in paths:
+            self.assertFalse(os.path.lexists(path), f"{path} reached the host")
+        self.assertEqual({**{path: "EROFS" for path in paths}, f"/root/{name}": "ok", f"/dev/shm/{name}": "ok"},
+                         {path: observed[path] for path in paths})
+        self.assertEqual(b"written inside the sandbox\n", (self.root / "cow" / "upper" / "root" / name).read_bytes())
+        self.assertEqual("ENOENT", observed["beside"])
+        parts = self.root.parts[1:]
+        self.assertEqual([[part] for part in parts[1:]], observed["listing"])
+
+    def test_private_mounts_are_capped(self):
+        # C6: without size= a tmpfs may grow to half the host's memory (README: 64 MiB, 1 GiB, 64 MiB).
+        observed = self.inside("import json, os\n"
+                               "sizes = {}\n"
+                               "for tree in ('/run', '/tmp', '/dev/shm'):\n"
+                               "    info = os.statvfs(tree)\n"
+                               "    sizes[tree] = info.f_blocks * info.f_frsize\n"
+                               "print(json.dumps(sizes))\n")
+        self.assertEqual({"/run": 64 << 20, "/tmp": 1 << 30, "/dev/shm": 64 << 20}, observed)
+
+    def test_missing_read_only_hidden_or_private_mount_stops_the_run(self):
+        # C2: PID 1 checks these mounts like the others; without one of them nothing runs.
+        for line, expected in (("read_only /usr", "/usr is writable inside"),
+                               ("read_only /boot", "/boot is writable inside"),
+                               ('mount -n -o remount,bind,ro / || refuse "cannot make / read-only"',
+                                "/ is writable inside"),
+                               ("only_root_beside", "/srv does not show only the path to the sandbox root"),
+                               ("copy_on_write /root", "/root is not the sandbox's copy-on-write view"),
+                               ("private_tmpfs /dev/shm 1777 64m", "/dev/shm is not private to the sandbox")):
+            with self.subTest(line=line):
+                root = SANDBOX_MOUNT / f"root-{uuid.uuid4().hex[:8]}"
+                root.mkdir(mode=0o700)
+                marker = root / "command-ran"
+                result = self.launch("/bin/sh", "-c", f"echo ran > {marker}", launcher=self.mutant(line), root=root)
+                self.assertEqual(REFUSED, result.returncode, result.stderr)
+                self.assertIn(expected, result.stderr)
+                self.assertFalse(marker.exists(), "The command ran")
 
 
 @unittest.skipUnless(sys.platform == "linux", "Linux paths")

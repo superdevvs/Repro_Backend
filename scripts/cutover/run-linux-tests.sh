@@ -24,6 +24,10 @@ for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.p
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
 python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
+# The sandbox config tests need no privileges and catch drift in the host.json contract. The
+# launcher tests in the same file need docker run --privileged (they fail without it) and run only
+# when production/sandbox/test_sandbox.py is passed as an extra argument.
+python3 -B -m unittest discover -s "$cutover/production/sandbox" -p test_sandbox.py -k MakeConfigTests -v
 for extra in "$@"; do
     python3 -B -m unittest discover -s "$(dirname "$cutover/$extra")" -p "$(basename "$extra")" -v
 done
