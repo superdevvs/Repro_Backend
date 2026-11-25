@@ -332,7 +332,11 @@ after that stamp). SQLite alone has no binlog chain, so the lag rule cannot
 pass before the MySQL leg runs.
 
 A publication folder without `completion.json` (still uploading, or abandoned)
-is skipped and read again on the next run. A crash between writing a slot's
+is skipped and read again on the next run. A run whose batch was published but
+whose checkpoint did not advance (time limit, failed final read-back) is retried
+from the same checkpoint, so the retry batch repeats those logs; the chain
+follows whichever ready batch holds the next log and reaches furthest, in
+either listing order. A crash between writing a slot's
 sample and its journal row, or in the middle of the row, no longer costs the
 slot: the retry replaces the orphan sample and drops the cut row. A lock on
 the journal keeps two runs from writing one slot. Every other failed run

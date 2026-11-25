@@ -46,8 +46,9 @@ class FakeBucket:
         self.downloads = []
         self.uploading = {}  # identity -> backup IDs whose folder is listed before completion.json exists
 
-    def publish(self, identity: str, created: int, artifacts: dict, *, delay: int = 30) -> None:
-        backup_id = str(uuid.UUID(int=len(self.objects) + 1))
+    def publish(self, identity: str, created: int, artifacts: dict, *, delay: int = 30,
+                backup_id: str | None = None) -> None:
+        backup_id = backup_id or str(uuid.UUID(int=len(self.objects) + 1))
         manifest = {"schema": backup.INPUT_SCHEMA, "backup_id": backup_id, "created_at": stamp(created),
                     "scope": "database", "release": "a" * 40, "identity": identity,
                     "artifacts": [{"path": name, "bytes": len(data), "sha256": backup.sha256(data)}
@@ -270,6 +271,27 @@ class ObserverTests(unittest.TestCase):
         self.bucket.publish(ARCHIVE, slot - 120, logs((3, slot - 120)))
         row = observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=observer.State.load(self.plan))
         self.assertEqual(row["recoverable_through_unix_s"], slot - 120)
+
+    def test_a_retry_batch_that_repeats_published_logs_extends_the_chain(self):
+        # A run whose publication completed but whose checkpoint did not advance (killed at its
+        # time limit, or the final read-back failed) leaves a batch with a marker. The next run
+        # starts again at the checkpoint, so its batch repeats those logs and adds the newly
+        # closed ones; later batches continue after the retry. Batch IDs are random, so the
+        # observer may meet the two in either order.
+        slot = START + 86400
+        for seen_between, ids in ((True, (None, None)), (False, (str(uuid.UUID(int=2**128 - 1)), str(uuid.UUID(int=99))))):
+            with self.subTest(attempt_observed_before_the_retry=seen_between, retry_id_sorts_first=ids[1] is not None):
+                self.setUp()
+                self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+                self.bucket.publish(ARCHIVE, slot - 3000, logs((1, slot - 3000)))
+                state = observer.State.load(self.plan)
+                self.bucket.publish(ARCHIVE, slot - 890, logs((2, slot - 900)), backup_id=ids[0])  # Checkpoint not advanced.
+                if seen_between:
+                    observer.observe(self.plan, self.bucket, now=slot - 840 + 5, state=state)
+                self.bucket.publish(ARCHIVE, slot - 770, logs((2, slot - 900), (3, slot - 780)), backup_id=ids[1])
+                self.bucket.publish(ARCHIVE, slot - 660, logs((4, slot - 660)))
+                row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+                self.assertEqual(row["recoverable_through_unix_s"], slot - 660)
 
     def test_rotation_time_comes_from_the_terminal_rotate_event(self):
         raw = binlog("binlog.000007", 1_800_000_000)

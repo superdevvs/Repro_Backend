@@ -13,7 +13,9 @@ A publication counts for a slot only if its completion marker's verified_at is
 at or before the slot start, not merely if this run (a few seconds later) can
 read it. The publisher uploads the marker right after that stamp.
 A publication folder without completion.json (still uploading, or abandoned)
-is skipped and looked at again on the next run; it never costs a slot.
+is skipped and looked at again on the next run; it never costs a slot. A retry
+batch that repeats logs of a published batch whose checkpoint did not advance
+extends the chain like any other batch holding the next log.
 `export` writes the repro.backup-health.observations.v1 file that
 scripts/cutover/readiness/summarize_backup_health.py reads.
 
@@ -107,8 +109,8 @@ class State:
         self.plan = plan
         self.slots: set[int] = set()
         self.cache = {"version": CACHE_VERSION, "bases": {}, "binlogs": {}, "chains": {}}
-        self.ranges: list = []
-        self.first: dict[int, str] = {}
+        self.ranges: list = []  # (first log, last log, backup ID) of every batch, sorted
+        self.furthest: list[int] = []  # furthest[i]: the highest last log among ranges[:i + 1]
 
     @classmethod
     def load(cls, plan: dict) -> "State":
@@ -127,14 +129,35 @@ class State:
             cached = json.loads(cache.read_bytes())
             if cached.get("version") == CACHE_VERSION:  # An older cache is rebuilt from the bucket.
                 state.cache = cached
-        for backup_id, item in state.cache["binlogs"].items():
+        batches = state.cache["binlogs"].items()
+        for backup_id, item in sorted(batches, key=lambda pair: (pair[1]["first"] or 0, pair[1]["last"] or 0, pair[0])):
             state.index(backup_id, item)
         return state
 
     def index(self, backup_id: str, item: dict) -> None:
-        if item["first"] is not None:
-            bisect.insort(self.ranges, (item["first"], item["last"], backup_id))
-            self.first[item["first"]] = backup_id
+        if item["first"] is None:
+            return
+        entry = (item["first"], item["last"], backup_id)
+        position = bisect.bisect_left(self.ranges, entry)
+        self.ranges.insert(position, entry)
+        self.furthest.insert(position, item["last"])
+        for at in range(position, len(self.ranges)):  # Usually only the new entry, appended at the end.
+            self.furthest[at] = max(self.ranges[at][1], self.furthest[at - 1] if at else self.ranges[at][1])
+
+    def holding(self, log: int, slot: int) -> tuple[int, str] | None:
+        """(last log, backup ID) of the batch ready by the slot start that holds this log and reaches furthest.
+
+        A run whose batch was published but whose checkpoint did not advance (time limit, failed
+        final read-back) is retried from the same checkpoint, so its retry repeats those logs and
+        adds newer ones. Either may be met first, so the chain follows any batch holding the log."""
+        best = None
+        for at in range(bisect.bisect_right(self.ranges, (log, float("inf"), "")) - 1, -1, -1):
+            if self.furthest[at] < log:
+                break  # No batch at or before this one reaches the log.
+            _, last, backup_id = self.ranges[at]
+            if last >= log and (best is None or last > best[0]) and ready(self.cache["binlogs"][backup_id], slot):
+                best = (last, backup_id)
+        return best
 
     def save(self) -> None:
         path = Path(self.plan["journal"] + ".cache.json")
@@ -209,21 +232,16 @@ def chain_through(state: State, base_id: str, base: dict, slot: int, coverage) -
 
     Returns the newest rotation time the chain is known to reach. Only the chain's newest
     batch is read; a batch whose last log cannot be read leaves the previous value."""
-    binlogs = state.cache["binlogs"]
     current = state.cache["chains"].get(base_id)
     advanced = False
     if current is None:
-        position = bisect.bisect_right(state.ranges, (base["start"], float("inf"), "")) - 1
-        if position < 0:
+        found = state.holding(base["start"], slot)
+        if found is None:
             return None
-        first, last, backup_id = state.ranges[position]
-        if not first <= base["start"] <= last or not ready(binlogs[backup_id], slot):
-            return None
-        current, advanced = {"next": last + 1, "through": None, "batches": 1, "tip": backup_id}, True
-    while current["next"] in state.first and ready(binlogs[state.first[current["next"]]], slot):
-        backup_id = state.first[current["next"]]
-        current = {"next": binlogs[backup_id]["last"] + 1, "through": current["through"],
-                   "batches": current["batches"] + 1, "tip": backup_id}
+        current, advanced = {"next": found[0] + 1, "through": None, "batches": 1, "tip": found[1]}, True
+    while (found := state.holding(current["next"], slot)) is not None:
+        current = {"next": found[0] + 1, "through": current["through"], "batches": current["batches"] + 1,
+                   "tip": found[1]}
         advanced = True
     if advanced:
         moment = coverage(current["tip"])
