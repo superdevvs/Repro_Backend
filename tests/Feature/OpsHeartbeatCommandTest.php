@@ -7,6 +7,7 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
@@ -20,11 +21,15 @@ class OpsHeartbeatCommandTest extends TestCase
 
     private int $alertServiceStatus = 200;
 
+    private bool $alertServiceUnreachable = false;
+
     protected function setUp(): void
     {
         parent::setUp();
         Http::preventStrayRequests();
-        Http::fake(fn () => Http::response('OK', $this->alertServiceStatus));
+        Http::fake(fn (Request $request) => $this->alertServiceUnreachable
+            ? Http::failedConnection()($request)
+            : Http::response('OK', $this->alertServiceStatus));
 
         $this->backupDirectory = sys_get_temp_dir().'/heartbeat-backups-'.bin2hex(random_bytes(6));
         mkdir($this->backupDirectory, 0775, true);
@@ -203,6 +208,20 @@ class OpsHeartbeatCommandTest extends TestCase
             ->expectsOutputToContain('Heartbeat ping failed')
             ->assertFailed();
 
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING);
+    }
+
+    public function test_a_connection_error_never_prints_the_ping_address(): void
+    {
+        // The address is a private token; cURL errors quote the full URL.
+        $this->alertServiceUnreachable = true;
+
+        $exitCode = Artisan::call('ops:heartbeat');
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Heartbeat ping failed: ConnectionException.', $output);
+        $this->assertStringNotContainsString('0f4c-heartbeat', $output);
         Http::assertSent(fn (Request $request) => $request->url() === self::PING);
     }
 
