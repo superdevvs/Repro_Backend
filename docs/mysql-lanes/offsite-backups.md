@@ -316,8 +316,8 @@ Commands (Windows Python 3.12 unless noted; Linux runs use the pinned QA image
 
 | Command | Result |
 | --- | --- |
-| `python -B -m unittest test_alert_bridge test_alert_probe test_purge_archived_binlogs test_enter_r2_config test_install_backup_host test_run_pitr_drill test_observe_backup_health test_produce_recovery_kit` (in `scripts/mysql/offsite`, Windows) | 75 tests OK, 9 skipped (Linux-only) |
-| `python3 -B -m unittest discover -s scripts/mysql/offsite -p 'test_*.py'` (Linux, UID 1000) | 161 tests OK (86 before this lane) |
+| `python -B -m unittest test_alert_bridge test_alert_probe test_purge_archived_binlogs test_enter_r2_config test_install_backup_host test_run_pitr_drill test_observe_backup_health test_produce_recovery_kit` (in `scripts/mysql/offsite`, Windows) | 78 tests OK, 10 skipped (Linux-only) |
+| `python3 -B -m unittest discover -s scripts/mysql/offsite -p 'test_*.py'` (Linux, UID 1000) | 164 tests OK (86 before this lane) |
 | `python3 -B -m unittest test_rotation_attempt` (Linux, `systemd/binlog-fixture`) | 6 tests OK |
 | `python -I -B systemd/test_units.py`; `python -B -m unittest test_production_units` | 8 and 12 tests OK |
 | `python -B -m unittest discover -s scripts/cutover/readiness -p 'test_*.py'` | 59 tests OK (unchanged) |
