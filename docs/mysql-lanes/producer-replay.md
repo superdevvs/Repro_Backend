@@ -15,7 +15,7 @@ Branch `claude/producer-replay-20261125`, based on `a6e799bb` (draft PR 46).
 | --- | --- | --- |
 | P2-03 | `recruit_application_receipts` gets `payload_sha256` and `attachment_sha256s` (new migration `2026_11_25_140000`). The first use of a reference records a SHA-256 of the canonical validated fields (files and empty values left out, keys sorted, scalars as text) and the ordered `kind:sha256` list of attachments. A replay with other fields, other bytes, missing files, or against a receipt from before this change returns **409** `{received:false, error:"reference_conflict"}`, stores no file and sends recruiters a `recruit_reference_conflict` notice (no applicant data in it). Exact replays still return the stored applicant. | `tests/Feature/Crm/RecruitingReplayIntegrityTest.php`, `tests/MySql/RecruitingReplayConcurrencyTest.php` |
 | P2-04 | The careers route uses `crm.enabled:retry`: CRM off gives **503 + Retry-After**, not 404. Staff CRM routes still give 404. Website intake receipts are always registered, even with CRM off; `crm:website-intake` replays them once the CRM is back. | `tests/Feature/Crm/ProducerIngressHoldTest.php` |
-| P2-04, P2-07 | `PRODUCER_INGRESS_HOLD` answers the producer routes with 503 + Retry-After, first in the global middleware stack (before telemetry, maintenance and controllers). Resend `email.received` with CRM off now gives 503, never 200 "ignored". A reviewed nginx snippet does the same at the edge. | `ProducerIngressHoldTest.php`, `tests/Feature/Crm/ResendRedeliveryTest.php`, `scripts/cutover/fence/test_producer_hold.py` |
+| P2-04, P2-07 | `PRODUCER_INGRESS_HOLD` answers the producer routes with 503 + Retry-After, first in the global middleware stack (before telemetry, maintenance and controllers). Resend `email.received` with CRM off now gives 503, never 200 "ignored". A reviewed nginx snippet holds the same webhooks at the edge, and all of `/api/external/` (see the edge note under owner decisions). | `ProducerIngressHoldTest.php`, `tests/Feature/Crm/ResendRedeliveryTest.php`, `scripts/cutover/fence/test_producer_hold.py` |
 | P2-06 | `scripts/cutover/website_ledger.py` turns a read-only website export into the capture ledger, a private CSV and a references file. `php artisan crm:website-ledger` reports the Dashboard side for each reference, read-only against the database it is given, and lists bookings saved without a reference. | `scripts/cutover/test_website_ledger.py`, `tests/Feature/Crm/CrmWebsiteLedgerTest.php` |
 | P2-08 | `php artisan crm:calendar-reconcile --dry-run` compares every linked follow-up with Google, inside and outside the poll window. Done or missed follow-ups (`closed_locally`) and links without a Google connection (`no_connection`) are listed but do not fail it, because the poller never acts on them. | `tests/Feature/Crm/CrmCalendarReconcileTest.php` |
 | P2-10 | `php artisan stripe:undelivered-events` lists events with pending deliveries, using a restricted read key. Tests prove a payment event sent 5 times gives one payment. | `tests/Feature/StripeReplayAfterFreezeTest.php` |
@@ -245,6 +245,15 @@ A read-only, service-role-only server route or SQL view that returns JSON for
   other secrets.
 - The nginx include line must be added once to both Dashboard vhosts in a
   normal reviewed deploy before any freeze.
+- The edge snippet is wider than `PRODUCER_INGRESS_HOLD`: it answers 503
+  for everything under `/api/external/`, so the website's catalog read
+  (`GET /api/external/services`), `POST /api/external/check-client` and the
+  website's Listing Studio guest-trial bridge (`/api/external/listing-studio/*`)
+  are held too. That suits a full write freeze, and a held catalog read is the
+  known cause of website bookings saved without a frozen quote (the P2-06
+  ledger lists them). Confirm the website's guest-trial flow shows a retry
+  message on 503, or narrow the snippet to the producer paths, before a real
+  freeze.
 
 ## Notes for the integrator
 
