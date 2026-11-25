@@ -424,6 +424,46 @@ final class WriterTokenRuleTest extends TestCase
         $this->assertSame(3, $this->counter());
     }
 
+    public static function sessionResets(): array
+    {
+        return [
+            'lock error, then disconnect' => ['lock', 'disconnect'],
+            'lost session, then reconnect' => ['lost', 'reconnect'],
+        ];
+    }
+
+    #[DataProvider('sessionResets')]
+    public function test_a_new_session_after_a_failed_transaction_is_usable_without_a_purge(string $failure, string $reset): void
+    {
+        $id = (int) $this->db()->selectOne('SELECT CONNECTION_ID() AS id')->id;
+        $committed = [];
+        $this->db()->beginTransaction();
+        $this->db()->afterCommit(function () use (&$committed) {
+            $committed[] = 'failed transaction';
+        });
+        $this->db()->table('_writer_policy_probe')->where('id', 1)->increment('counter');
+        if ($failure === 'lock') {
+            $this->admin->beginTransaction();
+            $this->admin->exec('UPDATE _writer_policy_probe SET counter = 1 WHERE id = 2');
+            $error = $this->failureOf(fn () => $this->db()->table('_writer_policy_probe')->where('id', 2)->increment('counter'));
+            $this->admin->rollBack();
+        } else {
+            self::rootPdo()->exec('KILL CONNECTION '.$id);
+            $error = $this->failureOf(fn () => $this->db()->table('_writer_policy_probe')->where('id', 2)->increment('counter'));
+        }
+        $this->assertInstanceOf(QueryException::class, $error);
+        $this->assertStringContainsString('requires an outer rollback', $this->failureOf(fn () => $this->db()->selectOne('SELECT 1'))?->getMessage() ?? '');
+
+        // Laravel resets the depth with the session; the failed transaction went with it.
+        $reset === 'reconnect' ? DB::reconnect('mysql') : DB::disconnect('mysql');
+
+        $this->assertSame(0, $this->db()->transactionLevel());
+        $this->db()->transaction(fn ($db) => $db->table('_writer_policy_probe')->where('id', 2)->increment('counter'));
+        $this->assertSame([0, 1], [$this->counter(1), $this->counter(2)]);
+        $this->assertSame([], $committed, 'Callbacks of the failed transaction never run.');
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
     public static function commitStyles(): array
     {
         return ['manual' => ['manual'], 'closure' => ['closure']];

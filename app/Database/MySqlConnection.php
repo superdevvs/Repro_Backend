@@ -288,6 +288,17 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
     public function setPdo($pdo)
     {
         $this->sessionServerUuid = null;
+        if ($this->poisoned || $this->pdoLost) {
+            // disconnect() and reconnect() replace the session and Laravel resets the depth
+            // to 0, so no rollback can reach the guard any more. The failed transaction left
+            // with the old session: drop its records without running their callbacks.
+            $this->abandonTransactionRecords();
+            $this->poisoned = false;
+            $this->pdoLost = false;
+            $this->testWrapperCommitted = false;
+            $this->tokenAcquiredAt = null;
+            $this->tokenHeldNs = null;
+        }
 
         return parent::setPdo($pdo);
     }
