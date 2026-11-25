@@ -104,6 +104,7 @@ All runs were local and offline. Linux tests ran as root in a disposable
 | Runner state machine (Windows) | `python -B -m unittest discover -s scripts/cutover -p test_runner.py` | 42 passed |
 | Guard (Windows) | `python -B -m unittest discover -s scripts/cutover/fence -p test_guard.py` | 20 passed, 3 Linux-only skipped |
 | All Linux suites | `scripts/cutover/run-linux-tests.sh` in the container | runner 42, guard 20, process contract 6, admission wrapper 6, fences 7, adapter and CLI 14, root-only refresh 10; all passed, none skipped |
+| Production nginx include under nginx 1.22.1 | `test_nginx_hold.py` (also in the launcher) | passed: six routes on both vhosts, including the direct `.php` files, return 503 with `Retry-After: 30` while the marker is absent, pass through once it exists, and close again as soon as it is removed, with no reload |
 
 New tests that prove the hold. They were written before the code; the
 runner, refresh, wrapper, fence and adapter tests were run and seen failing
