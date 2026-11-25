@@ -106,6 +106,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(\App\Http\Middleware\ServerMonitorTiming::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
         $middleware->prepend(\App\Http\Middleware\ListingStudioAdmissionCors::class);
+        // Producer replay hold: first in the stack, before anything that writes.
+        $middleware->prepend(\App\Http\Middleware\HoldProducerIngress::class);
         $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustConfiguredProxies::class);
         $middleware->trustProxies(
             headers: Request::HEADER_X_FORWARDED_TRAEFIK,
