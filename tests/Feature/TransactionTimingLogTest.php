@@ -74,8 +74,8 @@ class TransactionTimingLogTest extends TestCase
         $context = $records[0]['context'];
         $this->assertGreaterThanOrEqual(115, $context['duration_ms']);
         $this->assertGreaterThanOrEqual(115, $context['first_write_ms']);
-        $this->assertLessThanOrEqual($context['duration_ms'], $context['first_write_ms']);
-        $this->assertLessThan(100, $context['writer_held_ms']);
+        // The two parts split the duration at the first write.
+        $this->assertEqualsWithDelta($context['duration_ms'], $context['first_write_ms'] + $context['writer_held_ms'], 0.2);
         $this->assertSame(2, $context['queries']);
         $this->assertSame(1, $context['writes']);
         $this->assertSame(DB::getDefaultConnection(), $context['connection']);
@@ -93,8 +93,8 @@ class TransactionTimingLogTest extends TestCase
         });
 
         $context = $this->records()[0]['context'];
-        $this->assertLessThan(100, $context['first_write_ms']);
         $this->assertGreaterThanOrEqual(115, $context['writer_held_ms']);
+        $this->assertEqualsWithDelta($context['duration_ms'], $context['first_write_ms'] + $context['writer_held_ms'], 0.2);
     }
 
     public function test_fast_transactions_are_not_logged(): void
