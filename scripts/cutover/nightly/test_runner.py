@@ -739,6 +739,56 @@ class NightlyRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(nightly.Refused, "candidate-changed-for-this-night"):
             self.run_night()
 
+    def test_resume_rechecks_the_checkout_pins_and_tools_the_capture_checked(self):
+        helper = Path(self.config["reverse_triggers"]["path"])
+        migrate = self.candidate_root / nightly.CANDIDATE_TOOLS["migrate"]
+
+        def dirty_checkout():
+            self.host.candidate = (CANDIDATE, False)
+
+        def changed_helper():
+            helper.write_text("changed helper\n", encoding="utf-8")
+
+        def hidden_tool_change():  # git reports clean, for example under skip-worktree
+            migrate.write_text("changed converter\n", encoding="utf-8")
+
+        cases = ((dirty_checkout, "candidate-checkout-dirty"), (changed_helper, "reverse-helper-pin-differs"),
+                 (hidden_tool_change, "candidate-tools-changed-for-this-night"))
+        for change, reason in cases:
+            with self.subTest(reason=reason):
+                originals = (helper.read_bytes(), migrate.read_bytes())
+                try:
+                    self.host.fail.add("export-sqlite.py")
+                    self.assertEqual(self.run_night()["stopped_at"], "reverse")
+                    self.host.fail.clear()
+                    self.host.calls.clear()
+                    change()
+                    journal_before = (self.outputs() / "journal.json").read_bytes()
+                    with self.assertRaisesRegex(nightly.Refused, reason):
+                        self.run_night()
+                    self.assertEqual(self.host.calls, [])
+                    self.assertEqual((self.outputs() / "journal.json").read_bytes(), journal_before)
+                finally:
+                    helper.write_bytes(originals[0])
+                    migrate.write_bytes(originals[1])
+                    self.host.candidate = (CANDIDATE, True)
+                    self.host.fail.clear()
+                    shutil.rmtree(self.outputs(), ignore_errors=True)
+
+    def test_the_reverse_helper_pin_is_checked_again_just_before_it_runs(self):
+        helper = Path(self.config["reverse_triggers"]["path"])
+        original_verify = self.host.on_verify
+
+        def verify_then_replace(argv, timeout_s, _input):
+            helper.write_text("replaced during the night\n", encoding="utf-8")
+            return original_verify(argv, timeout_s, _input)
+
+        self.host.on_verify = verify_then_replace
+        receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                         ("stopped", "reverse", "reverse-helper-pin-differs"))
+        self.assertNotIn("apply-reviewed-reverse-triggers.py", self.host.events)
+
     def test_stale_mysqld_from_an_interrupted_run_is_stopped_on_resume(self):
         self.host.fail.add("export-sqlite.py")
         self.run_night()

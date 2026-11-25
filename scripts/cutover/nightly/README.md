@@ -102,6 +102,11 @@ Each finished stage is journaled with the digests of its outputs. Running the
 same night again:
 
 - refuses if any journaled output changed, or the config or candidate changed;
+- once the capture is done, refuses unless the checkout is still clean, every
+  pin (scope, exceptions, driver, reverse helper, finance) still holds and each
+  candidate tool still has the digest the capture recorded, so a resume never
+  runs code the capture did not check; the reverse helper's pin is also checked
+  again right before it runs;
 - reuses the capture and plan;
 - restarts `target`, `import_and_verify` and `reverse` together, because they
   share one disposable MySQL, after stopping any leftover `mysqld` found by

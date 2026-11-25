@@ -537,6 +537,7 @@ class NightlyRunner:
             journal = self.open_journal()
             if journal["status"] == "reviewer-inputs-ready":
                 return json.loads((self.run_dir / "run-receipt.json").read_bytes())
+            self.revalidate(journal)
             self.reset_incomplete(journal)
             journal["attempts"].append({"started_utc": self.host.utc_now().isoformat()})
             journal["status"], journal["reason"], journal["stopped_at"] = "running", None, None
@@ -603,6 +604,28 @@ class NightlyRunner:
                     unchanged = False
                 need(unchanged, f"evidence-changed: {output} differs from the journal")
         return journal
+
+    def revalidate(self, journal: dict) -> None:
+        """A resumed night must run the code and pinned inputs its capture checked.
+
+        A resume skips the capture stage, where the checkout's cleanliness and the
+        pins are checked, so check them again here, and compare every candidate
+        tool with the digest the capture recorded (git can be told to hide a
+        change, for example with skip-worktree). Nothing is changed on refusal.
+        """
+        capture = journal["stages"].get("capture", {})
+        if capture.get("status") != "done":
+            return  # The capture stage runs again and checks all of this itself.
+        need(self.host.checkout()[1], "candidate-checkout-dirty")
+        for name, ok in self.pins_hold().items():
+            need(ok, f"{'finance' if name.startswith('finance') else name}-pin-differs")
+        tools = {}
+        for name, tool in self.tools.items():
+            try:
+                tools[name] = file_sha256(tool)
+            except OSError:
+                tools[name] = None
+        need(tools == capture["result"].get("tool_sha256"), "candidate-tools-changed-for-this-night")
 
     def save(self, journal: dict) -> None:
         write_json(self.run_dir / "journal.json", journal)
@@ -906,6 +929,9 @@ class NightlyRunner:
         started = host.monotonic()
         triggers = None
         if self.cfg["reverse_triggers"] is not None:
+            # The helper runs from outside the candidate; check its pin again right before it runs.
+            if not self.pins_hold().get("reverse-helper"):
+                raise Stop("reverse-helper-pin-differs")
             self.mysql("SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF; SELECT @@read_only,@@super_read_only",
                        expect="0\t0", reason="trigger-maintenance-refused")
             try:
