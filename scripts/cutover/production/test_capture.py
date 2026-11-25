@@ -3,18 +3,23 @@
 The file tests run anywhere. CaptureTests run the real capture.php behind the
 real nginx hold include (test_nginx_hold.HoldHarness) in its own PHP-FPM
 master, against an application checkout with vendor/, as root in a disposable
-Linux container (it starts PHP-FPM children and the replay as www-data). For
-example, from the repository root on the host:
+Linux container (it starts PHP-FPM children and the replay as www-data). The
+web user must be able to read vendor/, as on the host; the locked dev vendor
+volume is root-only, so copy it into a tmpfs first. For example:
 
     docker run --rm --pull never --network none --cpus 2 --memory 2g \\
       --mount type=bind,source=<checkout>,target=/app \\
-      --mount type=volume,source=<vendor volume>,target=/app/vendor,volume-subpath=vendor,readonly \\
+      --mount type=volume,source=<vendor volume>,target=/vendor-src,volume-subpath=vendor,readonly \\
+      --tmpfs /app/vendor:rw,exec,size=400m,mode=0755 \\
       --tmpfs /tmp:rw,exec,size=512m,mode=1777 --tmpfs /app/bootstrap/cache:rw,size=64m,mode=0755 \\
-      -w /app --entrypoint python3 repro-mysql-rehearsal-qa:20261122 \\
-      -B -m unittest discover -s scripts/cutover/production -p test_capture.py -v
+      -w /app --entrypoint /bin/sh repro-mysql-rehearsal-qa:20261122 -c \\
+      'cp -a /vendor-src/. /app/vendor/ && chmod -R a+rX /app/vendor &&
+       python3 -B -m unittest discover -s scripts/cutover/production -p test_capture.py -v'
 
 The class caches the application's config into bootstrap/cache/config.php
 (the capture reads that fixed path) and refuses to run if one exists already.
+Storage, the SQLite database and the spool live in a temporary directory
+(LARAVEL_STORAGE_PATH), so nothing else in the checkout is written.
 """
 
 from __future__ import annotations

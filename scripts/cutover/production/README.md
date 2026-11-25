@@ -171,8 +171,10 @@ lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
 
 `test_admit.py`, `test_fences.py` and `test_adapter.py` need Linux root and
 run in a disposable container through `../run-linux-tests.sh`. The cron and
-unit-file tests also run on Windows. `test_nginx_hold.py` needs nginx and
-PHP-FPM (the QA image has both). `test_capture.py`'s file tests run anywhere;
+unit-file tests also run on Windows. `test_nginx_hold.py` needs nginx (the QA
+image has it); its three capture tests also start the capture's PHP-FPM
+master from `capture/php-fpm.conf` and need root, as on the host, to hand
+the socket to `www-data`. `test_capture.py`'s file tests run anywhere;
 its `CaptureTests` run the real `capture.php` behind nginx and replay a
 captured text through `telnyx:replay-spool` into the app's handler, so they
 need root, nginx, PHP-FPM and an application checkout whose `vendor/` the
