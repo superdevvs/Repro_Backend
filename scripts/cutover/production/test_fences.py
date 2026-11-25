@@ -252,6 +252,17 @@ class CronEntryTests(unittest.TestCase):
         self.assertEqual(self.installed_lines()[2:], lines[5:])
         self.assertEqual((wrapped, []), crontab.wrap(wrapped, self.RULES, WRAPPER))
 
+    def test_commands_chained_after_a_matched_entry_are_refused_not_dropped(self):
+        # The wrapper runs only the profile's command; anything chained after the match would be lost.
+        text = ("* * * * * cd /var/www/backend && php artisan schedule:run && /usr/local/bin/ping-check >> /dev/null 2>&1\n"
+                "17 * * * * cd /var/www/backend && /usr/bin/php artisan auth:prune-security-limits --limit=1000; "
+                "/usr/bin/touch /var/tmp/pruned\n"
+                "* * * * * cd /var/www/backend && php artisan schedule:run 2>&1 | /usr/bin/logger -t schedule\n"
+                "* * * * * cd /var/www/backend && php artisan schedule:run || /usr/bin/logger failed\n")
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual(text.splitlines(), unknown)
+        self.assertNotIn(WRAPPER, wrapped)
+
     def test_unknown_application_lines_are_reported_not_installed(self):
         text = "*/5 * * * * cd /var/www/backend && php artisan tinker --execute='User::query()->delete()'\n" \
                "0 3 * * * /usr/bin/sqlite3 /var/www/backend/database/database.sqlite 'VACUUM'\n" \

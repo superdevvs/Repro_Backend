@@ -5,6 +5,9 @@ fixed wrapper with that profile. The schedule, the output redirection and any
 trailing marker comment are kept, so installer idempotency checks still work.
 Entries that touch the application but match no rule are returned instead of
 being installed, so an unknown writer is never left unfenced by accident.
+Entries that chain, pipe or substitute another command after the matched one
+are returned too: the wrapper runs only the profile's command, so the rest
+would be dropped silently.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from pathlib import Path
 SCHEDULE = re.compile(r"^(\s*(?:@\w+|\S+\s+\S+\s+\S+\s+\S+\s+\S+))\s+(\S.*)$")
 TRAILER = re.compile(r"((?:\s+(?:>>?|2>>?)\s*[^\s'\"]+)*(?:\s+2>&1)?)(\s+#[^'\"]*)?$")
 ASSIGNMENT = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=")
+# Shell control after the matched command: a chained, piped or substituted command.
+CHAINED = re.compile(r"[;&|`]|\$\(")
 
 
 def wrap(text: str, rules: dict, wrapper: str) -> tuple[str, list[str]]:
@@ -33,15 +38,21 @@ def wrap(text: str, rules: dict, wrapper: str) -> tuple[str, list[str]]:
         if command.startswith(wrapper + " "):
             lines.append(line)
             continue
-        rule = next((rule for pattern, rule in compiled if pattern.search(command)), None)
-        if rule is None:
+        found = next(((match, rule) for pattern, rule in compiled if (match := pattern.search(command))), None)
+        rule = None if found is None else found[1]
+        trailer = TRAILER.search(command)
+        if rule is not None and "allow" not in rule \
+                and CHAINED.search(command[found[0].end():trailer.start()]):
+            # The wrapper runs only the profile's command; a chained command would be dropped.
+            unknown.append(line)
+            lines.append(line)
+        elif rule is None:
             if any(marker in command for marker in markers):
                 unknown.append(line)
             lines.append(line)
         elif "allow" in rule:
             lines.append(line)
         else:
-            trailer = TRAILER.search(command)
             lines.append(f"{schedule} {wrapper} {rule['profile']}{trailer.group(1)}{trailer.group(2) or ''}")
     return "\n".join(lines) + ("\n" if text.endswith("\n") else ""), unknown
 
