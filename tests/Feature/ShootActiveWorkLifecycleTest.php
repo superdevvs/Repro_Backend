@@ -109,22 +109,23 @@ class ShootActiveWorkLifecycleTest extends TestCase
         $this->getJson('/api/shoots?tab=completed&statuses[]=active&no_cache=1')->assertOk()->assertJsonPath('meta.count', 1);
     }
 
-    public function test_scheduled_active_service_takes_precedence_over_older_unscheduled_work(): void
+    public function test_scheduled_active_service_clock_preserves_the_older_unscheduled_queue_date(): void
     {
         [$shoot, $done] = $this->fixture();
         $original = $shoot->getRawOriginal();
         $oldLine = $done->getRawOriginal();
         $unscheduled = $this->addService($shoot, $done);
         $this->assertNull($unscheduled->scheduled_at);
-        $later = $this->scheduledService($shoot, '2026-11-09 16:00:00');
+        $queueAnchor = $shoot->fresh()->active_work_at->format('Y-m-d H:i:s');
+        $this->scheduledService($shoot, '2026-11-09 16:00:00');
         $earlier = $this->scheduledService($shoot, '2026-11-08 01:30:00');
 
         $shoot->refresh();
-        $this->assertSame('2026-11-08 01:30:00', $shoot->active_work_at->format('Y-m-d H:i:s'));
-        $this->assertSame('2026-11-07', $shoot->active_work_date);
-        $this->assertSame('20:30', $shoot->active_work_time);
+        $this->assertSame($queueAnchor, $shoot->active_work_at->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-11-06', $shoot->active_work_date);
+        $this->assertNull($shoot->active_work_time);
         $this->getJson('/api/shoots/'.$shoot->id)->assertOk()
-            ->assertJsonPath('data.active_work_date', '2026-11-07')
+            ->assertJsonPath('data.active_work_date', '2026-11-06')
             ->assertJsonPath('data.active_work_time', '20:30');
         foreach (['scheduled_date', 'scheduled_at', 'time', 'photographer_id', 'admin_verified_at', 'completed_at'] as $field) {
             $this->assertSame($original[$field], $shoot->getRawOriginal($field));
@@ -132,8 +133,10 @@ class ShootActiveWorkLifecycleTest extends TestCase
         $this->assertSame($oldLine, $done->fresh()->getRawOriginal());
 
         $earlier->forceFill(['workflow_status' => 'cancelled', 'delivery_status' => 'cancelled', 'cancelled_at' => now()])->save();
-        $this->assertSame('11:00', $shoot->fresh()->active_work_time);
-        $this->assertSame($later->scheduled_at->format('Y-m-d H:i:s'), $shoot->fresh()->active_work_at->format('Y-m-d H:i:s'));
+        $this->assertNull($shoot->fresh()->active_work_time);
+        $this->assertSame('11:00', app(ShootActiveWorkLifecycle::class)->presentation($shoot->fresh())['active_work_time']);
+        $this->assertSame($queueAnchor, $shoot->fresh()->active_work_at->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-11-06', $shoot->fresh()->active_work_date);
     }
 
     public function test_existing_active_cycle_reads_the_service_clock_without_mutating_its_queue_date(): void
@@ -165,6 +168,7 @@ class ShootActiveWorkLifecycleTest extends TestCase
         DB::table('shoot_service')->where('id', $cancelled->id)->update([
             'workflow_status' => 'cancelled', 'delivery_status' => 'cancelled', 'cancelled_at' => now(),
         ]);
+        DB::table('shoots')->where('id', $shoot->id)->update(['active_work_time' => '20:30']);
         $shoot->refresh();
         $original = $shoot->getRawOriginal();
         $this->assertSame('20:30', $shoot->active_work_time);

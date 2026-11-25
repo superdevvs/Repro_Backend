@@ -103,14 +103,13 @@ class ShootActiveWorkLifecycle
             $shoot->delivery_status = ShootService::DELIVERY_DELIVERED;
         } else {
             $resolver = app(ScheduleInstantResolver::class);
-            $appointment = $this->earliestScheduledPendingAt($shoot, $pending);
-            // Unscheduled added work must not hide a real appointment merely
-            // because it was created before the scheduled service.
-            $shoot->active_work_at = $appointment ?? $pending->map(fn ($item) => $item->created_at ?? $shoot->active_work_started_at)
-                ->filter()->sortBy(fn ($at) => $at->getTimestamp())->first() ?? $shoot->active_work_started_at;
+            $anchors = $pending->map(fn ($item) => ['at' => $item->scheduled_at ? $resolver->forServiceItem($shoot, $item)?->utc() : ($item->created_at ?? $shoot->active_work_started_at), 'scheduled' => (bool) $item->scheduled_at])
+                ->filter(fn ($anchor) => $anchor['at'])->sortBy(fn ($anchor) => $anchor['at']->getTimestamp());
+            $anchor = $anchors->first();
+            $shoot->active_work_at = $anchor['at'] ?? $shoot->active_work_started_at;
             $shoot->active_work_date = $shoot->active_work_at->copy()
                 ->setTimezone($shoot->timezone ?: $resolver->timezoneForShoot($shoot))->toDateString();
-            $shoot->active_work_time = $appointment
+            $shoot->active_work_time = ($anchor['scheduled'] ?? false)
                 ? $shoot->active_work_at->copy()->setTimezone($shoot->timezone ?: $resolver->timezoneForShoot($shoot))->format('H:i') : null;
             $shoot->status = Shoot::STATUS_ACTIVE;
             if (in_array($shoot->workflow_status, ['delivered', 'ready_for_client', 'admin_verified'], true)) {
@@ -127,8 +126,8 @@ class ShootActiveWorkLifecycle
         $active = $this->hasActiveWork($shoot) && ! $this->isSuspended($shoot);
         $at = $shoot->active_work_at;
         $zone = $shoot->timezone ?: app(ScheduleInstantResolver::class)->timezoneForShoot($shoot);
-        // Existing cycles can still have the old created-at anchor. Read the
-        // actual appointment clock without moving persisted queue dates on GET.
+        // Read the actual appointment clock independently of the queue's earliest
+        // work anchor, without moving persisted queue dates on GET.
         // No appointment means no active clock; the UI can show the original
         // booking time rather than a stale appointment or the work-added time.
         $appointment = $active ? $this->earliestScheduledPendingAt($shoot, $this->outstandingItems($shoot)) : null;
