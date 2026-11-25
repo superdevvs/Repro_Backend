@@ -192,6 +192,12 @@ def retention(base=BASE, apply=False, now=None, policy='days'):
         if not directory.exists() and not directory.is_symlink():
             continue
         safe_directory(directory)
+        if apply and component == 'backend':
+            # apply_retention holds both deploy locks, so no compression is
+            # running. This also covers a crash followed by switching
+            # compress_sqlite_backups off, after which the compress step never
+            # runs to clear it.
+            remove_stale_partials(directory)
         bundles = []
         for path in sorted(directory.iterdir()):
             bundle = inspect_backup(path, component, database_optional)
@@ -332,8 +338,8 @@ def compress_sqlite_copy(bundle, reserve):
 def remove_stale_partials(directory):
     """Remove partial gzip files that a killed compression left behind.
 
-    The caller holds the backend deploy lock, so no compression is running and
-    any partial file is stale. Left in place, it would make retention treat the
+    The caller (the compress step or applied retention) holds the backend deploy
+    lock, so no compression is running and any partial file is stale. Left in place, it would make retention treat the
     bundle as unrecognized and keep its raw copy forever. Only that exact name,
     as a plain file owned by this user, is removed.
     """

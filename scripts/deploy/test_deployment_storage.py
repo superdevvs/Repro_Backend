@@ -82,6 +82,28 @@ class RetentionTest(unittest.TestCase):
         self.run_retention(policy='tiered')
         self.assertFalse(source_only.exists())
 
+    def test_applied_retention_clears_a_partial_gzip_left_by_a_killed_compression(self):
+        # A compression killed by a reboot leaves the partial file. If the flag
+        # is then switched off, the compress step never runs again, so applied
+        # retention (which holds both deploy locks) must clear it, or the bundle
+        # and its raw copy are kept forever as unrecognized.
+        self.bundle(1, success=True)
+        old = self.bundle(30, success=True)
+        (old / guard.PARTIAL_GZIP).write_bytes(b'\x1f\x8b truncated')
+        output = self.run_retention(apply=False)
+        self.assertTrue((old / guard.PARTIAL_GZIP).exists(), 'A dry run changes nothing.')
+        self.assertIn(f'preserve backend/{old.name}', output)
+        output = self.run_retention()
+        self.assertFalse((old / guard.PARTIAL_GZIP).exists())
+        self.assertIn(f'removed-stale-partial bundle={old.name}', output)
+        self.assertIsNotNone(guard.inspect_backup(old, 'backend'))
+        # Removing the file touched the folder, so it is kept for review like any
+        # recently touched old label, then ages out.
+        later = datetime.now().timestamp() + timedelta(days=guard.RETENTION_DAYS + 1).total_seconds()
+        with redirect_stdout(io.StringIO()):
+            guard.retention(self.base, apply=True, now=later)
+        self.assertFalse(old.exists())
+
     def test_tiered_policy_keeps_last_five_and_one_a_day_for_fourteen_days(self):
         created = {}
         for day in range(20):
