@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Database\DatabaseEngineMismatch;
+use App\Services\ListingStudio\ListingStudioTrialMonitoring;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -25,6 +26,7 @@ class DatabaseHealthCheckTest extends TestCase
         if ($this->app?->maintenanceMode()->active()) {
             $this->app->maintenanceMode()->deactivate();
         }
+        DB::purge('health_side_file');
         foreach ($this->temporaryFiles as $file) {
             @unlink($file);
         }
@@ -124,6 +126,34 @@ class DatabaseHealthCheckTest extends TestCase
         config(['health.expected_engine' => '']);
         DB::purge();
         $this->assertSame(1, (int) DB::selectOne('select 1 as ok')->ok);
+    }
+
+    public function test_code_that_takes_the_pdo_itself_cannot_write_on_the_wrong_engine(): void
+    {
+        // ListingStudioTrialMonitoring writes its counters through the default
+        // connection's PDO, which never passes Laravel's beforeExecuting hooks.
+        $file = tempnam(sys_get_temp_dir(), 'health-guard-');
+        $this->temporaryFiles[] = $file;
+        $this->useSqliteFile($file);
+        Schema::create('listing_studio_trial_counters', function (Blueprint $table) {
+            $table->date('day');
+            $table->string('event', 64);
+            $table->string('service', 32);
+            $table->unsignedInteger('count')->default(0);
+            $table->primary(['day', 'event', 'service']);
+        });
+        config([
+            'health.expected_engine' => 'mysql',
+            'database.connections.health_side_file' => ['driver' => 'sqlite', 'database' => $file, 'prefix' => ''],
+        ]);
+        DB::purge('sqlite');
+
+        app(ListingStudioTrialMonitoring::class)->count('trial_rate_limit');
+
+        $this->assertSame(0, DB::connection('health_side_file')->table('listing_studio_trial_counters')->count(),
+            'A process on the wrong engine wrote to the old database.');
+        $this->expectException(DatabaseEngineMismatch::class);
+        DB::connection()->getPdo();
     }
 
     public function test_engine_guard_leaves_other_named_connections_alone(): void

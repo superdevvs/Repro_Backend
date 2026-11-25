@@ -40,8 +40,14 @@ final class DatabaseEngine
         }
 
         $expected = (string) self::expected();
-        $connection->beforeExecuting(static function () use ($connection, $driver, $expected): void {
+        $refuse = static function () use ($connection, $driver, $expected): never {
             throw DatabaseEngineMismatch::for($connection->getName(), $driver, $expected);
-        });
+        };
+        // Statements stop before they reach the database...
+        $connection->beforeExecuting($refuse);
+        // ...and code that takes the PDO handle itself (ListingStudioTrialMonitoring,
+        // a raw BEGIN IMMEDIATE) gets none. A reconnect fires ConnectionEstablished,
+        // which guards the fresh handle again.
+        $connection->setPdo($refuse)->setReadPdo($refuse);
     }
 }

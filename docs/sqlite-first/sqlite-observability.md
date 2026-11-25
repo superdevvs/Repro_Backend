@@ -20,7 +20,7 @@ All go in `/var/www/backend/.env`. Each production change needs the owner's appr
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `DB_EXPECTED_ENGINE` | empty (off) | `sqlite` or `mysql`. On any other engine, `/up` answers 503 and every query on the default connection stops with `DatabaseEngineMismatch`. Other named connections are not checked. |
+| `DB_EXPECTED_ENGINE` | empty (off) | `sqlite` or `mysql`. On any other engine, `/up` answers 503 and every query on the default connection stops with `DatabaseEngineMismatch`, including code that takes the connection's PDO handle itself. Other named connections are not checked. |
 | `REPRO_MYSQL_EXPECTED_SERVER_UUID` | empty (off) | MySQL only. `/up` also compares `@@server_uuid`. |
 | `QUEUE_PRUNE_FAILED_ENABLED` | `false` | Runs `queue:prune-failed --hours=336` daily at 03:55. **The first run deletes every failed job older than 14 days.** Turn on only after the remaining `failed_jobs` rows are archived (item 2b). |
 | `TRANSACTION_TIMING_ENABLED` | `false` | Turns on the slow-transaction log. |
