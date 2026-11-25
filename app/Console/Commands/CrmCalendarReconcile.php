@@ -16,10 +16,16 @@ use Illuminate\Support\Facades\DB;
  * overwrite Google), and changes outside the poll window or limit. Reads
  * only. A connection whose token needs a refresh is reported, not refreshed,
  * unless --allow-token-refresh is given (a refresh saves the new token).
- * Exit 0 when everything is in sync, 1 when something needs a decision.
+ * Done or missed follow-ups (the sync leaves them in Google on purpose) and
+ * links without a Google connection are listed but never acted on by the
+ * poller, so they do not block. Exit 0 when nothing else is found, 1 when
+ * something needs a decision.
  */
 class CrmCalendarReconcile extends Command
 {
+    /** Listed, but the poller never acts on them, so they need no decision. */
+    private const NOT_BLOCKING = ['in_sync', 'closed_locally', 'no_connection'];
+
     protected $signature = 'crm:calendar-reconcile
         {--dry-run : Required. Report only; nothing in the CRM or Google changes}
         {--allow-token-refresh : Let expired Google tokens refresh (writes google_calendar_connections)}
@@ -71,13 +77,16 @@ class CrmCalendarReconcile extends Command
             }
         }
 
-        return array_diff(array_keys($counts), ['in_sync']) === [] ? self::SUCCESS : self::FAILURE;
+        return array_diff(array_keys($counts), self::NOT_BLOCKING) === [] ? self::SUCCESS : self::FAILURE;
     }
 
     /** @return array{0: string, 1: array<string, mixed>} the category and what Google holds */
     private function compare(GoogleCalendarService $google, GoogleCalendarConnection|false $connection, object $link, Carbon $startsAt): array
     {
         $none = ['remote_starts_at' => null, 'remote_duration_min' => null, 'remote_differs' => null];
+        if (in_array($link->status, ['done', 'missed'], true)) {
+            return ['closed_locally', $none]; // push() keeps these in Google and the poll skips them
+        }
         if (! $connection) {
             return ['no_connection', $none];
         }
@@ -98,7 +107,7 @@ class CrmCalendarReconcile extends Command
 
         return [match (true) {
             (bool) $link->push_pending => 'push_pending',
-            $link->status !== 'planned' => $remote === null ? 'in_sync' : 'local_not_planned',
+            $link->status !== 'planned' => $remote === null ? 'in_sync' : 'cancelled_still_in_google',
             $remote === null => 'deleted_in_google',
             ! $remoteStart => 'remote_without_time',
             $differs => 'moved_in_google',

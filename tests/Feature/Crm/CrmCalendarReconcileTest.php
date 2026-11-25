@@ -111,6 +111,44 @@ class CrmCalendarReconcileTest extends CrmTestCase
         $this->assertSame(['token_refresh_needed' => 1], $report['counts']);
     }
 
+    /**
+     * The sync leaves a done or missed follow-up in Google on purpose, and a
+     * rep who disconnected Google leaves links the poller never reads. Neither
+     * is a decision before the poller is released, so neither may block it.
+     */
+    public function test_closed_follow_ups_and_disconnected_calendars_are_listed_without_blocking_the_release(): void
+    {
+        $start = now()->addDay()->setTime(9, 0)->utc();
+        $this->linked('g_ok', $start);
+        $this->remote['g_ok'] = $this->remoteAt($start);
+        $done = $this->linked('g_done', now()->subDays(3)->setTime(9, 0)->utc(), [], ['status' => 'done']);
+        $this->remote['g_done'] = $this->remoteAt(now()->subDays(3)->setTime(9, 0)->utc());
+        $missed = $this->linked('g_missed', now()->subDays(2)->setTime(9, 0)->utc(), [], ['status' => 'missed']);
+        $this->remote['g_missed'] = $this->remoteAt(now()->subDays(2)->setTime(13, 0)->utc());
+        $disconnected = $this->rep();
+        $orphan = $this->linked('g_orphan', $start, ['user_id' => $disconnected->id], ['assigned_user_id' => $disconnected->id]);
+
+        [$exit, $report] = $this->reconcile();
+
+        $rows = collect($report['rows'])->keyBy('event_id');
+        $this->assertSame('closed_locally', $rows[$done->id]['category']);
+        $this->assertSame('closed_locally', $rows[$missed->id]['category']);
+        $this->assertSame('no_connection', $rows[$orphan->id]['category']);
+        $this->assertSame(0, $exit, 'Only rows the poller would act on, or cannot read, need a decision.');
+    }
+
+    public function test_a_cancelled_follow_up_still_in_google_needs_a_decision(): void
+    {
+        $start = now()->addDay()->setTime(9, 0)->utc();
+        $cancelled = $this->linked('g_cancelled', $start, [], ['status' => 'cancelled']);
+        $this->remote['g_cancelled'] = $this->remoteAt($start);
+
+        [$exit, $report] = $this->reconcile();
+
+        $this->assertSame('cancelled_still_in_google', collect($report['rows'])->keyBy('event_id')[$cancelled->id]['category']);
+        $this->assertSame(1, $exit);
+    }
+
     public function test_all_in_sync_exits_zero_and_the_command_refuses_to_run_without_dry_run(): void
     {
         $start = now()->addDay()->setTime(9, 0)->utc();
