@@ -202,6 +202,16 @@ MySQL 8.4.13 server (local image, socket only, network none) return exactly
 the tuple the runner requires, and the seal reads back `1 1`. The builder's
 mutation claims were repeated and hold.
 
+Tests rerun by the review:
+
+| Command | Result |
+| --- | --- |
+| `python -B -m unittest discover -s scripts/cutover/nightly -p 'test_*.py'` (Windows) | 60 tests OK, 9 Linux-only skipped |
+| Same in `repro-mysql-rehearsal-qa:20261122`, uid 1000, network none, read-only mount | 60 tests OK |
+| `python -B -m unittest discover -s scripts/cutover/readiness -p 'test_*.py'` (Windows and Linux) | 67 tests OK on both |
+| `python -B -m unittest discover -s scripts/cutover -p 'test_*.py'` | Windows: 41 OK, 4 skipped. Linux uid 1000: 1 error in `test_final_backup_check` ("unsafe path owner"); the same error on `a6e799bb` in the same setup, and no file it uses changed. |
+| Full SQLite suite, `php -d memory_limit=1800M vendor/bin/phpunit --no-progress` on an export of `87ddc5d4`, container tmpfs, network none | 9,589 tests, 320,416 assertions, 3 skipped, 2 errors, 2 failures (73 min). The same four tests as above; running those four files on `a6e799bb` in the same setup gives the same 2 errors and 2 failures. The review commits change no PHP file. |
+
 Notes left open (not defects of the stated items):
 
 - A second SIGTERM or SIGHUP while cleanup waits for `mysqld` to stop leaves
