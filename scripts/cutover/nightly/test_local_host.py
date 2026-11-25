@@ -99,6 +99,26 @@ class LocalHostTests(unittest.TestCase):
         (candidate / "tool.py").write_text("v2\n", encoding="utf-8")
         self.assertEqual(self.host.checkout(), (head, False))
 
+    def test_checkout_ignores_git_settings_left_inside_the_checkout(self):
+        # The probe must not read a stray .gitconfig in the candidate, which an
+        # untracked-files=no status would never report.
+        candidate = self.root / "candidate"
+        candidate.mkdir()
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+        subprocess.run(["git", "-C", str(candidate), "init", "-q"], env=env, check=True)
+        (candidate / "tool.py").write_text("v1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(candidate), "add", "tool.py"], env=env, check=True)
+        subprocess.run(["git", "-C", str(candidate), "commit", "-q", "-m", "tool"], env=env, check=True)
+        marker = self.root / "fsmonitor-ran"
+        hook = self.root / "fsmonitor.sh"
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o700)
+        (candidate / ".gitconfig").write_text(f"[core]\n\tfsmonitor = {hook}\n", encoding="utf-8")
+        self.assertTrue(self.host.checkout()[1])
+        self.assertFalse(marker.exists())
+
     def test_memory_and_timeouts(self):
         meminfo = self.root / "meminfo"
         meminfo.write_text("MemTotal:       32000000 kB\nMemAvailable:   26000000 kB\n", encoding="ascii")

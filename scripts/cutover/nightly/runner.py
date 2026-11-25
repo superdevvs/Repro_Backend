@@ -1217,7 +1217,11 @@ class LocalHost:
 
     def checkout(self) -> tuple[str, bool]:
         root = self.cfg["candidate_root"]
-        env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1", "HOME": root}
+        # Read only the checkout's own repository settings: no system, global or
+        # $HOME config, so a stray .gitconfig in the candidate cannot run hooks
+        # or change what counts as clean.
+        env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_CONFIG_GLOBAL": "/dev/null", "HOME": "/nonexistent"}
         head = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, env=env,
                               timeout=30, check=False)
         status = subprocess.run(["git", "-C", root, "status", "--porcelain", "--untracked-files=no"],
