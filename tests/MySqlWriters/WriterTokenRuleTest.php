@@ -410,7 +410,9 @@ final class WriterTokenRuleTest extends TestCase
         $callbacks = [];
         $this->db()->beginTransaction();
         $this->db()->afterCommit(function () use (&$callbacks) {
-            $callbacks[] = ['outer', $this->tokenIsHeld()];
+            // Our own transaction, and so our hold on the token, has ended. (The
+            // waiting peer may already hold the token by now.)
+            $callbacks[] = ['outer', $this->db()->getPdo()->inTransaction()];
         });
         $this->db()->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 1]);
         $this->db()->beginTransaction();
