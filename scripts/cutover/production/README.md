@@ -106,6 +106,13 @@ release) and reopen writes no activation receipt. After a reopened
 rollback, `reopen` lifts the fence once activation is verified. `refresh` copies the SQLite live-configuration pin from the policy;
 an independent configuration probe is still to be added before W1.
 
+**Live check on `reopen`.** The authority proof was measured earlier, and
+the guard does not look at the host again. `reopen` therefore observes the
+host before it lets any writer in and refuses unless SQLite is the only
+writable engine. If the check after opening fails, it removes the open
+marker, pauses the queues and stops the workers again; the deploy fence
+and the missing activation receipt keep deploys held.
+
 **Retrying `reopen`.** If a reopen fails after it started a worker group,
 those wrappers keep their shared writer lease. Run `cli.py reopen` again: it
 stops any running worker group first (`stop_workers`), waits for the writer

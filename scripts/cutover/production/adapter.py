@@ -394,6 +394,19 @@ class ProductionAdapter:
         if self.paths["ingress_open"].exists() or self.paths["ingress_open"].is_symlink():
             raise UnsafeCutover("Ingress is open. Refresh measures a held host only, for example after a reboot")
 
+    def _close_reopened(self) -> None:
+        """Undo a reopen whose live check failed: ingress first, then the queues and workers.
+
+        The deploy fence is still published and no activation receipt exists,
+        so deploys stay held as well.
+        """
+        _remove(self.paths["ingress_open"])
+        deadline = self.clock() + self.config["command_seconds"]
+        for queue in self.config["queues"]:
+            self._run(self.config["commands"]["queue_pause"] + [queue], deadline)
+        for argv in self.config["commands"]["stop_workers"]:
+            self._run(argv, deadline)
+
     def reopen(self) -> None:
         """Reopen SQLite writers in order once the guard accepts the committed SQLite authority.
 
@@ -423,6 +436,12 @@ class ProductionAdapter:
             phase = None if state is None else state["phase"]
             if phase not in ("planned", "sqlite_authoritative"):
                 raise UnsafeCutover("Reopening requires a planned journal or a completed SQLite authority transition")
+            # The proof was measured earlier; the guard does not look at the host again.
+            # Check the live route before any writer is let in.
+            current = self.observe()
+            if (current.engine != "sqlite" or not current.sqlite_writable or current.mysql_writable
+                    or current.mysql_business_activity):
+                raise UnsafeCutover("SQLite is no longer the only writable engine; writers stay held")
             # Invalidate an earlier receipt before any change, then let wrapped writers in.
             _remove(self.paths["activation"])
             self.journal.release_writers(lease)
@@ -431,8 +450,14 @@ class ProductionAdapter:
             for argv in self.config["commands"]["start_workers"]:
                 self._run(argv)
             _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
-            if not self.observe().sqlite_live():
-                raise UnsafeCutover("SQLite admissions could not be verified after reopening")
+            try:
+                live = self.observe().sqlite_live()
+            except UnsafeCutover:
+                live = False
+            if not live:
+                self._close_reopened()
+                raise UnsafeCutover("SQLite admissions could not be verified after reopening; "
+                                    "ingress, queues and workers are held again")
             if phase == "planned":
                 # Deploys stay held for the planned cutover; there is no activation receipt.
                 return

@@ -243,6 +243,53 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertFalse((self.root / "etc" / "active").exists())
         self.assertTrue(adapter.observe().sqlite_live())
 
+    def mysql_probe_from_file(self, config):
+        """The MySQL probe reads its answer from a file, so a test can change the live target."""
+        probe = self.root / "etc" / "mysql-probe.json"
+        probe.write_text('{"writable": false, "business_activity": false}', encoding="ascii")
+        config["commands"]["mysql"] = [sys.executable, "-c", "import sys; print(open(sys.argv[1]).read())",
+                                       str(probe)]
+        return probe
+
+    def test_reopen_refuses_when_mysql_became_writable_after_the_proof(self):
+        config = self.config()
+        probe = self.mysql_probe_from_file(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        runner.perform("abort")
+        # The proof was measured with MySQL read-only; the target changes afterwards.
+        probe.write_text('{"writable": true, "business_activity": false}', encoding="ascii")
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, "only writable engine"):
+            adapter.reopen()
+        self.assertFalse((self.root / "ingress" / "open").exists(), "reopen opened ingress with MySQL writable")
+        self.assertEqual([], self.commands()[before:], "reopen resumed queues or started workers")
+        self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
+        self.assertFalse((self.root / "run" / "verified-activation.json").exists())
+
+    def test_reopen_closes_ingress_again_when_the_live_check_fails_after_opening(self):
+        config = self.config()
+        probe = self.mysql_probe_from_file(config)
+        # MySQL turns writable while the workers start, after the pre-check.
+        config["commands"]["start_workers"] = [self.record("start"), [
+            sys.executable, "-c", "import sys; open(sys.argv[1], 'w').write(sys.argv[2])", str(probe),
+            '{"writable": true, "business_activity": false}']]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        runner.perform("abort")
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, "could not be verified after reopening"):
+            adapter.reopen()
+        self.assertFalse((self.root / "ingress" / "open").exists(), "a failed reopen left ingress open")
+        self.assertEqual([["resume", queue] for queue in QUEUES] + [["start"]]
+                         + [["pause", queue] for queue in QUEUES] + [["stop"]], self.commands()[before:])
+        self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
+        self.assertFalse((self.root / "run" / "verified-activation.json").exists())
+
     def test_reboot_during_hold_reasserts_the_closed_route_under_the_new_boot(self):
         journal, adapter, runner = self.started()
         runner.perform("hold", runner.approval_request("hold"))
