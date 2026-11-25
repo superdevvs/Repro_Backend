@@ -28,6 +28,7 @@ trait WriterFixture
         $this->admin->exec('DELETE FROM repro_mysql_control.writer_token');
         $this->admin->exec("INSERT INTO repro_mysql_control.writer_token VALUES (1, 'repro_mysql_test', 1)");
         $this->admin->exec('DROP TABLE IF EXISTS _writer_policy_probe');
+        $this->admin->exec('DROP TABLE IF EXISTS _writer_policy_ddl');
         $this->admin->exec('CREATE TABLE _writer_policy_probe (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             counter INT UNSIGNED NOT NULL DEFAULT 0, note VARCHAR(64) NULL UNIQUE) ENGINE=InnoDB');
         $this->admin->exec('INSERT INTO _writer_policy_probe (id, counter) VALUES (1, 0), (2, 0)');

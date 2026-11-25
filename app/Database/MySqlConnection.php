@@ -32,6 +32,9 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
     /** The session was lost inside a transaction; Laravel's depth is kept until rollback. */
     private bool $pdoLost = false;
 
+    /** DDL committed a test's RefreshDatabase wrapper; the test continues in autocommit, as before. */
+    private bool $testWrapperCommitted = false;
+
     /** @var list<string>|null Tables writable while queue bookkeeping skips the token. */
     private ?array $exemptTables = null;
 
@@ -205,6 +208,9 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         } catch (Throwable $error) {
             $this->discardSession();
             throw $error;
+        }
+        if ($this->transactions === 0) {
+            $this->testWrapperCommitted = false;
         }
     }
 
@@ -382,14 +388,17 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
             && $this->transactionsManager instanceof \Illuminate\Foundation\Testing\DatabaseTransactionsManager;
     }
 
-    /** Let MySQL commit the test wrapper as before, then wrap the rest of the test again with the token. */
+    /**
+     * Let MySQL commit the test wrapper, exactly as before the policy. The test
+     * then continues in autocommit and RefreshDatabase rebuilds the schema for
+     * the next test when it finds the wrapper gone.
+     */
     private function runDdlInsideTestWrapper(string $query, array $bindings, Closure $callback): mixed
     {
         $result = parent::runQueryCallback($query, $bindings, $callback);
-        $pdo = $this->getPdo();
-        if (! $pdo->inTransaction()) {
+        if (! $this->getPdo()->inTransaction()) {
             $this->tokenReleased();
-            $this->acquireWriterToken();
+            $this->testWrapperCommitted = true;
         }
 
         return $result;
@@ -411,7 +420,8 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         if ($this->poisoned) {
             throw new RuntimeException(self::POISONED);
         }
-        if ($this->transactions > 0 && ! $this->pdoLost && $this->pdo instanceof PDO && ! $this->pdo->inTransaction()) {
+        if ($this->transactions > 0 && ! $this->pdoLost && ! $this->testWrapperCommitted
+            && $this->pdo instanceof PDO && ! $this->pdo->inTransaction()) {
             // A raw COMMIT/ROLLBACK or a server-side rollback ended the transaction.
             // Statements must not continue in autocommit at Laravel's old depth.
             $this->poisoned = true;
@@ -479,6 +489,7 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         $this->abandonTransactionRecords();
         $this->closePdo();
         $this->transactions = 0;
+        $this->testWrapperCommitted = false;
         $this->poisoned = false;
         $this->pdoLost = false;
         $this->tokenAcquiredAt = null;

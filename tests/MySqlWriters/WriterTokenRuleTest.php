@@ -183,7 +183,7 @@ final class WriterTokenRuleTest extends TestCase
         });
     }
 
-    public function test_ddl_inside_only_the_test_wrapper_commits_it_as_before_and_rewraps_the_rest(): void
+    public function test_ddl_inside_only_the_test_wrapper_commits_it_exactly_as_before(): void
     {
         // RefreshDatabase's wrapper: the only open transaction, under the testing manager.
         $this->db()->setTransactionManager(new \Illuminate\Foundation\Testing\DatabaseTransactionsManager(['mysql']));
@@ -193,16 +193,24 @@ final class WriterTokenRuleTest extends TestCase
         $this->db()->statement('CREATE TABLE _writer_policy_ddl (id INT)');
 
         // MySQL committed the wrapper implicitly, exactly as without the policy.
+        // RefreshDatabase sees that at teardown and rebuilds the schema.
         $this->assertSame(1, $this->counter(1));
-        // The rest of the test is wrapped again and still holds the token.
         $this->assertSame(1, $this->db()->transactionLevel());
-        $this->assertTrue($this->db()->getPdo()->inTransaction());
-        $this->assertTrue($this->tokenIsHeld());
-        $this->db()->table('_writer_policy_probe')->where('id', 2)->update(['counter' => 2]);
-        $this->db()->rollBack();
-        $this->assertSame([1, 0], [$this->counter(1), $this->counter(2)]);
+        $this->assertFalse($this->db()->getPdo()->inTransaction());
         $this->assertFalse($this->tokenIsHeld());
+        $this->db()->table('_writer_policy_probe')->where('id', 2)->update(['counter' => 2]);
+        $this->assertSame(2, $this->counter(2));
+        $this->db()->rollBack();
+        $this->assertSame(0, $this->db()->transactionLevel());
+        $this->assertSame([1, 2], [$this->counter(1), $this->counter(2)]);
         $this->admin->exec('DROP TABLE _writer_policy_ddl');
+
+        // Afterwards the connection is an ordinary token connection again.
+        $this->db()->transaction(function ($db) {
+            $this->assertTrue($this->tokenIsHeld());
+            $db->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 5]);
+        });
+        $this->assertSame(5, $this->counter(1));
 
         // A transaction the test or the application opened inside the wrapper still refuses DDL.
         $this->db()->beginTransaction();
