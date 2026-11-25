@@ -177,7 +177,8 @@ Tests run in this lane. Results are filled in below.
 | Same, Linux container as uid 1000, network none | 52 tests OK, none skipped |
 | `python -B -m unittest discover -s scripts/cutover -p 'test_*.py'` (Windows) | 41 tests OK, 4 skipped |
 | `phpunit -c phpunit.mysql.xml tests/MySql/ConnectionIdentityTest.php tests/MySql/DatabaseBackupTest.php` on MySQL 8.4.13, network none | Identity test passed. Two backup tests fail at the "configuration" stage; the same two fail on `a6e799bb` with the same output (the local image has no `mysqldump`). No PHP file differs from the base. |
-| Full SQLite suite `vendor/bin/phpunit` | See the lane report. |
+| Full SQLite suite, given command `php vendor/bin/phpunit --no-progress` | Aborts on PHP's default 512 MB limit inside `intervention/image` on both this head and `a6e799bb`. CI runs PHPUnit with `memory_limit=2G` per shard. |
+| Full SQLite suite, `php -d memory_limit=1800M vendor/bin/phpunit --no-progress` on `5d701a74`, tree copied into container tmpfs, network none | 9,589 tests, 320,643 assertions, 3 skipped, 2 errors, 2 failures. The four are `ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest` (worker share), `WorkspacePhotoLogoPermissionsTest` and `IguideLabImportTest` (concurrent retry). The same four fail on `a6e799bb` in the same setup: child processes switch user and cannot read the read-only shared files. |
 
 Mutation checks on the runner: dropping `--sync-binlog=1`, the import timeout,
 the MySQL stop before finance, the deploy lock check, the evidence check or the
