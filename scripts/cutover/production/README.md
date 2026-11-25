@@ -57,7 +57,11 @@ boot IDs, ingress open marker, deploy marker, scheduler hold, seal record),
 `commands` (identity probe, MySQL probe, queue pause and resume prefixes, stop
 and start worker commands, FPM drain), process patterns (`writer_processes`,
 `long_job_processes`, `scheduler_processes`), `command_seconds` and the owner
-`options`. `test_adapter.py` builds a complete example. The identity probe
+`options`. `test_adapter.py` builds a complete example. The CLI refuses a
+config whose guard paths differ from the installed guard's, or whose
+`ingress_open` and `deploy_marker` are not `/run/repro-cutover-ingress/open`
+(read by the nginx include) and `/etc/repro-database-cutover/active` (read by
+Deploy-App); another file would close nothing and the hold would fail open. The identity probe
 must observe the deployed release, artifact, source and configuration digests
 independently of the pinned policy. The MySQL probe must report
 `writable` and `business_activity` for the target.

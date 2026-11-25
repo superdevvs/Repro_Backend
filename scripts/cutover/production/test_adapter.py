@@ -235,11 +235,33 @@ class ProductionAdapterTests(unittest.TestCase):
             _require_root_installation=lambda: None,
         )
 
+    def marker_paths(self):
+        # The nginx hold and Deploy-App read fixed marker paths; point them at this fixture.
+        paths = self.config()["paths"]
+        return patch.multiple(cli, INGRESS_OPEN=Path(paths["ingress_open"]), DEPLOY_MARKER=Path(paths["deploy_marker"]))
+
     def cli(self, *argv):
         output = io.StringIO()
-        with self.guard_paths(), redirect_stdout(output):
+        with self.guard_paths(), self.marker_paths(), redirect_stdout(output):
             code = cli.main(["--config", str(self.config_path), *argv])
         return code, json.loads(output.getvalue()) if output.getvalue().strip() else None
+
+    def test_cli_refuses_marker_paths_that_nginx_and_deploys_do_not_read(self):
+        journal, _, runner = self.started()
+        approval = self.root / "state" / "hold-approval.json"
+        approval.write_text(json.dumps(runner.approval_request("hold").__dict__), encoding="utf-8")
+        approval.chmod(0o600)
+        # A host config that names another file would close nothing nginx or Deploy-App reads.
+        for constant in ("INGRESS_OPEN", "DEPLOY_MARKER"):
+            with self.subTest(constant=constant):
+                errors = io.StringIO()
+                with self.guard_paths(), self.marker_paths(), patch.object(cli, constant, self.root / "elsewhere"), \
+                        redirect_stdout(io.StringIO()), patch("sys.stderr", errors):
+                    code = cli.main(["--config", str(self.config_path), "hold", "--approval", str(approval)])
+                self.assertEqual("planned", journal.read()["phase"])
+                self.assertEqual(1, code)
+                self.assertIn("marker paths", errors.getvalue())
+        self.assertTrue((self.root / "ingress" / "open").exists())
 
     def test_reboot_in_planned_holds_writers_until_refresh_and_reopen(self):
         journal, adapter, runner = self.started()
@@ -383,6 +405,12 @@ class UnitFileTests(unittest.TestCase):
         media = profiles["media-archives"]
         self.assertEqual(unit["ExecStart"][0].split(), media["argv"])
         self.assertEqual((unit["User"][0], unit["Group"][0], unit["UMask"][0]), (media["user"], media["group"], media["umask"]))
+
+    def test_cli_marker_paths_are_the_ones_nginx_and_deploys_read(self):
+        hold = (self.HERE / "nginx" / "repro-cutover-hold.conf").read_text(encoding="ascii")
+        self.assertIn(f"if (-f {cli.INGRESS_OPEN.as_posix()})", hold)
+        deploy = (self.HERE.parents[1] / "deploy" / "Deploy-App.ps1").read_text(encoding="utf-8")
+        self.assertEqual(2, deploy.count(f"[ -e {cli.DEPLOY_MARKER.as_posix()} ]"))
 
     def test_supervisor_restarts_a_worker_that_exits_normally(self):
         # Every deploy runs queue:restart, and --max-time ends a worker each hour: queue:work then

@@ -31,6 +31,9 @@ CONFIG = Path("/etc/repro-cutover-fence/host.json")
 ACTIONS = ("status", "init", "approval-template", "hold", "freeze", "tick", "abort", "refresh", "reopen")
 # The host config must name exactly the paths the installed guard reads.
 GUARD_PATHS = ("state", "policy", "evidence", "activation", "machine_id", "boot_id")
+# nginx (nginx/repro-cutover-hold.conf) and Deploy-App read these fixed paths.
+INGRESS_OPEN = Path("/run/repro-cutover-ingress/open")
+DEPLOY_MARKER = Path("/etc/repro-database-cutover/active")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
         installed = (guard.STATE, guard.POLICY, guard.EVIDENCE, guard.ACTIVATION, guard.MACHINE_ID, guard.BOOT_ID)
         if any(Path(config["paths"][name]) != path for name, path in zip(GUARD_PATHS, installed)):
             raise UnsafeCutover("Host config paths differ from the installed guard paths")
+        # Another file would close nothing that nginx or Deploy-App reads: the hold would fail open.
+        if (Path(config["paths"]["ingress_open"]) != INGRESS_OPEN
+                or Path(config["paths"]["deploy_marker"]) != DEPLOY_MARKER):
+            raise UnsafeCutover("Host config marker paths differ from the nginx hold and the deploy check")
         journal = Journal(Path(config["paths"]["state"]))
         adapter = host.ProductionAdapter(config, journal)
         runner = host.runner_for(config, journal, adapter)
