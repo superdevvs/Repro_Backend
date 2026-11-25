@@ -187,6 +187,34 @@ class TelnyxSpoolReplayTest extends TestCase
         $this->assertCount(4, $this->spool()->entries(TelnyxMaintenanceSpool::REPLAYED));
     }
 
+    public function test_a_message_stored_live_while_its_replay_was_under_way_is_not_stored_twice(): void
+    {
+        // Runs between the handler's first duplicate check and its write.
+        $controller = new class extends TelnyxWebhookController
+        {
+            private bool $raced = false;
+
+            protected function findContactByPhone(string $phone): ?Contact
+            {
+                if (! $this->raced) {
+                    $this->raced = true;
+                    // Telnyx's own retry of the same text is stored live now.
+                    Message::create(['channel' => 'SMS', 'direction' => 'INBOUND', 'provider' => 'TELNYX',
+                        'provider_message_id' => 'msg_raced', 'from_address' => '+12025550177',
+                        'to_address' => '+18883426998', 'body_text' => 'same text', 'status' => 'DELIVERED']);
+                }
+
+                return parent::findContactByPhone($phone);
+            }
+        };
+        $payload = json_decode($this->inbound('evt_raced_replay', 'msg_raced', 'same text'), true);
+
+        $response = $controller->replayVerified('messaging', null, $payload, $this->t0);
+
+        $this->assertSame('duplicate', $response->getData(true)['status']);
+        $this->assertSame(1, Message::where('provider_message_id', 'msg_raced')->count());
+    }
+
     public function test_status_events_for_the_same_message_are_all_applied_in_order(): void
     {
         $message = $this->outbound('msg_status_flow');

@@ -133,7 +133,14 @@ class TelnyxWebhookController extends Controller
 
         $knownThread = app(\App\Services\Messaging\SmsInboxPolicy::class)->threadForPair($from, $to);
         $knownContact = $knownThread?->contact ?? $this->findContactByPhone($this->normalizePhoneNumber($from));
-        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, $at, $receivedAt): int {
+        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, $at, $receivedAt): ?int {
+            // Checked again inside the write: a live delivery and a replay of
+            // the same text can both pass the check above. On SQLite a copy
+            // committed meanwhile makes this write fail as locked, and the
+            // LockedWrite retry then finds it here.
+            if (Message::where('provider_message_id', $messageId)->exists()) {
+                return null;
+            }
             $contactPhone = $this->normalizePhoneNumber($from);
             $thread = $knownThread?->fresh();
             $contact = $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
@@ -190,6 +197,14 @@ class TelnyxWebhookController extends Controller
             }
             return $message->id;
         }), 'sms.inbound.persist');
+
+        if ($createdMessageId === null) {
+            if ($existing = Message::where('provider_message_id', $messageId)->first()) {
+                app(\App\Services\Messaging\GroundwireSmsPushService::class)->queueIncoming($existing->id);
+            }
+
+            return response()->json(['status' => 'duplicate']);
+        }
 
         if ($createdMessageId !== null) {
             $message = Message::with('thread.contact', 'thread.assignedTo')->findOrFail($createdMessageId);
