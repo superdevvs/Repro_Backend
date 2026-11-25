@@ -1,0 +1,14 @@
+[Unit]
+Description=RePro cutover watchdog tick (re-close admissions, roll back to SQLite at the deadline)
+Documentation=file:///opt/repro-cutover-fence/production/README.md
+# Only while a cutover journal exists on this host.
+ConditionPathExists=/var/lib/repro-cutover-fence/state.json
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# Root: the journal, guard records and service controls are root-only.
+ExecStart=/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py tick
+# A tick waits up to 50 seconds for another controller; stay inside the 1-minute period.
+TimeoutStartSec=55
+UMask=0077

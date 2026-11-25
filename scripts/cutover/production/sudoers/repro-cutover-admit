@@ -1,0 +1,13 @@
+# /etc/sudoers.d/repro-cutover-admit (mode 0440, check with visudo -cf).
+# The deploy user's Supervisor and crontab start writers only through the
+# root admission wrapper, each with one fixed profile. Nothing else runs as root.
+Cmnd_Alias REPRO_ADMIT = \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py studio, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py voice-realtime, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py voice-notifications, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py voice-transcripts, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py scheduler, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py auth-prune, \
+    /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py cubicasa-poll
+Defaults!REPRO_ADMIT env_reset, !requiretty
+maverick ALL=(root) NOPASSWD: REPRO_ADMIT

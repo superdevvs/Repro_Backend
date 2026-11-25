@@ -308,6 +308,14 @@ class Journal:
         lease.writers = stream
         return time.monotonic() - started
 
+    @staticmethod
+    def release_writers(lease: "Lease") -> None:
+        """Admit writers again while the controller lock stays held, for example when reopening."""
+        if lease.writers is not None:
+            _unlock(lease.writers)
+            lease.writers.close()
+            lease.writers = None
+
 
 @dataclass
 class Lease:

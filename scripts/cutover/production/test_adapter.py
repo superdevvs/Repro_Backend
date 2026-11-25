@@ -1,0 +1,306 @@
+"""Linux tests for the production host adapter and CLI with fake host commands and real processes."""
+
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import uuid
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
+import adapter as production
+import cli
+import deploy_marker
+import sqlite_seal
+from fence import guard
+from runner import Identity, Journal, Runner, UnsafeCutover
+
+IDENTITY = Identity("host-fixture", "a" * 40, "b" * 64, "c" * 64, "d" * 64, "ec219d68-61fd-4a9e-ba98-43ddb4008383")
+QUEUES = ["database:mail", "database:default", "studio:studio"]
+
+
+@unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires Linux root, /proc and flock")
+class ProductionAdapterTests(unittest.TestCase):
+    def setUp(self):
+        # Protected-file checks reject world-writable parents such as /tmp.
+        temporary = tempfile.TemporaryDirectory(prefix="repro-cutover-host-", dir="/var/lib")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.root.chmod(0o755)
+        self.tag = uuid.uuid4().hex[:12]
+        for folder in ("state", "run", "ingress", "etc", "home", "database", "log"):
+            (self.root / folder).mkdir(mode=0o755)
+        (self.root / "state").chmod(0o700)
+        (self.root / "run").chmod(0o700)
+        os.chown(self.root / "database", 33, 33)
+        os.chown(self.root / "home", 33, 33)
+        self.database = self.root / "database" / "database.sqlite"
+        subprocess.run(["/usr/bin/setpriv", "--reuid=33", "--regid=33", "--clear-groups", sys.executable, "-c",
+                        "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL');"
+                        "c.execute('CREATE TABLE t (v)'); c.commit()", str(self.database)], check=True)
+        (self.root / "machine-id").write_bytes(b"host fixture machine\n")
+        self.boot = self.root / "boot-id"
+        self.boot.write_text("2fb9e4be-f041-45a0-9055-8d3ed47f9857\n", encoding="ascii")
+        self.log = self.root / "log" / "commands.jsonl"
+        self.config_path = self.root / "etc" / "host.json"
+        self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
+        policy = {
+            "version": 1, "machine_id_sha256": guard.sha256((self.root / "machine-id").read_bytes()),
+            "identity": {**IDENTITY.__dict__}, "sqlite_live_config_sha256": "1" * 64, "mysql_live_config_sha256": "2" * 64,
+        }
+        (self.root / "etc" / "policy.json").write_text(json.dumps(policy, sort_keys=True), encoding="utf-8")
+        (self.root / "ingress" / "open").write_text("{}", encoding="ascii")
+        self.workers = []
+
+    def record(self, name):
+        return [sys.executable, "-c",
+                "import json, sys; open(sys.argv[1], 'a').write(json.dumps(sys.argv[2:]) + '\\n')", str(self.log), name]
+
+    def config(self, **overrides):
+        root = self.root
+        return {
+            "version": 1,
+            "paths": {
+                "state": str(root / "state"), "policy": str(root / "etc" / "policy.json"),
+                "evidence": str(root / "run" / "verified-engine.json"),
+                "activation": str(root / "run" / "verified-activation.json"),
+                "machine_id": str(root / "machine-id"), "boot_id": str(self.boot),
+                "ingress_open": str(root / "ingress" / "open"), "deploy_marker": str(root / "etc" / "active"),
+                "scheduler_hold": str(root / "run" / "scheduler-hold.json"),
+                "sqlite_seal_record": str(root / "state" / "sqlite-seal.json"),
+            },
+            "sqlite": str(self.database),
+            "deploy_locks": [str(root / "home" / ".repro-backend-deploy.lock"),
+                             str(root / "home" / ".repro-frontend-deploy.lock")],
+            "deploy_owner": "www-data",
+            "queues": QUEUES,
+            "commands": {
+                "identity": [sys.executable, "-c", f"print({json.dumps(json.dumps(IDENTITY.__dict__))})"],
+                "mysql": [sys.executable, "-c", "print('{\"writable\": false, \"business_activity\": false}')"],
+                "queue_pause": self.record("pause"), "queue_resume": self.record("resume"),
+                # '[f]ake' never matches this shell's own command line.
+                "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
+                                 self.record("stop")],
+                "start_workers": [self.record("start")],
+                "drain_fpm": [self.record("drain-fpm")],
+            },
+            "writer_processes": [f"fake-queue-worker-{self.tag}", f"fake-studio-worker-{self.tag}"],
+            "long_job_processes": [f"fake-studio-worker-{self.tag}"],
+            "scheduler_processes": [f"fake-schedule-run-{self.tag}"],
+            "command_seconds": 20,
+            "options": {"max_drain_seconds": 5, "separate_freeze_approval": False, "adopt_external_hold": False,
+                        "require_long_job_predrain": True},
+            **overrides,
+        }
+
+    def spawn(self, name, seconds=30):
+        process = subprocess.Popen([f"{name}-{self.tag}", str(seconds)], executable="/bin/sleep")
+        self.workers.append(process)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        time.sleep(0.1)
+        return process
+
+    def commands(self):
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def host(self):
+        loaded = production.load_config(self.config_path.read_bytes())
+        journal = Journal(Path(loaded["paths"]["state"]))
+        adapter = production.ProductionAdapter(loaded, journal)
+        return journal, adapter, production.runner_for(loaded, journal, adapter)
+
+    def started(self):
+        journal, adapter, runner = self.host()
+        runner.initialize()
+        return journal, adapter, runner
+
+    def test_hold_closes_ingress_publishes_the_deploy_fence_and_pauses_every_queue(self):
+        journal, adapter, runner = self.started()
+        worker = self.spawn("fake-queue-worker")
+        state = runner.perform("hold", runner.approval_request("hold"))
+        self.assertEqual("holding", state["phase"])
+        self.assertFalse((self.root / "ingress" / "open").exists())
+        self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
+        self.assertEqual([["pause", queue] for queue in QUEUES], self.commands())
+        observed = adapter.observe()
+        self.assertTrue(observed.held())
+        self.assertFalse(observed.workers_stopped)
+        self.assertIsNone(worker.poll(), "The hold must not stop workers; the drain does")
+        with self.assertRaisesRegex(guard.Refused, "holds all admissions"):
+            guard.authority(json.loads((self.root / "etc" / "policy.json").read_text()), state, "scheduler")
+
+    def test_long_job_worker_still_running_refuses_the_hold(self):
+        journal, adapter, runner = self.started()
+        self.spawn("fake-studio-worker")
+        original = journal.path.read_bytes()
+        with self.assertRaisesRegex(UnsafeCutover, "Long-job queues"):
+            runner.perform("hold", runner.approval_request("hold"))
+        self.assertEqual(original, journal.path.read_bytes())
+        self.assertTrue((self.root / "ingress" / "open").exists())
+
+    def test_freeze_stops_workers_waits_for_the_scheduler_and_seals_sqlite(self):
+        journal, adapter, runner = self.started()
+        worker = self.spawn("fake-queue-worker")
+        scheduler = self.spawn("fake-schedule-run", seconds=1.5)
+        runner.perform("hold", runner.approval_request("hold"))
+        state = runner.perform("freeze")
+        self.assertEqual("frozen", state["phase"])
+        self.assertIsNotNone(worker.poll())
+        self.assertIsNotNone(scheduler.poll(), "The scheduler drain returned while a scheduled command ran")
+        self.assertEqual(0, state["scheduler_drain"]["unresolved_permits"])
+        self.assertFalse(sqlite_seal.writable(self.database))
+        self.assertTrue(adapter.observe().frozen())
+        self.assertIn(["drain-fpm"], self.commands())
+
+    def test_writer_that_never_stops_keeps_the_hold_and_the_watchdog_rolls_back(self):
+        config = self.config()
+        config["commands"]["stop_workers"] = [self.record("stop")]  # The stop does not reach this worker.
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        worker = self.spawn("fake-queue-worker")
+        held = runner.perform("hold", runner.approval_request("hold"))
+        with self.assertRaisesRegex(UnsafeCutover, "still running"):
+            runner.perform("freeze")
+        self.assertEqual(("holding", "freeze"), (journal.read()["phase"], journal.read()["pending"]["action"]))
+        self.assertTrue(sqlite_seal.writable(self.database))
+        worker.kill()
+        worker.wait()
+        late = Runner(journal, IDENTITY, adapter, lambda: held["started_at"] + Runner.DECISION_SECONDS)
+        self.assertEqual("sqlite_authoritative", late.perform("tick")["phase"])
+
+    def test_abort_publishes_sqlite_authority_and_reopen_restores_admissions_in_order(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        state = runner.perform("abort")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertTrue(sqlite_seal.writable(self.database))
+        self.assertFalse((self.root / "ingress" / "open").exists())
+        policy = (self.root / "etc" / "policy.json").read_bytes()
+        evidence = (self.root / "run" / "verified-engine.json").read_bytes()
+        host = {"machine_sha": guard.sha256((self.root / "machine-id").read_bytes()),
+                "boot_id": self.boot.read_text().strip()}
+        guard.verify(policy, journal.path.read_bytes(), evidence, **host, action="queue-worker", expected_engine="sqlite")
+        with self.assertRaisesRegex(guard.Refused, "not authoritative"):
+            guard.verify(policy, journal.path.read_bytes(), evidence, **host, action="queue-worker",
+                         expected_engine="mysql")
+
+        before = len(self.commands())
+        adapter.reopen()
+        self.assertTrue((self.root / "ingress" / "open").exists())
+        self.assertEqual([["resume", queue] for queue in QUEUES] + [["start"]], self.commands()[before:])
+        self.assertFalse((self.root / "etc" / "active").exists())
+        activation = (self.root / "run" / "verified-activation.json").read_bytes()
+        guard.verify(policy, journal.path.read_bytes(), evidence, **host, action="deploy", expected_engine="sqlite",
+                     activation_raw=activation)
+        self.assertTrue(adapter.observe().sqlite_live())
+
+    def test_reboot_during_hold_reasserts_the_closed_route_under_the_new_boot(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        # The deploy marker lives in /etc and survives; /run starts empty after a reboot.
+        (self.root / "etc" / "active").unlink()
+        self.boot.write_text("6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11\n", encoding="ascii")
+        before = len(self.commands())
+        journal, adapter, runner = self.host()
+        state = runner.perform("tick")
+        self.assertEqual("6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11", state["hold"]["boot_id"])
+        self.assertEqual("reassert_hold", state["history"][-1]["action"])
+        self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
+        self.assertEqual([["pause", queue] for queue in QUEUES], self.commands()[before:])
+
+    def test_target_steps_are_refused_by_this_adapter(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        with self.assertRaisesRegex(UnsafeCutover, "SQLite hold, freeze and rollback only"):
+            runner.perform("prepare")
+        self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
+
+    def test_cli_runs_status_hold_freeze_tick_and_abort_from_the_root_config(self):
+        def call(*argv):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = cli.main(["--config", str(self.config_path), *argv])
+            return code, json.loads(output.getvalue()) if output.getvalue().strip() else None
+
+        self.assertEqual("planned", call("init")[1]["state"]["phase"])
+        code, template = call("approval-template", "--phase", "hold")
+        approval = self.root / "state" / "hold-approval.json"
+        approval.write_text(json.dumps(template), encoding="utf-8")
+        approval.chmod(0o600)
+        self.assertEqual("holding", call("hold", "--approval", str(approval))[1]["state"]["phase"])
+        self.assertEqual("frozen", call("freeze")[1]["state"]["phase"])
+        self.assertEqual("frozen", call("tick")[1]["state"]["phase"])
+        self.assertEqual("sqlite_authoritative", call("abort")[1]["state"]["phase"])
+        self.assertEqual(1, call("hold", "--approval", str(approval))[0])
+
+    def test_cli_requires_a_protected_approval_file(self):
+        journal, adapter, runner = self.started()
+        approval = self.root / "state" / "hold-approval.json"
+        approval.write_text(json.dumps(runner.approval_request("hold").__dict__), encoding="utf-8")
+        approval.chmod(0o666)
+        self.assertEqual(1, cli.main(["--config", str(self.config_path), "hold", "--approval", str(approval)]))
+        self.assertEqual("planned", journal.read()["phase"])
+
+
+class UnitFileTests(unittest.TestCase):
+    HERE = Path(__file__).resolve().parent
+
+    @staticmethod
+    def entries(path):
+        values = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith(("#", ";", "[")) and "=" in line:
+                key, value = line.split("=", 1)
+                values.setdefault(key.strip(), []).append(value.strip())
+        return values
+
+    def test_watchdog_timer_ticks_every_minute_from_boot_as_root(self):
+        service = self.entries(self.HERE / "systemd" / "repro-cutover-watchdog.service")
+        timer = self.entries(self.HERE / "systemd" / "repro-cutover-watchdog.timer")
+        self.assertEqual(["oneshot"], service["Type"])
+        self.assertEqual(["/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py tick"], service["ExecStart"])
+        self.assertNotIn("User", service)
+        self.assertEqual(["/var/lib/repro-cutover-fence/state.json"], service["ConditionPathExists"])
+        self.assertLess(int(service["TimeoutStartSec"][0]), 60)
+        self.assertEqual(["1min"], timer["OnUnitActiveSec"])
+        self.assertEqual(["30s"], timer["OnBootSec"])
+        self.assertEqual(["timers.target"], timer["WantedBy"])
+
+    def test_media_archive_drop_in_starts_the_worker_through_the_wrapper(self):
+        drop_in = self.entries(self.HERE / "systemd" / "repro-media-archives.service.d" / "cutover-fence.conf")
+        self.assertEqual(["", "+/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py media-archives"],
+                         drop_in["ExecStart"])
+        self.assertEqual(["75"], drop_in["RestartPreventExitStatus"])
+        profiles = json.loads((self.HERE / "wrappers.example.json").read_text(encoding="utf-8"))["profiles"]
+        unit = self.entries(self.HERE.parents[1] / "deploy" / "repro-media-archives.service")
+        media = profiles["media-archives"]
+        self.assertEqual(unit["ExecStart"][0].split(), media["argv"])
+        self.assertEqual((unit["User"][0], unit["Group"][0], unit["UMask"][0]), (media["user"], media["group"], media["umask"]))
+
+    def test_every_example_profile_is_valid_and_every_cron_rule_has_a_profile(self):
+        import admit
+
+        raw = (self.HERE / "wrappers.example.json").read_bytes()
+        names = json.loads(raw)["profiles"]
+        with patch.object(admit.pwd, "getpwnam", return_value=type("Account", (), {"pw_uid": 1000})()), \
+                patch.object(admit.grp, "getgrnam", return_value=type("Group", (), {"gr_gid": 33})()):
+            for name in names:
+                admit.load_profile(name, raw)
+        rules = json.loads((self.HERE / "cron-rules.example.json").read_text(encoding="utf-8"))["rules"]
+        self.assertTrue({rule["profile"] for rule in rules if "profile" in rule} <= set(names))
+        supervisor = (self.HERE / "supervisor" / "laravel-worker.conf.example").read_text(encoding="utf-8")
+        self.assertIn("admit.py laravel-worker", supervisor)
+
+
+if __name__ == "__main__":
+    unittest.main()

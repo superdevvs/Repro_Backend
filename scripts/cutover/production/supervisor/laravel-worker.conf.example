@@ -1,0 +1,27 @@
+; Template for /etc/supervisor/conf.d/laravel-worker.conf. Compare it with
+; the live file before use: copy its numprocs, timeouts and log settings.
+; Supervisor has no ExecCondition, so the program runs the root admission
+; wrapper, which drops to the profile's user (www-data) itself.
+[program:laravel-worker]
+command=/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py laravel-worker
+process_name=%(program_name)s_%(process_num)02d
+numprocs=3
+user=root
+autostart=true
+; A held admission exits 75. Do not restart it in a loop; the cutover reopen
+; starts the group again once the journal names the engine.
+autorestart=unexpected
+exitcodes=0,75
+startsecs=5
+stopsignal=TERM
+; Wrapper and worker share a process group, so a group stop reaches both.
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=3600
+redirect_stderr=true
+
+; The deploy user's Supervisor (repro-studio supervisord.conf) is not root.
+; Its programs call the same wrapper through sudo, limited by
+; sudoers/repro-cutover-admit:
+;   command=/usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py studio
+; with the same autorestart, exitcodes and stopasgroup settings.

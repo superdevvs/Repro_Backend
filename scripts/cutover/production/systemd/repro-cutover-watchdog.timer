@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the RePro cutover watchdog every minute from boot
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
