@@ -202,6 +202,57 @@ class SqliteSealTests(unittest.TestCase):
         self.assertTrue({str(path) for path in self.files()} <= synced, f"Restored modes not synced: {events}")
         self.assertIn(("fsync", str(self.record.parent)), events[removed:])
 
+    def test_seal_refuses_while_an_idle_connection_keeps_the_database_open(self):
+        # A tinker or sqlite3 session opened before the freeze holds no lock while idle, so the
+        # checkpoint and BEGIN IMMEDIATE succeed. Its descriptors stay writable after the chmod.
+        holder = subprocess.Popen(
+            ["/usr/bin/setpriv", "--reuid=33", "--regid=33", "--clear-groups", sys.executable, "-c",
+             "import sqlite3, sys\nc = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+             "c.execute('SELECT count(*) FROM effects').fetchone()\nprint('idle', flush=True)\n"
+             "sys.stdin.readline()\n"
+             "try:\n    c.execute(\"INSERT INTO effects VALUES ('after-seal')\")\n    print('wrote')\n"
+             "except sqlite3.Error as error:\n    print('refused', error)\n", str(self.database)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        self.assertEqual("idle\n", holder.stdout.readline())
+        try:
+            sqlite_seal.seal(self.database, self.record)
+        except UnsafeCutover as refused:
+            self.assertIn("still has a writer", str(refused))
+        else:
+            written, _ = holder.communicate("go\n", timeout=5)
+            self.fail(f"The seal succeeded while an idle connection kept the database open; "
+                      f"its write after the seal: {written.strip()}")
+        holder.communicate("go\n", timeout=5)
+        sqlite_seal.unseal(self.database, self.record)
+        self.assertTrue(sqlite_seal.writable(self.database))
+
+    def fake_proc(self, handles):
+        """A /proc tree with one open descriptor per process: {pid: (target, open flags)}."""
+        proc = Path(tempfile.mkdtemp(prefix="proc-", dir=self.record.parent))
+        for pid, (target, flags) in handles.items():
+            (proc / str(pid) / "fd").mkdir(parents=True)
+            (proc / str(pid) / "fdinfo").mkdir()
+            (proc / str(pid) / "fd" / "3").symlink_to(target)
+            (proc / str(pid) / "fdinfo" / "3").write_text(f"pos:\t0\nflags:\t{flags:o}\nmnt_id:\t1\n")
+        return proc
+
+    def test_seal_finds_writable_descriptors_and_ignores_read_only_ones(self):
+        wal = Path(f"{self.database}-wal")
+        proc = self.fake_proc({
+            999991: (self.database, os.O_RDONLY | os.O_CLOEXEC),
+            999992: (self.record.parent, os.O_RDWR),  # Another file.
+            999993: (wal if wal.exists() else self.database, os.O_RDWR | os.O_CLOEXEC),
+        })
+        self.assertEqual([999993], sqlite_seal.open_writers(self.database, proc))
+        with self.assertRaisesRegex(UnsafeCutover, "still has a writer: process 999993"):
+            sqlite_seal.seal(self.database, self.record, proc=proc)
+        # Refused before any change: modes kept, no record.
+        self.assertTrue(sqlite_seal.writable(self.database))
+        self.assertFalse(self.record.exists())
+        self.assertEqual([], sqlite_seal.open_writers(self.database, self.fake_proc({})))
+
     def test_seal_refuses_while_a_writer_holds_the_database(self):
         holder = subprocess.Popen(
             ["/usr/bin/setpriv", "--reuid=33", "--regid=33", "--clear-groups", sys.executable, "-c",

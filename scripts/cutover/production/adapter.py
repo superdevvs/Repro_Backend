@@ -297,7 +297,7 @@ class ProductionAdapter:
 
     def freeze(self, lease: Lease, deadline: int) -> None:
         lease.require_writers_drained()
-        sqlite_seal.seal(self.database, self.paths["sqlite_seal_record"])
+        sqlite_seal.seal(self.database, self.paths["sqlite_seal_record"], proc=self.proc)
 
     def prepare(self, lease: Lease, deadline: int) -> None:
         raise UnsafeCutover(NOT_SUPPORTED)

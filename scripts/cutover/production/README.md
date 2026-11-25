@@ -46,7 +46,7 @@ start again through the wrapper.
 | Laravel scheduler (cron `schedule:run`) | `admit.py scheduler`; background commands keep the lease |
 | Other application cron lines | `crontab.py` rewrites known lines; unknown ones are refused |
 | Deployments | `/etc/repro-database-cutover/active`, published under both deploy locks from `init` (Deploy-App checks only this file, never the guard) until reopening a completed rollback lifts it |
-| Manual `sqlite3` or tinker as the deploy or web user | SQLite seal: no write bits on the database files during the freeze |
+| Manual `sqlite3` or tinker as the deploy or web user | SQLite seal: no write bits on the database files during the freeze. Write bits stop new opens only, so the seal first refuses while any other process holds the database, `-wal` or `-shm` open for writing (an idle session opened earlier), and checks again after the modes change. It needs root's `/proc` access to every process (`CAP_SYS_PTRACE`); an unreadable process also refuses |
 
 Root bypasses file modes. Root-run tools are fenced by the runbook only.
 
