@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -711,6 +712,50 @@ class NightlyRunnerTests(unittest.TestCase):
         receipt = self.run_night()
         self.assertEqual(receipt["diagnostics"], [])
         self.assertFalse((self.outputs() / "diagnostics-private").exists())
+
+    def handle_signals_like_the_cli(self):
+        names = [name for name in ("SIGTERM", "SIGHUP") if hasattr(signal, name)]
+        previous = {name: signal.getsignal(getattr(signal, name)) for name in names}
+        self.addCleanup(lambda: [signal.signal(getattr(signal, name), handler) for name, handler in previous.items()])
+        nightly.install_signal_handlers()
+
+    def test_a_signal_during_cleanup_still_stops_mysqld_and_writes_the_receipt(self):
+        self.handle_signals_like_the_cli()
+        self.host.fail.add("export-sqlite.py")
+        stop = FakeProcess.terminate
+
+        def terminate_then_signal(process):
+            stop(process)
+            signal.raise_signal(signal.SIGTERM)  # a second SIGTERM while cleanup waits for mysqld
+
+        with patch.object(FakeProcess, "terminate", terminate_then_signal):
+            receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                         ("stopped", "reverse", "reverse-export-refused"))
+        self.assertEqual(json.loads((self.outputs() / "journal.json").read_bytes())["status"], "stopped")
+        self.assertTrue((self.outputs() / "run-receipt.json").exists())
+        self.assertEqual(list(self.outputs().glob("work-*")), [])
+        # The CLI's handler is back in place once the run returns, or once an unexpected error escapes it.
+        self.assertIs(signal.getsignal(signal.SIGTERM), nightly.interrupted)
+        shutil.rmtree(self.outputs())
+        with patch.object(nightly.NightlyRunner, "stage_plan", side_effect=RuntimeError("unexpected")):
+            with self.assertRaisesRegex(RuntimeError, "unexpected"):
+                self.run_night()
+        self.assertIs(signal.getsignal(signal.SIGTERM), nightly.interrupted)
+
+    def test_a_signal_before_the_first_stage_is_a_journaled_stop(self):
+        save = nightly.NightlyRunner.save
+
+        def interrupted_while_marking_running(runner, journal):
+            if journal["status"] == "running" and not journal["stages"]:
+                raise nightly.Stop("interrupted-by-signal-15")
+            save(runner, journal)
+
+        with patch.object(nightly.NightlyRunner, "save", interrupted_while_marking_running):
+            receipt = self.run_night()
+        self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                         ("stopped", None, "interrupted-by-signal-15"))
+        self.assertEqual(self.host.calls, [])
 
     def test_memory_guard_uses_the_buffer_pool_size(self):
         config = copy.deepcopy(self.config)

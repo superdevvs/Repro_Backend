@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
@@ -31,6 +31,7 @@ import signal
 import sqlite3
 import stat
 import subprocess
+import threading
 import time
 from typing import Protocol
 
@@ -548,42 +549,47 @@ class NightlyRunner:
             journal["attempts"].append({"started_utc": self.host.utc_now().isoformat()})
             self.attempt = len(journal["attempts"])
             journal["status"], journal["reason"], journal["stopped_at"] = "running", None, None
-            self.save(journal)
-            try:
-                for name in STAGES:
-                    if journal["stages"].get(name, {}).get("status") == "done":
-                        continue
-                    started = self.host.monotonic()
-                    try:
-                        try:
-                            result, outputs = getattr(self, f"stage_{name}")(journal)
-                        except Refused as error:
-                            # A host check that refuses mid-night stops the night like any other stage failure.
-                            raise Stop(str(error)) from error
-                        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-                            raise Stop(f"unexpected-{type(error).__name__}") from error
-                    except Stop as stop:
-                        journal["stages"][name] = {"status": "failed", "reason": stop.reason, "result": stop.result,
-                                                   "elapsed_ms": milliseconds(self.host.monotonic() - started)}
-                        raise
-                    journal["stages"][name] = {
-                        "status": "done", "result": result,
-                        "elapsed_ms": milliseconds(self.host.monotonic() - started),
-                        "outputs": {output: file_sha256(self.run_dir / output) for output in outputs},
-                    }
+            name = None
+            with ExitStack() as hold:
+                try:
                     self.save(journal)
-                journal["status"] = "reviewer-inputs-ready"
-            except Stop as stop:
-                journal["status"], journal["reason"], journal["stopped_at"] = "stopped", stop.reason, name
-            finally:
-                self.end_mysql(journal, keep_diagnostics=journal["status"] != "reviewer-inputs-ready")
-            journal["attempts"][-1] |= {"finished_utc": self.host.utc_now().isoformat(), "status": journal["status"],
-                                        "reason": journal["reason"]}
-            receipt = self.receipt(journal)
-            write_json(self.run_dir / "run-receipt.json", receipt)
-            self.save(journal)
-            if journal["status"] == "reviewer-inputs-ready":
-                self.prune()
+                    for name in STAGES:
+                        if journal["stages"].get(name, {}).get("status") == "done":
+                            continue
+                        started = self.host.monotonic()
+                        try:
+                            try:
+                                result, outputs = getattr(self, f"stage_{name}")(journal)
+                            except Refused as error:
+                                # A host check that refuses mid-night stops the night like any other stage failure.
+                                raise Stop(str(error)) from error
+                            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                                raise Stop(f"unexpected-{type(error).__name__}") from error
+                        except Stop as stop:
+                            journal["stages"][name] = {"status": "failed", "reason": stop.reason, "result": stop.result,
+                                                       "elapsed_ms": milliseconds(self.host.monotonic() - started)}
+                            raise
+                        journal["stages"][name] = {
+                            "status": "done", "result": result,
+                            "elapsed_ms": milliseconds(self.host.monotonic() - started),
+                            "outputs": {output: file_sha256(self.run_dir / output) for output in outputs},
+                        }
+                        self.save(journal)
+                    journal["status"] = "reviewer-inputs-ready"
+                except Stop as stop:
+                    journal["status"], journal["reason"], journal["stopped_at"] = "stopped", stop.reason, name
+                finally:
+                    # From here the night only finishes. A further SIGTERM or SIGHUP must not cut the
+                    # mysqld stop, the receipt or the journal short; it is noted and the night ends anyway.
+                    hold.enter_context(signals_held())
+                    self.end_mysql(journal, keep_diagnostics=journal["status"] != "reviewer-inputs-ready")
+                journal["attempts"][-1] |= {"finished_utc": self.host.utc_now().isoformat(),
+                                            "status": journal["status"], "reason": journal["reason"]}
+                receipt = self.receipt(journal)
+                write_json(self.run_dir / "run-receipt.json", receipt)
+                self.save(journal)
+                if journal["status"] == "reviewer-inputs-ready":
+                    self.prune()
             return receipt
 
     def open_journal(self) -> dict:
@@ -1414,14 +1420,36 @@ class LocalHost:
 
 # Command line ------------------------------------------------------------------
 
+def interrupted(signum, _frame):
+    raise Stop(f"interrupted-by-signal-{signum}")
+
+
 def install_signal_handlers() -> None:
     """Turn SIGTERM and SIGHUP into a journaled stop, so cleanup stops the disposable MySQL."""
-    def interrupted(signum, _frame):
-        raise Stop(f"interrupted-by-signal-{signum}")
-
     for name in ("SIGTERM", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupted)
+
+
+@contextmanager
+def signals_held():
+    """Note a SIGTERM or SIGHUP instead of raising it while a night finishes.
+
+    The night is already ending: raising out of cleanup would leave mysqld
+    waiting to stop, the journal at `running` and no receipt. Only the runner's
+    own handler is swapped, and it is restored afterwards.
+    """
+    held, swapped = [], {}
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGTERM", "SIGHUP"):
+            signum = getattr(signal, name, None)
+            if signum is not None and signal.getsignal(signum) is interrupted:
+                swapped[signum] = signal.signal(signum, lambda number, _frame: held.append(number))
+    try:
+        yield held
+    finally:
+        for signum, handler in swapped.items():
+            signal.signal(signum, handler)
 
 
 def exit_code(receipt: dict) -> int:
