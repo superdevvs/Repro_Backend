@@ -432,6 +432,13 @@ class EnginePreflightTest(unittest.TestCase):
         (self.app / '.env').write_text('APP_NAME=Fixture\nDB_CONNECTION="mysql" # cutover\n')
         self.assertEqual(guard.database_driver(self.app), 'mysql')
 
+    def test_environment_file_uses_the_last_assignment_like_laravel(self):
+        # phpdotenv keeps the last of duplicate keys, so the app runs on that one.
+        (self.app / '.env').write_text('DB_CONNECTION=mysql\nAPP_NAME=Fixture\nDB_CONNECTION=sqlite\n')
+        self.assertEqual(guard.database_driver(self.app), 'sqlite')
+        (self.app / '.env').write_text('DB_CONNECTION=sqlite\nexport DB_CONNECTION="mysql"\n')
+        self.assertEqual(guard.database_driver(self.app), 'mysql')
+
     @unittest.skipUnless(shutil.which('php'), 'php is required to read a cached Laravel config')
     def test_engine_comes_from_the_cached_config_when_present(self):
         (self.app / '.env').write_text('DB_CONNECTION=sqlite\n')

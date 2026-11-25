@@ -439,6 +439,8 @@ def environment_connection(path):
         return 'sqlite'
     if not stat.S_ISREG(info.st_mode):
         raise RuntimeError(f'Unsafe environment file: {path}')
+    driver = 'sqlite'
+    # Laravel's dotenv loader keeps the last of duplicate keys, so this does too.
     for line in path.read_text(errors='replace').splitlines():
         match = re.match(r'\s*(?:export\s+)?DB_CONNECTION\s*=\s*(.*)$', line)
         if not match:
@@ -446,9 +448,10 @@ def environment_connection(path):
         value = match.group(1).strip()
         if value[:1] in ('"', "'"):
             end = value.find(value[0], 1)
-            return value[1:end] if end > 0 else value[1:]
-        return re.split(r'\s#', value, maxsplit=1)[0].strip()
-    return 'sqlite'
+            driver = value[1:end] if end > 0 else value[1:]
+        else:
+            driver = re.split(r'\s#', value, maxsplit=1)[0].strip()
+    return driver
 
 
 def database_driver(app):
