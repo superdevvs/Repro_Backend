@@ -12,7 +12,7 @@ It needs no migration.
 | Request telemetry is written after the response is sent. Durations still stop when the response was ready. | On | `SYSTEM_OVERVIEW_RECORD_AFTER_RESPONSE=false` |
 | Table and column checks on request paths come from a cache keyed by the release. | **Off** | `SCHEMA_CACHE_ENABLED=false` |
 | `automation_runs` and their steps get an age limit, run by the daily `model:prune` at 03:45. | **Off** until an age is set | leave `AUTOMATION_RUNS_RETENTION_DAYS` empty |
-| Cherry-pick of `2943bc40`: the fal.ai job no longer saves its outgoing request (which can hold the whole image) in `provider_payload`; AI job and automation run lists read fewer columns; scheduled iGUIDE recovery goes through the recovery throttle instead of queuing asset ingest again. | On | revert the commit |
+| Cherry-pick of `2943bc40`: the fal.ai job no longer saves its outgoing request (which can hold the whole image) in `provider_payload`; AI job and automation run lists read fewer columns; scheduled iGUIDE recovery goes through the recovery throttle instead of queuing asset ingest again (it still moves older, unassigned iGUIDE floorplans onto the booked iGUIDE service first, as the ingest job did). | On | revert `b7b79cc6`, then `cb51c0cd` |
 
 What users may notice: "Last active" on the profile security page can lag by up to five
 minutes. Nothing else should look different.
@@ -51,7 +51,8 @@ scheduled message from being sent twice.
 ## Guard and engine-branch list
 
 - `tests/Unit/DatabaseDialectGuardTest.php` fails if `app/` gains SQL that only SQLite
-  understands, or a new engine branch.
+  understands, or a new engine branch. It reads each PHP string the way PHP does, so
+  escaped quotes (`'DATE(\'now\')'`) do not hide SQL.
 - `tests/database-dialect-baseline.json` lists the 38 cases that exist today. It may only
   shrink. After removing one, regenerate it (this only drops entries that are gone; it
   never adds new SQL):
@@ -67,8 +68,47 @@ scheduled message from being sent twice.
 - `scripts/ops/correct-service-55-sqft-boundary.php`, and `--apply` on
   `shoots:classify-travel-fees` and `shoots:reconcile-partial-delivery`, refuse with a clear
   message when the live database is not SQLite. On SQLite they work as before.
+- They ask `App\Support\DatabaseDriver` which engine is live. It reads the config without
+  connecting, and honours `DB_URL` the way Laravel does: a `mysql://` URL counts as MySQL
+  even when `DB_CONNECTION` still says `sqlite`.
 - `media:storage-health` on MySQL checks the MySQL data folder
   (`MEDIA_HEALTH_DATABASE_DIRECTORY`, else the server's `@@datadir`) and fails if it cannot
   find it. On SQLite nothing changes.
 - Not in this branch: `scripts/deploy/deployment-storage.py` still assumes `database.sqlite`
   (it belongs with the deploy-backup work, P0-3a).
+
+## Codex review round (25 Nov)
+
+Codex reviewed `3684aa05`. All three findings still applied at `53e4f029`; each got a failing
+test first.
+
+- Cross-lane rename: `App\Support\DatabaseEngine` is now `App\Support\DatabaseDriver`
+  (`c667fb40`), so this branch no longer clashes with the sqlite-observability branch.
+- sqlite-request-writes#1 (DB_URL): fixed in `ed24e7bf`. `DatabaseDriver` reads the engine through Laravel's URL parser; new tests in `SqliteBackupCommandsEngineTest` and `OpsScriptsDatabaseDriverTest`.
+- sqlite-request-writes#2 (iGUIDE adoption): fixed in `b7b79cc6`. Scheduled syncs move unscoped iGUIDE floorplans onto the iGUIDE line again; `IguideAutomaticSyncTest::test_scheduled_sync_still_assigns_legacy_unscoped_floorplans_to_the_iguide_service`.
+- sqlite-request-writes#3 (escaped quotes): fixed in `b0faac70`. The guard decodes PHP strings; `DatabaseDialectGuardTest::test_scanner_reads_string_literals_the_way_php_does`. The baseline did not change.
+- reviewer#1 (`deployment-storage.py`): documented. It belongs to the sqlite-backups-billing branch, which changes that file. That branch reads only the `driver` key, so a `mysql://` `DB_URL` would look like SQLite there too.
+- reviewer#2 (schema cache off): owner decision. It stays off until `SCHEMA_CACHE_ENABLED=true`.
+- reviewer#3 (two changes on by default): owner decision. They are the point of P0-6; each has an env switch (table above).
+- reviewer#4 (no MySQL run): run locally on MySQL 8.4.13. All lane test files pass there (details below). A MySQL CI shard still needs PR #46.
+- reviewer#5 (not pushed): owner decision. Push and PR wait for approval.
+
+MySQL 8.4.13 run (local, READ COMMITTED, `utf8mb4_0900_bin`): main's migrations do not run
+on MySQL (`shoot_service` points at `shoots` before it exists), so the schema came from the
+PR #46 MySQL baseline dump plus the two recovery-attempt migrations, reloaded before each
+file. These passed: `IguideAutomaticSyncTest`, `SqliteBackupCommandsEngineTest`,
+`OpsScriptsDatabaseDriverTest`, `DatabaseDialectGuardTest`, `AutomationRunPruningTest`,
+`AutomationRunHistoryTest`, `PerRequestSchemaLookupTest`, `TokenLastUsedThrottleTest`,
+`SystemOverviewTelemetryAfterResponseTest`, `ProviderFloorplanRecoveryTest`,
+`ProviderFloorplanRecoveryBackoffTest`. `SchemaFactsTest` passed one test at a time (its
+`Schema::create` commits on MySQL and ends the test transaction). `MediaStorageHealthTest`
+passed with `MEDIA_HEALTH_DATABASE_DIRECTORY` set, because the server ran in another container.
+With `DB_CONNECTION=sqlite` and a `mysql://` `DB_URL`, `DatabaseDriver` said `mysql`, as did
+the live connection.
+
+Left as they were (both also on base):
+
+- Whole-shoot iGUIDE recovery counts only unscoped files. A shoot whose files already sit on
+  the iGUIDE line gets a no-op ingest job, at most 10 times per asset list, with growing
+  gaps. The scheduled sync before this branch queued a full ingest on every run.
+- `media:storage-health` on SQLite reads the file path from `DB_DATABASE`, not from `DB_URL`.
