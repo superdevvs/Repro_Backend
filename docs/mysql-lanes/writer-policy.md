@@ -69,8 +69,10 @@ The plan's one-writer-at-a-time rule now runs in the application, on the main
   the default connection carries the token, every other MySQL connection is
   limited to its own bookkeeping tables (`jobs`; `cache` and `cache_locks`;
   `cache_locks`), a fresh session is READ COMMITTED with 5/5 lock waits, and
-  the token can be taken. It resolves `DB_URL` for the default connection as
-  Laravel does; the unused templates that also read `DB_URL` do not fail it.
+  the token can be taken. It resolves `DB_URL` as Laravel does for the default
+  connection and every other connection that declares MySQL
+  (`mysql_cache_locks` inherits it); the unused templates that also read
+  `DB_URL` do not fail it.
   On SQLite it reports "not applicable" and exits 0.
 
 Design choices that differ from the plan, and every behaviour change, are in
@@ -324,6 +326,25 @@ a socket-only fixture, PHP 8.3.33, `--fail-on-warning --fail-on-risky
   leftover rows; the profile expects a fresh schema, as in CI.
 - `vendor/bin/pint --test` on every PHP file changed in this round: pass.
 
+### Third Codex round (25 Nov)
+
+Codex reviewed `d1ac72f3..8b34c805`. One finding, fixed test first: the new
+test failed on the unfixed code for the reason given, then passed.
+
+- `r3#1` (P2) **fixed** in the commit that adds this entry: `mysql_cache_locks` inherits `DB_URL` from the `mysql` settings, and Laravel's URL query options override a connection's own keys. With `DB_URL=mysql://...?repro_writer_policy=true` the booted application gave that session the token too (raw `false`, resolved `true`), but the check read the raw `false` and passed. It now resolves `DB_URL` for every MySQL connection it validates, after the declared-driver filter from `r2#3`, so the unused templates still do not count (D4 updated). Test: `WriterPolicyCheckCommandTest::test_database_url_options_reach_the_cache_lock_session_as_they_do_in_the_application`, data sets "the writer token" and "a business table" (`repro_writer_exempt_tables[]=cache_locks&repro_writer_exempt_tables[]=users`). RED on SQLite, both data sets: `Failed asserting that two arrays are identical`, expected the one problem, got `[]`, so the check passed.
+
+Runs, local and offline, PHP 8.3.33, `--fail-on-warning --fail-on-risky
+--fail-on-phpunit-deprecation`:
+
+- SQLite: `tests/Unit/Database` and the Feature files `WriterPolicyCheckCommandTest`,
+  `WriterTokenRetryLayersTest`, `LeftoverTransactionCleanupTest`,
+  `ThrottleDatabaseResilienceTest`, `ThrottleConfigurationTest`: OK (154 tests,
+  754 assertions).
+- MySQL 8.4.13 on a socket-only fixture, `phpunit.mysql-writers.xml`:
+  `WriterPolicyCheckTest` OK (6 tests, 57 assertions); `WriterPolicyCheckCommandTest`
+  against the same server OK (12 tests, 36 assertions).
+- `vendor/bin/pint --test` on both changed PHP files: pass.
+
 ## WP-7 business proofs (second stage, 25 Nov)
 
 `tests/MySqlWriters/WriterBusinessRacesTest.php`, workers in
@@ -444,4 +465,5 @@ several times slower over a Windows bind mount.
   load and the dress rehearsals with the policy on (WP-11, WP-12); the
   read-only writer re-inventory on the server (WP-10).
 - **Owner decisions:** D1 to D6 and B1 to B18 in the known-differences
-  register (B2 and D4 extended in the second Codex round).
+  register (B2 and D4 extended in the second Codex round, D4 again in the
+  third).

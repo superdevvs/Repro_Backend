@@ -136,6 +136,33 @@ class WriterPolicyCheckCommandTest extends TestCase
         ]);
     }
 
+    public static function databaseUrlOptionsOnTheCacheLockSession(): array
+    {
+        return [
+            'the writer token' => ['repro_writer_policy=true',
+                'Connection mysql_cache_locks also carries the writer token; exactly one may.'],
+            'a business table' => ['repro_writer_exempt_tables[]=cache_locks&repro_writer_exempt_tables[]=users',
+                'Connection mysql_cache_locks skips the writer token for tables outside its bookkeeping scope: users.'],
+        ];
+    }
+
+    #[DataProvider('databaseUrlOptionsOnTheCacheLockSession')]
+    public function test_database_url_options_reach_the_cache_lock_session_as_they_do_in_the_application(
+        string $query, string $problem): void
+    {
+        // mysql_cache_locks inherits DB_URL from the mysql settings, and Laravel lets the URL's
+        // query options override a connection's own keys. The queue-worker and scheduling-cache
+        // sessions set no URL; the unused templates still do not count.
+        $this->useEnvironment(['DB_CONNECTION' => 'mysql',
+            'DB_URL' => 'mysql://url-user:url-secret@url-host:3307/url_database?'.$query]);
+        $this->provisionedServer();
+
+        [$code, $report] = $this->check();
+
+        $this->assertSame([$problem], $report['problems']);
+        $this->assertSame(1, $code);
+    }
+
     public function test_the_shipped_mysql_connection_layout_passes(): void
     {
         config(['database.default' => 'mysql', 'database.connections.mysql_reporting' => [
