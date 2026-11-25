@@ -225,12 +225,61 @@ class ProductionAdapterTests(unittest.TestCase):
             runner.perform("prepare")
         self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
 
+    def guard_paths(self):
+        # The installed guard's fixed paths, pointed at this fixture's root-owned tree.
+        paths = self.config()["paths"]
+        return patch.multiple(
+            guard, STATE=Path(paths["state"]), POLICY=Path(paths["policy"]), EVIDENCE=Path(paths["evidence"]),
+            ACTIVATION=Path(paths["activation"]), MACHINE_ID=Path(paths["machine_id"]), BOOT_ID=self.boot,
+            _require_root_installation=lambda: None,
+        )
+
+    def cli(self, *argv):
+        output = io.StringIO()
+        with self.guard_paths(), redirect_stdout(output):
+            code = cli.main(["--config", str(self.config_path), *argv])
+        return code, json.loads(output.getvalue()) if output.getvalue().strip() else None
+
+    def test_reboot_in_planned_holds_writers_until_refresh_and_reopen(self):
+        journal, adapter, runner = self.started()
+        # A reboot empties /run: ingress is closed and no authority proof exists for the new boot.
+        (self.root / "ingress" / "open").unlink()
+        self.boot.write_text("6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11\n", encoding="ascii")
+        journal, adapter, runner = self.host()
+        with self.assertRaises((UnsafeCutover, FileNotFoundError)):
+            adapter.reopen()
+        self.assertFalse((self.root / "ingress" / "open").exists())
+
+        code, refreshed = self.cli("refresh")
+        self.assertEqual(0, code)
+        self.assertEqual("planned", refreshed["state"]["phase"])
+        evidence = json.loads((self.root / "run" / "verified-engine.json").read_text())
+        self.assertEqual(("6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11", guard.sha256(journal.path.read_bytes())),
+                         (evidence["boot_id"], evidence["journal_sha256"]))
+        before = len(self.commands())
+        self.assertEqual(0, self.cli("reopen")[0])
+        self.assertTrue((self.root / "ingress" / "open").exists())
+        self.assertEqual([["resume", queue] for queue in QUEUES] + [["start"]], self.commands()[before:])
+        self.assertFalse((self.root / "run" / "verified-activation.json").exists())
+        policy = (self.root / "etc" / "policy.json").read_bytes()
+        host = {"machine_sha": guard.sha256((self.root / "machine-id").read_bytes()),
+                "boot_id": "6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11"}
+        guard.verify(policy, journal.path.read_bytes(), json.dumps(evidence).encode(), **host,
+                     action="scheduler", expected_engine="sqlite")
+        with self.assertRaisesRegex(guard.Refused, "Deploys are held"):
+            guard.verify(policy, journal.path.read_bytes(), json.dumps(evidence).encode(), **host,
+                         action="deploy", expected_engine="sqlite")
+
+    def test_cli_refuses_a_config_that_differs_from_the_installed_guard_paths(self):
+        self.started()
+        self.assertEqual(0, self.cli("status")[0])
+        errors = io.StringIO()
+        with redirect_stdout(io.StringIO()), patch("sys.stderr", errors):
+            self.assertEqual(1, cli.main(["--config", str(self.config_path), "status"]))
+        self.assertIn("installed guard paths", errors.getvalue())
+
     def test_cli_runs_status_hold_freeze_tick_and_abort_from_the_root_config(self):
-        def call(*argv):
-            output = io.StringIO()
-            with redirect_stdout(output):
-                code = cli.main(["--config", str(self.config_path), *argv])
-            return code, json.loads(output.getvalue()) if output.getvalue().strip() else None
+        call = self.cli
 
         self.assertEqual("planned", call("init")[1]["state"]["phase"])
         code, template = call("approval-template", "--phase", "hold")
@@ -248,7 +297,7 @@ class ProductionAdapterTests(unittest.TestCase):
         approval = self.root / "state" / "hold-approval.json"
         approval.write_text(json.dumps(runner.approval_request("hold").__dict__), encoding="utf-8")
         approval.chmod(0o666)
-        self.assertEqual(1, cli.main(["--config", str(self.config_path), "hold", "--approval", str(approval)]))
+        self.assertEqual(1, self.cli("hold", "--approval", str(approval))[0])
         self.assertEqual("planned", journal.read()["phase"])
 
 

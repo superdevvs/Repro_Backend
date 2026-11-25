@@ -76,19 +76,21 @@ cli.py approval-template --phase hold > approval.json   # root-owned, mode 0600
 cli.py hold --approval approval.json                     # outage clock starts here
 cli.py freeze
 cli.py status | tick | abort
-cli.py reopen                                            # after sqlite_authoritative
+cli.py refresh                                           # after a reboot (planned or sqlite_authoritative)
+cli.py reopen                                            # after abort, or after refresh
 ```
 
 This adapter covers the SQLite hold, freeze and pre-write rollback only.
 `prepare` and `promote` refuse, so it cannot open MySQL for writes.
 
-**Gap before installing (W1).** With the nginx include and wrappers
-installed, a reboot clears `/run`, so every writer is held until authority
-evidence for the new boot exists and the open marker is recreated. The CLI
-does not yet expose `refresh` (`guard.refresh_engine_evidence` exists), and
-`reopen` only accepts `sqlite_authoritative`. Add a `refresh` action and a
-`planned` reopen, with tests, before W1. Until then, keep the include and
-wrappers uninstalled.
+**After every reboot.** `/run` is empty, so every writer is held: there is
+no authority proof for the new boot and no open marker. The operator runs
+`cli.py refresh`, which measures the host and publishes current-boot evidence
+for a committed `planned` or `sqlite_authoritative` journal through the
+guard, then `cli.py reopen`. There is no automatic reopen at boot (owner
+decision). In `planned`, reopen leaves deploys held and writes no activation
+receipt. `refresh` copies the SQLite live-configuration pin from the policy;
+an independent configuration probe is still to be added before W1.
 
 ## Tests
 

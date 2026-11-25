@@ -312,8 +312,32 @@ class ProductionAdapter:
             "competing_writer_detected": bool(writers),
         }, 0o600)
 
+    def host_authority(self, engine: str) -> "guard.HostAuthority":
+        """Read-only probe for guard.refresh_engine_evidence, for a committed planned or terminal journal."""
+        observed = self.observe()
+        identity = self.identity()
+        try:
+            guard.authority(self.policy, self.journal.read(), "deploy")
+            deploys_held = False
+        except guard.Refused:
+            deploys_held = True
+        return guard.HostAuthority(
+            engine=observed.engine, database_identity=identity.source_sha256,
+            live_config_sha256=self.policy[f"{observed.engine}_live_config_sha256"],
+            release_sha=identity.release_sha, artifact_sha256=identity.artifact_sha256,
+            competing_writer_detected=bool(self.processes(self.config["writer_processes"]
+                                                         + self.config["scheduler_processes"])),
+            admissions_open=observed.admissions_open, workers_stopped=observed.workers_stopped,
+            deployment_fenced=observed.deployment_fenced or deploys_held,
+            sqlite_writable=observed.sqlite_writable, mysql_writable=observed.mysql_writable,
+        )
+
     def reopen(self) -> None:
-        """Reopen SQLite writers in order once the guard accepts the committed SQLite authority."""
+        """Reopen SQLite writers in order once the guard accepts the committed SQLite authority.
+
+        After an abort this follows sqlite_authoritative. After a reboot in the
+        planned phase it follows a refresh of the authority evidence.
+        """
         with self.journal.acquire() as (state, lease):
             self.journal.drain_writers(lease, self.config["command_seconds"])
             journal_raw = self.journal.path.read_bytes()
@@ -323,8 +347,9 @@ class ProductionAdapter:
                              boot_id=self.boot_id(), action="web-writer", expected_engine="sqlite")
             except guard.Refused as error:
                 raise UnsafeCutover(str(error)) from error
-            if state is None or state["phase"] != "sqlite_authoritative":
-                raise UnsafeCutover("Reopening requires a completed SQLite authority transition")
+            phase = None if state is None else state["phase"]
+            if phase not in ("planned", "sqlite_authoritative"):
+                raise UnsafeCutover("Reopening requires a planned journal or a completed SQLite authority transition")
             # Invalidate an earlier receipt before any change, then let wrapped writers in.
             _remove(self.paths["activation"])
             self.journal.release_writers(lease)
@@ -335,6 +360,9 @@ class ProductionAdapter:
             _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
             if not self.observe().sqlite_live():
                 raise UnsafeCutover("SQLite admissions could not be verified after reopening")
+            if phase == "planned":
+                # Deploys stay held for the planned cutover; there is no activation receipt.
+                return
             _write_atomic(self.paths["activation"], {
                 "version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
                 "journal_sha256": guard.sha256(journal_raw), "authority_sha256": guard.sha256(evidence_raw),

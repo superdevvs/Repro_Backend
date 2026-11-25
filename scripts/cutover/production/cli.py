@@ -3,7 +3,9 @@
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py <action>
 
 Actions: status, init, approval-template --phase hold|freeze, hold --approval FILE,
-freeze [--approval FILE], tick, abort, reopen. The systemd watchdog timer runs
+freeze [--approval FILE], tick, abort, refresh, reopen. 'refresh' publishes
+authority evidence for the current boot (needed after every reboot) and
+'reopen' then opens SQLite writers in order. The systemd watchdog timer runs
 'tick' every minute from boot: it closes admissions again after a crash or a
 reboot and rolls back to SQLite 45 minutes after the hold.
 
@@ -26,7 +28,9 @@ from adapter import guard  # noqa: E402
 from runner import Approval, Journal, UnsafeCutover  # noqa: E402
 
 CONFIG = Path("/etc/repro-cutover-fence/host.json")
-ACTIONS = ("status", "init", "approval-template", "hold", "freeze", "tick", "abort", "reopen")
+ACTIONS = ("status", "init", "approval-template", "hold", "freeze", "tick", "abort", "refresh", "reopen")
+# The host config must name exactly the paths the installed guard reads.
+GUARD_PATHS = ("state", "policy", "evidence", "activation", "machine_id", "boot_id")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,6 +46,9 @@ def main(argv: list[str] | None = None) -> int:
         if sys.platform != "linux" or os.geteuid() != 0:
             raise UnsafeCutover("The cutover controller runs as root on the Linux host")
         config = host.load_config(guard.read_protected(args.config))
+        installed = (guard.STATE, guard.POLICY, guard.EVIDENCE, guard.ACTIVATION, guard.MACHINE_ID, guard.BOOT_ID)
+        if any(Path(config["paths"][name]) != path for name, path in zip(GUARD_PATHS, installed)):
+            raise UnsafeCutover("Host config paths differ from the installed guard paths")
         journal = Journal(Path(config["paths"]["state"]))
         adapter = host.ProductionAdapter(config, journal)
         runner = host.runner_for(config, journal, adapter)
@@ -52,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "approval-template":
             print(json.dumps(asdict(runner.approval_request(args.phase)), sort_keys=True))
             return 0
+        elif args.action == "refresh":
+            # Current-boot authority for a committed planned or terminal journal, for example after a
+            # reboot. It takes both locks without waiting and refuses while a controller runs.
+            guard.refresh_engine_evidence(adapter.host_authority)
+            result = runner.status()
         elif args.action == "reopen":
             adapter.reopen()
             result = runner.status()
