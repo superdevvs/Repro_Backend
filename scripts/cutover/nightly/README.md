@@ -45,8 +45,14 @@ copy stops the night: the deploy lock is probed before and again after the
 copy (a deploy holds it from the start but rewrites `deploy-meta.json` only at
 the end), and a changed `deploy-meta.json` is refused. The runner does not
 hold the deploy lock during the copy, so it never delays or refuses a deploy.
-A deploy that took and released the lock entirely within the copy without
-finishing leaves a changed layout that the reviewed-layout pin refuses.
+A deploy that takes and releases the lock entirely within the copy, without
+finishing, is not seen by either probe. One that stops before
+`php artisan migrate` (which runs only after the deploy's own database backup)
+has not changed the database. One that fails after its migrations ran leaves
+the previous release live, because the deploy restores the old source, on the
+migrated database: a layout change is refused by the reviewed-layout pin, but
+a data-only migration is not detected. Either way the copy is one consistent
+state of the live database, which is what the night verifies.
 
 ## Safety
 
