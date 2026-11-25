@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro archive-aware binary log purge every hour
+
+[Timer]
+OnCalendar=*-*-* *:17:00 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-binlog-purge.service
+
+[Install]
+WantedBy=timers.target

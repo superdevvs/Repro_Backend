@@ -51,14 +51,16 @@ def main():
         # units into Linux tmpfs; compare identical bytes before parser validation.
         staged = VERIFY_ROOT / profile
         staged.mkdir(mode=0o700)
-        for name in sorted(units.NAMES):
+        # The system profile also carries the production alert, MySQL and kit units.
+        names = sorted(units.NAMES) if profile != "system" else sorted(p.name for p in (ROOT / profile).iterdir())
+        for name in names:
             raw = (ROOT / profile / name).read_bytes()
             target = staged / name
             target.write_bytes(raw)
             target.chmod(0o644)
             if target.read_bytes() != raw:
                 raise RuntimeError("unit staging bytes differ")
-        paths = sorted(staged.glob("*.service")) + sorted(staged.glob("*.timer"))
+        paths = sorted(staged.glob("*.service")) + sorted(staged.glob("*.timer")) + sorted(staged.glob("*.path"))
         argv = ["/usr/bin/systemd-analyze"]
         if profile == "user-fixture":
             argv += ["--user"]
@@ -70,7 +72,7 @@ def main():
             diagnostic = (result.stdout + result.stderr).decode("utf-8", "replace")[:4096]
             raise RuntimeError("systemd verification emitted diagnostics for " + profile + ": " + diagnostic)
         hashes.update({str(p.relative_to(VERIFY_ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths})
-    command(["/usr/bin/systemd-analyze", "calendar", "--iterations=2", "*-*-* 02:30:00 UTC"])
+    command(["/usr/bin/systemd-analyze", "calendar", "--iterations=2", "*-*-* 03:30:00 UTC"])
     report["verified_units"] = len(hashes)
     report["sha256"] = hashes
     control = Path("/var/lib/repro-backup/inert-exit-code")

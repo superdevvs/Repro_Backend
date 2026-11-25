@@ -32,5 +32,9 @@
       "threshold": {"window_seconds": 600, "max_read_bytes": 8388608, "max_folders": 20000}},
     "server_silent": {"class": "wake", "delivery_limit_seconds": 600, "source": "heartbeat",
       "threshold": {"ping_every_seconds": 60, "silence_alert_seconds": 300}}
+  },
+  "extra_conditions": {
+    "backup_failed": {"class": "daytime", "delivery_limit_seconds": 300, "source": "backup-unit-result",
+      "threshold": {"expected_ping_every_seconds": 86400, "provider_grace_seconds": 7200}}
   }
 }

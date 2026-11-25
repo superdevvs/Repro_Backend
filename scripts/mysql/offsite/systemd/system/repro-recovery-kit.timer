@@ -1,0 +1,12 @@
+[Unit]
+Description=RePro daily recovery kit check
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 UTC
+RandomizedDelaySec=5m
+AccuracySec=1s
+Persistent=true
+Unit=repro-recovery-kit.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro local alert detectors every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:15 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-alert-probe.service
+
+[Install]
+WantedBy=timers.target

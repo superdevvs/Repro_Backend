@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro rotate the MySQL binary log every two minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/2:00 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-binlog-rotate.service
+
+[Install]
+WantedBy=timers.target
