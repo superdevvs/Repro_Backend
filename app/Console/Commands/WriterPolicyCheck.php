@@ -37,9 +37,10 @@ final class WriterPolicyCheck extends Command
         $connections = (array) $config->get('database.connections');
         // Resolve DB_URL for the default connection as Laravel's DatabaseManager does
         // before it connects, so the check inspects the database the application uses.
+        $parser = new ConfigurationUrlParser;
         $target = $connections[$default] ?? null;
         if (is_array($target) || is_string($target)) {
-            $target = (new ConfigurationUrlParser)->parseConfiguration($target);
+            $target = $parser->parseConfiguration($target);
         }
         $engine = $target['driver'] ?? null;
         if ($engine !== 'mysql') {
@@ -53,6 +54,9 @@ final class WriterPolicyCheck extends Command
             if ($name === $default || ! is_array($settings) || ($settings['driver'] ?? null) !== 'mysql') {
                 continue;
             }
+            // A MySQL connection that reads DB_URL (mysql_cache_locks does) takes its query
+            // options over its own keys, as in the application.
+            $settings = $parser->parseConfiguration($settings);
             $tables = $settings['repro_writer_exempt_tables'] ?? null;
             if (($settings['repro_writer_policy'] ?? false) === true) {
                 $problems[] = "Connection {$name} also carries the writer token; exactly one may.";
