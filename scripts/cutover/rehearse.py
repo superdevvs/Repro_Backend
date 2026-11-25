@@ -41,10 +41,22 @@ class FixtureAdapter:
     def boot_id(self) -> str:
         return self.BOOT_ID
 
+    def long_jobs_drained(self) -> bool:
+        # The fixture models the pre-hold (9:20 pm) pause of long-job queues as done.
+        return True
+
+    def close_admissions(self, lease: Lease, deadline: int) -> None:
+        self._write(lease, replace(self.observe(), admissions_open=False, deployment_fenced=True))
+
+    def drain(self, lease: Lease, deadline: int) -> None:
+        self._write(lease, replace(self.observe(), workers_stopped=True))
+
     def hold_and_drain_scheduler(self, lease: Lease, deadline: int) -> SchedulerDrain:
         lease.require_current()
         if (self.journal.directory / "fixture-scheduler-drain.json").exists():
-            return self.scheduler_drain()
+            recorded = self.scheduler_drain()
+            if recorded.boot_id == self.boot_id():
+                return recorded
         observed = SchedulerDrain(digest(asdict(self._identity)), self.boot_id(), str(uuid.uuid4()), True, 0)
         self.journal.write_record("fixture-scheduler-drain.json", asdict(observed))
         return observed
@@ -147,16 +159,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument(
-        "action", choices=["init", "status", "approval-template", "freeze", "prepare", "promote", "tick", "abort", "reopen"]
+        "action",
+        choices=["init", "status", "approval-template", "hold", "freeze", "prepare", "promote", "tick", "abort", "reopen"],
     )
-    parser.add_argument("--phase", choices=["freeze", "promote"])
+    parser.add_argument("--phase", choices=["hold", "freeze", "promote"])
     parser.add_argument("--approval", type=Path)
     args = parser.parse_args()
     name = args.state_dir.name
     if not name.startswith("repro-cutover-fixture-"):
         parser.error("Use a dedicated directory named repro-cutover-fixture-*")
     if args.action == "approval-template" and args.phase is None:
-        parser.error("Specify --phase freeze or --phase promote")
+        parser.error("Specify --phase hold or --phase promote")
 
     try:
         identity = Identity(name, "a" * 40, "b" * 64, "c" * 64, "d" * 64,

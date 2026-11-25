@@ -54,8 +54,12 @@ class HostWriterGuardTests(unittest.TestCase):
                      **({"machine_sha": self.machine, "boot_id": self.boot} | host),
                      action=action, expected_engine=engine, activation_raw=activation)
 
+    def hold(self):
+        return self.runner.perform("hold", self.runner.approval_request("hold"))
+
     def freeze(self):
-        return self.runner.perform("freeze", self.runner.approval_request("freeze"))
+        self.hold()
+        return self.runner.perform("freeze")
 
     @contextmanager
     def fixture_guard(self, evidence_overrides=None):
@@ -282,11 +286,21 @@ class HostWriterGuardTests(unittest.TestCase):
 
     def test_reboot_does_not_authorize_frozen_or_uncertain_phase(self):
         frozen = self.freeze()
-        for phase in ("frozen", "ready", "writes_possible", "recovery_required", "unrecognized"):
+        for phase in ("holding", "frozen", "ready", "writes_possible", "recovery_required", "unrecognized"):
             modified = frozen | {"phase": phase, "writes_possible": phase in {"writes_possible", "recovery_required"}}
             for kind in guard.ACTIONS:
                 with self.subTest(phase=phase, kind=kind), self.assertRaisesRegex(guard.Refused, "holds all"):
                     self.verify(modified, "sqlite", kind)
+
+    def test_holding_and_pending_hold_refuse_every_admission(self):
+        held = self.hold()
+        pending = held | {"pending": {"action": "hold", "hold_id": held["hold"]["hold_id"]}}
+        for state, reason in ((held, "holds all admissions"), (pending, "unfinished action")):
+            for kind in guard.ACTIONS:
+                for engine in ("sqlite", "mysql"):
+                    with self.subTest(phase=state["phase"], pending=state["pending"], kind=kind, engine=engine):
+                        with self.assertRaisesRegex(guard.Refused, reason):
+                            self.verify(state, engine, kind)
 
     def test_pending_action_and_missing_journal_fields_fail_closed(self):
         for invalid in (

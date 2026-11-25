@@ -199,9 +199,12 @@ class FastCgiRehearsal(ContainerRehearsal):
         if opened:
             self.journal.write_record(INGRESS_OPEN.name, {"open": True})
 
+    def close_admissions(self, lease, deadline):
+        super().close_admissions(lease, deadline)
+        self.assert_route_holds()
+
     def freeze(self, lease, deadline):
         super().freeze(lease, deadline)
-        self.assert_route_holds()
         # Restart both services while the ingress file is absent. The later
         # stale-gate check independently exercises the journal guard in FPM.
         self.restart_and_check_hold("sqlite")

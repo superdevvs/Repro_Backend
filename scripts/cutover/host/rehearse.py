@@ -261,12 +261,27 @@ class ContainerRehearsal:
         # inventory for the Runner; it is not protected systemd evidence.
         return SchedulerDrain(**json.loads((self.journal.directory / "no-scheduler-fixture.json").read_text()))
 
-    def freeze(self, lease, deadline):
+    def long_jobs_drained(self):
+        # The fixture starts no long-job worker, so the pre-hold queue pause is empty.
+        return True
+
+    def close_admissions(self, lease, deadline):
         lease.require_current()
         self.set_gate("sqlite", False)
         self.closed_at = time.monotonic()
         require(self.http("POST", 503) == {"admission_held": True}, "SQLite HTTP write escaped the fixture hold")
         require(self.queue("work") == {"admission_held": True}, "Fixture queue worker escaped the hold")
+        require(time.time() < deadline, "Fixture hold deadline expired")
+
+    def drain(self, lease, deadline):
+        # One-shot fixture workers exit by themselves; admitted requests hold
+        # the shared lease, which the runner drains next.
+        lease.require_current()
+        require(time.time() < deadline, "Fixture drain deadline expired")
+
+    def freeze(self, lease, deadline):
+        lease.require_writers_drained()
+        require(not self.gate()["open"], "The fixture hold was lost before the freeze")
         SOURCE.chmod(0o400)
         with closing(sqlite_connect()) as source:
             try:
@@ -363,7 +378,8 @@ class ContainerRehearsal:
         }
 
     def install_planned_proof(self):
-        with self.journal.acquire() as (state, _):
+        with self.journal.acquire() as (state, lease):
+            self.journal.drain_writers(lease, 5)
             require(state["phase"] == "planned" and self.observe().sqlite_live(), "Fixture preflight changed")
             self.journal.write_record("policy.json", json.loads(self.policy()))
             self.journal.write_record("proof.json", self.sqlite_proof(self.journal.path.read_bytes()))
@@ -387,7 +403,8 @@ class ContainerRehearsal:
         )
 
     def reopen(self):
-        with self.journal.acquire():
+        with self.journal.acquire() as (_, lease):
+            self.journal.drain_writers(lease, 5)
             self.verify_guard("sqlite")
             stale_proof = json.loads((self.journal.directory / "proof.json").read_bytes())
             stale_proof["boot_id"] = str(uuid.uuid4())
@@ -408,14 +425,16 @@ def prepare_fixture(adapter, *, queue_before_freeze):
     require(initial["phase"] == "planned", "Runner did not start planned")
     if adapter.writer_authority == "journal":
         adapter.install_planned_proof()
-        with adapter.journal.acquire():
+        with adapter.journal.acquire() as (_, lease):
+            adapter.journal.drain_writers(lease, 5)
             adapter.assert_writer_hold()
     require(set(adapter.http("POST")["receipts"]) == {"synthetic-http-receipt"}, "Synthetic write not acknowledged")
     if queue_before_freeze:
         require(adapter.queue("enqueue") == {"queued": 1}, "Synthetic queue payload was not stored")
     adapter.baseline = adapter.http()
     require(adapter.baseline["pending"] == int(queue_before_freeze), "Unexpected fixture queue baseline")
-    runner.perform("freeze", runner.approval_request("freeze"))
+    runner.perform("hold", runner.approval_request("hold"))
+    runner.perform("freeze")
     if adapter.writer_authority == "journal":
         # A stale permissive launch record cannot override the durable freeze.
         adapter.set_gate("sqlite", True)
