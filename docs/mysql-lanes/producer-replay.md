@@ -16,10 +16,10 @@ Branch `claude/producer-replay-20261125`, based on `a6e799bb` (draft PR 46).
 | P2-03 | `recruit_application_receipts` gets `payload_sha256` and `attachment_sha256s` (new migration `2026_11_25_140000`). The first use of a reference records a SHA-256 of the canonical validated fields (files and empty values left out, keys sorted, scalars as text) and the ordered `kind:sha256` list of attachments. A replay with other fields, other bytes, missing files, or against a receipt from before this change returns **409** `{received:false, error:"reference_conflict"}`, stores no file and sends recruiters a `recruit_reference_conflict` notice (no applicant data in it). Exact replays still return the stored applicant. | `tests/Feature/Crm/RecruitingReplayIntegrityTest.php`, `tests/MySql/RecruitingReplayConcurrencyTest.php` |
 | P2-04 | The careers route uses `crm.enabled:retry`: CRM off gives **503 + Retry-After**, not 404. Staff CRM routes still give 404. Website intake receipts are always registered, even with CRM off; `crm:website-intake` replays them once the CRM is back. | `tests/Feature/Crm/ProducerIngressHoldTest.php` |
 | P2-04, P2-07 | `PRODUCER_INGRESS_HOLD` answers the producer routes with 503 + Retry-After, first in the global middleware stack (before telemetry, maintenance and controllers). Resend `email.received` with CRM off now gives 503, never 200 "ignored". A reviewed nginx snippet holds the same webhooks at the edge, and all of `/api/external/` (see the edge note under owner decisions). | `ProducerIngressHoldTest.php`, `tests/Feature/Crm/ResendRedeliveryTest.php`, `scripts/cutover/fence/test_producer_hold.py` |
-| P2-06 | `scripts/cutover/website_ledger.py` turns a read-only website export into the capture ledger, a private CSV and a references file. `php artisan crm:website-ledger` reports the Dashboard side for each reference, read-only against the database it is given, and lists bookings saved without a reference. | `scripts/cutover/test_website_ledger.py`, `tests/Feature/Crm/CrmWebsiteLedgerTest.php` |
+| P2-06 | `scripts/cutover/website_ledger.py` turns a read-only website export into the capture ledger, a private CSV and a references file. `php artisan crm:website-ledger` reports the Dashboard side for each reference, read-only against the database it is given, and lists website bookings saved without a reference (another source's `shoot-<id>` receipt is not one). | `scripts/cutover/test_website_ledger.py`, `tests/Feature/Crm/CrmWebsiteLedgerTest.php` |
 | P2-08 | `php artisan crm:calendar-reconcile --dry-run` compares every linked follow-up with Google, inside and outside the poll window, and lists a pending create Google never confirmed (`unconfirmed_create`). Done or missed follow-ups (`closed_locally`) and links without a Google connection (`no_connection`) are listed but do not fail it, because the poller never acts on them. | `tests/Feature/Crm/CrmCalendarReconcileTest.php` |
 | P2-10 | `php artisan stripe:undelivered-events` lists events with pending deliveries, using a restricted read key. Tests prove a payment event sent 5 times gives one payment. | `tests/Feature/StripeReplayAfterFreezeTest.php` |
-| P2-11 | `aryeo:connection` gains `--record-state=<file> --pause` and `--resume-processing=<file>`. The Aryeo API webhook is held with the other producers. | `tests/Feature/AryeoFreezeResumeTest.php` |
+| P2-11 | `aryeo:connection` gains `--record-state=<file> --pause` and `--resume-processing=<file>`. The pause stops job claims; the resume refuses a connection changed since the recording. The Aryeo API webhook is held with the other producers. | `tests/Feature/AryeoFreezeResumeTest.php` |
 | P2-12 | `CRM_OUTBOUND_HOLD` stops drips, campaigns, the follow-up digest and marketing sends, while replies, delivery events, opt-outs and website intake keep working. `crm:outbound-release-check` gates the release; `crm:send-disposition` records the review of an uncertain send. | `tests/Feature/Crm/CrmOutboundHoldTest.php` |
 
 ## Flags and settings
@@ -400,3 +400,41 @@ were test-first (each new test seen failing for the stated reason).
 | MySQL 8.4.13 (`phpunit.mysql.xml`, disposable server on an internal Docker network, after `migrate:fresh`): the same three files | 18 tests, 103 assertions, OK, 1 skipped (SQLite-copy-only ledger test) |
 | `test_producer_hold` in the Linux image (real nginx) after the comment change | 2 tests OK |
 | `pint --test` on the six changed PHP files | Pass |
+
+### Round 2 (Codex on `a4395bcc`)
+
+Codex reviewed the whole branch again; its two findings and the earlier
+dismissals were rechecked. Fixes were test-first.
+
+- r2#1 (P1), `--pause` leaves worker writes on: documented in `7e4c4fd0`.
+  Like `--disable-processing` (`docs/aryeo-flow.md`), the pause stops job
+  claims, delivery and request acceptance, so no Aryeo action starts;
+  heartbeats, discovery with a requester email and inventory are idempotent
+  sync the agent re-sends. HTTP writes during the freeze are stopped by the
+  writer freeze (admission closed before Laravel), not by this command. The
+  command, its help and runbook step 1 now say this, and
+  `AryeoFreezeResumeTest::test_a_paused_worker_cannot_claim_a_job_and_the_command_says_what_continues`
+  pins the claim refusal.
+- r2#2 (P2), other sources' `shoot-<id>` receipts in manual reconciliation:
+  fixed in `7ff872b6`. A receipt counts only when its shoot is a website
+  booking without a reference
+  (`CrmWebsiteLedgerTest::test_only_website_bookings_without_a_reference_need_manual_reconciliation`,
+  both engines).
+- producer-replay#3: still fixed; done and missed follow-ups are never
+  pushed or polled, so `closed_locally` stays non-blocking.
+- reviewer#1: still not a defect. The only `access_token` writers store a
+  token `parseTokenResponse` checked is non-empty (the third mention, in
+  `assertCalendarPermission`, only reads it).
+- reviewer#3, reviewer#5: still documented; nothing new.
+- reviewer#4: reopened and fixed in `f658d66c`. The warning did not stop the
+  resume from re-enabling a credential revoked during the freeze or
+  re-widening a narrowed scope. The resume now turns back on only what the
+  pause turned off and otherwise refuses, changing nothing
+  (`AryeoFreezeResumeTest::test_resume_refuses_a_connection_changed_during_the_freeze`).
+
+| Run (code at `7e4c4fd0`) | Result |
+| --- | --- |
+| SQLite: each new test before its fix | Failed for the stated reason (manual list `[1, 2, 999999]`; resume of a revoked connection exit 0; pause output) |
+| SQLite: `CrmWebsiteLedgerTest`, `AryeoFreezeResumeTest`, `AryeoIntegrationTest` | 74 tests, 539 assertions, OK |
+| MySQL 8.4.13 (`phpunit.mysql.xml`, disposable server on an internal Docker network, after `migrate:fresh`): the same three files | 74 tests, 521 assertions, OK, 1 skipped (SQLite-copy-only ledger test) |
+| `pint --test` on the four changed PHP files | Pass |
