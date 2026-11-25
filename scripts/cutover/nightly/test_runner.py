@@ -678,6 +678,13 @@ class NightlyRunnerTests(unittest.TestCase):
             self.assertTrue((self.outputs(day.isoformat()) / "snapshot.sqlite").exists())
 
 
+class ExitCodeTests(unittest.TestCase):
+    def test_only_a_qualifying_draft_exits_zero(self):
+        self.assertEqual(nightly.exit_code({"status": "reviewer-inputs-ready", "qualifying_draft": True}), 0)
+        self.assertEqual(nightly.exit_code({"status": "reviewer-inputs-ready", "qualifying_draft": False}), 3)
+        self.assertEqual(nightly.exit_code({"status": "stopped", "qualifying_draft": False}), 1)
+
+
 class CommittedConfigTests(unittest.TestCase):
     def test_committed_config_is_valid_and_pins_the_reviewed_scope(self):
         path = HERE / "nightly-config.json"

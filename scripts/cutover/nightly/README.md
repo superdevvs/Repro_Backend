@@ -137,6 +137,12 @@ python3 -B -m scripts.cutover.nightly.runner run --config nightly-config.json \
   --state-dir /home/maverick/repro-nightly --day 2026-11-27 --execute --approval approval.json
 ```
 
+The command exits 0 when the night's draft passes the per-night gate, 3 when
+the night finished but cannot qualify (for example finance is not configured),
+and 1 when it stopped or was refused. SIGTERM and SIGHUP stop the night
+cleanly: the journal records the stop and the disposable MySQL is stopped.
+Tools never inherit the caller's environment.
+
 ## After each night
 
 1. Review the outputs, then add the night to the manifest:

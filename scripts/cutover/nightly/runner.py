@@ -1272,12 +1272,31 @@ class LocalHost:
             cwd: Path | None = None) -> Completed:
         if timeout_s <= 0:
             raise subprocess.TimeoutExpired(argv, 0)
+        # Never pass the caller's environment through to a tool.
+        env = env if env is not None else {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"}
         result = subprocess.run(list(map(str, argv)), input=input, env=env, cwd=cwd, capture_output=True, text=True,
                                 timeout=timeout_s, check=False)
         return Completed(result.returncode, result.stdout, result.stderr)
 
 
 # Command line ------------------------------------------------------------------
+
+def install_signal_handlers() -> None:
+    """Turn SIGTERM and SIGHUP into a journaled stop, so cleanup stops the disposable MySQL."""
+    def interrupted(signum, _frame):
+        raise Stop(f"interrupted-by-signal-{signum}")
+
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), interrupted)
+
+
+def exit_code(receipt: dict) -> int:
+    """0 for a qualifying draft, 3 for a finished night that cannot qualify, 1 for a stopped night."""
+    if receipt.get("status") != "reviewer-inputs-ready":
+        return 1
+    return 0 if receipt.get("qualifying_draft") is True else 3
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1303,12 +1322,13 @@ def main() -> int:
         if not args.execute:
             print(json.dumps(runner.plan(), indent=2, sort_keys=True, default=str))
             return 0
+        install_signal_handlers()
         receipt = runner.run(check.load(args.approval))
-    except (Refused, check.Missing, check.Failed) as error:
+    except (Refused, Stop, check.Missing, check.Failed) as error:
         print(json.dumps({"result": "nightly-run-refused", "detail": str(error)}, sort_keys=True))
         return 1
     print(json.dumps(receipt, indent=2, sort_keys=True))
-    return 0 if receipt["status"] == "reviewer-inputs-ready" else 1
+    return exit_code(receipt)
 
 
 if __name__ == "__main__":

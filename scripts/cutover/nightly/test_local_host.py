@@ -110,6 +110,25 @@ class LocalHostTests(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             self.host.run([sys.executable, "-c", "print(1)"], timeout_s=0)
 
+    def test_commands_get_a_minimal_environment_by_default(self):
+        os.environ["NIGHTLY_DRESS_SHOULD_NOT_LEAK"] = "1"
+        self.addCleanup(os.environ.pop, "NIGHTLY_DRESS_SHOULD_NOT_LEAK")
+        result = self.host.run(["/usr/bin/env"], timeout_s=30)
+        self.assertEqual(sorted(line.split("=")[0] for line in result.stdout.splitlines()), ["LC_ALL", "PATH"])
+
+    def test_termination_signals_run_the_cleanup(self):
+        program = ("import os, signal\n"
+                   "from scripts.cutover.nightly import runner\n"
+                   "runner.install_signal_handlers()\n"
+                   "try:\n"
+                   "    os.kill(os.getpid(), signal.SIGTERM)\n"
+                   "finally:\n"
+                   "    print('cleanup ran', flush=True)\n")
+        result = subprocess.run([sys.executable, "-B", "-c", program], capture_output=True, text=True,
+                                cwd=HERE.parents[2], check=False)
+        self.assertIn("cleanup ran", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_stale_mysqld_stop_only_targets_the_recorded_work_directory(self):
         work = self.root / "work-abc"
         sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
