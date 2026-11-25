@@ -145,10 +145,15 @@ class DatabaseHealthCheckTest extends TestCase
         $this->assertSame('', $config['mysql_server_uuid']);
     }
 
-    public function test_up_confirms_the_mysql_server_identity_when_one_is_expected(): void
+    public function test_up_compares_the_server_uuid_on_mysql_and_ignores_it_elsewhere(): void
     {
-        if (DB::connection()->getDriverName() !== 'mysql') {
-            $this->markTestSkipped('MySQL only.');
+        $engine = DB::connection()->getDriverName();
+        if ($engine !== 'mysql') {
+            // CI runs with --fail-on-skipped, so the SQLite run checks the other half.
+            config(['health.mysql_server_uuid' => '00000000-0000-0000-0000-000000000000']);
+            $this->get('/up')->assertOk()->assertExactJson(['status' => 'ok', 'engine' => $engine]);
+
+            return;
         }
         $uuid = (string) DB::selectOne('select @@server_uuid as uuid')->uuid;
 
