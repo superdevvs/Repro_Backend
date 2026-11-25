@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 import publish_backup as backup
@@ -174,6 +176,15 @@ sys.exit(1 if "CREATE TABLE" in data + statement and not selected else 0)
 """
 
 
+# Creates the database, then never reads the dump, like a client whose server has stalled.
+STALLED_CLIENT = """#!{python} -I
+import sys, time
+if any(item.startswith("--execute=") for item in sys.argv[1:]):
+    sys.exit(0)
+time.sleep(30)
+"""
+
+
 @unittest.skipUnless(sys.platform == "linux", "runs a fake mysql client as a child process")
 class StockLoadTests(unittest.TestCase):
     """The real backup-database.php dump names no database (no --databases), so the loader must select one."""
@@ -204,6 +215,35 @@ class StockLoadTests(unittest.TestCase):
         self.assertIn("--execute=CREATE DATABASE `repro_dashboard`", create["argv"])
         self.assertIn("--database=repro_dashboard", load["argv"])
         self.assertIn("CREATE TABLE `markers`", load["stdin"])
+
+    def test_load_base_stops_at_its_time_limit_when_the_client_stops_reading(self):
+        # A target that stalls (a lock, a full disk) stops the client reading its input. Once the
+        # pipe filled, the copy blocked before the timed wait was reached, so the drill hung
+        # with no replay.json at all instead of failing at load_base.
+        client = Path(self.plan["target"]["client"])
+        client.write_text(STALLED_CLIENT.format(python=sys.executable))
+        self.plan["timeout_seconds"] = 2
+        with gzip.open(self.dump, "wb") as stream:
+            stream.write(b"INSERT INTO `markers` VALUES (1);\n" * 200_000)  # Far more than a pipe holds.
+        outcome = {}
+
+        def load():
+            started = time.monotonic()
+            try:
+                drill.StockSteps(self.plan).load_base(self.plan, self.dump)
+                outcome["result"] = "loaded"
+            except backup.Refusal as error:
+                outcome["result"] = str(error)
+            except OSError as error:
+                outcome["result"] = type(error).__name__
+            outcome["seconds"] = time.monotonic() - started
+
+        worker = threading.Thread(target=load, daemon=True)
+        worker.start()
+        worker.join(15)
+        self.assertFalse(worker.is_alive(), "load_base was still blocked writing to a client that stopped reading")
+        self.assertEqual(outcome["result"], "base load exceeded its time limit")
+        self.assertLess(outcome["seconds"], 10)
 
     def test_load_base_refuses_a_database_name_it_cannot_quote_safely(self):
         self.plan["database"] = "repro`; DROP DATABASE mysql; --"

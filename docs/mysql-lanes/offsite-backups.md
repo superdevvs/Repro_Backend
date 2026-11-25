@@ -366,7 +366,10 @@ for the chosen row and, for drill 2, a check that the planted row is absent.
 `backup-database.php` dumps one database without `--databases`, so the dump has
 no `CREATE DATABASE` or `USE`. The runner creates the plan's `database` on the
 fresh target (refused if it already exists) and loads into it; MySQL 8.4.13
-refused the dump with ERROR 1046 before this.
+refused the dump with ERROR 1046 before this. The plan's `timeout_seconds`
+bounds the whole load, streaming included: a target that stops reading is
+killed at the deadline and the drill records `load_base` as failed instead of
+hanging with no `replay.json`.
 
 ## Risks fixed and limits found
 

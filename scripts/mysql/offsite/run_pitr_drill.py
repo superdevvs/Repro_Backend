@@ -22,6 +22,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 TOOLS = Path(__file__).resolve().parent
@@ -169,9 +170,35 @@ class StockSteps:
         with gzip.open(dump, "rb") as source:
             process = subprocess.Popen(self.mysql("--database=" + database), stdin=subprocess.PIPE,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=backup.SAFE_ENV)
-            shutil.copyfileobj(source, process.stdin, 1024 * 1024)
-            process.stdin.close()
-            backup.need(process.wait(timeout=plan["timeout_seconds"]) == 0, "base load refused")
+            # One deadline for the whole transfer: a client that stops reading (a stalled target)
+            # blocks the copy itself once the pipe is full, long before a timed wait is reached.
+            expired = threading.Event()
+
+            def expire() -> None:
+                expired.set()
+                process.kill()
+
+            timer = threading.Timer(plan["timeout_seconds"], expire)
+            timer.daemon = True
+            timer.start()
+            try:
+                try:
+                    shutil.copyfileobj(source, process.stdin, 1024 * 1024)
+                except BrokenPipeError:
+                    pass  # The client stopped reading: it failed or the deadline killed it; its exit says which.
+                finally:
+                    try:
+                        process.stdin.close()
+                    except BrokenPipeError:
+                        pass
+                code = process.wait()  # Bounded by the same deadline.
+            finally:
+                timer.cancel()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+        backup.need(not expired.is_set(), "base load exceeded its time limit")
+        backup.need(code == 0, "base load refused")
 
     def replay(self, plan, files, start, stop) -> None:
         decoder = subprocess.Popen([plan["target"]["mysqlbinlog"], "--no-defaults", "--verify-binlog-checksum",
