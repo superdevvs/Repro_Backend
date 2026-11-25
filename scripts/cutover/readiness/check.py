@@ -310,8 +310,11 @@ def review_stress_and_crash(rehearsal: dict) -> None:
 def review_dress_data(rehearsal: dict) -> None:
     """Plan pass mark: import and both verifications within 12 minutes, zero
     errors, warnings and notes, no unexplained cell difference, scan clean and
-    the tables moved equal the reviewed scope."""
+    the tables moved equal the reviewed scope. The record must be for this
+    rehearsal's own source snapshot."""
     data = object_field(rehearsal, "data")
+    if sha_field(data, "snapshot_sha256") != sha_field(rehearsal, "snapshot_sha256"):
+        raise Failed("The data record is for a different snapshot than this dress rehearsal")
     cap(data, "import_and_verify_ms", 12 * MINUTE)
     for name in NIGHTLY_COUNTERS:
         zero(data, name)

@@ -137,6 +137,7 @@ def readiness_fixture():
                     for _ in range(check.CRASH_KILL_COUNT)
                 ],
                 "data": {
+                    "snapshot_sha256": str(index + 2) * 64,
                     "import_and_verify_ms": 12 * check.MINUTE,
                     **dict.fromkeys(check.NIGHTLY_COUNTERS, 0), **dict.fromkeys(check.DRESS_DATA_PROOFS, True),
                 },
@@ -305,6 +306,17 @@ class ReadinessTests(unittest.TestCase):
                 data[name] = original
         del self.first["data"]
         self.assert_gate("dress_rehearsal_1.data", "missing")
+
+    def test_plan_data_mark_is_bound_to_the_rehearsal_snapshot(self):
+        data = self.first["data"]
+        data["snapshot_sha256"] = self.second["snapshot_sha256"]  # an import of another rehearsal's copy
+        self.assert_gate("dress_rehearsal_1.data", "failed")
+        data["snapshot_sha256"] = "not a digest"
+        self.assert_gate("dress_rehearsal_1.data", "failed")
+        del data["snapshot_sha256"]
+        self.assert_gate("dress_rehearsal_1.data", "missing")
+        data["snapshot_sha256"] = self.first["snapshot_sha256"]
+        self.assert_gate("dress_rehearsal_1.data", "passed")
 
     def test_plan_way_back_mark_requires_reverse_and_money_parity(self):
         self.assert_gate("dress_rehearsal_1.way_back", "passed")
