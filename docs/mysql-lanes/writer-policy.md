@@ -180,6 +180,45 @@ the durable defaults.
   minutes to shard 0 (local estimate). If shard 0 nears its 75-minute limit,
   move `scripts/mysql/test-queue-worker-ci.sh` into its own job.
 
+## Independent review (same day)
+
+A second session reviewed the branch as if to refute it, re-ran the tests and
+fixed two defects, each test first:
+
+- **Busy writers got a 500 on MySQL.** Callers such as the editing dispatch,
+  media rename, schedule commit and upload submission answer "busy, retry"
+  (503 or 409) when `LockedWrite::isLockContention()` says another writer held
+  the database. It did not recognise `WriterTokenTimeout`, so on MySQL the same
+  situation became a 500. It now does. `LockedWrite::run()` still replays its
+  callback only for SQLite's own lock error. Proofs:
+  `WriterTokenRetryLayersTest::test_a_writer_token_timeout_is_lock_contention_for_busy_responses`
+  (both engines) and `WriterExemptionsTest::test_a_token_wait_that_runs_out_is_busy_for_callers`.
+- **A job that could not be claimed was deleted without a failed_jobs row.**
+  `MySqlDatabaseQueue` wrapped Laravel's whole `pop()` in the token-free
+  bookkeeping scope, so the failure path inside it (the job's failed handler
+  and the JobFailed listeners, which write `failed_jobs`) was refused and the
+  refusal swallowed. Only the claim transaction skips the token now. Proof:
+  `WriterExemptionsTest::test_a_job_that_cannot_be_claimed_is_failed_and_recorded_with_the_token`.
+
+Notes for the integrator, not fixed here:
+
+- The open item asked for the policy "behind a default-off flag". The lane
+  turned it on by default for MySQL (no effect on SQLite). That keeps the
+  readiness gate honest but makes every MySQL target need the token row before
+  the application writes. Owner decision; the flag is `REPRO_MYSQL_WRITER_POLICY`.
+- Two business proofs do not depend on the token: the Google Routes race (one
+  atomic statement) and the twelve-worker queue run (row locks with SKIP LOCKED)
+  also pass without it. They show the policy does not break those paths; they
+  are not proof of serialization.
+- A job that leaves a transaction open and also fails on its last try is
+  recorded in `failed_jobs` twice: the cleanup at JobFailed undoes Laravel's
+  delete, so the worker fails the job again after `retry_after`.
+- `ANALYZE`, `OPTIMIZE`, `REPAIR`, `CHECK` and `FLUSH` are not classed as DDL.
+  Inside a transaction MySQL commits implicitly before them; the next statement
+  is then refused. The application runs none of them today.
+- Each request that takes a database cache lock opens a second MySQL session
+  (`mysql_cache_locks`). Size `max_connections` for that.
+
 ## How to rerun locally
 
 The image tags are the ones above. Every container runs with
