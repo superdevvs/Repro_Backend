@@ -141,6 +141,15 @@ class AclTests(unittest.TestCase):
         again = installer.with_named_user(acl, 801, installer.READ | installer.EXECUTE)
         self.assertEqual([perm for tag, _, perm in again if tag == installer.MASK], [0o5])
 
+    def test_a_narrowed_mask_is_not_reopened_for_the_owning_group(self):
+        # chmod g-r on a file that has an ACL sets the mask to ---. Adding read to
+        # that mask would give the owning group and user 700 their read back.
+        undefined = installer.UNDEFINED
+        acl = [(installer.USER_OBJ, undefined, 6), (installer.USER, 700, 4), (installer.GROUP_OBJ, undefined, 4),
+               (installer.MASK, undefined, 0), (installer.OTHER, undefined, 0)]
+        with self.assertRaises(installer.Refusal):
+            installer.with_named_user(acl, 801, installer.READ)
+
     def test_default_acl_mirrors_the_directory_mode(self):
         acl = installer.with_named_user(installer.acl_from_mode(0o775), 801, installer.READ)
         self.assertEqual(installer.describe_acl(acl),

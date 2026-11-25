@@ -104,6 +104,12 @@ def decode_acl(raw: bytes) -> list:
 def with_named_user(entries: list, uid: int, perm: int) -> list:
     """Add read access for one user without widening what the owning group can do."""
     current = {(tag, ident): value for tag, ident, value in entries}
+    if (MASK, UNDEFINED) in current:
+        reopened = perm & ~current[(MASK, UNDEFINED)]
+        others = [value for (tag, ident), value in current.items()
+                  if tag in (USER, GROUP_OBJ, GROUP) and (tag, ident) != (USER, uid)]
+        need(not any(value & reopened for value in others),
+             "the ACL mask was narrowed on purpose; widening it would give the group back rights. Review by hand")
     current[(USER, uid)] = current.get((USER, uid), 0) | perm
     if (MASK, UNDEFINED) in current:
         current[(MASK, UNDEFINED)] |= perm
