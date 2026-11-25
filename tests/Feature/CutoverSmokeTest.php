@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
+use Tests\Concerns\CutoverSmokeRootStandIn;
 use Tests\Concerns\CutoverTableSnapshots;
 use Tests\TestCase;
 
@@ -31,12 +32,57 @@ use Tests\TestCase;
  */
 class CutoverSmokeTest extends TestCase
 {
+    use CutoverSmokeRootStandIn;
     use CutoverTableSnapshots;
     use RefreshDatabase;
 
     private const VECTORS = 'scripts/cutover/probe/route-hash-vectors.json';
 
     private const ROUTE_KEYS = ['database.default', 'database.connections', 'cache.default', 'cache.stores', 'queue.default', 'queue.connections'];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->standInForRoot();
+    }
+
+    public function test_smoke_refuses_root_before_any_database_work(): void
+    {
+        $this->createFixtures();
+        $before = $this->tableSnapshot();
+        $this->app->instance(CutoverEngineProbe::EFFECTIVE_UID_SEAM, 0);
+        $statements = $this->recordStatements();
+        $queued = collect();
+        Event::listen(JobQueued::class, fn (JobQueued $event) => $queued->push(get_class($event->job)));
+
+        foreach (['--engine-only', '--read-only', '--write'] as $mode) {
+            [$exit, $out, $raw] = $this->smoke($mode);
+
+            $this->assertSame(1, $exit, $raw);
+            $this->assertSame(['version', 'mode', 'ok', 'problems'], array_keys($out), $raw);
+            $this->assertFalse($out['ok']);
+            $this->assertCount(1, $out['problems']);
+            $this->assertStringContainsString('refused: cutover:smoke never runs as root', $out['problems'][0]);
+        }
+        $exit = Artisan::call('cutover:smoke', ['--write' => true]);
+        $this->assertSame(1, $exit);
+        $this->assertMatchesRegularExpression('/\Aproblem: refused: cutover:smoke never runs as root.*\nfailed\n\z/s', Artisan::output());
+
+        $this->assertSame([], $statements->all(), 'the refused smoke ran a query');
+        $this->assertSame([], $queued->all());
+        $this->assertSame([], $this->changedTables($before, $this->tableSnapshot()));
+    }
+
+    public function test_without_the_seam_the_smoke_reads_the_real_effective_user(): void
+    {
+        $this->app->forgetInstance(CutoverEngineProbe::EFFECTIVE_UID_SEAM);
+        $root = function_exists('posix_geteuid') && posix_geteuid() === 0;
+
+        [$exit, $out, $raw] = $this->smoke('--engine-only');
+
+        $this->assertSame($root ? 1 : 0, $exit, $raw);
+        $this->assertSame($root, str_contains(implode(' ', $out['problems']), 'never runs as root'), $raw);
+    }
 
     public function test_engine_only_prints_route_values_without_passwords(): void
     {
@@ -83,12 +129,14 @@ class CutoverSmokeTest extends TestCase
     public function test_engine_only_output_matches_route_hash_vectors(): void
     {
         $original = $this->routeConfig();
+        $root = $this->temporaryDirectory();
         try {
-            foreach ($this->vectors() as $vector) {
+            foreach ($this->localVectors($root) as $vector) {
                 $this->overlay($vector['config']);
 
                 [, $out, $raw] = $this->smoke('--engine-only');
 
+                $this->assertPathsUnder($root, $out['route_values'], $vector['name']);
                 $this->assertSame($vector['engine'], $out['engine'], $vector['name']);
                 $this->assertSame($this->canonical($vector['route_values']), $this->canonical($out['route_values']), $vector['name']);
                 $this->assertOnlyObjects(json_decode($raw)->route_values, $vector['name']);
@@ -236,11 +284,42 @@ class CutoverSmokeTest extends TestCase
         Queue::resume('database', 'cutover-smoke');
 
         $leftover = Queue::connection('database')->pushOn('cutover-smoke', new CutoverSmokeJob('leftover'));
-        $this->assertRefusedWithoutChange('pending');
+        $problem = $this->assertRefusedWithoutChange('pending');
+        // The smoke leaves the row (asserted above) and prints the documented manual cleanup.
+        $cleanup = $this->leftoverCleanup();
+        $this->assertStringContainsString("the smoke never deletes them. For a leftover CutoverSmokeJob see 'Leftover smoke job' in scripts/cutover/probe/README.md", $problem);
+        $this->assertStringContainsString($cleanup['SELECT'], $problem);
+        $this->assertStringContainsString($cleanup['DELETE'], $problem);
         DB::table('jobs')->where('id', $leftover)->delete();
 
         DB::table('shoots')->where('id', $fixture['shoot_id'])->update(['iguide_work_order_id' => 'WO-1']);
         $this->assertRefusedWithoutChange('iguide_work_order_id');
+    }
+
+    public function test_documented_leftover_cleanup_removes_only_unreserved_smoke_jobs(): void
+    {
+        $cleanup = $this->leftoverCleanup();
+        $queue = Queue::connection('database');
+        $leftover = $queue->pushOn('cutover-smoke', new CutoverSmokeJob('leftover'));
+        $reserved = $queue->pushOn('cutover-smoke', new CutoverSmokeJob('reserved'));
+        DB::table('jobs')->where('id', $reserved)->update(['reserved_at' => time(), 'attempts' => 1]);
+        $other = DB::table('jobs')->insertGetId(['queue' => 'cutover-smoke', 'payload' => json_encode(['displayName' => 'App\\Jobs\\SomeOtherJob']),
+            'attempts' => 0, 'reserved_at' => null, 'available_at' => time(), 'created_at' => time()]);
+        $elsewhere = $queue->pushOn('default', new CutoverSmokeJob('elsewhere'));
+        $ids = fn () => DB::table('jobs')->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        $shown = DB::select($cleanup['SELECT']);
+        $this->assertSame([$leftover, $reserved, $other], array_map(fn ($row) => (int) $row->id, $shown));
+        $this->assertStringContainsString('CutoverSmokeJob', $shown[0]->payload_start);
+        $this->assertStringContainsString('SomeOtherJob', $shown[2]->payload_start);
+
+        $this->assertSame(1, DB::delete($cleanup['DELETE']));
+        $this->assertSame([$reserved, $other, $elsewhere], $ids());
+
+        // A worker that died holding the row: release it, then the same DELETE removes it.
+        $this->assertSame(1, DB::update($cleanup['UPDATE']));
+        $this->assertSame(1, DB::delete($cleanup['DELETE']));
+        $this->assertSame([$other, $elsewhere], $ids());
     }
 
     public function test_job_does_nothing_and_leaves_no_row(): void
@@ -271,9 +350,11 @@ class CutoverSmokeTest extends TestCase
             return;
         }
 
-        foreach ($this->vectors() as $vector) {
+        $root = $this->temporaryDirectory();
+        foreach ($this->localVectors($root) as $vector) {
             [$exit, $out, $raw] = $this->probe(['APP_CONFIG_CACHE' => $this->probeConfig($vector['config'])]);
 
+            $this->assertPathsUnder($root, $out['route_values'] ?? null, $vector['name']);
             $this->assertSame('fpm-engine', $out['probe'] ?? null, $raw);
             $this->assertTrue($out['config_cached'], $vector['name']);
             $this->assertSame($vector['engine'], $out['engine'], $vector['name']);
@@ -305,8 +386,13 @@ class CutoverSmokeTest extends TestCase
             'cache' => ['default' => 'file', 'stores' => ['file' => ['driver' => 'file', 'path' => $directory.'/cache']]],
             'queue' => ['default' => 'database', 'connections' => ['database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default']]],
         ]);
-        $watched = [$directory, storage_path(), base_path('bootstrap/cache')];
-        $before = $this->fileState($watched);
+        // The probe boots bootstrap/app.php, so it writes (if it ever did) under the checkout's own
+        // storage/, not under this process's storage_path(): with CI's TEST_TOKEN that is
+        // storage/framework/testing/parallel/worker-N. storage/framework/testing holds only the test
+        // runs' own files (parallel workers, fake disks), which other workers change meanwhile.
+        $watched = [$directory, base_path('storage'), base_path('bootstrap/cache')];
+        $testOnly = [base_path('storage/framework/testing')];
+        $before = $this->fileState($watched, $testOnly);
 
         [$exit, $out, $raw] = $this->probe(['APP_CONFIG_CACHE' => $cache]);
 
@@ -318,7 +404,7 @@ class CutoverSmokeTest extends TestCase
         $this->assertSame(PHP_SAPI, $out['sapi']);
         $this->assertSame(['enabled', 'cache_full', 'restart_pending', 'num_cached_scripts', 'start_time', 'last_restart_time',
             'validate_timestamps'], array_keys($out['opcache']));
-        $this->assertSame($before, $this->fileState($watched), 'the probe wrote a file');
+        $this->assertSame($before, $this->fileState($watched, $testOnly), 'the probe wrote a file');
     }
 
     public function test_fpm_engine_refuses_to_boot_when_a_bootstrap_manifest_is_missing(): void
@@ -327,7 +413,7 @@ class CutoverSmokeTest extends TestCase
             return;
         }
         $directory = $this->temporaryDirectory();
-        $vector = $this->vectors()[0];
+        $vector = $this->localVectors($directory)[0];
 
         [$exit, $out, $raw] = $this->probe(['APP_CONFIG_CACHE' => $this->probeConfig($vector['config']),
             'APP_SERVICES_CACHE' => $directory.'/services.php', 'APP_PACKAGES_CACHE' => $directory.'/packages.php']);
@@ -387,13 +473,18 @@ class CutoverSmokeTest extends TestCase
         return $directory;
     }
 
-    /** @return array<string, string> path => size, mtime and digest */
-    private function fileState(array $roots): array
+    /**
+     * @param  list<string>  $skip  paths left out with everything below them
+     * @return array<string, string> path => size, mtime and digest
+     */
+    private function fileState(array $roots, array $skip = []): array
     {
         clearstatcache();
         $state = [];
         foreach ($roots as $root) {
-            $items = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::SELF_FIRST);
+            $tree = new \RecursiveCallbackFilterIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+                fn (\SplFileInfo $item) => ! in_array($item->getPathname(), $skip, true));
+            $items = new \RecursiveIteratorIterator($tree, \RecursiveIteratorIterator::SELF_FIRST);
             foreach ($items as $item) {
                 $state[$item->getPathname()] = $item->isDir() ? 'dir' : $item->getSize().' '.$item->getMTime().' '.hash_file('sha256', $item->getPathname());
             }
@@ -403,7 +494,8 @@ class CutoverSmokeTest extends TestCase
         return $state;
     }
 
-    private function assertRefusedWithoutChange(string $reason): void
+    /** @return string the problem that names $reason */
+    private function assertRefusedWithoutChange(string $reason): string
     {
         $before = $this->tableSnapshot();
 
@@ -413,6 +505,27 @@ class CutoverSmokeTest extends TestCase
         $this->assertFalse($out['ok']);
         $this->assertStringContainsString($reason, implode(' ', $out['problems']));
         $this->assertSame([], $this->changedTables($before, $this->tableSnapshot()), "refused ($reason) after a write");
+
+        return collect($out['problems'])->first(fn (string $problem) => str_contains($problem, $reason));
+    }
+
+    /**
+     * The SQL of README.md's "Leftover smoke job" section, by its first keyword.
+     *
+     * @return array<string, string>
+     */
+    private function leftoverCleanup(): array
+    {
+        $readme = file_get_contents(base_path('scripts/cutover/probe/README.md'));
+        $this->assertSame(1, preg_match('/^## Leftover smoke job\n(.*?)(?=^## |\z)/ms', $readme, $section), 'README has no Leftover smoke job section');
+        preg_match_all('/^```sql\n(.*?)\n```$/ms', $section[1], $blocks);
+        $statements = [];
+        foreach ($blocks[1] as $sql) {
+            $statements[strtoupper(strtok($sql, ' '))] = trim($sql);
+        }
+        $this->assertSame(['SELECT', 'DELETE', 'UPDATE'], array_keys($statements));
+
+        return $statements;
     }
 
     /** @return array{client_id: int, shoot_id: int} */
@@ -453,6 +566,69 @@ class CutoverSmokeTest extends TestCase
         $this->assertGreaterThanOrEqual(4, count($document['vectors']));
 
         return $document['vectors'];
+    }
+
+    /**
+     * The vectors with every path moved under $root. They name production paths
+     * (/var/www/backend/database/database.sqlite, /run/repro-mysql84-native/mysql.sock),
+     * and the probes connect to the default connection, so on a host where those
+     * exist a test would open the real database. Config and expected route values
+     * move alike; the pinned hashes stay in test_route_hash_vectors.py.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function localVectors(string $root): array
+    {
+        return array_map(fn (array $vector) => ['config' => $this->relocate($vector['config'], $root),
+            'route_values' => $this->relocate($vector['route_values'], $root)] + $vector, $this->vectors());
+    }
+
+    /** Every absolute path in $value, a url's query values included, prefixed with $root. */
+    private function relocate(mixed $value, string $root): mixed
+    {
+        if (is_array($value)) {
+            return array_map(fn ($item) => $this->relocate($item, $root), $value);
+        }
+        if (! is_string($value)) {
+            return $value;
+        }
+        if (str_starts_with($value, '/')) {
+            return $root.$value;
+        }
+        $query = parse_url($value, PHP_URL_QUERY);
+        if (! is_string($query) || $query === '') {
+            return $value;
+        }
+        parse_str($query, $parameters);
+
+        return str_replace('?'.$query, '?'.http_build_query($this->relocate($parameters, $root), '', '&', PHP_QUERY_RFC3986), $value);
+    }
+
+    /** The route values name at least one path, and every one of them lies under $root. */
+    private function assertPathsUnder(string $root, mixed $routeValues, string $label): void
+    {
+        $paths = $this->paths($routeValues);
+        $this->assertNotEmpty($paths, $label.': no path in the route values');
+        foreach ($paths as $path) {
+            $this->assertStringStartsWith($root.'/', $path, $label.': the test reached a path outside its temporary directory');
+        }
+    }
+
+    /** @return list<string> every absolute path in $value, a url's query values included */
+    private function paths(mixed $value): array
+    {
+        if (is_array($value)) {
+            return array_merge([], ...array_map(fn ($item) => $this->paths($item), array_values($value)));
+        }
+        if (! is_string($value)) {
+            return [];
+        }
+        if (str_starts_with($value, '/')) {
+            return [$value];
+        }
+        parse_str((string) parse_url($value, PHP_URL_QUERY), $query);
+
+        return array_values(array_filter($query, fn ($item) => is_string($item) && str_starts_with($item, '/')));
     }
 
     /** @return array<string, mixed> */

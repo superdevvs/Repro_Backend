@@ -5,10 +5,13 @@ namespace Tests\Feature;
 use App\Models\AryeoConnection;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Support\Cutover\CutoverEngineProbe;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Tests\Concerns\CutoverSmokeRootStandIn;
 use Tests\Concerns\CutoverTableSnapshots;
 use Tests\TestCase;
 
@@ -18,6 +21,7 @@ use Tests\TestCase;
  */
 class CutoverSmokeFixturesTest extends TestCase
 {
+    use CutoverSmokeRootStandIn;
     use CutoverTableSnapshots;
     use RefreshDatabase;
 
@@ -25,6 +29,31 @@ class CutoverSmokeFixturesTest extends TestCase
 
     /** Columns that would link a shoot or a client to a provider, a person or a schedule. */
     private const PROVIDER_COLUMN = '/cubicasa|iguide|mls|mmm_|dropbox|stripe|aryeo|google|copilot|external|tour_|featured|bright|photographer_id|editor_id|rep_id|scheduled|phone|cc_emails|verified_by|approved_by|idempotency/';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->standInForRoot();
+    }
+
+    public function test_create_refuses_root_before_any_database_work(): void
+    {
+        $before = $this->tableSnapshot();
+        $this->app->instance(CutoverEngineProbe::EFFECTIVE_UID_SEAM, 0);
+        $statements = collect();
+        DB::listen(fn (QueryExecuted $query) => $statements->push($query->sql));
+
+        [$exit, $out, $raw] = $this->fixtures('--create');
+
+        $this->assertSame(1, $exit, $raw);
+        $this->assertFalse($out['ok']);
+        $this->assertFalse($out['created']);
+        $this->assertFalse($out['present']);
+        $this->assertCount(1, $out['problems']);
+        $this->assertStringContainsString('refused: cutover:smoke-fixtures never runs as root', $out['problems'][0]);
+        $this->assertSame([], $statements->all(), 'the refused command ran a query');
+        $this->assertSame([], $this->changedTables($before, $this->tableSnapshot()));
+    }
 
     public function test_fixtures_have_no_provider_ids_and_one_encrypted_field(): void
     {

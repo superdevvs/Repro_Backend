@@ -10,7 +10,8 @@ pool socket with a minimal FastCGI client (experiment E8's) and checks that:
   www-data with the same cache, and what Python builds from the cache file itself with
   a strict var_export reader (never executed), so both languages agree on a real config;
 - the database, the cache directory and the app's storage and bootstrap/cache are unchanged;
-- root running the file on the CLI is refused before any application code loads.
+- root running the file on the CLI is refused before any application code loads;
+- root running `cutover:smoke` or `cutover:smoke-fixtures` is refused and changes nothing.
 
 Needs root, php-fpm, www-data and a readable vendor/ (the pinned QA image); skipped
 otherwise. Run from the app root: python3 -B -m unittest discover -s scripts/cutover/probe
@@ -271,6 +272,23 @@ env[APP_CONFIG_CACHE] = {cls.config}
         self.assertFalse(out["ok"])
         self.assertIn("root", " ".join(out["problems"]))
         self.assertNotIn("route_values", out)
+
+    def test_root_running_the_smoke_commands_is_refused_and_changes_nothing(self):
+        # The real effective uid 0, no test seam: what a profile misconfigured as root would do.
+        # That the refusal comes before any query is proven by CutoverSmokeTest's query log.
+        before = tree_state(self.data)
+        environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "APP_CONFIG_CACHE": str(self.config)}
+        for argv in (["cutover:smoke", "--engine-only", "--json"], ["cutover:smoke", "--write", "--json"],
+                     ["cutover:smoke-fixtures", "--create", "--json"]):
+            with self.subTest(argv=argv):
+                result = subprocess.run(["php", "artisan", *argv], cwd=APP, env=environment, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                out = json.loads(result.stdout)
+                self.assertFalse(out["ok"])
+                self.assertEqual(len(out["problems"]), 1, out)
+                self.assertIn(f"refused: {argv[0]} never runs as root", out["problems"][0])
+                self.assertNotIn("route_values", out)
+        self.assertEqual(before, tree_state(self.data), "a refused command changed the database")
 
 
 if __name__ == "__main__":

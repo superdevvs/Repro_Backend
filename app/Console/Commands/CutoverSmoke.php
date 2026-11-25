@@ -33,7 +33,8 @@ use Throwable;
  *                 queue:work --once. It writes only users, shoots, aryeo_changes
  *                 (the shoot triggers) and jobs.
  *
- * Exit 0 when every check passed, 1 otherwise, 2 for a usage error.
+ * Exit 0 when every check passed, 1 otherwise, 2 for a usage error. Run as root
+ * (effective uid 0) it refuses first, before any query: exit 1, mode null.
  */
 class CutoverSmoke extends Command
 {
@@ -45,8 +46,20 @@ class CutoverSmoke extends Command
 
     protected $description = 'Cutover smoke: engine and route values, read-only checks of the test records, or the write smoke';
 
+    /** The manual cleanup of a leftover smoke job, word for word as in scripts/cutover/probe/README.md. */
+    private const LEFTOVER_SELECT = "SELECT id, attempts, reserved_at, available_at, created_at, SUBSTR(payload, 1, 160) AS payload_start FROM jobs WHERE queue = 'cutover-smoke';";
+
+    private const LEFTOVER_DELETE = "DELETE FROM jobs WHERE queue = 'cutover-smoke' AND reserved_at IS NULL AND payload LIKE '%CutoverSmokeJob%';";
+
     public function handle(): int
     {
+        $refusal = CutoverEngineProbe::rootRefusal($this->laravel, 'cutover:smoke');
+        if ($refusal !== null) {
+            $this->report(['version' => 1, 'mode' => null, 'ok' => false, 'problems' => [$refusal]]);
+
+            return self::FAILURE;
+        }
+
         $modes = array_keys(array_filter([
             'engine-only' => (bool) $this->option('engine-only'),
             'read-only' => (bool) $this->option('read-only'),
@@ -116,7 +129,9 @@ class CutoverSmoke extends Command
         $checks['smoke_queue_pending'] = $this->smokeJobs()->count();
         $checks['smoke_queue_paused'] = (bool) $this->laravel['queue']->isPaused(Fixture::QUEUE_CONNECTION, Fixture::QUEUE);
         if ($checks['smoke_queue_pending'] !== 0) {
-            $problems[] = "{$checks['smoke_queue_pending']} jobs are pending on {$checks['smoke_queue']}";
+            $problems[] = "{$checks['smoke_queue_pending']} jobs are pending on {$checks['smoke_queue']}; the smoke never deletes them. "
+                ."For a leftover CutoverSmokeJob see 'Leftover smoke job' in scripts/cutover/probe/README.md: look with "
+                .self::LEFTOVER_SELECT.' then remove only the unreserved smoke jobs with '.self::LEFTOVER_DELETE;
         }
 
         return $checks;
@@ -173,16 +188,21 @@ class CutoverSmoke extends Command
         return $this->laravel['db']->connection($config['connection'] ?? null)->table($config['table'] ?? 'jobs')->where('queue', Fixture::QUEUE);
     }
 
+    /** A refusal before any work (root) has only version, mode null, ok and problems. */
     private function report(array $report): void
     {
-        $report['route_values'] = CutoverRouteValues::forJson($report['route_values']);
+        if (array_key_exists('route_values', $report)) {
+            $report['route_values'] = CutoverRouteValues::forJson($report['route_values']);
+        }
         if ($this->option('json')) {
             $this->output->writeln(json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION), OutputInterface::OUTPUT_RAW);
 
             return;
         }
-        $this->output->writeln(sprintf('%s: engine %s, connection %s, database %s', $report['mode'], $report['engine'] ?? '-',
-            $report['connection'] ?? '-', $report['database'] ?? '-'), OutputInterface::OUTPUT_RAW);
+        if ($report['mode'] !== null) {
+            $this->output->writeln(sprintf('%s: engine %s, connection %s, database %s', $report['mode'], $report['engine'] ?? '-',
+                $report['connection'] ?? '-', $report['database'] ?? '-'), OutputInterface::OUTPUT_RAW);
+        }
         foreach ($report['checks'] ?? [] as $check => $value) {
             $this->output->writeln($check.': '.json_encode($value, JSON_UNESCAPED_SLASHES), OutputInterface::OUTPUT_RAW);
         }

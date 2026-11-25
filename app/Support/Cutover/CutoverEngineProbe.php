@@ -19,6 +19,12 @@ use UnexpectedValueException;
  */
 final class CutoverEngineProbe
 {
+    /**
+     * Test seam: a container binding that stands in for posix_geteuid() in
+     * rootRefusal(). Only PHPUnit binds it; nothing outside the process can.
+     */
+    public const EFFECTIVE_UID_SEAM = 'cutover.smoke.effective_uid';
+
     /** @return array<string, mixed> */
     public static function measure(Application $app): array
     {
@@ -88,6 +94,20 @@ final class CutoverEngineProbe
             default:
                 throw new RuntimeException("engine {$connection->getDriverName()} is not supported");
         }
+    }
+
+    /**
+     * The smoke commands, like fpm-engine.php, never run application code as
+     * root: root could leave root-owned log or cache files where www-data
+     * writes. Called first in handle(), before any query or write. Null when the
+     * effective user is not root.
+     */
+    public static function rootRefusal(Application $app, string $command): ?string
+    {
+        $euid = $app->bound(self::EFFECTIVE_UID_SEAM) ? $app->make(self::EFFECTIVE_UID_SEAM)
+            : (function_exists('posix_geteuid') ? posix_geteuid() : null);
+
+        return $euid === 0 ? "refused: {$command} never runs as root (effective uid 0); run it as www-data or the deploy user" : null;
     }
 
     /** Process identity as the wrapper profile set it up. */

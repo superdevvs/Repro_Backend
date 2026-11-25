@@ -14,7 +14,8 @@ use Throwable;
  * Create, or report, the inert test client and test shoot of the MySQL cutover
  * smoke (design v2, 5.3). They must exist in production before the copy that
  * the drill or the cutover loads, so they are created with the release deploy
- * and their IDs go into the controller's host.json (`smoke`).
+ * and their IDs go into the controller's host.json (`smoke`). Run as root
+ * (effective uid 0) it refuses first, before any query, with exit 1.
  */
 class CutoverSmokeFixtures extends Command
 {
@@ -26,9 +27,16 @@ class CutoverSmokeFixtures extends Command
 
     public function handle(): int
     {
-        $db = $this->laravel['db']->connection();
         $report = ['version' => 1, 'present' => false, 'created' => false, 'client_id' => null, 'shoot_id' => null, 'ok' => false, 'problems' => []];
+        $refusal = CutoverEngineProbe::rootRefusal($this->laravel, 'cutover:smoke-fixtures');
+        if ($refusal !== null) {
+            $report['problems'][] = $refusal;
+            $this->report($report);
 
+            return self::FAILURE;
+        }
+
+        $db = $this->laravel['db']->connection();
         try {
             $found = CutoverSmokeFixture::find($db);
             if ($found['client'] === null && $this->option('create')) {
@@ -51,17 +59,22 @@ class CutoverSmokeFixtures extends Command
             $report['problems'][] = CutoverEngineProbe::message($error);
         }
         $report['ok'] = $report['problems'] === [];
-
-        if ($this->option('json')) {
-            $this->output->writeln(json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES), OutputInterface::OUTPUT_RAW);
-        } else {
-            $this->output->writeln(sprintf('test client %s, test shoot %s%s', $report['client_id'] ?? '-', $report['shoot_id'] ?? '-',
-                $report['created'] ? ' (created)' : ''), OutputInterface::OUTPUT_RAW);
-            foreach ($report['problems'] as $problem) {
-                $this->output->writeln('problem: '.$problem, OutputInterface::OUTPUT_RAW);
-            }
-        }
+        $this->report($report);
 
         return $report['ok'] ? self::SUCCESS : self::FAILURE;
+    }
+
+    private function report(array $report): void
+    {
+        if ($this->option('json')) {
+            $this->output->writeln(json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES), OutputInterface::OUTPUT_RAW);
+
+            return;
+        }
+        $this->output->writeln(sprintf('test client %s, test shoot %s%s', $report['client_id'] ?? '-', $report['shoot_id'] ?? '-',
+            $report['created'] ? ' (created)' : ''), OutputInterface::OUTPUT_RAW);
+        foreach ($report['problems'] as $problem) {
+            $this->output->writeln('problem: '.$problem, OutputInterface::OUTPUT_RAW);
+        }
     }
 }
