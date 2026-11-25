@@ -1,4 +1,4 @@
-"""Root-installed, read-only admission check for the cutover journal."""
+"""Root-installed cutover admission check and authority evidence refresh."""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 ENTRYPOINT = Path("/opt/repro-cutover-fence/guard.py")
@@ -31,6 +33,23 @@ ACTIVATION_FIELDS = {
 
 class Refused(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class HostAuthority:
+    """Independent observations gathered by the trusted host adapter."""
+
+    engine: str
+    database_identity: str
+    live_config_sha256: str
+    release_sha: str
+    artifact_sha256: str
+    competing_writer_detected: bool
+    admissions_open: bool
+    workers_stopped: bool
+    deployment_fenced: bool
+    sqlite_writable: bool
+    mysql_writable: bool
 
 
 def require(condition: bool, message: str) -> None:
@@ -176,13 +195,9 @@ def verify(policy_raw: bytes, journal_raw: bytes, evidence_raw: bytes, *, machin
                 "Deploys are held because activation evidence is stale or incomplete")
 
 
-@contextmanager
-def admitted(action: str, expected_engine: str) -> Iterator[int]:
-    """Hold a verified shared lease for the bounded operation in this scope."""
+def _require_root_installation() -> None:
     require(sys.platform == "linux" and os.geteuid() == 0 and sys.flags.isolated and sys.flags.no_site,
             "Guard requires Linux root with the isolated system interpreter")
-    import fcntl
-
     require(Path(__file__).absolute() == ENTRYPOINT, "Use the fixed root-installed guard entrypoint")
     check_chain(ENTRYPOINT)
     interpreter = Path(sys.executable).resolve()
@@ -192,6 +207,101 @@ def admitted(action: str, expected_engine: str) -> Iterator[int]:
     private = STATE.lstat()
     trusted(private, directory=True)
     require(not private.st_mode & 0o077, "Cutover journal directory is not root-private")
+
+
+def _invalidate(directory: int, filename: str) -> None:
+    try:
+        trusted(os.stat(filename, dir_fd=directory, follow_symlinks=False))
+    except FileNotFoundError:
+        return
+    os.unlink(filename, dir_fd=directory)
+    os.fsync(directory)
+
+
+def _publish(directory: int, record: bytes) -> None:
+    temporary = f".proof-{uuid.uuid4().hex}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=directory)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(record)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, EVIDENCE.name, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
+    except BaseException:
+        # An error after rename must not leave usable authority after the lock is released.
+        _invalidate(directory, EVIDENCE.name)
+        raise
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+
+
+def refresh_engine_evidence(observe: Callable[[str], HostAuthority]) -> None:
+    """Refresh committed-journal authority while a trusted adapter has drained writers.
+
+    The caller supplies a bounded read-only host probe. This entrypoint owns
+    the exclusive flock and is separate from a runner's pending transition.
+    """
+    _require_root_installation()
+    import fcntl
+
+    require(ACTIVATION.parent == EVIDENCE.parent, "Evidence files must share a protected directory")
+    check_chain(EVIDENCE.parent, directory=True)
+    lock_path = STATE / "operator.lock"
+    with open_protected(lock_path) as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        directory = os.open(EVIDENCE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            trusted(os.fstat(directory), directory=True)
+            _invalidate(directory, EVIDENCE.name)
+            _invalidate(directory, ACTIVATION.name)
+            policy_raw = read_protected(POLICY)
+            journal_raw = read_protected(STATE / "state.json")
+            machine_sha = sha256(read_protected(MACHINE_ID))
+            boot_id = BOOT_ID.read_text(encoding="ascii").strip()
+            policy, journal = map(read_json, (policy_raw, journal_raw))
+            require(valid_uuid(boot_id) and policy.get("machine_id_sha256") == machine_sha,
+                    "Current boot or policy host identity is invalid")
+            engine = authority(policy, journal, "web-writer")
+            observed = observe(engine)
+            require(isinstance(observed, HostAuthority)
+                    and observed.admissions_open is False and observed.workers_stopped is True
+                    and observed.deployment_fenced is True
+                    and observed.sqlite_writable is (engine == "sqlite")
+                    and observed.mysql_writable is (engine == "mysql"),
+                    "Host probe did not establish a sealed single-engine route")
+            record = {
+                "version": 1, "boot_id": boot_id, "policy_sha256": sha256(policy_raw),
+                "journal_sha256": sha256(journal_raw), "engine": observed.engine,
+                "database_identity": observed.database_identity, "live_config_sha256": observed.live_config_sha256,
+                "release_sha": observed.release_sha, "artifact_sha256": observed.artifact_sha256,
+                "competing_writer_detected": observed.competing_writer_detected,
+            }
+            evidence_raw = (json.dumps(record, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+            verify(policy_raw, journal_raw, evidence_raw, machine_sha=machine_sha, boot_id=boot_id,
+                   action="web-writer", expected_engine=engine)
+            require(policy_raw == read_protected(POLICY) and journal_raw == read_protected(STATE / "state.json")
+                    and machine_sha == sha256(read_protected(MACHINE_ID))
+                    and boot_id == BOOT_ID.read_text(encoding="ascii").strip(),
+                    "Authority inputs changed during the host probe")
+            require(os.path.samestat(os.fstat(lock), lock_path.lstat())
+                    and os.path.samestat(os.fstat(directory), EVIDENCE.parent.lstat()),
+                    "Authority paths changed during the host probe")
+            _publish(directory, evidence_raw)
+        finally:
+            os.close(directory)
+
+
+@contextmanager
+def admitted(action: str, expected_engine: str) -> Iterator[int]:
+    """Hold a verified shared lease for the bounded operation in this scope."""
+    _require_root_installation()
+    import fcntl
+
     with open_protected(STATE / "operator.lock") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         try:

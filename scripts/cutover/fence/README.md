@@ -1,9 +1,10 @@
 # Cutover admission guard
 
-This read-only check consumes the actual host cutover journal. It returns exit
-zero for the verified engine in the current boot and exit one when admissions
-must remain held. The repository supplies the check and tests. Host enforcement
-and the trusted evidence publisher still need implementation and acceptance.
+The admission CLI reads the actual host cutover journal. It returns exit zero
+for the verified engine in the current boot and exit one when admissions must
+remain held. The repository supplies the guard, committed-journal evidence
+refresh and tests. Live host probes, transition publication and enforcement
+still need host integration and acceptance.
 
 | Journal phase | Allowed on valid authority evidence |
 | --- | --- |
@@ -59,6 +60,19 @@ the worker itself still runs as its service account.
    source identity or MySQL UUID. Keep hashes of SQLite snapshot contents in
    the migration evidence, since live SQLite contents change after reopening.
 
+   For an already committed journal, the trusted host adapter can explicitly
+   call `refresh_engine_evidence(observe)` after holding ingress and draining
+   workers. The callback receives the engine from the journal and must return
+   a `HostAuthority` built from bounded, read-only runtime probes. It must
+   measure the route seals, writer state, live database identity, effective
+   configuration and release independently of the policy's expected values.
+   The refresh takes the exclusive operator lease, revokes prior authority
+   and activation evidence, verifies the observation, rechecks the boot,
+   policy, journal and lock inode, then atomically publishes the refreshed
+   authority. If a probe fails, admissions remain held. Pending transitions
+   require the runner's separate publication path. Keep the adapter and its
+   invocation root-owned with the same installation constraints as the guard.
+
 4. **Application activation evidence.** After admission reopens, verify the
    application and reconcile the writer state before lifting the deploy hold.
    Atomically publish protected
@@ -102,3 +116,10 @@ privilege chain before connecting production services.
 ```text
 python -B -m unittest discover -s scripts/cutover/fence -p test_guard.py -v
 ```
+
+Run `test_refresh.py` in a disposable Linux filesystem using `/usr/bin/python3
+-I -S`, a root-owned installed guard at the fixed `/opt/repro-cutover-fence`
+path, and `REPRO_FENCE_TEST_ROOT` pointing to a private root-owned scratch
+directory. These tests substitute disposable journal and machine records while
+exercising real file permissions, flock contention, renames and directory
+sync. They leave the production configuration outside the test filesystem.
