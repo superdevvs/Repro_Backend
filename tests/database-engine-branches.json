@@ -6,40 +6,40 @@
             "rule": "engine-branch",
             "text": "$pdo = new PDO('sqlite:'.$path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY]);",
             "count": 1,
-            "status": "to-fix",
-            "reason": "Opens a SQLite backup file directly (H-1). Must stay SQLite-only and refuse clearly on MySQL."
+            "status": "safe",
+            "reason": "SQLite-only by design: it reads a SQLite safety backup. --apply refuses unless the live database is SQLite (H-1); the dry run uses the live connection."
         },
         {
             "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
             "rule": "engine-branch",
             "text": "$this->require($age >= -5 && $age <= 900 && filesize($path) >= 4096 && file_get_contents($path, false, null, 0, 16) === \"SQLite format 3\\0\", 'The SQLite backup must be complete and no more than 15 minutes old.');",
             "count": 1,
-            "status": "to-fix",
-            "reason": "Checks the SQLite file header of the backup (H-1). Same command as above."
+            "status": "safe",
+            "reason": "SQLite-only by design: it reads a SQLite safety backup. --apply refuses unless the live database is SQLite (H-1); the dry run uses the live connection."
         },
         {
             "file": "app/Console/Commands/MediaStorageHealth.php",
             "rule": "engine-branch",
-            "text": "$databaseRoot = config('database.default') === 'sqlite' && $databaseFile !== ':memory:'",
+            "text": "if ($driver === 'sqlite') {",
             "count": 1,
-            "status": "to-fix",
-            "reason": "Finds the disk that holds the database from the SQLite file path. On MySQL it must probe the MySQL data folder (H-1)."
+            "status": "safe",
+            "reason": "SQLite: the folder of the database file. MySQL: the MySQL data folder (config or @@datadir). Any other engine fails the check (H-1)."
         },
         {
             "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
             "rule": "engine-branch",
             "text": "$pdo = new PDO('sqlite:'.$path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY]);",
             "count": 1,
-            "status": "to-fix",
-            "reason": "Opens a SQLite safety backup directly (H-1). Must stay SQLite-only and refuse clearly on MySQL."
+            "status": "safe",
+            "reason": "SQLite-only by design: it reads a SQLite safety backup. --apply refuses unless the live database is SQLite (H-1); the dry run uses the live connection."
         },
         {
             "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
             "rule": "engine-branch",
             "text": "$this->require(file_get_contents($path, false, null, 0, 16) === \"SQLite format 3\\0\", 'The safety backup is not a SQLite database.');",
             "count": 1,
-            "status": "to-fix",
-            "reason": "Checks the SQLite file header of the safety backup (H-1). Same command as above."
+            "status": "safe",
+            "reason": "SQLite-only by design: it reads a SQLite safety backup. --apply refuses unless the live database is SQLite (H-1); the dry run uses the live connection."
         },
         {
             "file": "app/Http/Middleware/RetryDatabaseThrottleRequests.php",
@@ -144,6 +144,14 @@
             "count": 1,
             "status": "safe",
             "reason": "Chooses CAST AS TEXT on SQLite and CAST AS CHAR on MySQL. Both engines get the same text."
+        },
+        {
+            "file": "app/Support/DatabaseEngine.php",
+            "rule": "engine-branch",
+            "text": "return self::driver($connection) === 'sqlite';",
+            "count": 1,
+            "status": "safe",
+            "reason": "The one shared engine check. Reads config only; used by code that must refuse on MySQL."
         },
         {
             "file": "app/Support/EditingDispatchWriteLock.php",

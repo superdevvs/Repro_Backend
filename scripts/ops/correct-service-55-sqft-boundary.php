@@ -3,11 +3,17 @@
 // Separate operator action: this script is NEVER invoked by a migration/deploy.
 // Default is read-only. Apply requires both explicit flags and an operator's
 // separately verified SQLite backup. No application notifications are triggered.
+// It only corrects a SQLite file, so it refuses when the app's live database is not SQLite.
 $options = getopt('', ['database:', 'apply', 'confirm:', 'backup:']);
 $database = isset($options['database']) ? realpath($options['database']) : false;
 $apply = array_key_exists('apply', $options);
 
 try {
+    require __DIR__.'/bootstrap-app.php';
+    $driver = App\Support\DatabaseEngine::driver();
+    if ($driver !== 'sqlite') {
+        throw new RuntimeException("This script corrects a SQLite file, but the live database is {$driver}. Make the correction through the live database instead.");
+    }
     if (! $database || ! is_file($database)) {
         throw new RuntimeException('Supply --database=/absolute/path/to/database.sqlite.');
     }

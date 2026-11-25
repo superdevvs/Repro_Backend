@@ -12,6 +12,8 @@ selection for this service rather than choose one price silently.
 
 Prepared script: `scripts/ops/correct-service-55-sqft-boundary.php`.
 Supply the exact verified production database path; the script does not infer it.
+Run it from the app folder. It refuses when the app's live database is not SQLite
+(after the move to MySQL), because the SQLite file would then be a stale copy.
 
 ```sh
 # Read only: checks the exact range identity, bounds and price.
