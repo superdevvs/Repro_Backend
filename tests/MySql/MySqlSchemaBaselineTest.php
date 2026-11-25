@@ -14,6 +14,8 @@ use Symfony\Component\Process\Process;
  * These tests need no database server. The parity tests compare the baseline with a
  * fresh SQLite migrate of this checkout, run once in a child process against its own
  * temporary SQLite file, so they behave the same under phpunit.xml and phpunit.mysql.xml.
+ * They compare names only: tables, columns, indexes and triggers. Column types, index
+ * columns, trigger bodies, foreign keys and CHECK constraints are not compared.
  */
 final class MySqlSchemaBaselineTest extends TestCase
 {
