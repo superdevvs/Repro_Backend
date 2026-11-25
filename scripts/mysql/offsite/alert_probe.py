@@ -111,7 +111,7 @@ def parse_plan(raw: bytes) -> dict:
     return plan
 
 
-def app_engine(plan: dict) -> str:
+def env_engine(plan: dict) -> str:
     """Read only the DB_CONNECTION line of the app's .env; nothing else is kept."""
     with open(Path(plan["app_root"]) / ".env", "rb") as stream:
         raw = stream.read(1024 * 1024)
@@ -120,6 +120,109 @@ def app_engine(plan: dict) -> str:
         if line.startswith(b"DB_CONNECTION="):
             engine = line.split(b"=", 1)[1].strip().strip(b"'\"").decode("ascii", "replace")
     return engine or "unset"
+
+
+OPAQUE = object()  # A cached config value the engine check does not need (object, concatenation, number).
+URL_DRIVERS = {"mysql2": "mysql", "postgres": "pgsql", "postgresql": "pgsql", "sqlite3": "sqlite", "mssql": "sqlsrv"}
+
+
+def var_export_tokens(raw: bytes) -> list[tuple[str, bytes]]:
+    """Tokens of PHP var_export output: quoted strings (unescaped), the symbols => ( ) , ; and bare words."""
+    tokens, index, size = [], 0, len(raw)
+    while index < size:
+        char = raw[index:index + 1]
+        if char in b" \t\r\n":
+            index += 1
+        elif char == b"'":
+            value, index = bytearray(), index + 1
+            while True:
+                need(index < size, "unterminated string")
+                char = raw[index:index + 1]
+                if char == b"\\" and raw[index + 1:index + 2] in (b"\\", b"'"):
+                    value += raw[index + 1:index + 2]
+                    index += 2
+                elif char == b"'":
+                    index += 1
+                    break
+                else:
+                    value += char
+                    index += 1
+            tokens.append(("str", bytes(value)))
+        elif raw.startswith(b"=>", index):
+            tokens.append(("op", b"=>"))
+            index += 2
+        elif char in b"(),;":
+            tokens.append(("op", char))
+            index += 1
+        else:
+            start = index
+            while index < size and raw[index:index + 1] not in b" \t\r\n'(),;" and not raw.startswith(b"=>", index):
+                index += 1
+            tokens.append(("word", raw[start:index]))
+    return tokens
+
+
+def var_export_value(tokens: list, index: int):
+    """Parse one value; return (value, index of the token after it). Arrays become dicts."""
+    if tokens[index] == ("word", b"array") and tokens[index + 1] == ("op", b"("):
+        result, index = {}, index + 2
+        while tokens[index] != ("op", b")"):
+            kind, key = tokens[index]
+            need(kind in ("str", "word") and tokens[index + 1] == ("op", b"=>"), "unexpected array entry")
+            result[key.decode("utf-8", "replace")], index = var_export_value(tokens, index + 2)
+            if tokens[index] == ("op", b","):
+                index += 1
+        return result, index + 1
+    if tokens[index][0] == "str" and tokens[index + 1] in (("op", b","), ("op", b")"), ("op", b";")):
+        return tokens[index][1].decode("utf-8", "replace"), index + 1
+    if tokens[index] == ("word", b"NULL") and tokens[index + 1] in (("op", b","), ("op", b")")):
+        return None, index + 1
+    depth = 0  # Anything else (object, enum, concatenation, number) is skipped to its end.
+    while True:
+        kind, text = tokens[index]
+        if kind == "op" and text == b"(":
+            depth += 1
+        elif kind == "op" and text in (b")", b",", b";") and depth == 0:
+            return OPAQUE, index
+        elif kind == "op" and text == b")":
+            depth -= 1
+        index += 1
+
+
+def cached_engine(raw: bytes) -> str:
+    """The driver of the default connection in Laravel's cached config. Only that name is kept."""
+    try:
+        tokens = var_export_tokens(raw)
+        need(tokens[:2] == [("word", b"<?php"), ("word", b"return")], "not a cached config")
+        config, index = var_export_value(tokens, 2)
+        need(tokens[index:] == [("op", b";")] and isinstance(config, dict), "cached config has trailing text")
+        database = config["database"]
+        connection = database["connections"][database["default"]]
+        driver, url = connection["driver"], connection.get("url")
+        if isinstance(url, str) and url:
+            # Laravel's ConfigurationUrlParser takes the driver from the URL scheme.
+            scheme = url.split(":", 1)[0].lower()
+            driver = URL_DRIVERS.get(scheme, scheme)
+        need(isinstance(driver, str) and driver != "", "no driver")
+        return driver
+    except (Refusal, IndexError, KeyError, TypeError):
+        raise DetectorError("cached config could not be read") from None
+
+
+def app_engine(plan: dict) -> tuple[str, str]:
+    """The engine the app runs on, and where that came from.
+
+    Laravel ignores .env once `php artisan config:cache` wrote bootstrap/cache/config.php
+    (Deploy-App runs it), so that file wins, as in backup-database.php."""
+    cached = Path(plan["app_root"]) / "bootstrap" / "cache" / "config.php"
+    try:
+        with open(cached, "rb") as stream:
+            raw = stream.read(8 * 1024 * 1024 + 1)
+    except FileNotFoundError:
+        return env_engine(plan), ".env"
+    if len(raw) > 8 * 1024 * 1024:
+        raise DetectorError("cached config is too large")
+    return cached_engine(raw), "cached config"
 
 
 def sqlite_rows(plan: dict, sql: str, params: tuple = ()) -> list[tuple]:
@@ -155,7 +258,11 @@ def database_down(context: Context) -> tuple[str, str]:
 
 
 def wrong_database_engine(context: Context) -> tuple[str, str]:
-    engine, expected = app_engine(context.plan), context.plan["expected_engine"]
+    (engine, source), expected = app_engine(context.plan), context.plan["expected_engine"]
+    if source == "cached config":
+        if engine != expected:
+            return "fail", f"app runs on {engine[:16]} (cached config), expected {expected}"
+        return "ok", f"app runs on {expected} (cached config)"
     if engine != expected:
         return "fail", f"app is configured for {engine[:16]}, expected {expected}"
     return "ok", f"app is configured for {expected}"
