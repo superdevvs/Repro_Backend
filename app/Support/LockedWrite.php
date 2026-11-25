@@ -28,10 +28,10 @@ use Throwable;
  * the caller still fails visibly.
  *
  * On MySQL with the writer policy there is no stale-snapshot refusal to retry.
- * The write takes the writer token first, retrying only that wait, and then
- * runs exactly once inside the token's transaction. A failure after the token
- * is held, including a lock timeout, is never retried and the callback is
- * never replayed.
+ * The callback runs once, at its own transaction depth. Each writer-token wait
+ * inside it may retry where it stands, before its BEGIN or statement does
+ * anything. A failure after the token is held, including a MySQL lock timeout
+ * or deadlock, is never retried, so the callback is never replayed for it.
  */
 final class LockedWrite
 {
@@ -56,13 +56,11 @@ final class LockedWrite
     {
         $attempts = max(1, $attempts);
         $connection = DB::connection();
-        if ($connection instanceof WriterTokenConnection && $connection->writerPolicyEnabled()) {
-            return self::runWithWriterToken($connection, $write, $context, $attempts);
-        }
+        $writerToken = $connection instanceof WriterTokenConnection && $connection->writerPolicyEnabled();
 
         for ($attempt = 1; ; $attempt++) {
             try {
-                return $write();
+                return $writerToken ? self::runWithWriterToken($connection, $write, $context, $attempts) : $write();
             } catch (Throwable $e) {
                 if ($attempt >= $attempts || ! self::isLockContention($e)) {
                     if (self::isLockContention($e)) {
@@ -92,6 +90,9 @@ final class LockedWrite
     }
 
     /**
+     * Run the callback once. Each MySQL writer-token wait inside it may retry
+     * where it stands, before its BEGIN or statement does anything.
+     *
      * @template TReturn
      *
      * @param  callable(): TReturn  $write
@@ -99,13 +100,8 @@ final class LockedWrite
      */
     private static function runWithWriterToken(WriterTokenConnection $connection, callable $write, ?string $context, int $attempts)
     {
-        if ($connection->transactionLevel() > 0) {
-            // The token is already held by the enclosing transaction.
-            return $write();
-        }
-
         try {
-            return $connection->transaction(static fn () => $write(), $attempts);
+            return $connection->withAcquisitionAttempts($attempts, static fn () => $write());
         } catch (WriterTokenTimeout $e) {
             if ($connection->isAcquisitionTimeout($e)) {
                 Log::error('Write still blocked by another database writer after retrying; giving up.', [

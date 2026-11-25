@@ -192,7 +192,8 @@ final class WriterExemptionsTest extends TestCase
             $this->admin->rollBack();
         }
         $this->assertSame(1, $calls);
-        $this->assertSame(0, $this->counter(1), 'The whole callback rolls back with its transaction.');
+        // LockedWrite adds no transaction: the first write committed on its own, as on SQLite.
+        $this->assertSame(1, $this->counter(1));
         $this->assertFalse($this->tokenIsHeld());
     }
 

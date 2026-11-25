@@ -28,9 +28,9 @@ class WriterTokenRetryLayersTest extends TestCase
 {
     private ?FakeWriterTokenConnection $fake = null;
 
-    private function useFakeWriterConnection(int $timeoutsBeforeAcquired = 0, int $level = 0): FakeWriterTokenConnection
+    private function useFakeWriterConnection(int $level = 0, ?Closure $whileWaiting = null): FakeWriterTokenConnection
     {
-        $this->fake = new FakeWriterTokenConnection($timeoutsBeforeAcquired, $level);
+        $this->fake = new FakeWriterTokenConnection($level, $whileWaiting);
         config(['database.connections.writer-fake' => ['driver' => 'writer-fake', 'name' => 'writer-fake']]);
         DB::extend('writer-fake', fn () => $this->fake);
         DB::setDefaultConnection('writer-fake');
@@ -38,38 +38,42 @@ class WriterTokenRetryLayersTest extends TestCase
         return $this->fake;
     }
 
-    public function test_locked_write_takes_the_token_first_and_runs_the_callback_once(): void
+    public function test_locked_write_runs_the_callback_once_and_lets_its_token_waits_retry_in_place(): void
     {
-        $fake = $this->useFakeWriterConnection(timeoutsBeforeAcquired: 2);
+        $fake = $this->useFakeWriterConnection();
         $calls = 0;
 
         $result = LockedWrite::run(function () use (&$calls, $fake) {
             $calls++;
-            $this->assertTrue($fake->holdsToken, 'The callback must run only after the token is held.');
+            // Each token wait inside the callback may now retry where it stands.
+            $this->assertSame(LockedWrite::DEFAULT_ATTEMPTS, $fake->acquisitionAttempts);
+            // No transaction of its own: depth and atomicity are as on SQLite.
+            $this->assertSame(0, $fake->transactionLevel());
 
             return 'saved';
         }, 'test');
 
         $this->assertSame('saved', $result);
         $this->assertSame(1, $calls);
-        $this->assertSame([LockedWrite::DEFAULT_ATTEMPTS], $fake->transactionAttempts);
-        $this->assertSame(3, $fake->acquisitions);
+        $this->assertSame([LockedWrite::DEFAULT_ATTEMPTS], $fake->attemptsRequested);
+        $this->assertSame(1, $fake->acquisitionAttempts, 'The longer patience ends with the callback.');
     }
 
-    public function test_locked_write_gives_up_after_its_attempts_without_entering_the_callback(): void
+    public function test_locked_write_reports_an_exhausted_token_wait_once_and_never_replays_the_callback(): void
     {
-        $fake = $this->useFakeWriterConnection(timeoutsBeforeAcquired: 10);
+        $fake = $this->useFakeWriterConnection(whileWaiting: fn (FakeWriterTokenConnection $fake) => $fake->exhaustTokenWait());
         Log::spy();
         $calls = 0;
         try {
-            LockedWrite::run(function () use (&$calls) {
+            LockedWrite::run(function () use (&$calls, $fake) {
                 $calls++;
+                $fake->write();
             }, 'test');
-            $this->fail('Exhausted acquisition must surface.');
-        } catch (WriterTokenTimeout) {
+            $this->fail('An exhausted token wait must surface.');
+        } catch (WriterTokenTimeout $error) {
+            $this->assertTrue($fake->isAcquisitionTimeout($error));
         }
-        $this->assertSame(0, $calls);
-        $this->assertSame(LockedWrite::DEFAULT_ATTEMPTS, $fake->acquisitions);
+        $this->assertSame(1, $calls);
         Log::shouldHaveReceived('error')->once();
     }
 
@@ -100,20 +104,35 @@ class WriterTokenRetryLayersTest extends TestCase
         $this->assertSame(1, $calls);
     }
 
-    public function test_locked_write_inside_an_open_transaction_runs_once_without_another_acquisition(): void
+    public function test_locked_write_inside_an_open_transaction_runs_once(): void
     {
         $fake = $this->useFakeWriterConnection(level: 1);
         $calls = 0;
 
-        $this->assertSame('inner', LockedWrite::run(function () use (&$calls) {
+        $this->assertSame('inner', LockedWrite::run(function () use (&$calls, $fake) {
             $calls++;
+            $this->assertSame(1, $fake->transactionLevel());
 
             return 'inner';
         }));
 
         $this->assertSame(1, $calls);
-        $this->assertSame([], $fake->transactionAttempts);
-        $this->assertSame(0, $fake->acquisitions);
+    }
+
+    public function test_sqlite_lock_messages_keep_their_old_bounded_retry(): void
+    {
+        $this->useFakeWriterConnection();
+        $calls = 0;
+
+        $this->assertSame('saved', LockedWrite::run(function () use (&$calls) {
+            if (++$calls === 1) {
+                throw new \PDOException('SQLSTATE[HY000]: General error: 5 database is locked');
+            }
+
+            return 'saved';
+        }, 'test'));
+
+        $this->assertSame(2, $calls);
     }
 
     public static function limiterOperations(): array

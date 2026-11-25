@@ -8,18 +8,19 @@ use Closure;
 use Illuminate\Database\Connection;
 use Throwable;
 
-/** Stand-in for the MySQL writer connection: simulates acquisition timeouts before the callback. */
+/** Stand-in for the MySQL writer connection: records how long its token waits may retry. */
 final class FakeWriterTokenConnection extends Connection implements WriterTokenConnection
 {
-    public array $transactionAttempts = [];
+    /** @var list<int> */
+    public array $attemptsRequested = [];
 
-    public int $acquisitions = 0;
-
-    public bool $holdsToken = false;
+    public int $acquisitionAttempts = 1;
 
     private ?WriterTokenTimeout $lastTimeout = null;
 
-    public function __construct(private int $timeoutsBeforeAcquired, int $level)
+    private bool $exhausted = false;
+
+    public function __construct(int $level, private ?Closure $whileWaiting = null)
     {
         parent::__construct(fn () => null, 'fake', '', ['name' => 'writer-fake']);
         $this->transactions = $level;
@@ -35,27 +36,32 @@ final class FakeWriterTokenConnection extends Connection implements WriterTokenC
         return $error === $this->lastTimeout;
     }
 
-    public function transaction(Closure $callback, $attempts = 1)
+    public function withAcquisitionAttempts(int $attempts, Closure $callback): mixed
     {
-        $this->transactionAttempts[] = $attempts;
-        for ($attempt = 1; ; $attempt++) {
-            $this->acquisitions++;
-            if ($this->timeoutsBeforeAcquired-- > 0) {
-                $this->lastTimeout = new WriterTokenTimeout('The MySQL writer token is busy.');
-                if ($attempt >= $attempts) {
-                    throw $this->lastTimeout;
-                }
+        $this->attemptsRequested[] = $attempts;
+        $previous = $this->acquisitionAttempts;
+        $this->acquisitionAttempts = max($previous, $attempts);
+        try {
+            if ($this->whileWaiting) {
+                ($this->whileWaiting)($this);
+            }
 
-                continue;
-            }
-            $this->holdsToken = true;
-            $this->transactions++;
-            try {
-                return $callback($this);
-            } finally {
-                $this->transactions--;
-                $this->holdsToken = false;
-            }
+            return $callback();
+        } finally {
+            $this->acquisitionAttempts = $previous;
+        }
+    }
+
+    /** The next write's token wait times out on every attempt. */
+    public function exhaustTokenWait(): void
+    {
+        $this->exhausted = true;
+    }
+
+    public function write(): void
+    {
+        if ($this->exhausted) {
+            throw $this->lastTimeout = new WriterTokenTimeout('The MySQL writer token is busy.');
         }
     }
 }

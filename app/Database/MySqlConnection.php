@@ -37,6 +37,9 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
 
     private ?WriterTokenTimeout $acquisitionTimeout = null;
 
+    /** How many token waits one acquisition may use before it gives up. */
+    private int $acquisitionAttempts = 1;
+
     private ?int $tokenAcquiredAt = null;
 
     private ?int $tokenHeldNs = null;
@@ -74,6 +77,22 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
     public function isAcquisitionTimeout(Throwable $error): bool
     {
         return $error instanceof WriterTokenTimeout && $error === $this->acquisitionTimeout;
+    }
+
+    /**
+     * Run the callback once while each token wait on this connection may retry
+     * where it stands, up to $attempts waits. A wait happens before its BEGIN or
+     * statement does anything, so retrying it never replays any work.
+     */
+    public function withAcquisitionAttempts(int $attempts, Closure $callback): mixed
+    {
+        $previous = $this->acquisitionAttempts;
+        $this->acquisitionAttempts = max($previous, $attempts, 1);
+        try {
+            return $callback();
+        } finally {
+            $this->acquisitionAttempts = $previous;
+        }
     }
 
     public function beginTransaction()
@@ -121,28 +140,15 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
         if (! $this->writerPolicyEnabled() || $this->pretending()) {
             return parent::transaction($callback, $attempts);
         }
-        $attempts = max(1, (int) $attempts);
-        $outer = $this->transactions === 0;
-        for ($attempt = 1; ; $attempt++) {
-            $entered = false;
-            $this->acquisitionTimeout = null;
-            try {
-                // The parent gets one attempt: it must never replay the callback or COMMIT.
-                return parent::transaction(function ($connection) use ($callback, &$entered) {
-                    $entered = true;
-                    $result = $callback($connection);
-                    $this->assertUsable();
 
-                    return $result;
-                }, 1);
-            } catch (WriterTokenTimeout $timeout) {
-                if (! $outer || $entered || $timeout !== $this->acquisitionTimeout || $attempt >= $attempts
-                    || $this->transactions !== 0) {
-                    throw $timeout;
-                }
-                $this->report('warning', 'The MySQL writer token is busy; retrying before the transaction starts.', ['attempt' => $attempt]);
-            }
-        }
+        // Only the token wait at BEGIN may retry, in place, before the callback
+        // runs. The parent gets one attempt: it never replays the callback or COMMIT.
+        return $this->withAcquisitionAttempts(max(1, (int) $attempts), fn () => parent::transaction(function ($connection) use ($callback) {
+            $result = $callback($connection);
+            $this->assertUsable();
+
+            return $result;
+        }, 1));
     }
 
     public function commit()
@@ -295,15 +301,21 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
     private function acquireWriterToken(): void
     {
         $this->acquisitionTimeout = null;
-        try {
-            (new MySqlWriterToken)->beginAndAcquire($this->getPdo(), $this->expectedServerUuid(), $this->getDatabaseName());
-        } catch (WriterTokenTimeout $timeout) {
-            // beginAndAcquire confirmed the rollback; this session stays usable.
-            $this->acquisitionTimeout = $timeout;
-            throw $timeout;
-        } catch (Throwable $error) {
-            $this->discardSession();
-            throw $error;
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                (new MySqlWriterToken)->beginAndAcquire($this->getPdo(), $this->expectedServerUuid(), $this->getDatabaseName());
+                break;
+            } catch (WriterTokenTimeout $timeout) {
+                // beginAndAcquire confirmed the rollback; this session stays usable.
+                if ($attempt >= $this->acquisitionAttempts) {
+                    $this->acquisitionTimeout = $timeout;
+                    throw $timeout;
+                }
+                $this->report('warning', 'The MySQL writer token is busy; waiting again before anything runs.', ['attempt' => $attempt]);
+            } catch (Throwable $error) {
+                $this->discardSession();
+                throw $error;
+            }
         }
         $this->tokenAcquiredAt = hrtime(true);
         $this->tokenHeldNs = null;
