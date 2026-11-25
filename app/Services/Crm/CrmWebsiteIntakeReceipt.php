@@ -9,12 +9,12 @@ use Illuminate\Support\Facades\DB;
 
 final class CrmWebsiteIntakeReceipt
 {
+    /**
+     * Always keep the receipt, even while the CRM is switched off, so the
+     * scheduled retryPending() turns it into a lead once the CRM is back.
+     */
     public function register(string $kind, string $reference, array $payload): void
     {
-        if (! config('crm.enabled')) {
-            return;
-        }
-
         LockedWrite::run(fn () => DB::table('crm_website_intake_receipts')->insertOrIgnore([
             'kind' => $kind,
             'reference' => strtolower($reference),

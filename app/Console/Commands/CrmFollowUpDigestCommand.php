@@ -19,6 +19,11 @@ class CrmFollowUpDigestCommand extends Command
 
             return self::SUCCESS;
         }
+        if (config('crm.outbound_hold')) {
+            $this->line('CRM outbound is held (CRM_OUTBOUND_HOLD). No digest was sent.');
+
+            return self::SUCCESS;
+        }
         $this->line('Digest: '.json_encode($digest->run()));
 
         return self::SUCCESS;

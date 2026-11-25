@@ -23,6 +23,9 @@ class CrmFollowUpDigest
     /** @return array{sent: int, skipped: int} */
     public function run(): array
     {
+        if (config('crm.outbound_hold')) {
+            return ['sent' => 0, 'skipped' => 0];
+        }
         $endOfToday = CrmBusinessTime::endOfDay();
         $byUser = CrmEvent::query()->where('status', 'planned')->where('starts_at', '<=', $endOfToday)
             ->whereNotNull('assigned_user_id')->orderBy('starts_at')->get()->groupBy('assigned_user_id');

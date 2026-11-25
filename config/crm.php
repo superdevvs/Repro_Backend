@@ -12,6 +12,15 @@ return [
     'enabled' => (bool) env('CRM_ENABLED', false),
 
     /*
+     * Producer replay: hold outbound CRM email (drips, campaigns, the
+     * follow-up digest and any marketing send) without switching the CRM off.
+     * Replies, delivery events, opt-outs and website intake keep working.
+     * Release only after `crm:outbound-release-check --since=<freeze start>`
+     * passes. Off by default.
+     */
+    'outbound_hold' => (bool) env('CRM_OUTBOUND_HOLD', false),
+
+    /*
      * Placeholder business rules from the design. Owners can change these
      * without a code change.
      */
