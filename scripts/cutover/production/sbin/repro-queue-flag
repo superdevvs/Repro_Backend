@@ -10,9 +10,9 @@ write and remove it; and a flag the deploy user's workers cannot read counts as 
 The helper loads /etc/repro-cutover-fence/host.json with the controller's own check (root-only file,
 and the identity.json it names), refuses any queue the host config does not list, and runs the host
 config's fixed queue_pause or queue_resume argument list with the queue appended as "$1". The check
-makes that list `runuser -u www-data -- /bin/sh -c '... umask 0022 && exec ... queue:<verb> "$1"'`,
-so the flag is www-data 0644 in 0755 folders whatever umask sudo or the caller had. It runs nothing
-else and takes no other argument.
+makes that list exactly `runuser -u www-data -- /bin/sh -c 'cd <app_root> && umask 0022 && exec
+/usr/bin/php artisan queue:<verb> "$1"'`, so the flag is www-data 0644 in 0755 folders whatever umask
+sudo or the caller had. It runs nothing else and takes no other argument.
 
 Exit status: 0 done; 1 refused (nothing run); 2 usage (nothing run); 3 the queue command failed or
 timed out (the flag may or may not have changed).

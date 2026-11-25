@@ -6,6 +6,11 @@
 commands are www-data through runuser with umask 0022), refuses any queue the host config does not
 list, and runs the configured `queue_pause` or `queue_resume` argument list with the queue as `$1`.
 
+The queue commands are design 5.1's exact form, `cd <app_root> && umask 0022 && exec /usr/bin/php
+artisan queue:<verb> "$1"`, the only form load_config accepts. The QA image has no /usr/bin/php, so
+the fixtures patch adapter.QUEUE_PHP (the helper imports the same adapter module): the helper tests
+to a fixture program that records what ran, the Laravel tests to the image's own php.
+
 The Laravel tests run the real `php artisan queue:pause` through the helper and a real
 `queue:work` as a member of the www-data group, on Laravel's own file cache layout. They need Linux
 root, php and the vendor tree at the repository root (the QA image with the locked vendor volume);
@@ -33,6 +38,7 @@ from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE)]
+import adapter  # noqa: E402
 from test_adapter import example_config, example_identity, queue_command  # noqa: E402
 
 HELPER = HERE / "sbin" / "repro-queue-flag"
@@ -49,25 +55,27 @@ SMOKE_QUEUE = "database:cutover-smoke"
 LINUX_ROOT = sys.platform == "linux" and os.geteuid() == 0
 PHP = next((path for path in ("/usr/bin/php", "/usr/local/bin/php") if os.access(path, os.X_OK)), None)
 
-# Appends what ran, as whom and with which umask. Runs as www-data through the configured prefix.
-RECORDER = """import json, os, sys
-log, verb, queue = sys.argv[1:]
+# The helper tests' stand-in for /usr/bin/php (adapter.QUEUE_PHP). It runs as www-data after the script's
+# `cd <app_root>` (it opens the app root's artisan) and reads the app root's fake-php.json: it saves the
+# environment it sees if asked, waits `seconds`, leaves `marker` if named, appends what ran, as whom and with
+# which umask to `log`, and exits with `code`. A slow or failing queue command is the same program.
+FAKE_PHP = """#!{python} -IS
+import json, os, sys, time
+artisan, command, queue = sys.argv[1:]
+open(artisan).close()
+with open("fake-php.json") as stream:
+    settings = json.load(stream)
+if "environment" in settings:
+    with open(settings["environment"], "w") as stream:
+        json.dump(dict(os.environ), stream)
+time.sleep(settings.get("seconds", 0))
+if "marker" in settings:
+    open(settings["marker"], "w").close()
 mask = os.umask(0)
 os.umask(mask)
-with open(log, "a") as stream:
-    stream.write(json.dumps([verb, queue, os.getuid(), os.getgid(), mask]) + "\\n")
-"""
-# Records the environment the queue command sees.
-ENVIRONMENT_RECORDER = """import json, os, sys
-with open(sys.argv[1], "w") as stream:
-    json.dump(dict(os.environ), stream)
-"""
-# Sleeps, then leaves a marker and exits with the given code: a failing or hanging queue command.
-SLOW = """import sys, time
-seconds, code, marker = sys.argv[1:4]
-time.sleep(float(seconds))
-open(marker, "w").close()
-sys.exit(int(code))
+with open(settings["log"], "a") as stream:
+    stream.write(json.dumps([command, queue, os.getuid(), os.getgid(), mask]) + "\\n")
+sys.exit(settings.get("code", 0))
 """
 # Queues one no-op job as the deploy user: the job a paused worker must leave alone.
 DISPATCH = """<?php
@@ -212,18 +220,36 @@ class QueueFlagHelperTests(HelperFixture):
         self.log = self.www / "queue.jsonl"
         self.log.touch(mode=0o644)
         os.chown(self.log, WWW_DATA, WWW_DATA)
-        self.recorder = self.etc / "record-queue.py"
-        self.recorder.write_text(RECORDER, encoding="ascii")
-        self.slow = self.etc / "slow.py"
-        self.slow.write_text(SLOW, encoding="ascii")
+        # The fixture app root the queue command's `cd` enters, and the fixture php it runs there.
+        self.app = self.root / "app"
+        self.app.mkdir(mode=0o755)
+        (self.app / "artisan").write_text("<?php // The fixture php reads fake-php.json instead.\n", encoding="ascii")
+        self.php_settings()
+        self.php = self.root / "bin" / "php"
+        self.php.parent.mkdir(mode=0o755)
+        self.php.write_text(FAKE_PHP.format(python=sys.executable), encoding="ascii")
+        self.php.chmod(0o755)
+        php = patch.object(adapter, "QUEUE_PHP", str(self.php))
+        php.start()
+        self.addCleanup(php.stop)
         self.config = self.write_config(self.recording_config())
+
+    def php_settings(self, **settings):
+        """What the fixture php does on its next runs; it always records what ran in the command log."""
+        path = self.app / "fake-php.json"
+        path.write_text(json.dumps({"log": str(self.log), **settings}), encoding="ascii")
+        path.chmod(0o644)
+
+    def script(self, verb, *, cd=True, umask=True, php=None):
+        """Design 5.1's queue script for this fixture's app root and php, or one with a step left out."""
+        steps = [f"cd {self.app}"] * cd + ["umask 0022"] * umask
+        return " && ".join([*steps, f'exec {php or self.php} artisan queue:{verb} "$1"'])
 
     def recording_config(self):
         config = example_config()
+        config["app_root"] = str(self.app)
         for verb in ("pause", "resume"):
-            config["commands"][f"queue_{verb}"] = queue_command(
-                verb, script=f'cd {self.root} && umask 0022 && exec {sys.executable} -I -S {self.recorder} '
-                             f'{self.log} queue:{verb} "$1"')
+            config["commands"][f"queue_{verb}"] = queue_command(verb, script=self.script(verb))
         return config
 
     def commands(self):
@@ -262,18 +288,23 @@ class QueueFlagHelperTests(HelperFixture):
     def test_host_config_failing_the_controller_check_runs_nothing(self):
         # The helper loads host.json with the controller's own load_config, so it never runs a queue
         # command the controller would refuse, and identity.json is read and checked as well.
-        php = 'exec /usr/bin/php artisan queue:pause "$1"'
-        as_deploy_user = self.recording_config()
-        as_deploy_user["commands"]["queue_pause"] = queue_command("pause", user="maverick")
-        without_umask = self.recording_config()
-        without_umask["commands"]["queue_pause"] = queue_command("pause", script=f"cd /var/www/backend && {php}")
+        # Each refused queue command differs from the accepted recording one in one thing only.
+        def changed(user="www-data", **script):
+            config = self.recording_config()
+            config["commands"]["queue_pause"] = queue_command("pause", user=user, script=self.script("pause", **script))
+            return config
+
         unknown_key = {**self.recording_config(), "queue_flag": True}
+        refused_command = "must run as www-data through runuser with umask 0022"
         cases = (
-            ("as the deploy user", as_deploy_user, None, "must run as www-data through runuser with umask 0022"),
-            ("without umask 0022", without_umask, None, "must run as www-data through runuser with umask 0022"),
+            ("as the deploy user", changed(user="maverick"), None, refused_command),
+            ("without umask 0022", changed(umask=False), None, refused_command),
+            ("without the cd to the app root", changed(cd=False), None, refused_command),
+            # D16's own fixtures ran an interpreter directly; only the configured php is accepted.
+            ("another program than the php", changed(php=sys.executable), None, refused_command),
             ("an unknown key", unknown_key, None, "Host config keys are incomplete or unknown"),
             ("a denylist short of a switch key", self.recording_config(),
-             {**example_identity(example_config()), "env_denylist": ["CRM_OUTBOUND_HOLD"]},
+             {**example_identity(self.recording_config()), "env_denylist": ["CRM_OUTBOUND_HOLD"]},
              "env_denylist must equal the night flags plus the switch keys"),
         )
         for name, config, identity, message in cases:
@@ -317,13 +348,8 @@ class QueueFlagHelperTests(HelperFixture):
     def test_caller_environment_not_passed_on(self):
         # Laravel reads its environment before .env and the cached config: nothing from sudo's or the
         # caller's environment reaches artisan.
-        recorder = self.etc / "record-environment.py"
-        recorder.write_text(ENVIRONMENT_RECORDER, encoding="ascii")
         seen = self.www / "environment.json"
-        config = self.recording_config()
-        config["commands"]["queue_pause"] = queue_command(
-            "pause", script=f'umask 0022 && exec {sys.executable} -I -S {recorder} {seen} queue:pause "$1"')
-        self.write_config(config)
+        self.php_settings(environment=str(seen))
         caller = {"CACHE_STORE": "array", "APP_ENV": "testing", "PHP_INI_SCAN_DIR": str(self.www),
                   "APP_CONFIG_CACHE": str(self.www / "config.php"), "LANG": "fr_FR.UTF-8"}
         with patch.dict(os.environ, caller):
@@ -339,10 +365,8 @@ class QueueFlagHelperTests(HelperFixture):
             with self.subTest(message):
                 config = self.recording_config()
                 config["command_seconds"] = 1
-                config["commands"]["queue_pause"] = queue_command(
-                    "pause", script=f'umask 0022 && exec {sys.executable} -I -S {self.slow} {seconds} {exit_code} '
-                                    f'{marker} queue:pause "$1"')
                 self.write_config(config)
+                self.php_settings(seconds=seconds, code=exit_code, marker=str(marker))
                 started = time.monotonic()
                 code, _, error = self.run_helper("pause", "database:default")
                 self.assertEqual(3, code, error)
@@ -389,6 +413,10 @@ class LaravelQueueFlagTests(HelperFixture):
         config = example_config()
         config["app_root"] = str(self.app)
         config["queues"].append(SMOKE_QUEUE)
+        # The real php stands in for /usr/bin/php (this image has it elsewhere); the rule is otherwise unchanged.
+        php = patch.object(adapter, "QUEUE_PHP", PHP)
+        php.start()
+        self.addCleanup(php.stop)
         for verb in ("pause", "resume"):
             # Design 5.1's command with this fixture's app root and php.
             config["commands"][f"queue_{verb}"] = queue_command(
