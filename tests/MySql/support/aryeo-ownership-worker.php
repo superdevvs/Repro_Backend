@@ -15,7 +15,7 @@ $db = Illuminate\Support\Facades\DB::connection();
 if ($db->getDriverName() !== 'mysql' || $db->getDatabaseName() !== 'repro_mysql_test' || $db->getConfig('username') !== 'repro_test') {
     throw new RuntimeException('Actual worker connection differs from its isolated test configuration.');
 }
-$db->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+// The application fixes READ COMMITTED and five-second lock waits on its MySQL sessions.
 [$directory, $id] = array_slice($argv, 1);
 if (! in_array($id, ['1', '2'], true)) throw new RuntimeException('Unknown race participant.');
 $fixture = json_decode(file_get_contents($directory.'/fixture.json'), true, flags: JSON_THROW_ON_ERROR);

@@ -15,8 +15,7 @@ $db = Illuminate\Support\Facades\DB::connection();
 if ($db->getDriverName() !== 'mysql' || $db->getDatabaseName() !== 'repro_mysql_test' || $db->getConfig('username') !== 'repro_test') {
     throw new RuntimeException('The actual worker database is not the isolated test target.');
 }
-$db->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-$db->statement('SET SESSION innodb_lock_wait_timeout=5');
+// The application fixes READ COMMITTED and five-second lock waits on its MySQL sessions.
 [$directory, $slot] = array_slice($argv, 1);
 if (! in_array($slot, ['a', 'b'], true)) {
     throw new RuntimeException('Unknown synthetic device.');
