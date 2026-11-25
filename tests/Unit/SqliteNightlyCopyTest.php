@@ -69,6 +69,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_copy_is_consistent_and_never_blocks_an_active_writer(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 40000);
         $stop = $this->directory.'/stop';
         $ready = $this->directory.'/ready';
@@ -126,6 +127,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_rotation_keeps_the_newest_copies_and_nothing_else_is_touched(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 10);
         foreach (['20260101-010000', '20260102-010000', '20260103-010000'] as $stamp) {
             file_put_contents($this->destination."/database-{$stamp}.sqlite", 'old copy');
@@ -150,6 +152,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_a_copy_without_its_checksum_file_does_not_count_toward_the_kept_copies(): void
     {
+        $this->requireLinuxHost();
         // A run stopped between publishing a copy and writing its .sha256 file
         // leaves a copy the restore proof refuses. It must not push a complete
         // older copy out of the --keep window.
@@ -182,6 +185,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_a_rollback_journal_source_is_refused_because_it_would_block_writers(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 10, journal: 'DELETE');
 
         $process = $this->runCopy();
@@ -195,6 +199,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_a_copy_on_the_same_disk_as_the_live_file_needs_an_explicit_override(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 10);
 
         $process = $this->runCopy(allowSameDevice: false);
@@ -206,6 +211,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_a_second_run_waits_for_nothing_and_exits_while_the_first_holds_the_lock(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 10);
         $lock = fopen($this->destination.'/.sqlite-nightly-copy.lock', 'c');
         $this->assertTrue(flock($lock, LOCK_EX));
@@ -222,7 +228,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_the_process_must_run_with_the_database_files_group(): void
     {
-        $this->assertTrue(function_exists('posix_getegid'), 'The copy script relies on the posix extension.');
+        $this->requireLinuxHost();
         // Root may use any group; anyone else may use one of their supplementary groups.
         $otherGroups = array_values(array_diff(posix_getgroups(), [posix_getegid()]));
         $foreignGroup = posix_geteuid() === 0 ? posix_getegid() + 4242 : ($otherGroups[0] ?? null);
@@ -253,6 +259,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_restore_proof_verifies_checksum_and_opens_a_scratch_copy(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 25);
         $this->assertSame(0, $this->runCopy()->getExitCode());
         $copy = glob($this->destination.'/database-*.sqlite')[0];
@@ -272,6 +279,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_restore_proof_rejects_a_copy_whose_checksum_does_not_match(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 25);
         $this->assertSame(0, $this->runCopy()->getExitCode());
         $copy = glob($this->destination.'/database-*.sqlite')[0];
@@ -289,6 +297,7 @@ class SqliteNightlyCopyTest extends TestCase
 
     public function test_restore_proof_requires_the_checksum_file(): void
     {
+        $this->requireLinuxHost();
         $this->createSource(rows: 5);
         $this->assertSame(0, $this->runCopy()->getExitCode());
         $copy = glob($this->destination.'/database-*.sqlite')[0];
@@ -323,6 +332,16 @@ class SqliteNightlyCopyTest extends TestCase
         $this->assertStringStartsWith('40 1 * * * sg www-data -c "nice -n 10 ionice -c2 -n7 '.$command.'"', $cron[0]);
         $this->assertStringNotContainsString('--allow-same-device', $service.$cron[0]);
         $this->assertFileExists(dirname(__DIR__, 2).'/scripts/backup/sqlite-nightly-copy.php');
+    }
+
+    private function requireLinuxHost(): void
+    {
+        // The copy script runs on the Linux server: it needs the posix extension
+        // and absolute Unix paths. CI runs with --fail-on-skipped, so a Linux
+        // image without posix still fails there.
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('posix_getegid') || ! function_exists('posix_geteuid')) {
+            $this->markTestSkipped('The nightly copy script needs Linux and the posix extension.');
+        }
     }
 
     private function createSource(int $rows, string $journal = 'WAL'): void
