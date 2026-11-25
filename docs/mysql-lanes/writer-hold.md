@@ -68,10 +68,13 @@ old order (drain, then pause, then stop, with no journal).
    rollback only.
 
 **Watchdog.** `repro-cutover-watchdog.timer` runs `cli.py tick` every minute
-from boot. In a held phase it closes admissions again if a reboot or a
-restart reopened them, and re-drains the scheduler under the new boot. At 45
-minutes from the hold it rolls back to SQLite. All deadlines count from the
-hold, so the drain uses the same 60-minute outage budget.
+from boot (`OnCalendar=minutely`). In a held phase it closes admissions again
+if a reboot or a restart reopened them, and re-drains the scheduler under the
+new boot. At 45 minutes from the hold it rolls back to SQLite. All deadlines
+count from the hold, so the drain uses the same 60-minute outage budget. The
+service allows a tick 25 minutes, enough for the controller-lock wait and a
+whole rollback; while a tick runs, an operator command is refused with
+"Another host operator holds the cutover lock" and can be retried.
 
 **Undo.** `cli.py abort` (or the watchdog) re-closes admissions, drains,
 unseals SQLite and publishes boot-bound SQLite authority. `cli.py reopen`
@@ -113,6 +116,8 @@ All runs were local and offline. Linux tests ran as root in a disposable
 | All Linux suites, after the review (`51db2739`) | same | runner 43, guard 20, process contract 6, admission wrapper 6, fences 7, adapter and CLI 20, nginx include 1, root-only refresh 10; all passed, none skipped |
 | Full SQLite PHPUnit suite (`git archive` of `6aebf499`, extracted in the container, shared read-only vendor volume, `php -d memory_limit=1536M`) | `vendor/bin/phpunit --no-progress` | 9,589 tests: 9,582 passed, 3 skipped, 2 errors and 2 failures. The same four fail identically on the base `a6e799bb` in the same setup (privilege-drop tests that cannot read the root-owned vendor volume as uid 33), so they are pre-existing. This lane changes no PHP application, test or config file, so the MySQL profile has no touched area. The default 512 MB PHP limit ends the whole run with a fatal in a GD image test; the bind-mounted run was stopped after 95 minutes of slow 9p file access. |
 | Full SQLite PHPUnit suite, review run (`git archive` of `695dcbef`, extracted in the container, shared read-only vendor volume, `php -d memory_limit=1536M`; later commits change only `scripts/cutover` Python and docs) | `vendor/bin/phpunit --no-progress` | 9,589 tests in 85 min: 2 errors and 2 failures, 3 skipped. The same four tests (`ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest` `test_fpm_upload_and_separate_worker_can_share_private_files`, `WorkspacePhotoLogoPermissionsTest::test_php_can_upload_a_logo_when_worker_outputs_are_not_group_writable`, `IguideLabImportTest::test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk`) fail the same way on `a6e799bb` in the same setup, so they are pre-existing. |
+| All Linux suites, after the Codex round (`e2513923`) | same | runner 43, guard 20, process contract 6, admission wrapper 6, fences 10, adapter and CLI 22, nginx include 1, host replay 3, root-only refresh 10; all passed, none skipped |
+| Watchdog units under systemd 252 (Debian 12, offline in the same image) | `systemd-analyze verify` on both units; `calendar minutely`; `timespan 25min` | verify exit 0; `minutely` = `*-*-* *:*:00`; 25min = 1,500 s. Timer firing after a skipped condition still needs a real systemd (W2). |
 | Production nginx include under nginx 1.22.1 | `test_nginx_hold.py` (also in the launcher) | passed: six routes on both vhosts, including the direct `.php` files, return 503 with `Retry-After: 30` while the marker is absent, pass through once it exists, and close again as soon as it is removed, with no reload |
 
 New tests that prove the hold. They were written before the code; the
@@ -172,7 +177,10 @@ checks per round), the drain got the writer lock in 0 to 1 ms in every run.
 **Host fixture runs (H5): not yet executed.** The code is committed and
 checked (`py_compile`, `php -l`, Pint), but `run-local.ps1` refused to start
 twice by its own device guard: Windows had 0.5 to 1.9 GB free while other
-lanes were running, and the guard requires 2.3 GB. Run both scenarios when
+lanes were running, and the guard requires 2.3 GB. In the Codex round
+Windows had 1.5 GB free, below the 3 GB set for this run, so it was not
+attempted. The recovery scenario's replay defect (Codex #6) is fixed and
+unit-tested without the fixture. Run both scenarios when
 the machine has headroom, from this branch, with fresh evidence folders:
 
 ```powershell
@@ -243,9 +251,10 @@ The code implements the safe default and makes each a config value.
   release. A later deploy changes the observed release, so the next reboot's
   `refresh` refuses and every writer stays held. Retire the installed fences
   (or start a new run) before the next deploy.
-- The watchdog service stops after 55 s. A rollback whose drain needs longer
-  is killed and retried each minute; each step is idempotent, so it finishes
-  once the last writer exits, but the site stays held until then.
+- A watchdog tick can now run up to 25 minutes (it was stopped after 55 s,
+  which could stop a rollback from ever finishing). During a long tick, run
+  operator commands again once it ends; `systemctl status
+  repro-cutover-watchdog.service` shows it.
 
 ## Independent review (25 November)
 
@@ -266,11 +275,26 @@ Open notes, not changed:
   (`mysql_authoritative` with ingress closed). This lane's adapter refuses
   promotion, so it is not reachable here; the MySQL adapter lane must handle
   it.
-- `OnUnitActiveSec` with a service whose `ConditionPathExists` fails at the
-  first boot tick was not checked against real systemd. Confirm in W2 that
-  the timer keeps ticking after `cli.py init` creates the journal, or switch
-  to `OnCalendar=minutely`.
-- `crontab.py` replaces the whole command of a matched line. A line that
-  chains other commands after the matched one would lose them; review its
-  output before installing.
+- Resolved in the Codex round: the timer now uses `OnCalendar=minutely`,
+  and `crontab.py` refuses lines that chain a command after the match.
 - H5 (host fixture runs) is still not executed; see above.
+
+## Codex review round (25 Nov)
+
+Codex reviewed `6aebf499`. Each finding was rechecked at `490f9c77`; fixes
+are test-first commits on this branch. Every red test was run and seen to
+fail for the stated reason before its fix.
+
+- writer-hold#1 (P1, watchdog killed after 55 s): fixed in `011a67ea`. `TimeoutStartSec=25min`, at least the 50 s lock wait plus the 15-minute rollback budget plus one 300 s command; `test_watchdog_service_outlasts_the_controller_wait_and_a_full_rollback` (red: 55 < 1250).
+- writer-hold#2 (P1, reboot after a reopened rollback): already fixed in `4c38253e` (`runner.py:622-626`, `adapter.py:350-354`). The current `test_reboot_after_reopened_rollback_keeps_sqlite_authority_for_the_watchdog` fails against the `6aebf499` runner ("SQLite authority could not be verified") and passes now, as does `test_reboot_after_reopened_rollback_ticks_refreshes_and_reopens`.
+- writer-hold#3 (P1, Supervisor exit 0): already fixed in `425e9e2d` (`exitcodes=75` with `autorestart=unexpected`); `test_supervisor_restarts_a_worker_that_exits_normally`.
+- writer-hold#4 (P2, reopen retry blocked by started workers): fixed in `10a262fb`. A retried reopen stops running worker groups, then drains; `test_reopen_retry_stops_workers_that_a_failed_reopen_started` (red: "Admitted writers did not drain").
+- writer-hold#5 (P2, seal record rename not durable): fixed in `9abbd875`. Directory fsync after the rename and before the chmod, and unseal syncs restored modes before removing the record; `test_seal_record_is_durable_before_write_bits_are_removed`, `test_unseal_restored_modes_are_durable_before_the_record_is_removed`.
+- writer-hold#6 (P2, recovery replay compared with None): fixed in `521fcaae`. `mysql_baseline()` is used by `observe()` and `replay_routes()`; `host/test_prewrite_fastcgi.py` (red: "reached the sealed MySQL target").
+- reviewer#1 (H5 fixture runs): not run. 1.5 GB free, below the 3 GB set for this run. Still open for a machine with headroom.
+- reviewer#2 (`mysql_authoritative` reboot escalation): left for the MySQL adapter lane. This adapter refuses promotion, so the state cannot be reached here.
+- reviewer#3 (`OnUnitActiveSec` after a skipped condition): fixed in `011a67ea` with `OnCalendar=minutely`. `systemd-analyze verify` passes under systemd 252; a real timer still needs W2.
+- reviewer#4 (55 s timeout nit): fixed with writer-hold#1 in `011a67ea`.
+- reviewer#5 (old release pinned after an aborted cutover): owner decision. Before the next deploy, either retire the installed fences or start a new run with a new policy. See Risks.
+- reviewer#6 (`crontab.py` dropped chained commands): fixed in `e2513923`. Such lines are now refused; `test_commands_chained_after_a_matched_entry_are_refused_not_dropped`.
+- reviewer#7 (no real systemd, Supervisor, crontab or visudo): needs W1 and W2, each with owner approval. None can be tested offline here.
