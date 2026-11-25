@@ -6,6 +6,8 @@ use App\Models\Shoot;
 use App\Services\IguideService;
 use App\Services\Shoots\IguideServiceOwnership;
 use App\Services\Shoots\ProviderFloorplanRecovery;
+use App\Services\Shoots\ShootListingService;
+use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -133,8 +135,10 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
             static fn ($key) => is_string($key) && $key !== ''));
         $ownership = app(IguideServiceOwnership::class);
         $owner = $keys === [] ? null : $ownership->resolve($shoot->fresh());
-        if ($owner) {
-            $ownership->adoptUnscoped($shoot, (int) $owner->id, $keys);
+        // The move writes no updated_at, so drop cached file and shoot lists as the ingest job does.
+        if ($owner && $ownership->adoptUnscoped($shoot, (int) $owner->id, $keys)) {
+            app(ShootMediaMutationSupportService::class)->clearShootFilesCache($shoot);
+            ShootListingService::flushCachedListings();
         }
     }
 }

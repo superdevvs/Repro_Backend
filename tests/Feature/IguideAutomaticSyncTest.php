@@ -7,8 +7,10 @@ use App\Jobs\SyncShootIguideJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Services\IguideService;
+use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -136,6 +138,38 @@ class IguideAutomaticSyncTest extends TestCase
         // and the ingest job moved unscoped iGUIDE files onto the iGUIDE line. Recovery treats
         // unscoped files as complete, so the scheduled sync must do that move itself, or the
         // floorplans stay "unassigned" on a multi-service shoot.
+        [$shoot, $photoLine, $iguideLine, $legacy] = $this->shootWithLegacyUnscopedIguideFloorplans();
+
+        (new SyncShootIguideJob($shoot->id, null, true))->handle(app(IguideService::class));
+
+        foreach ($legacy as $file) {
+            $this->assertSame($iguideLine->id, (int) $file->fresh()->shoot_service_id, 'iGUIDE file '.$file->id.' was left unassigned');
+        }
+        $this->assertSame(0, $shoot->files()->where('shoot_service_id', $photoLine->id)->count());
+    }
+
+    public function test_scheduled_sync_refreshes_cached_media_after_assigning_legacy_floorplans(): void
+    {
+        // The ingest job bumps the shoot's media revision and drops cached shoot lists after it
+        // moves files. The move writes no updated_at, so without that the cached file list (30s)
+        // keeps showing the floorplans as unassigned. Queue::fake keeps the recovery job out.
+        Queue::fake();
+        [$shoot, , $iguideLine, $legacy] = $this->shootWithLegacyUnscopedIguideFloorplans();
+        $media = app(ShootMediaMutationSupportService::class);
+        $revision = $media->currentMediaRevision($shoot);
+        Cache::put('shoots_index_cache_keys', ['shoots_index_cached_page']);
+        Cache::put('shoots_index_cached_page', ['stale' => true]);
+
+        (new SyncShootIguideJob($shoot->id, null, true))->handle(app(IguideService::class));
+
+        $this->assertSame($iguideLine->id, (int) $legacy[0]->fresh()->shoot_service_id);
+        $this->assertGreaterThan($revision, $media->currentMediaRevision($shoot), 'cached file lists still show the old assignment');
+        $this->assertNull(Cache::get('shoots_index_cached_page'), 'cached shoot lists were not dropped');
+    }
+
+    /** @return array{0: Shoot, 1: ShootService, 2: ShootService, 3: list<ShootFile>} */
+    private function shootWithLegacyUnscopedIguideFloorplans(): array
+    {
         Http::fake([
             $this->propertyUrl() => Http::response($this->metadata()),
             $this->propertyUrl().'/asset-urls' => Http::response($this->assets()),
@@ -160,12 +194,7 @@ class IguideAutomaticSyncTest extends TestCase
             ]);
         }
 
-        (new SyncShootIguideJob($shoot->id, null, true))->handle(app(IguideService::class));
-
-        foreach ($legacy as $file) {
-            $this->assertSame($iguideLine->id, (int) $file->fresh()->shoot_service_id, 'iGUIDE file '.$file->id.' was left unassigned');
-        }
-        $this->assertSame(0, $shoot->files()->where('shoot_service_id', $photoLine->id)->count());
+        return [$shoot, $photoLine, $iguideLine, $legacy];
     }
 
     public function test_rich_ready_metadata_keeps_provider_urls_and_does_not_refetch_assets(): void
