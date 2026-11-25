@@ -1,6 +1,9 @@
 [Unit]
 Description=RePro verified database base backup
-OnFailure=repro-backup-alert.service
+Wants=network-online.target
+After=network-online.target time-sync.target
+OnSuccess=repro-alert-backup-ok.service
+OnFailure=repro-backup-alert.service repro-alert-backup-failed.service
 OnFailureJobMode=replace
 
 [Service]

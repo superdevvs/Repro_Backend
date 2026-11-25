@@ -1,0 +1,40 @@
+{
+  "schema": "repro.alert.conditions.v1",
+  "note": "One file for every alert threshold. alert_probe.py reads it; tests check it against scripts/cutover/readiness/check.py.",
+  "conditions": {
+    "database_down": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"query_timeout_seconds": 10}},
+    "wrong_database_engine": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {}},
+    "site_unreachable": {"class": "wake", "delivery_limit_seconds": 300, "source": "external-website-check",
+      "threshold": {"check_every_seconds": 60}},
+    "disk_nearly_full": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"min_free_percent": 10, "min_free_bytes": 21474836480}},
+    "backup_lag": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-backup",
+      "threshold": {"max_lag_seconds": 300, "consecutive_checks": 2}},
+    "server_error_rate": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"window_seconds": 1800, "max_percent": 2, "min_requests": 50, "max_read_bytes": 67108864}},
+    "historical_money_totals_changed": {"class": "wake", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {}},
+    "rehearsal_failed": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-backup",
+      "threshold": {"max_age_seconds": 129600}},
+    "restore_overdue": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-backup",
+      "threshold": {"max_age_seconds": 691200}},
+    "backup_stale": {"class": "daytime", "delivery_limit_seconds": 300, "source": "watchdog",
+      "threshold": {"max_age_seconds": 93600}},
+    "database_contention": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"max_per_hour": 5}},
+    "mysql_restarted": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"min_uptime_seconds": 900}},
+    "queue_stale": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"max_age_seconds": 600, "reserved_expiry_seconds": 7260}},
+    "cache_write_failed": {"class": "daytime", "delivery_limit_seconds": 300, "source": "probe-host",
+      "threshold": {"window_seconds": 600, "max_read_bytes": 8388608, "max_folders": 20000}},
+    "server_silent": {"class": "wake", "delivery_limit_seconds": 600, "source": "heartbeat",
+      "threshold": {"ping_every_seconds": 60, "silence_alert_seconds": 300}}
+  },
+  "extra_conditions": {
+    "backup_failed": {"class": "daytime", "delivery_limit_seconds": 300, "source": "backup-unit-result",
+      "threshold": {"expected_ping_every_seconds": 86400, "provider_grace_seconds": 7200}}
+  }
+}

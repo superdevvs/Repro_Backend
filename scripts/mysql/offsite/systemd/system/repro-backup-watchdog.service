@@ -1,6 +1,7 @@
 [Unit]
 Description=RePro database backup freshness watchdog
-OnFailure=repro-backup-alert.service
+OnSuccess=repro-alert-backup-fresh.service
+OnFailure=repro-backup-alert.service repro-alert-backup-stale.service
 OnFailureJobMode=replace
 
 [Service]

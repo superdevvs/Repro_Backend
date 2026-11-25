@@ -4,7 +4,9 @@ These are reviewable, disabled-by-default unit files for the standalone backup
 runner. Nothing here installs a unit, creates an account, enables a timer, or
 changes the live application, database, network, or cloud configuration.
 
-Use the five files in `system/` together for a reviewed system-manager setup.
+Use the five base files in `system/` together for a reviewed system-manager setup.
+`system/` also holds the production alert, MySQL recovery and recovery-kit units;
+`test_production_units.py` describes them and `../install_backup_host.py` installs them.
 `user-fixture/` is a separate compatibility fixture for an already externally
 isolated user manager. Never install both profiles into one manager. The user
 profile deliberately omits filesystem, device and network namespace protections
@@ -60,10 +62,13 @@ not proof that a full backup will fit. No host-wide settings are changed.
 
 ## Schedules and observable failures
 
-- The sample backup calendar is daily at **02:30 UTC**, with up to five minutes
-  jitter and one minute timer accuracy. `Persistent=true` catches up a missed
-  calendar event when the timer starts; that can cause an immediate backup. Review
-  the time, permissions, target and deadline before any enabling/start operation.
+- The backup calendar is daily at **03:30 UTC**, with up to five minutes jitter
+  and one minute timer accuracy. It keeps 90 minutes clear of the monthly 02:00
+  reboot on the 28th. `Persistent=true` catches up one missed night when the
+  timer starts, after the network is online; that can cause an immediate backup.
+  Only the daily backup and recovery-kit timers are persistent. Minute and
+  two-minute timers never catch up: a missed minute is what the provider should
+  see. Review the time, permissions, target and deadline before enabling.
 - The independent watchdog starts five minutes after its manager starts and runs
   five minutes after the previous check finishes. Review the plan freshness limit
   against schedule jitter, allowed run duration and detection delay; a daily
@@ -73,10 +78,13 @@ not proof that a full backup will fit. No host-wide settings are changed.
   check failed` at error priority, then runs the same check. The handler has no
   `OnFailure` of its own, so its failed check does not recurse. It does not swallow
   nonzero status. A subsequent successful check does not erase the earlier marker.
-- The marker is a local journal event, **not an externally delivered alert**. An
-  independently monitored notification path, host/timer outage detection, journal
-  persistence and a demonstrated acknowledgement are still installation gates.
-  This package sends no email, webhook or provider notification.
+- The marker is a local journal event, **not an externally delivered alert**. In
+  the system profile the same failures also start `repro-alert-backup-failed` or
+  `repro-alert-backup-stale`, and success starts `repro-alert-backup-ok` or
+  `repro-alert-backup-fresh`. These bridge units run as `repro-alert`, are the
+  only alert units with IP networking, cannot see backup state or the app, and
+  ping the provider through `alert_bridge.py`. A demonstrated phone delivery is
+  still an acceptance gate. The user fixture sends nothing.
 - A timer does not restart its service while that service is already active; the
   runner's own file lock also refuses overlapping invocations. No service uses
   `RemainAfterExit`, `SuccessExitStatus`, skipped-path conditions or ignored errors

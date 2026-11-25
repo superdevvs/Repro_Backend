@@ -1,0 +1,344 @@
+"""Off-server backup health observer against a synthetic bucket listing (no network)."""
+from __future__ import annotations
+
+import bisect
+from dataclasses import asdict
+import datetime as dt
+import hashlib
+import io
+import json
+from pathlib import Path
+import struct
+import sys
+import tempfile
+import unittest
+import uuid
+import zlib
+
+import observe_backup_health as observer
+import publish_backup as backup
+
+REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO))
+from scripts.cutover.readiness import check, summarize_backup_health as health  # noqa: E402
+from scripts.cutover.runner import Identity, digest  # noqa: E402
+
+SOURCE = "11111111-2222-4333-8444-555555555555"
+ARCHIVE = SOURCE + ".closed-binlogs"
+INTERVAL = 60
+STOP = 1_800_000_000 - 1_800_000_000 % 300
+START = STOP - check.BACKUP_WINDOW_SECONDS
+ROTATION = 120
+
+
+def stamp(seconds: int) -> str:
+    return dt.datetime.fromtimestamp(seconds, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class FakeBucket:
+    """Completion records and small artifacts, as the publisher leaves them, with arrival times."""
+
+    def __init__(self):
+        self.visible = {}  # identity -> sorted [(visible_at, backup_id)]
+        self.objects = {}
+        self.ids = {}
+        self.reads = 0
+        self.downloads = []
+        self.uploading = {}  # identity -> backup IDs whose folder is listed before completion.json exists
+
+    def publish(self, identity: str, created: int, artifacts: dict, *, delay: int = 30,
+                backup_id: str | None = None) -> None:
+        backup_id = backup_id or str(uuid.UUID(int=len(self.objects) + 1))
+        manifest = {"schema": backup.INPUT_SCHEMA, "backup_id": backup_id, "created_at": stamp(created),
+                    "scope": "database", "release": "a" * 40, "identity": identity,
+                    "artifacts": [{"path": name, "bytes": len(data), "sha256": backup.sha256(data)}
+                                  for name, data in artifacts.items()]}
+        completion = {"schema": backup.COMPLETE_SCHEMA, "status": "artifact-readback-verified",
+                      "input_manifest_sha256": "1" * 64, "input": manifest, "verified_at": stamp(created + delay),
+                      "proof_limits": []}
+        self.objects[(identity, backup_id)] = (backup.encode(completion), artifacts)
+        bisect.insort(self.visible.setdefault(identity, []), (created + delay, backup_id))
+
+    def list_backups(self, identity: str, now: int) -> list[str]:
+        items = self.visible.get(identity, [])
+        if len(self.ids.get(identity, ())) != len(items):
+            self.ids[identity] = [backup_id for _, backup_id in items]
+        return self.ids[identity][:bisect.bisect_right(items, (now, "~"))] + self.uploading.get(identity, [])
+
+    def completion(self, identity: str, backup_id: str) -> bytes | None:
+        if backup_id in self.uploading.get(identity, []):
+            return None  # The publisher writes completion.json last.
+        self.reads += 1
+        return self.objects[(identity, backup_id)][0]
+
+    def artifact(self, identity: str, backup_id: str, path: str) -> bytes:
+        return self.objects[(identity, backup_id)][1][path]
+
+    def verified_artifact(self, identity: str, backup_id: str, path: str, size: int, sha256: str) -> bytes:
+        self.downloads.append((backup_id, path))
+        data = self.objects[(identity, backup_id)][1][path]
+        if len(data) != size or backup.sha256(data) != sha256:
+            raise backup.Refusal("readback size or digest mismatch")
+        return data
+
+
+def receipt(number: int) -> bytes:
+    return json.dumps({"pitr": {"binlog_file": f"binlog.{number:06d}", "binlog_position": 4}}).encode()
+
+
+def event(moment: int, kind: int, payload: bytes, position: int) -> bytes:
+    size = 19 + len(payload) + 4
+    head = struct.pack("<IBIIIH", moment, kind, 5384, size, position + size, 0)
+    return head + payload + struct.pack("<I", zlib.crc32(head + payload))
+
+
+def binlog(name: str, closed: int) -> bytes:
+    """A closed MySQL 8.4 binary log as the server leaves it: format event first, rotation last.
+
+    The terminal Rotate event carries the rotation time (checked on MySQL 8.4.13)."""
+    raw = b"\xfebin"
+    raw += event(closed - ROTATION, 15, bytes(95), len(raw))
+    prefix, number = name.rsplit(".", 1)
+    return raw + event(closed, 4, struct.pack("<Q", 4) + f"{prefix}.{int(number) + 1:06d}".encode(), len(raw))
+
+
+def logs(*closed: tuple[int, int]) -> dict:
+    """Artifacts of one binlog batch: (log number, rotation time) per closed log."""
+    return {f"binlog.{number:06d}": binlog(f"binlog.{number:06d}", moment) for number, moment in closed} | {
+        "closed-binlogs.json": b"{}"}
+
+
+class ObserverTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+        (self.root / "samples").mkdir()
+        self.plan = {"version": 1, "interval_s": INTERVAL, "journal": str(self.root / "observations.jsonl"),
+                     "samples_dir": str(self.root / "samples"), "database_identity": SOURCE,
+                     "binlog_identity": ARCHIVE}
+        self.bucket = FakeBucket()
+
+    def history(self, *, outage=None):
+        """Daily bases at 03:30 and a closed binlog published every two minutes, from a day before the window."""
+        number, pending = 1, []
+        for moment in range(START - 86400, STOP + ROTATION, ROTATION):
+            if (moment - START) % 86400 == 3 * 3600 + 1800 - ROTATION * 0:
+                self.bucket.publish(SOURCE, moment, {"database-backup.json": receipt(number), "database.sql.gz": b"x"})
+            pending.append((number, moment))  # Rotated now, so it holds everything committed until now.
+            number += 1
+            if outage and outage[0] <= moment < outage[1]:
+                continue  # The archive is down; closed files wait for the catch-up batch.
+            self.bucket.publish(ARCHIVE, moment, logs(*pending))
+            pending = []
+
+    def observe_window(self, *, skip=()):
+        state = observer.State.load(self.plan)
+        for slot in range(START, STOP, INTERVAL):
+            if slot not in skip:
+                observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        state.save()
+
+    def summarize(self, raw: bytes):
+        identity = asdict(Identity("health-fixture", "a" * 40, "b" * 64, "c" * 64, "d" * 64, SOURCE))
+        policy = {"version": 1, "identity": identity, "operations": {
+            "window_end_unix_s": STOP, "interval_s": INTERVAL, "evidence_valid_until_unix_s": STOP + 3600,
+            "destination_sha256": "e" * 64, "monitor_profile_sha256": "f" * 64,
+            "backup_health_report_sha256": hashlib.sha256(raw).hexdigest()}}
+        return health.summarize(policy, io.BytesIO(raw), now_unix_s=STOP)
+
+    def export(self):
+        identity = asdict(Identity("health-fixture", "a" * 40, "b" * 64, "c" * 64, "d" * 64, SOURCE))
+        return observer.export(self.plan, window_end=STOP, identity_sha256=digest(identity),
+                               destination_sha256="e" * 64, monitor_profile_sha256="f" * 64)
+
+    def test_seven_clean_days_meet_the_readiness_thresholds(self):
+        self.history()
+        self.observe_window()
+        summary = self.summarize(self.export())
+        self.assertTrue(health.thresholds_met(summary), summary)
+        self.assertEqual(summary["distinct_scheduled_observations"], check.BACKUP_WINDOW_SECONDS // INTERVAL)
+        self.assertLess(summary["max_snapshot_age_s"], check.BACKUP_MAX_AGE_SECONDS)
+        last = STOP - INTERVAL + 5
+        visible = sum(1 for items in self.bucket.visible.values() for moment, _ in items if moment <= last)
+        self.assertEqual(self.bucket.reads, visible, "each completion is read once and cached")
+
+    def test_a_two_hour_archive_outage_breaks_the_99_percent_rule(self):
+        self.history(outage=(START + 86400, START + 86400 + 7200))
+        self.observe_window()
+        summary = self.summarize(self.export())
+        self.assertFalse(health.thresholds_met(summary))
+        self.assertLess(summary["duration_with_lag_at_most_five_minutes_s"], check.BACKUP_WINDOW_SECONDS * 99 // 100)
+
+    def test_export_refuses_a_window_with_a_missing_slot(self):
+        self.history()
+        self.observe_window(skip={START + 3000})
+        with self.assertRaises(backup.Refusal) as caught:
+            self.export()
+        self.assertIn("1 scheduled slot", str(caught.exception))
+
+    def test_observation_is_as_of_the_slot_start_and_idempotent(self):
+        self.history()
+        state = observer.State.load(self.plan)
+        slot = START + 3 * 3600 + 1800
+        first = observer.observe(self.plan, self.bucket, now=slot + 50, state=state)
+        self.assertIsNone(observer.observe(self.plan, self.bucket, now=slot + 55, state=state))
+        self.assertLessEqual(first["newest_verified_base_unix_s"], slot)
+        self.assertLessEqual(first["recoverable_through_unix_s"], slot)
+        raw = (self.root / "samples" / f"{slot}.json").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), first["sample_sha256"])
+
+    def test_a_publication_without_its_completion_marker_is_skipped_until_the_marker_lands(self):
+        # The publisher uploads artifacts first and completion.json last, so every
+        # base upload and every binlog batch is listed for a while without a marker.
+        # An abandoned publication keeps no marker at all. Neither may cost a slot.
+        self.history()
+        uploading = "99999999-9999-4999-8999-999999999999"
+        self.bucket.uploading = {SOURCE: [uploading], ARCHIVE: [uploading]}
+        state = observer.State.load(self.plan)
+        slot = START + 3 * 3600 + 1800
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        self.assertIsNotNone(row)
+        self.assertGreater(row["newest_verified_base_unix_s"], 0)
+        self.assertIsNotNone(row["recoverable_through_unix_s"])
+        self.assertNotIn(uploading, state.cache["bases"])
+        self.assertNotIn(uploading, state.cache["binlogs"])
+        self.assertIsNotNone(observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state))
+
+    def test_rclone_bucket_reports_a_missing_marker_without_reading_it(self):
+        class Remote:
+            def __init__(self, names):
+                self.names, self.calls = names, []
+
+            def run(self, action, *args, absent_ok=False):
+                self.calls.append((action, args[0]))
+                if action == "lsjson":
+                    return json.dumps([{"Name": name, "IsDir": False} for name in self.names]).encode()
+                if "completion.json" not in self.names:
+                    raise backup.Refusal("rclone operation failed: cat")
+                return b'{"marker": true}'
+
+        bucket = observer.RcloneBucket.__new__(observer.RcloneBucket)
+        bucket.crypt = "repro_encrypted"
+        bucket.remotes = {SOURCE: Remote(["input-manifest.json"])}
+        self.assertIsNone(bucket.completion(SOURCE, "b1"))
+        self.assertEqual([action for action, _ in bucket.remotes[SOURCE].calls], ["lsjson"])
+        bucket.remotes = {SOURCE: Remote(["input-manifest.json", "completion.json"])}
+        self.assertEqual(bucket.completion(SOURCE, "b1"), b'{"marker": true}')
+        self.assertEqual(bucket.remotes[SOURCE].calls[-1],
+                         ("cat", f"repro_encrypted:database/{SOURCE}/b1/completion.json"))
+
+    def test_a_publication_completed_after_the_slot_start_is_not_credited_to_that_slot(self):
+        # The run starts a few seconds into its slot. A base and a binlog batch created before
+        # the slot start but completed (completion.json written) after it were not available
+        # at the slot start, so that slot may not count them.
+        slot = START + 86400
+        self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+        self.bucket.publish(ARCHIVE, slot - 3000, logs((1, slot - 3000)))
+        self.bucket.publish(SOURCE, slot - 20, {"database-backup.json": receipt(2), "database.sql.gz": b"x"}, delay=22)
+        self.bucket.publish(ARCHIVE, slot - 10, logs((2, slot - 10)), delay=12)
+        state = observer.State.load(self.plan)
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        self.assertEqual(row["newest_verified_base_unix_s"], slot - 7200)
+        self.assertEqual(row["recoverable_through_unix_s"], slot - 3000)
+        later = observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state)
+        self.assertEqual(later["newest_verified_base_unix_s"], slot - 20)
+        self.assertEqual(later["recoverable_through_unix_s"], slot - 10)
+
+    def test_recoverable_through_is_the_last_logs_rotation_not_the_batch_seal_time(self):
+        # After an archive outage the collector's file and byte limits can cut the catch-up
+        # batch to the oldest closed logs, sealed now. Newer logs are still unarchived, so
+        # recovery reaches only the rotation that closed the batch's last log.
+        slot = START + 86400
+        self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+        self.bucket.publish(ARCHIVE, slot - 60, logs((1, slot - 3600), (2, slot - 3480)))
+        state = observer.State.load(self.plan)
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        self.assertEqual(row["recoverable_through_unix_s"], slot - 3480)
+        self.assertEqual(self.bucket.downloads, [(self.bucket.ids[ARCHIVE][0], "binlog.000002")])
+        observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state)
+        self.assertEqual(len(self.bucket.downloads), 1, "the last log of a batch is read once")
+
+    def test_a_batch_without_a_terminal_rotation_does_not_advance_recovery(self):
+        slot = START + 86400
+        self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+        self.bucket.publish(ARCHIVE, slot - 3000, logs((1, slot - 3000)))
+        cut = logs((2, slot - 600))
+        cut["binlog.000002"] = cut["binlog.000002"][:-44]  # No Rotate event: not a closed log.
+        self.bucket.publish(ARCHIVE, slot - 600, cut)
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=observer.State.load(self.plan))
+        self.assertEqual(row["recoverable_through_unix_s"], None)
+        self.bucket.publish(ARCHIVE, slot - 120, logs((3, slot - 120)))
+        row = observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=observer.State.load(self.plan))
+        self.assertEqual(row["recoverable_through_unix_s"], slot - 120)
+
+    def test_a_retry_batch_that_repeats_published_logs_extends_the_chain(self):
+        # A run whose publication completed but whose checkpoint did not advance (killed at its
+        # time limit, or the final read-back failed) leaves a batch with a marker. The next run
+        # starts again at the checkpoint, so its batch repeats those logs and adds the newly
+        # closed ones; later batches continue after the retry. Batch IDs are random, so the
+        # observer may meet the two in either order.
+        slot = START + 86400
+        for seen_between, ids in ((True, (None, None)), (False, (str(uuid.UUID(int=2**128 - 1)), str(uuid.UUID(int=99))))):
+            with self.subTest(attempt_observed_before_the_retry=seen_between, retry_id_sorts_first=ids[1] is not None):
+                self.setUp()
+                self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+                self.bucket.publish(ARCHIVE, slot - 3000, logs((1, slot - 3000)))
+                state = observer.State.load(self.plan)
+                self.bucket.publish(ARCHIVE, slot - 890, logs((2, slot - 900)), backup_id=ids[0])  # Checkpoint not advanced.
+                if seen_between:
+                    observer.observe(self.plan, self.bucket, now=slot - 840 + 5, state=state)
+                self.bucket.publish(ARCHIVE, slot - 770, logs((2, slot - 900), (3, slot - 780)), backup_id=ids[1])
+                self.bucket.publish(ARCHIVE, slot - 660, logs((4, slot - 660)))
+                row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+                self.assertEqual(row["recoverable_through_unix_s"], slot - 660)
+
+    def test_rotation_time_comes_from_the_terminal_rotate_event(self):
+        raw = binlog("binlog.000007", 1_800_000_000)
+        self.assertEqual(observer.rotated_at(raw, "binlog.000007"), 1_800_000_000)
+        self.assertIsNone(observer.rotated_at(raw, "binlog.000008"), "rotation must name the next file")
+        self.assertIsNone(observer.rotated_at(raw[:-1] + bytes([raw[-1] ^ 1]), "binlog.000007"), "checksum")
+        self.assertIsNone(observer.rotated_at(raw[:-44], "binlog.000007"))
+        self.assertIsNone(observer.rotated_at(b"\xfebin", "binlog.000007"))
+
+    def test_a_retry_after_a_crash_between_sample_and_journal_row_records_the_slot(self):
+        # The sample is written before the journal row. A crash between the two left the
+        # sample behind, and the retry in the same slot failed on it, losing the slot.
+        self.history()
+        slot = START + 3 * 3600 + 1800
+        (self.root / "samples" / f"{slot}.json").write_bytes(b'{"from": "the crashed attempt"}')
+        row = observer.observe(self.plan, self.bucket, now=slot + 20, state=observer.State.load(self.plan))
+        self.assertIsNotNone(row)
+        raw = (self.root / "samples" / f"{slot}.json").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), row["sample_sha256"])
+
+    def test_a_journal_row_cut_short_by_a_crash_is_dropped_and_its_slot_retried(self):
+        self.history()
+        slot = START + 3 * 3600 + 1800
+        observer.observe(self.plan, self.bucket, now=slot - INTERVAL + 5, state=observer.State.load(self.plan))
+        with open(self.plan["journal"], "ab") as stream:
+            stream.write(b'{"newest_verified_base_unix_s": 1, "recoverable_')  # Power lost mid-append.
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=observer.State.load(self.plan))
+        self.assertIsNotNone(row)
+        rows = [json.loads(line) for line in Path(self.plan["journal"]).read_bytes().splitlines()]
+        self.assertEqual([item["slot_start_unix_s"] for item in rows], [slot - INTERVAL, slot])
+
+    @unittest.skipUnless(hasattr(__import__("os"), "fork"), "flock is POSIX")
+    def test_a_second_observe_run_is_refused_while_the_journal_is_locked(self):
+        with observer.journal_lock(self.plan):
+            with self.assertRaises(backup.Refusal):
+                with observer.journal_lock(self.plan):
+                    pass
+        with observer.journal_lock(self.plan):
+            pass
+
+    def test_sqlite_only_source_has_no_recoverable_through(self):
+        self.history()
+        self.plan["binlog_identity"] = None
+        row = observer.observe(self.plan, self.bucket, now=START + 5, state=observer.State.load(self.plan))
+        self.assertIsNone(row["recoverable_through_unix_s"])
+        self.assertGreater(row["newest_verified_base_unix_s"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

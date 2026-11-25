@@ -32,8 +32,10 @@ class UnitContractTest(unittest.TestCase):
                     yield profile, name, read_unit(profile, name)
 
     def test_complete_profiles_and_exact_commands(self):
-        for profile in PROFILES:
-            self.assertEqual({p.name for p in (ROOT / profile).iterdir()}, NAMES)
+        # The system profile also holds the production alert, MySQL and kit units
+        # (test_production_units.py); the user fixture keeps exactly the base five.
+        self.assertTrue(NAMES <= {p.name for p in (ROOT / "system").iterdir()})
+        self.assertEqual({p.name for p in (ROOT / "user-fixture").iterdir()}, NAMES)
         for profile, name, unit in self.services():
             action = "run" if name == "repro-backup.service" else "check"
             self.assertEqual(shlex.split(unit["Service"]["ExecStart"]), COMMAND + [action] + PLAN_ARGS)
@@ -67,7 +69,9 @@ class UnitContractTest(unittest.TestCase):
         for profile in PROFILES:
             for name in ("repro-backup.service", "repro-backup-watchdog.service"):
                 unit = read_unit(profile, name)
-                self.assertEqual(unit["Unit"]["OnFailure"], "repro-backup-alert.service")
+                # The journal marker stays first; the system profile adds the external bridge.
+                self.assertEqual(unit["Unit"]["OnFailure"].split()[0], "repro-backup-alert.service")
+                self.assertEqual(len(unit["Unit"]["OnFailure"].split()), 2 if profile == "system" else 1)
                 self.assertEqual(unit["Unit"]["OnFailureJobMode"], "replace")
             alert = read_unit(profile, "repro-backup-alert.service")
             self.assertNotIn("OnFailure", alert["Unit"])
@@ -120,7 +124,8 @@ class UnitContractTest(unittest.TestCase):
             daily = read_unit(profile, "repro-backup.timer")
             watch = read_unit(profile, "repro-backup-watchdog.timer")
             self.assertEqual(daily["Timer"]["Unit"], "repro-backup.service")
-            self.assertEqual(daily["Timer"]["OnCalendar"], "*-*-* 02:30:00 UTC")
+            # 03:30 UTC keeps 90 minutes clear of the monthly 02:00 reboot on the 28th.
+            self.assertEqual(daily["Timer"]["OnCalendar"], "*-*-* 03:30:00 UTC")
             self.assertEqual(daily["Timer"]["Persistent"], "true")
             self.assertEqual(daily["Timer"]["RandomizedDelaySec"], "5m")
             self.assertEqual(watch["Timer"]["Unit"], "repro-backup-watchdog.service")
