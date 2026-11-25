@@ -1,5 +1,5 @@
 {
-    "about": "Every place in app/ that branches on the database engine or names SQLite. Each entry is marked safe (correct on SQLite and MySQL 8.4) or to-fix (must change before the MySQL cutover). Checked by tests/Unit/DatabaseDialectGuardTest.php.",
+    "about": "Every place in app/ that branches on the database engine (getDriverName(), PDO::ATTR_DRIVER_NAME, DatabaseEngine::isSqlite()) or names an engine ('sqlite', 'mysql', a DSN). Each entry is marked safe (correct on SQLite and MySQL 8.4) or to-fix (must change before the MySQL cutover). Checked by tests/Unit/DatabaseDialectGuardTest.php.",
     "branches": [
         {
             "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
@@ -18,12 +18,28 @@
             "reason": "SQLite-only by design: it reads a SQLite safety backup. --apply refuses unless the live database is SQLite (H-1); the dry run uses the live connection."
         },
         {
+            "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
+            "rule": "engine-branch",
+            "text": "$this->require(DatabaseEngine::isSqlite(), 'Apply checks a SQLite safety backup, but the live database is '.DatabaseEngine::driver().'. Nothing was changed.');",
+            "count": 1,
+            "status": "safe",
+            "reason": "The refusal itself: --apply stops before any read or write unless the live database is SQLite, because its safety backup is a SQLite file (H-1)."
+        },
+        {
             "file": "app/Console/Commands/MediaStorageHealth.php",
             "rule": "engine-branch",
             "text": "if ($driver === 'sqlite') {",
             "count": 1,
             "status": "safe",
             "reason": "SQLite: the folder of the database file. MySQL: the MySQL data folder (config or @@datadir). Any other engine fails the check (H-1)."
+        },
+        {
+            "file": "app/Console/Commands/MediaStorageHealth.php",
+            "rule": "engine-branch",
+            "text": "if (! in_array($driver, ['mysql', 'mariadb'], true)) {",
+            "count": 1,
+            "status": "safe",
+            "reason": "Same check as above: engines other than SQLite and MySQL fail clearly instead of guessing a folder (H-1)."
         },
         {
             "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
@@ -40,6 +56,14 @@
             "count": 1,
             "status": "safe",
             "reason": "SQLite-only by design: it reads a SQLite safety backup. --apply refuses unless the live database is SQLite (H-1); the dry run uses the live connection."
+        },
+        {
+            "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
+            "rule": "engine-branch",
+            "text": "$this->require(! $this->option('apply') || DatabaseEngine::isSqlite(),",
+            "count": 1,
+            "status": "safe",
+            "reason": "The refusal itself: --apply stops before any read or write unless the live database is SQLite, because its safety backup is a SQLite file (H-1)."
         },
         {
             "file": "app/Http/Middleware/RetryDatabaseThrottleRequests.php",

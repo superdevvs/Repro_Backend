@@ -51,7 +51,7 @@ scheduled message from being sent twice.
 - `tests/database-dialect-baseline.json` lists the 38 cases that exist today. It may only
   shrink. After removing one, regenerate it:
   `DIALECT_GUARD_WRITE_BASELINE=1 php vendor/bin/phpunit tests/Unit/DatabaseDialectGuardTest.php`
-- `tests/database-engine-branches.json` lists all 20 engine branches, each `safe` or `to-fix`
+- `tests/database-engine-branches.json` lists all 23 engine branches, each `safe` or `to-fix`
   with a reason. 13 are still to fix before the MySQL cutover.
 - `AGENTS.md` and `CLAUDE.md` give coding sessions the plan's rules.
 

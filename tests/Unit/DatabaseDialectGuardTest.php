@@ -12,8 +12,9 @@ use Tests\Support\DatabaseDialectScanner;
  * - SQL that only SQLite understands (json_each, ||, DATE('now'), CAST AS INTEGER, two-argument
  *   MAX, PRAGMA, ...) is allowed only where tests/database-dialect-baseline.json lists it. The
  *   baseline may only shrink: remove an entry when you remove the SQL.
- * - Every engine branch (getDriverName(), PDO driver checks, 'sqlite' names and DSNs) must be
- *   listed in tests/database-engine-branches.json, marked "safe" or "to-fix" with a reason.
+ * - Every engine branch (getDriverName(), PDO driver checks, DatabaseEngine::isSqlite(), 'sqlite'
+ *   or 'mysql' names and DSNs) must be listed in tests/database-engine-branches.json, marked
+ *   "safe" or "to-fix" with a reason.
  *
  * Regenerate the baseline after removing SQLite-only SQL:
  *   DIALECT_GUARD_WRITE_BASELINE=1 php vendor/bin/phpunit tests/Unit/DatabaseDialectGuardTest.php
@@ -60,6 +61,36 @@ PHP;
             '9:engine-branch',
             '12:insert-or',
             '13:concat-pipes',
+        ], $rules);
+    }
+
+    public function test_scanner_flags_engine_checks_made_through_helpers_or_mysql_names(): void
+    {
+        // App\Support\DatabaseEngine::isSqlite() and comparisons with 'mysql' are engine branches
+        // too; without this they would pass the guard unlisted.
+        $source = <<<'PHP'
+<?php
+use App\Support\DatabaseEngine;
+if (DatabaseEngine::isSqlite()) { $copy = true; }
+if (config('database.default') === 'mysql') { $copy = false; }
+$pdo = new PDO('mysql:unix_socket=/run/mysqld/mysqld.sock');
+$supported = in_array($driver, ['mariadb'], true);
+$driver = DatabaseEngine::driver();
+$socket = config('database.connections.mysql.unix_socket');
+$message = 'MySQL 8.4 is the target.';
+final class Probe { public static function isSqlite(): bool { return false; } }
+PHP;
+
+        $rules = array_map(
+            fn (array $finding) => $finding['line'].':'.$finding['rule'],
+            DatabaseDialectScanner::scanSource($source, 'fixture.php'),
+        );
+
+        $this->assertEqualsCanonicalizing([
+            '3:engine-branch',
+            '4:engine-branch',
+            '5:engine-branch',
+            '6:engine-branch',
         ], $rules);
     }
 

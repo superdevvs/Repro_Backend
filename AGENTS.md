@@ -15,7 +15,8 @@ socket-only server). Until then every change ships to production on SQLite.
   text, `DATE('now')`, `strftime`, `CAST(x AS INTEGER)` or `AS TEXT`, two-argument
   `MAX(a, b)` or `MIN(a, b)`, `INSERT OR IGNORE`, `PRAGMA`, `sqlite_master`. Use the
   query builder, or a helper that works on both engines.
-- Do not add new engine branches (`getDriverName()`, `PDO::ATTR_DRIVER_NAME`, `'sqlite'`).
+- Do not add new engine branches (`getDriverName()`, `PDO::ATTR_DRIVER_NAME`,
+  `DatabaseEngine::isSqlite()`, `'sqlite'`, `'mysql'`).
   If one is truly needed, add it to `tests/database-engine-branches.json`, marked
   `safe` or `to-fix`, with a reason.
 - The guard test `tests/Unit/DatabaseDialectGuardTest.php` fails on new SQLite-only SQL

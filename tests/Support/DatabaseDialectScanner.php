@@ -17,8 +17,14 @@ final class DatabaseDialectScanner
 {
     private const BRANCH_RULE = 'engine-branch';
 
-    /** PHP identifiers that read the database engine. */
-    private const BRANCH_IDENTIFIERS = ['getDriverName', 'ATTR_DRIVER_NAME'];
+    /**
+     * PHP identifiers that read or test the database engine, including the engine helpers
+     * (App\Support\DatabaseEngine::isSqlite()). Their declarations do not count.
+     */
+    private const BRANCH_IDENTIFIERS = '/^(?:getDriverName|ATTR_DRIVER_NAME|is(?:Sqlite|MySql|MariaDb))$/i';
+
+    /** String literals that name an engine: a driver name or a DSN. */
+    private const BRANCH_LITERALS = '/^(?:sqlite(?:$|:|\s+format\s+3)|(?:mysql|mariadb)(?:$|:))/i';
 
     /** SQL that SQLite accepts but MySQL 8.4 rejects or answers differently. */
     private const SQL_RULES = [
@@ -90,6 +96,7 @@ final class DatabaseDialectScanner
         $previous = null;
 
         foreach (token_get_all($source) as $token) {
+            $before = $previous;
             if (! is_array($token)) {
                 if ($token === '(') {
                     $calls[] = is_array($previous) && $previous[0] === T_STRING ? $previous[1] : null;
@@ -105,8 +112,10 @@ final class DatabaseDialectScanner
             }
             [$id, $text, $line] = $token;
 
-            if ($id === T_STRING && in_array($text, self::BRANCH_IDENTIFIERS, true)) {
-                $branchLines[$line] = true;
+            if ($id === T_STRING && preg_match(self::BRANCH_IDENTIFIERS, $text)) {
+                if (! (is_array($before) && $before[0] === T_FUNCTION)) {
+                    $branchLines[$line] = true;
+                }
 
                 continue;
             }
@@ -120,7 +129,7 @@ final class DatabaseDialectScanner
                 continue;
             }
 
-            if (preg_match('/^sqlite(?:$|:|\s+format\s+3)/i', $literal)) {
+            if (preg_match(self::BRANCH_LITERALS, $literal)) {
                 $branchLines[$line] = true;
             }
             $enclosingCall = $calls === [] ? null : end($calls);
