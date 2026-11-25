@@ -25,12 +25,12 @@ class PerRequestSchemaLookupTest extends IsolatedSecurityTestCase
         Http::fake();
         Event::fake([SystemOverviewActivityUpdated::class]);
         config(['database.schema_cache.enabled' => true, 'database.schema_cache.store' => 'array']);
+        $this->startFreshPhpProcess();
         Sanctum::actingAs(User::factory()->create(['about' => 'Warm cache probe']));
 
         $this->getJson('/api/user', ['X-System-Session-Id' => 'schema-warm'])->assertOk();
 
-        // A PHP-FPM request starts with empty static memos; only the shared cache survives.
-        (new \ReflectionProperty(User::class, 'usersTableColumnCache'))->setValue(null, []);
+        $this->startFreshPhpProcess();
         $schemaQueries = [];
         DB::listen(function ($query) use (&$schemaQueries): void {
             if (preg_match('/sqlite_master|pragma_table|information_schema/i', $query->sql)) {
@@ -41,5 +41,11 @@ class PerRequestSchemaLookupTest extends IsolatedSecurityTestCase
         $this->getJson('/api/user', ['X-System-Session-Id' => 'schema-warm'])->assertOk();
 
         $this->assertSame([], $schemaQueries);
+    }
+
+    /** A PHP-FPM request starts with empty static memos; only the shared cache survives. */
+    private function startFreshPhpProcess(): void
+    {
+        (new \ReflectionProperty(User::class, 'usersTableColumnCache'))->setValue(null, []);
     }
 }
