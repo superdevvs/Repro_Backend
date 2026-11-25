@@ -30,6 +30,7 @@ class CrmCalendarSyncCommand extends Command
             $this->line('A planned follow-up that shows push_pending clears when it is saved again in the CRM.');
             $this->line('A cancelled one clears only when the sync runs: settle every other row, release CRM_CALENDAR_SYNC_HOLD, '
                 .'let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.');
+            $this->line('To release the hold, set CRM_CALENDAR_SYNC_HOLD=false and rebuild the config cache: a cached config does not read .env.');
 
             return self::SUCCESS;
         }

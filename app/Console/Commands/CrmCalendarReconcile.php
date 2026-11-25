@@ -69,7 +69,8 @@ class CrmCalendarReconcile extends Command
         $blocking = array_filter($rows, fn (array $row) => ! in_array($row['category'], self::NOT_BLOCKING, true));
         if ($blocking !== [] && array_filter($blocking, fn (array $row) => $row['category'] !== 'push_pending' || $row['local_status'] !== 'cancelled') === []) {
             $report['hint'] = 'Only cancelled follow-ups with push_pending are left. Only the sync clears them: release '
-                .'CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.';
+                .'CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0. '
+                .'To release the hold, set CRM_CALENDAR_SYNC_HOLD=false and rebuild the config cache: a cached config does not read .env.';
         }
         $report['rows'] = $rows;
 

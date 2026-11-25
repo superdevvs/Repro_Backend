@@ -220,6 +220,9 @@ class CrmCalendarSyncHoldTest extends CrmTestCase
         $this->assertStringContainsString('A planned follow-up that shows push_pending clears when it is saved again in the CRM.', $output);
         $this->assertStringContainsString('A cancelled one clears only when the sync runs: settle every other row, '
             .'release CRM_CALENDAR_SYNC_HOLD, let one sync run, then rerun crm:calendar-reconcile --dry-run, which must exit 0.', $output);
+        // Production caches its config, so changing .env alone leaves the hold on.
+        $this->assertStringContainsString('To release the hold, set CRM_CALENDAR_SYNC_HOLD=false and rebuild the config cache: '
+            .'a cached config does not read .env.', $output);
     }
 
     /** The first half of the held-command guidance: saving the follow-up again pushes it and clears the row. */
