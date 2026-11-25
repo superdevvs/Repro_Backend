@@ -406,7 +406,14 @@ class Runner:
         self.adopt_external_hold = adopt_external_hold
         self.require_long_job_predrain = require_long_job_predrain
 
-    def initialize(self) -> dict:
+    def initialize(self, fence_deploys: Callable[[], None] | None = None) -> dict:
+        """Commit a planned run.
+
+        fence_deploys runs under the controller lock before the journal is
+        committed. If it fails, for example behind a deploy that keeps its lock,
+        no run exists and init can be retried; a planned run is never committed
+        without its deploy fence.
+        """
         with self.journal.acquire() as (prior, lease):
             if prior is not None:
                 raise UnsafeCutover("A run already exists in this directory")
@@ -415,6 +422,8 @@ class Runner:
             preflight = self.adapter.preflight_sha256()
             if not is_sha256(preflight) or not self.adapter.observe().sqlite_live():
                 raise UnsafeCutover("SQLite preflight is incomplete")
+            if fence_deploys is not None:
+                fence_deploys()
             state = {
                 "version": 1,
                 "identity": asdict(self.identity),

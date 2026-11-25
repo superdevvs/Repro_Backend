@@ -60,9 +60,9 @@ def main(argv: list[str] | None = None) -> int:
         adapter = host.ProductionAdapter(config, journal)
         runner = host.runner_for(config, journal, adapter)
         if args.action == "init":
-            result = runner.initialize()
             # The guard holds deploys for a planned cutover; Deploy-App checks only this marker.
-            adapter.hold_deploys()
+            # It is published before the journal commit, so a busy deploy lock leaves no run to retry.
+            result = runner.initialize(fence_deploys=adapter.hold_deploys)
         elif args.action == "status":
             result = runner.status()
         elif args.action == "approval-template":

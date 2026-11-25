@@ -309,26 +309,41 @@ def refresh_engine_evidence(observe: Callable[[str], HostAuthority],
             os.close(directory)
 
 
+def _verify_admission(action: str, expected_engine: str) -> None:
+    try:
+        activation_raw = read_protected(ACTIVATION) if action == "deploy" else None
+    except FileNotFoundError:
+        activation_raw = None
+    verify(
+        read_protected(POLICY), read_protected(STATE / "state.json"), read_protected(EVIDENCE),
+        machine_sha=sha256(read_protected(MACHINE_ID)),
+        boot_id=BOOT_ID.read_text(encoding="ascii").strip(),
+        action=action, expected_engine=expected_engine, activation_raw=activation_raw,
+    )
+
+
 @contextmanager
 def admitted(action: str, expected_engine: str) -> Iterator[int]:
     """Hold a verified shared lease for the bounded operation in this scope."""
     _require_root_installation()
     import fcntl
 
+    # Refuse before the lock when the current records already refuse. Refusing
+    # is always safe, and flock has no writer preference: a crowd of refused
+    # checks holding the shared lock would starve a drain. Any other read
+    # problem is settled under the lock below, which alone can admit.
+    try:
+        _verify_admission(action, expected_engine)
+    except Refused:
+        raise
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass
+
     # Shared lock first, then the journal: a writer that reads state after a
     # hold is refused, and one admitted earlier holds the lock a drain waits for.
     with open_protected(STATE / WRITER_LOCK) as lock:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        try:
-            activation_raw = read_protected(ACTIVATION) if action == "deploy" else None
-        except FileNotFoundError:
-            activation_raw = None
-        verify(
-            read_protected(POLICY), read_protected(STATE / "state.json"), read_protected(EVIDENCE),
-            machine_sha=sha256(read_protected(MACHINE_ID)),
-            boot_id=BOOT_ID.read_text(encoding="ascii").strip(),
-            action=action, expected_engine=expected_engine, activation_raw=activation_raw,
-        )
+        _verify_admission(action, expected_engine)
         yield lock
 
 

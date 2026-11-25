@@ -232,6 +232,15 @@ class CutoverProcessContractTests(unittest.TestCase):
         self.call("check", "mysql", error="not authoritative")
         self.assertEqual("admitted", self.call("check", "sqlite").stdout.strip())
 
+    def test_held_admission_is_refused_without_waiting_for_the_writer_lock(self):
+        """A refusal is read before the shared lock, so refused checks never contend with a drain."""
+        self.call("runner", "hold")
+        with self.journal.acquire() as (_, lease):
+            self.journal.drain_writers(lease, DRAIN_SECONDS)
+            # The drain now holds the writer lock exclusively. The check must
+            # still be refused by the hold itself, not by a busy lock.
+            self.call("check", "sqlite", error="holds all admissions")
+
     def test_drain_under_refused_admission_load(self):
         """Measure writer starvation: flock has no writer preference while refused checks share the lock."""
         self.call("runner", "hold")
@@ -267,8 +276,14 @@ class CutoverProcessContractTests(unittest.TestCase):
 
     def kill_after_publishing(self, action, *, writes_possible):
         child = self.pause_at("pause-publication", action, "proof published")
-        self.call("check", "sqlite", error="admission lock held")
-        self.call("check", "mysql", error="admission lock held")
+        # The unfinished action refuses both engines before the lock is tried,
+        # and the publishing controller still holds the writer lock exclusively.
+        self.call("check", "sqlite", error="unfinished action")
+        self.call("check", "mysql", error="unfinished action")
+        import fcntl  # Linux only; this class is skipped elsewhere.
+
+        with (self.directory / guard.WRITER_LOCK).open("a+b") as lock, self.assertRaises(BlockingIOError):
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         pending_bytes = self.journal.path.read_bytes()
         pending = json.loads(pending_bytes)
         self.assertEqual(action, pending["pending"]["action"])

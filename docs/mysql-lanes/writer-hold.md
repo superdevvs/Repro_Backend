@@ -327,3 +327,42 @@ has a test that was run and seen failing for the stated reason first.
 - writer-hold#2 recheck (already fixed): holds. After the reboot the tick returns `sqlite_authoritative` without writing, so the refreshed proof still matches the journal; `test_reboot_after_reopened_rollback_ticks_refreshes_and_reopens` passes with the round-2 changes.
 - writer-hold#3 recheck (already fixed): holds. `queue:work` exits 0 (restart, `--max-time`), 12 (memory) or 1 (timeout), never 75. A held wrapper that exits 75 within `startsecs=5` goes BACKOFF then FATAL and stays down, and `reopen` starts it again.
 - reviewer#2 recheck (documented): holds. `prepare`, `evidence` and `seal_mysql` still refuse, so this adapter cannot reach `mysql_authoritative`.
+
+### Integration check (25 Nov)
+
+Running CI's Python checks on the merged release candidate with 2 CPUs (the
+size of a GitHub runner for a private repository),
+`test_drain_under_refused_admission_load` failed in two of three runs: the
+drain waited up to 3.2 s behind 4 or 8 refused checkers, against its 1 s mark.
+A refused check took the shared writer lock before reading the records, and
+`flock` gives a waiting exclusive lock no preference.
+
+Fixed test-first: `guard.admitted` now reads the records once before the lock
+and refuses at once when they already refuse. Refusing is always safe; only
+the read under the shared lock can admit, so admission is unchanged. A read
+error before the lock is settled under the lock as before.
+`test_held_admission_is_refused_without_waiting_for_the_writer_lock` (red:
+"admission lock held" instead of the hold) and the starvation test (five runs,
+0 ms drain) pass. The two publication-crash tests now expect the
+unfinished-action refusal and check directly that the publishing controller
+still holds the writer lock. `run-linux-tests.sh` passes in full.
+
+### Round 3
+
+Codex reviewed `68f90752..273aa827`; the finding was rechecked at `66b8b88f`.
+
+- r3#1 (P2, initial deploy fence not recoverable): real. `init` committed the
+  `planned` journal and released the controller lock before publishing the
+  fence. A deploy holding its lock past `command_seconds` then left an unfenced
+  planned run: a retried `init` refused ("A run already exists"), a planned
+  tick does nothing, and `refresh` refuses while ingress is open. Fixed in the
+  commit that adds this entry: `Runner.initialize` publishes the fence under
+  the controller lock before the journal commit, so a failed publication leaves
+  no run and `init` can be retried. A committed run is still never
+  initialized again. If the journal write itself fails after the fence is
+  published, deploys stay held with no run until `init` is retried (fail
+  closed). r2#4 and r2#5 are unchanged.
+  `test_init_refused_by_a_busy_deploy_lock_is_retried_until_deploys_are_fenced`
+  (red: "Cutover controller refused: A run already exists in this directory").
+  `run-linux-tests.sh` passes in full (adapter and CLI 31); CI discovery of
+  `scripts/cutover`, `fence` and `readiness` passes.
