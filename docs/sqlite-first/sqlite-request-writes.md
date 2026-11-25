@@ -29,7 +29,7 @@ After any `.env` change, run `php artisan config:cache` (each deploy already doe
 - The key is a fingerprint of the migration file names, frozen by `config:cache`, so each
   release with a new migration starts fresh. `SCHEMA_CACHE_RELEASE` overrides it.
 - With it on, a signed-in request asks the database no layout questions once the cache
-  is warm (today it asks nine).
+  is warm (with it off, it sends eight such queries).
 
 ## Automation run age limit (off by default)
 
