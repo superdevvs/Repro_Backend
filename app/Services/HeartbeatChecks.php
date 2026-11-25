@@ -84,6 +84,13 @@ final class HeartbeatChecks
         $minimum = (float) config('heartbeat.disk.min_free_gb', 20);
         $healthy = true;
         $parts = [];
+        // An unmounted mount point is an empty folder on the parent disk, so
+        // its free space would read as that disk's.
+        foreach (self::list(config('heartbeat.disk.mounts', '')) as $mount) {
+            $mounted = self::isMountPoint($mount);
+            $healthy = $healthy && $mounted;
+            $parts[] = $mount.($mounted ? ' mounted' : ' not_mounted');
+        }
         foreach ($paths as $path) {
             $free = @disk_free_space($path);
             if ($free === false) {
@@ -175,6 +182,22 @@ final class HeartbeatChecks
         }
 
         return $map;
+    }
+
+    /**
+     * A mount point sits on a different device from its parent folder, or is
+     * the root itself. A bind mount from the same disk does not count.
+     */
+    private static function isMountPoint(string $path): bool
+    {
+        $real = @realpath($path);
+        $self = $real === false ? false : @stat($real);
+        $parent = $real === false ? false : @stat(dirname($real));
+        if ($self === false || $parent === false) {
+            return false;
+        }
+
+        return $self['dev'] !== $parent['dev'] || $self['ino'] === $parent['ino'];
     }
 
     /** @return list<string> */

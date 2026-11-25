@@ -31,6 +31,7 @@ All go in `/var/www/backend/.env`. Each production change needs the owner's appr
 | `HEARTBEAT_BACKUP_MAX_AGE_HOURS` | `26` | Newest backup must be younger than this, and not empty. |
 | `HEARTBEAT_DISK_PATHS` | empty (the app's disk) | Comma-separated paths to watch, for example `/var/www/backend,/mnt/16tb`. |
 | `HEARTBEAT_DISK_MIN_FREE_GB` | `20` | Minimum free space on each path. |
+| `HEARTBEAT_DISK_MOUNTS` | empty (check skipped) | Comma-separated paths that must be mount points, for example `/mnt/16tb`. A path that is not mounted, or missing, fails the disk check: an empty mount folder would otherwise report the root disk's free space, and a backup written there would look fresh. A bind mount from the same disk does not count as mounted. |
 | `HEARTBEAT_QUEUE_MAX_AGE_MINUTES` | `10` | The oldest waiting job must be younger than this. Delayed and running jobs do not count. A job whose worker died counts again from the moment its `retry_after` runs out (the value of the queue connection that serves that queue). |
 | `HEARTBEAT_QUEUES` | empty (all queues) | Comma-separated queues to watch. Use it if a queue has no worker on purpose. |
 | `HEARTBEAT_TIMEOUT_SECONDS` | `10` | Time limit for the ping. |
@@ -74,7 +75,7 @@ Every transaction over one second must then be fixed or signed off by name (plan
 
 - `database`: the same check as `/up`.
 - `backup`: age and size of the newest file matching `HEARTBEAT_BACKUP_GLOB`.
-- `disk`: free space on each watched path.
+- `disk`: free space on each watched path, and that each path in `HEARTBEAT_DISK_MOUNTS` is mounted.
 - `queue`: age of the oldest waiting job in the `jobs` table.
 
 All ok: it POSTs a short text summary to the ping address. Any failure: it POSTs to the fail address. If the server is down, nothing is sent and the alert service raises the alarm after its grace time.

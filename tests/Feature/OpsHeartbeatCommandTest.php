@@ -43,6 +43,7 @@ class OpsHeartbeatCommandTest extends TestCase
             'heartbeat.backup.max_age_hours' => 26,
             'heartbeat.disk.paths' => $this->backupDirectory,
             'heartbeat.disk.min_free_gb' => 0.001,
+            'heartbeat.disk.mounts' => '',
             'heartbeat.queue.max_age_minutes' => 10,
             'heartbeat.queue.queues' => '',
             'queue.default' => 'database',
@@ -121,6 +122,38 @@ class OpsHeartbeatCommandTest extends TestCase
 
         Http::assertSent(fn (Request $request) => $request->url() === self::PING.'/fail'
             && str_contains($request->body(), 'disk: FAIL'));
+    }
+
+    public function test_a_watched_mount_that_is_not_mounted_fails(): void
+    {
+        // An unmounted /mnt/16tb is an empty folder on the root disk, so its
+        // free space reads as the root disk's and the space check passes.
+        config(['heartbeat.disk.paths' => $this->backupDirectory, 'heartbeat.disk.mounts' => $this->backupDirectory]);
+
+        $this->artisan('ops:heartbeat')->assertFailed();
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING.'/fail'
+            && str_contains($request->body(), 'disk: FAIL '.$this->backupDirectory.' not_mounted'));
+    }
+
+    public function test_a_mounted_watched_mount_passes(): void
+    {
+        config(['heartbeat.disk.mounts' => '/']);
+
+        $this->artisan('ops:heartbeat')->assertSuccessful();
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING
+            && str_contains($request->body(), 'disk: ok / mounted'));
+    }
+
+    public function test_a_missing_watched_mount_fails(): void
+    {
+        config(['heartbeat.disk.mounts' => $this->backupDirectory.'/missing']);
+
+        $this->artisan('ops:heartbeat')->assertFailed();
+
+        Http::assertSent(fn (Request $request) => $request->url() === self::PING.'/fail'
+            && str_contains($request->body(), 'missing not_mounted'));
     }
 
     public function test_an_old_waiting_job_pings_the_fail_url(): void
@@ -274,6 +307,7 @@ class OpsHeartbeatCommandTest extends TestCase
         $this->assertSame('', $config['url']);
         $this->assertSame('', $config['fail_url']);
         $this->assertSame('', $config['backup']['glob']);
+        $this->assertSame('', $config['disk']['mounts']);
         $this->assertSame(26.0, $config['backup']['max_age_hours']);
         $this->assertSame(10, $config['queue']['max_age_minutes']);
     }

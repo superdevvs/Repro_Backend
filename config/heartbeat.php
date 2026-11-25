@@ -28,6 +28,9 @@ return [
         'paths' => (string) env('HEARTBEAT_DISK_PATHS', ''),
         // Same reserve the deploy preflight keeps.
         'min_free_gb' => (float) env('HEARTBEAT_DISK_MIN_FREE_GB', 20),
+        // Comma-separated paths that must be mount points, for example
+        // /mnt/16tb. Unmounted or missing fails. Empty checks none.
+        'mounts' => (string) env('HEARTBEAT_DISK_MOUNTS', ''),
     ],
 
     'queue' => [
