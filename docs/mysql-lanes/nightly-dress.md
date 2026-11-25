@@ -22,13 +22,15 @@ deployed: the new tools only run when someone starts them.
 
 ## Fold into docs/mysql-production-readiness.md
 
+Links inside the quoted text are relative to `docs/`, ready to paste.
+
 Suggested text for the nightly streak status:
 
 > A committed runner now produces every input for one qualifying night:
 > the dated private capture, import with both forward verifications,
 > reverse SQLite parity, finance parity, applicant files and the CRM review,
 > bound to the snapshot, candidate release and reviewed scope
-> ([runner](../../scripts/cutover/nightly/README.md)). It has only run against
+> ([runner](../scripts/cutover/nightly/README.md)). It has only run against
 > fakes. The streak count is still zero. Each night needs an approved run on
 > the host, then review of its outputs.
 >
@@ -52,7 +54,7 @@ Suggested text for the dress-rehearsal gates:
 Suggested text for the dress-rehearsal profile:
 
 > Draft host and workload profiles are committed for review
-> ([profile](../../scripts/cutover/nightly/README.md#dress-rehearsal-profile)).
+> ([profile](../scripts/cutover/nightly/README.md#dress-rehearsal-profile)).
 > The workload uses the observed rates (p95 minute 125, peak 237 requests),
 > proposes a surge of twice the peak, and encodes the plan's stress and crash
 > test. The 50 busiest endpoints must be ranked from the request traces on a
@@ -171,8 +173,8 @@ Tests run in this lane. Results are filled in below.
 | --- | --- |
 | `python -B -m unittest discover -s scripts/cutover/readiness -p 'test_*.py'` (Windows, Python 3.12.10) | 67 tests OK |
 | Same, Linux container `repro-mysql-rehearsal-qa:20261122`, Python 3.11.2, network none | 67 tests OK |
-| `python -B -m unittest discover -s scripts/cutover/nightly -p 'test_*.py'` (Windows) | 49 tests OK, 5 Linux-only skipped |
-| Same, Linux container as uid 1000, network none | 49 tests OK, none skipped |
+| `python -B -m unittest discover -s scripts/cutover/nightly -p 'test_*.py'` (Windows) | 52 tests OK, 7 Linux-only skipped |
+| Same, Linux container as uid 1000, network none | 52 tests OK, none skipped |
 | `python -B -m unittest discover -s scripts/cutover -p 'test_*.py'` (Windows) | 41 tests OK, 4 skipped |
 | `phpunit -c phpunit.mysql.xml tests/MySql/ConnectionIdentityTest.php tests/MySql/DatabaseBackupTest.php` on MySQL 8.4.13, network none | Identity test passed. Two backup tests fail at the "configuration" stage; the same two fail on `a6e799bb` with the same output (the local image has no `mysqldump`). No PHP file differs from the base. |
 | Full SQLite suite `vendor/bin/phpunit` | See the lane report. |
