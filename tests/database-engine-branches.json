@@ -1,0 +1,157 @@
+{
+    "about": "Every place in app/ that branches on the database engine or names SQLite. Each entry is marked safe (correct on SQLite and MySQL 8.4) or to-fix (must change before the MySQL cutover). Checked by tests/Unit/DatabaseDialectGuardTest.php.",
+    "branches": [
+        {
+            "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
+            "rule": "engine-branch",
+            "text": "$pdo = new PDO('sqlite:'.$path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY]);",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Opens a SQLite backup file directly (H-1). Must stay SQLite-only and refuse clearly on MySQL."
+        },
+        {
+            "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
+            "rule": "engine-branch",
+            "text": "$this->require($age >= -5 && $age <= 900 && filesize($path) >= 4096 && file_get_contents($path, false, null, 0, 16) === \"SQLite format 3\\0\", 'The SQLite backup must be complete and no more than 15 minutes old.');",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Checks the SQLite file header of the backup (H-1). Same command as above."
+        },
+        {
+            "file": "app/Console/Commands/MediaStorageHealth.php",
+            "rule": "engine-branch",
+            "text": "$databaseRoot = config('database.default') === 'sqlite' && $databaseFile !== ':memory:'",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Finds the disk that holds the database from the SQLite file path. On MySQL it must probe the MySQL data folder (H-1)."
+        },
+        {
+            "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
+            "rule": "engine-branch",
+            "text": "$pdo = new PDO('sqlite:'.$path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::SQLITE_ATTR_OPEN_FLAGS => PDO::SQLITE_OPEN_READONLY]);",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Opens a SQLite safety backup directly (H-1). Must stay SQLite-only and refuse clearly on MySQL."
+        },
+        {
+            "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
+            "rule": "engine-branch",
+            "text": "$this->require(file_get_contents($path, false, null, 0, 16) === \"SQLite format 3\\0\", 'The safety backup is not a SQLite database.');",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Checks the SQLite file header of the safety backup (H-1). Same command as above."
+        },
+        {
+            "file": "app/Http/Middleware/RetryDatabaseThrottleRequests.php",
+            "rule": "engine-branch",
+            "text": "return config('database.connections.'.$connection.'.driver') === 'sqlite'",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Retries the rate limiter on SQLite busy errors only. On MySQL it must retry WriterTokenTimeout and nothing else (Phase 1 WP-4)."
+        },
+        {
+            "file": "app/Models/ShootFile.php",
+            "rule": "engine-branch",
+            "text": "if ($receipts->getConnection()->getDriverName() === 'mysql') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "The one MySQL-only query (JSON_CONTAINS); the SQLite side uses json_each. Neither runs on the other engine's CI. Replace with one query that works on both."
+        },
+        {
+            "file": "app/Queue/SqliteRetryDatabaseConnector.php",
+            "rule": "engine-branch",
+            "text": "if ($database->getDriverName() !== 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Chooses the SQLite queue class. The plan puts the MySQL queue class (no writer token for pop, delete, release) here."
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "engine-branch",
+            "text": "$pdo = new PDO('sqlite:file:'.str_replace('%2F', '/', rawurlencode($canonical)).'?mode=rw', null, null,",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Opens the SQLite file a second time with PRAGMA busy_timeout. Needs a MySQL path (Lane H; PR #46 adds one)."
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "engine-branch",
+            "text": "if ($primary->getDriverName() !== 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Same SQLite-only monitoring path as above."
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "engine-branch",
+            "text": "if ($primaryPdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Same SQLite-only monitoring path as above."
+        },
+        {
+            "file": "app/Services/Messaging/EmailMessageSearch.php",
+            "rule": "engine-branch",
+            "text": "$sqlite = $query->getConnection()->getDriverName() === 'sqlite';",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "Registers a SQLite-only PHP function for search. MySQL needs its own search text (Lane H)."
+        },
+        {
+            "file": "app/Services/Scheduling/ScheduleCommitGuard.php",
+            "rule": "engine-branch",
+            "text": "if (DB::connection()->getDriverName() === 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "SQLite writer reservation taken before the read snapshot. MySQL skips it, so this path has no reservation there until the Lane C writer token (Phase 1) takes its place."
+        },
+        {
+            "file": "app/Services/Shoots/Actions/ApplyAlternateDateAction.php",
+            "rule": "engine-branch",
+            "text": "if (DB::connection()->getDriverName() === 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "SQLite writer reservation taken before the read snapshot. MySQL skips it, so this path has no reservation there until the Lane C writer token (Phase 1) takes its place."
+        },
+        {
+            "file": "app/Services/Shoots/Actions/AssignServicePhotographerAction.php",
+            "rule": "engine-branch",
+            "text": "if (DB::connection()->getDriverName() === 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "SQLite writer reservation taken before the read snapshot. MySQL skips it, so this path has no reservation there until the Lane C writer token (Phase 1) takes its place."
+        },
+        {
+            "file": "app/Services/Shoots/Actions/ScheduleShootAction.php",
+            "rule": "engine-branch",
+            "text": "if (\\Illuminate\\Support\\Facades\\DB::connection()->getDriverName() === 'sqlite') {",
+            "count": 2,
+            "status": "to-fix",
+            "reason": "SQLite writer reservation taken before the read snapshot. MySQL skips it, so this path has no reservation there until the Lane C writer token (Phase 1) takes its place."
+        },
+        {
+            "file": "app/Services/Shoots/ShootEditablePayloadService.php",
+            "rule": "engine-branch",
+            "text": "if (DB::connection()->getDriverName() === 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "SQLite writer reservation taken before the read snapshot. MySQL skips it, so this path has no reservation there until the Lane C writer token (Phase 1) takes its place."
+        },
+        {
+            "file": "app/Services/Shoots/ShootSearchFilter.php",
+            "rule": "engine-branch",
+            "text": "$idCast = $query->getConnection()->getDriverName() === 'sqlite'",
+            "count": 1,
+            "status": "safe",
+            "reason": "Chooses CAST AS TEXT on SQLite and CAST AS CHAR on MySQL. Both engines get the same text."
+        },
+        {
+            "file": "app/Support/EditingDispatchWriteLock.php",
+            "rule": "engine-branch",
+            "text": "if (DB::connection()->getDriverName() === 'sqlite') {",
+            "count": 1,
+            "status": "to-fix",
+            "reason": "SQLite writer reservation taken before the read snapshot. MySQL skips it, so this path has no reservation there until the Lane C writer token (Phase 1) takes its place."
+        }
+    ]
+}
