@@ -6,6 +6,9 @@ READ-ONLY restore key. Each run records, as of the start of the current slot:
 the newest base backup with a completion marker, and how far a contiguous
 binlog chain from that base is published (the chain's last batch seal time).
 The raw sample is kept beside the journal and pinned by its SHA-256.
+A publication counts for a slot only if its completion marker's verified_at is
+at or before the slot start, not merely if this run (a few seconds later) can
+read it. The publisher uploads the marker right after that stamp.
 A publication folder without completion.json (still uploading, or abandoned)
 is skipped and looked at again on the next run; it never costs a slot.
 `export` writes the repro.backup-health.observations.v1 file that
@@ -33,6 +36,7 @@ import verify_mysql_binlog_chain as chain
 SAMPLE_SCHEMA = "repro.backup-health.sample.v1"
 REPORT_SCHEMA = "repro.backup-health.observations.v1"
 WINDOW = 7 * 24 * 3600
+CACHE_VERSION = 2
 PLAN_FIELDS = {"version", "interval_s", "journal", "samples_dir", "database_identity", "binlog_identity", "rclone",
                "crypt_remote", "database_config", "database_destination", "binlog_config", "binlog_destination",
                "timeout_seconds"}
@@ -49,8 +53,14 @@ def parse_completion(raw: bytes, identity: str) -> dict:
                 and record["input"].get("identity") == identity, "completion marker is not a verified publication")
     names = [item["path"] for item in record["input"]["artifacts"]]
     logs = sorted(int(name.rsplit(".", 1)[1]) for name in names if chain.BINLOG.fullmatch(name))
-    return {"created": epoch(record["input"]["created_at"]), "names": names, "first": logs[0] if logs else None,
-            "last": logs[-1] if logs else None, "sha256": backup.sha256(raw)}
+    return {"created": epoch(record["input"]["created_at"]), "available": epoch(record["verified_at"]),
+            "names": names, "first": logs[0] if logs else None, "last": logs[-1] if logs else None,
+            "sha256": backup.sha256(raw)}
+
+
+def ready(item: dict, slot: int) -> bool:
+    """Created and verified by the slot start; completion.json is uploaded right after verified_at."""
+    return item["created"] <= slot and item["available"] <= slot
 
 
 class State:
@@ -59,7 +69,7 @@ class State:
     def __init__(self, plan: dict):
         self.plan = plan
         self.slots: set[int] = set()
-        self.cache = {"bases": {}, "binlogs": {}, "chains": {}}
+        self.cache = {"version": CACHE_VERSION, "bases": {}, "binlogs": {}, "chains": {}}
         self.ranges: list = []
         self.first: dict[int, str] = {}
 
@@ -72,7 +82,9 @@ class State:
                 state.slots.add(json.loads(line)["slot_start_unix_s"])
         cache = Path(plan["journal"] + ".cache.json")
         if cache.exists():
-            state.cache = json.loads(cache.read_bytes())
+            cached = json.loads(cache.read_bytes())
+            if cached.get("version") == CACHE_VERSION:  # An older cache is rebuilt from the bucket.
+                state.cache = cached
         for backup_id, item in state.cache["binlogs"].items():
             state.index(backup_id, item)
         return state
@@ -115,7 +127,7 @@ def refresh(bucket, state: State, now: int) -> None:
 
 
 def chain_through(state: State, base_id: str, base: dict, slot: int) -> int | None:
-    """Extend the contiguous published chain from a base, counting only batches sealed by the slot start."""
+    """Extend the contiguous published chain from a base, counting only batches published by the slot start."""
     binlogs = state.cache["binlogs"]
     current = state.cache["chains"].get(base_id)
     if current is None:
@@ -123,10 +135,10 @@ def chain_through(state: State, base_id: str, base: dict, slot: int) -> int | No
         if position < 0:
             return None
         first, last, backup_id = state.ranges[position]
-        if not first <= base["start"] <= last or binlogs[backup_id]["created"] > slot:
+        if not first <= base["start"] <= last or not ready(binlogs[backup_id], slot):
             return None
         current = {"next": last + 1, "through": binlogs[backup_id]["created"], "batches": 1}
-    while current["next"] in state.first and binlogs[state.first[current["next"]]]["created"] <= slot:
+    while current["next"] in state.first and ready(binlogs[state.first[current["next"]]], slot):
         item = binlogs[state.first[current["next"]]]
         current = {"next": item["last"] + 1, "through": max(current["through"], item["created"]),
                    "batches": current["batches"] + 1}
@@ -140,8 +152,7 @@ def observe(plan: dict, bucket, *, now: int, state: State) -> dict | None:
     if slot in state.slots:
         return None
     refresh(bucket, state, now)
-    eligible = [(item["created"], backup_id) for backup_id, item in state.cache["bases"].items()
-                if item["created"] <= slot]
+    eligible = [(item["created"], backup_id) for backup_id, item in state.cache["bases"].items() if ready(item, slot)]
     base_time, base_id = max(eligible) if eligible else (0, None)
     through = None
     if base_id is not None and plan["binlog_identity"] and state.cache["bases"][base_id]["start"] is not None:

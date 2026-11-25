@@ -8,10 +8,12 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
 import uuid
+import zlib
 
 import observe_backup_health as observer
 import publish_backup as backup
@@ -73,6 +75,28 @@ class FakeBucket:
 
 def receipt(number: int) -> bytes:
     return json.dumps({"pitr": {"binlog_file": f"binlog.{number:06d}", "binlog_position": 4}}).encode()
+
+
+def event(moment: int, kind: int, payload: bytes, position: int) -> bytes:
+    size = 19 + len(payload) + 4
+    head = struct.pack("<IBIIIH", moment, kind, 5384, size, position + size, 0)
+    return head + payload + struct.pack("<I", zlib.crc32(head + payload))
+
+
+def binlog(name: str, closed: int) -> bytes:
+    """A closed MySQL 8.4 binary log as the server leaves it: format event first, rotation last.
+
+    The terminal Rotate event carries the rotation time (checked on MySQL 8.4.13)."""
+    raw = b"\xfebin"
+    raw += event(closed - ROTATION, 15, bytes(95), len(raw))
+    prefix, number = name.rsplit(".", 1)
+    return raw + event(closed, 4, struct.pack("<Q", 4) + f"{prefix}.{int(number) + 1:06d}".encode(), len(raw))
+
+
+def logs(*closed: tuple[int, int]) -> dict:
+    """Artifacts of one binlog batch: (log number, rotation time) per closed log."""
+    return {f"binlog.{number:06d}": binlog(f"binlog.{number:06d}", moment) for number, moment in closed} | {
+        "closed-binlogs.json": b"{}"}
 
 
 class ObserverTests(unittest.TestCase):
@@ -195,6 +219,23 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(bucket.completion(SOURCE, "b1"), b'{"marker": true}')
         self.assertEqual(bucket.remotes[SOURCE].calls[-1],
                          ("cat", f"repro_encrypted:database/{SOURCE}/b1/completion.json"))
+
+    def test_a_publication_completed_after_the_slot_start_is_not_credited_to_that_slot(self):
+        # The run starts a few seconds into its slot. A base and a binlog batch created before
+        # the slot start but completed (completion.json written) after it were not available
+        # at the slot start, so that slot may not count them.
+        slot = START + 86400
+        self.bucket.publish(SOURCE, slot - 7200, {"database-backup.json": receipt(1), "database.sql.gz": b"x"})
+        self.bucket.publish(ARCHIVE, slot - 3000, logs((1, slot - 3000)))
+        self.bucket.publish(SOURCE, slot - 20, {"database-backup.json": receipt(2), "database.sql.gz": b"x"}, delay=22)
+        self.bucket.publish(ARCHIVE, slot - 10, logs((2, slot - 10)), delay=12)
+        state = observer.State.load(self.plan)
+        row = observer.observe(self.plan, self.bucket, now=slot + 5, state=state)
+        self.assertEqual(row["newest_verified_base_unix_s"], slot - 7200)
+        self.assertEqual(row["recoverable_through_unix_s"], slot - 3000)
+        later = observer.observe(self.plan, self.bucket, now=slot + INTERVAL + 5, state=state)
+        self.assertEqual(later["newest_verified_base_unix_s"], slot - 20)
+        self.assertEqual(later["recoverable_through_unix_s"], slot - 10)
 
     def test_sqlite_only_source_has_no_recoverable_through(self):
         self.history()
