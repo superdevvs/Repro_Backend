@@ -599,6 +599,13 @@ class CutoverFixture(ProbeFixture):
                   "started_at": NOW - 1200, "pending_action": None, "hold_boot_id": self.boot}
         self.publish(record | fields)
 
+    def hold_ended(self, phase, started):
+        """The hold started at `started` and ended in `phase`, but nobody has reopened the site yet."""
+        if phase == "sqlite_authoritative":
+            self.journal("hold", "abort", started=started)  # The real runner's rollback.
+        else:
+            self.view(phase=phase, started_at=started)
+
     def open_site(self, reopened_at=NOW - 300):
         self.marker.write_text(json.dumps({"version": 1, "engine": "sqlite"}))
         os.utime(self.marker, (reopened_at, reopened_at))
@@ -635,6 +642,24 @@ class CutoverHoldTests(CutoverFixture):
         self.journal("hold", "freeze", started=NOW - Runner.DECISION_SECONDS)
         self.held_requests()
         self.assert_only_failure("site_held")
+
+    def test_held_site_after_the_hold_is_expected_within_the_60_minute_write_outage(self):
+        # 50 min is past the 45 min decision deadline, which ends with the hold itself.
+        for phase in ("sqlite_authoritative", "mysql_authoritative"):
+            with self.subTest(phase):
+                self.hold_ended(phase, started=NOW - 50 * 60)
+                status = self.run_probe()["site_held"]
+                self.assertEqual(status["state"], "ok", status)
+                self.assertIn("50 of 60 min", status["detail"])
+
+    def test_held_site_after_the_hold_pages_at_the_60_minute_write_outage(self):
+        for phase in ("sqlite_authoritative", "mysql_authoritative"):
+            with self.subTest(phase):
+                self.hold_ended(phase, started=NOW - Runner.WINDOW_SECONDS)
+                status = self.run_probe()["site_held"]
+                self.assertEqual(status["state"], "fail", status)
+                self.assertIn("over its 60 min limit", status["detail"])
+                self.assertIn("site_held", self.fail_pings())
 
     def test_hold_that_survived_a_reboot_pages(self):
         self.journal("hold", "freeze", "reboot", started=NOW - 600)
@@ -727,6 +752,18 @@ class HoldErrorRateTests(CutoverFixture):
         self.write_access(100, 1, minutes_ago=20)
         self.held_requests(minutes_ago=12, total=10)  # before the hold
         self.assertEqual(self.run_probe()["server_error_rate"]["state"], "fail")
+
+    def test_503s_past_the_60_minute_write_outage_still_count(self):
+        # The hold started 70 min ago and has ended, but the site is still held.
+        for phase in ("sqlite_authoritative", "mysql_authoritative"):
+            with self.subTest(phase):
+                self.write_access(100, 1, minutes_ago=20)
+                self.held_requests(minutes_ago=15)  # minute 55 of the outage: expected
+                self.hold_ended(phase, started=NOW - 70 * 60)
+                status = self.run_probe()["server_error_rate"]
+                self.assertEqual(status["state"], "ok", status)
+                self.held_requests(minutes_ago=5, total=10)  # minute 65: past the limit
+                self.assertEqual(self.run_probe()["server_error_rate"]["state"], "fail")
 
     def test_hold_from_an_earlier_boot_excludes_nothing(self):
         self.journal("hold", "reboot", started=NOW - 600)
