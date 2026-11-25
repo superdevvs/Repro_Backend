@@ -82,6 +82,11 @@ REQUIRED_TUNING = ("innodb_buffer_pool_size", "innodb_redo_log_capacity")
 DURABLE_SETTINGS = ("1", "1", "OFF", "ROW", "FULL", "ON", "1", "1", "ON")
 IDENTITY_SQL = ("SELECT VERSION(),@@server_uuid,@@skip_networking,@@log_bin,@@event_scheduler,@@binlog_format,"
                 "@@binlog_row_image,@@gtid_mode,@@sync_binlog,@@innodb_flush_log_at_trx_commit,@@innodb_doublewrite")
+# Diagnostics kept from a disposable work directory before it is removed. The
+# credential files, keys, data directory and recovered copy are never kept.
+WORK_DIAGNOSTICS = (("mysql.log", "mysql.log"), ("import/failure-private.json", "import-failure-private.json"),
+                    ("reverse/failure-private.json", "reverse-failure-private.json"))
+DIAGNOSTIC_LIMIT = 8 * 1024 * 1024
 CONFIG_FIELDS = {
     "schema", "backend_root", "candidate_root", "native_mysql_root", "php", "python", "pymysql_wheel",
     "deploy_lock", "scope", "approved_exceptions", "reviewed_schema_sha256", "crm_migrations", "budget", "guards",
@@ -337,6 +342,7 @@ class NightlyRunner:
         self.scope_path = self.candidate_root / self.cfg["scope"]["path"]
         self.process = None
         self.session = None
+        self.attempt = 0
 
     # Command builders shared by the dry run and the real stages ---------------
     def priority(self, *, capture: bool = False) -> list[str]:
@@ -540,6 +546,7 @@ class NightlyRunner:
             self.revalidate(journal)
             self.reset_incomplete(journal)
             journal["attempts"].append({"started_utc": self.host.utc_now().isoformat()})
+            self.attempt = len(journal["attempts"])
             journal["status"], journal["reason"], journal["stopped_at"] = "running", None, None
             self.save(journal)
             try:
@@ -569,7 +576,7 @@ class NightlyRunner:
             except Stop as stop:
                 journal["status"], journal["reason"], journal["stopped_at"] = "stopped", stop.reason, name
             finally:
-                self.end_mysql(journal)
+                self.end_mysql(journal, keep_diagnostics=journal["status"] != "reviewer-inputs-ready")
             journal["attempts"][-1] |= {"finished_utc": self.host.utc_now().isoformat(), "status": journal["status"],
                                         "reason": journal["reason"]}
             receipt = self.receipt(journal)
@@ -635,6 +642,9 @@ class NightlyRunner:
         mysql = journal["mysql"]
         if mysql.get("work") and Path(mysql["work"]).exists():
             self.host.stop_stale_mysqld(mysql.get("pid"), Path(mysql["work"]))
+            # The interrupted attempt never got to keep its diagnostics; keep them under its number.
+            self.attempt = len(journal["attempts"])
+            self.keep_work_diagnostics(Path(mysql["work"]))
             self.remove_work(Path(mysql["work"]))
         if any(stages.get(name, {}).get("status") != "done" for name in MYSQL_GROUP):
             for name in MYSQL_GROUP:
@@ -648,7 +658,7 @@ class NightlyRunner:
         if work.parent == self.run_dir and work.name.startswith("work-") and not work.is_symlink():
             shutil.rmtree(work, ignore_errors=True)
 
-    def end_mysql(self, journal: dict) -> None:
+    def end_mysql(self, journal: dict, *, keep_diagnostics: bool = False) -> None:
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
             try:
@@ -660,11 +670,54 @@ class NightlyRunner:
         self.session = None
         work = journal["mysql"].get("work")
         if work:
+            if keep_diagnostics:
+                self.keep_work_diagnostics(Path(work))
             self.remove_work(Path(work))
+
+    # Diagnostics ----------------------------------------------------------------
+    def diagnostics_dir(self) -> Path:
+        folder = self.run_dir / "diagnostics-private"
+        private_directory(folder)
+        attempt = folder / f"attempt-{self.attempt}"
+        private_directory(attempt)
+        return attempt
+
+    def keep_work_diagnostics(self, work: Path) -> None:
+        """Copy the MySQL error log and the tools' protected failure reports out of
+        a work directory before it is removed. Best effort: never blocks cleanup."""
+        if work.parent != self.run_dir or not work.name.startswith("work-") or work.is_symlink():
+            return
+        for relative, name in WORK_DIAGNOSTICS:
+            source = work / relative
+            try:
+                if not source.is_file() or source.is_symlink():
+                    continue
+                with source.open("rb") as stream:
+                    stream.seek(max(0, os.fstat(stream.fileno()).st_size - DIAGNOSTIC_LIMIT))
+                    data = stream.read(DIAGNOSTIC_LIMIT)
+                write_bytes(self.diagnostics_dir() / name, data)
+            except (OSError, Refused):
+                continue
+
+    def keep_output(self, step: str, completed: Completed) -> None:
+        """Keep a failed tool's stdout and stderr privately. Best effort."""
+        try:
+            folder = self.diagnostics_dir()
+            for stream, text in (("stdout", completed.stdout), ("stderr", completed.stderr)):
+                write_bytes(folder / f"{step}.{stream}", (text or "").encode("utf-8", "replace")[-DIAGNOSTIC_LIMIT:])
+        except (OSError, Refused):
+            pass
+
+    def diagnostics(self) -> list[str]:
+        folder = self.run_dir / "diagnostics-private" / f"attempt-{self.attempt}"
+        if not folder.is_dir():
+            return []
+        return sorted(path.relative_to(self.run_dir).as_posix() for path in folder.iterdir() if path.is_file())
 
     def mysql(self, sql: str, *, expect: str | None = None, reason: str = "mysql-statement-failed") -> str:
         result = self.host.run([*self.mysql_client(self.session["work"]), "-e", sql], timeout_s=30)
         if result.returncode != 0 or (expect is not None and result.stdout.strip() != expect):
+            self.keep_output("mysql", result)
             raise Stop(reason)
         return result.stdout
 
@@ -684,6 +737,7 @@ class NightlyRunner:
                                cwd=home or self.run_dir)
         record = last_json(result.stdout)
         if result.returncode != 0:
+            self.keep_output(step, result)
             raise Stop(reason)
         return record | {"_stdout": result.stdout}
 
@@ -718,6 +772,7 @@ class NightlyRunner:
                               env=self.tool_env(self.run_dir), cwd=self.run_dir)
             copy_seconds = host.monotonic() - started
             if result.returncode != 0 or result.stdout.strip() != "sqlite_consistent_backup=passed":
+                self.keep_output("capture", result)
                 raise Stop("capture-failed")
             after = host.live_database()
             if (after.path, after.identity) != (live.path, live.identity):
@@ -821,6 +876,7 @@ class NightlyRunner:
         env = {"PATH": "/usr/bin:/bin", "HOME": str(work), "LC_ALL": "C.UTF-8", "TMPDIR": str(work)}
         initialized = host.run(self.commands("mysqld_initialize", {"work": work}), timeout_s=90, env=env, cwd=work)
         if initialized.returncode != 0:
+            self.keep_output("mysqld_initialize", initialized)
             raise Stop("mysql-initialize-failed")
         self.process = host.start_mysqld(self.commands("mysqld", {"work": work}), env=env, cwd=work)
         journal["mysql"]["pid"] = getattr(self.process, "pid", None)
@@ -888,6 +944,7 @@ class NightlyRunner:
         result_path = work / "import/result.json"
         result = json.loads(result_path.read_bytes()) if imported.returncode == 0 and result_path.is_file() else {}
         if result.get("import_verified") is not True or result.get("mysql_warning_count") != 0:
+            self.keep_output("import", imported)
             raise Stop("import-refused", measured)
         if fail_fast and measured["import_ms"] >= limit_ms:
             raise Stop("budget-exceeded", measured)
@@ -906,6 +963,7 @@ class NightlyRunner:
         write_bytes(self.run_dir / "forward-fields-private.jsonl", verified.stdout.encode("utf-8"))
         fields = last_json(verified.stdout)
         if verified.returncode != 0 or fields.get("result") != "all-fields-verified" or fields.get("field_mismatches") != 0:
+            self.keep_output("verify_forward", verified)
             raise Stop("forward-verification-refused", measured)
         plan = self.done(journal, "plan")
         if fields.get("rows") != result.get("original_rows") or fields.get("tables") != plan["tables"]:
@@ -954,6 +1012,7 @@ class NightlyRunner:
         if (result.returncode != 0 or fields.get("result") != "all-fields-verified" or fields.get("field_mismatches") != 0
                 or [fields.get(name) for name in ("rows", "tables", "fields")]
                 != [forward[name] for name in ("rows", "tables", "fields")]):
+            self.keep_output("verify_reverse", result)
             raise Stop("reverse-verification-refused")
         write_json(self.run_dir / "reverse-export-result.json", recovered)
         write_bytes(work / "crm-audit.key", secrets.token_bytes(32))
@@ -982,6 +1041,7 @@ class NightlyRunner:
                                timeout_s=self.cfg["finance"]["timeout_s"], env=self.tool_env(self.run_dir),
                                cwd=self.run_dir)
         if result.returncode != 0 or not output.is_file():
+            self.keep_output("finance", result)
             raise Stop("finance-refused")
         receipt = json.loads(output.read_bytes())
         forward = self.done(journal, "import_and_verify")
@@ -1135,6 +1195,7 @@ class NightlyRunner:
             "tool_sha256": result("capture").get("tool_sha256"),
             "outputs": {output: sha for name in STAGES for output, sha in stages.get(name, {}).get("outputs", {}).items()},
             "attempts": len(journal["attempts"]),
+            "diagnostics": self.diagnostics(),
         }
 
     def prune(self) -> None:

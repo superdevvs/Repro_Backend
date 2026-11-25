@@ -30,6 +30,14 @@ digests. `night.json` has exactly the fields in `NIGHTLY_REPORT_FIELDS` and
 `crm-review.json` exactly those in `NIGHTLY_CRM_FIELDS`. A reviewer still
 confirms them against the evidence before pinning their digests.
 
+When a night stops, the runner keeps its diagnostics in
+`diagnostics-private/attempt-N/` (folder 0700, files 0600) before it removes
+the disposable work directory: the MySQL error log, the converter's and
+exporter's protected `failure-private.json` reports, and the failed tool's
+stdout and stderr (each kept to its last 8 MiB). Credential files, keys, the
+data directory and the recovered SQLite copy are never kept. The receipt's
+`diagnostics` lists the files for the attempt.
+
 The night's `release_sha` is the commit of the clean candidate checkout whose
 tools ran. The capture's `release` is the live backend commit read from
 `deploy-meta.json` at run time, before and after the copy. A deploy during the

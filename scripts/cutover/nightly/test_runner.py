@@ -223,6 +223,7 @@ class FakeHost:
 
     def on_mysqld(self, argv, timeout_s, _input):
         assert "--initialize-insecure" in argv
+        Path(option(argv, "--log-error")).write_text("[Note] [MY-010454] initialized\n", encoding="utf-8")
         return nightly.Completed(0, "", "")
 
     def on_mysql(self, argv, timeout_s, input):
@@ -647,6 +648,70 @@ class NightlyRunnerTests(unittest.TestCase):
         self.assertEqual(receipt["reason"], "finance-receipt-invalid: external-effects")
         self.assertFalse((self.outputs() / "night.json").exists())
 
+    def test_a_failed_mysql_step_keeps_its_protected_diagnostics(self):
+        def failing_tool(folder, stdout):
+            def fail(argv, timeout_s, _input):
+                if folder:
+                    output = Path(option(argv, "--output"))
+                    output.mkdir()
+                    (output / "failure-private.json").write_text('{"type": "MySqlImportWarnings"}', encoding="utf-8")
+                return nightly.Completed(1, stdout, "Traceback: the offending field\n")
+            return fail
+
+        def failing_initialize(host):
+            def fail(argv, timeout_s, _input):
+                host.__class__.on_mysqld(host, argv, timeout_s, _input)
+                return nightly.Completed(1, "", "[ERROR] [MY-010119] Aborting\n")
+            return fail
+
+        cases = (
+            ("mysqld_initialize", "target", "mysql-initialize-failed", "on_mysqld", None,
+             {"mysql.log", "mysqld_initialize.stdout", "mysqld_initialize.stderr"}),
+            ("import", "import_and_verify", "import-refused", "on_migrate", "import",
+             {"mysql.log", "import-failure-private.json", "import.stdout", "import.stderr"}),
+            ("export", "reverse", "reverse-export-refused", "on_export", "reverse",
+             {"mysql.log", "reverse-failure-private.json", "export.stdout", "export.stderr"}),
+        )
+        for step, stage, reason, hook, folder, expected in cases:
+            with self.subTest(step=step):
+                host = FakeHost(self.root / f"diagnose-{step}")
+                if step == "mysqld_initialize":
+                    host.on_mysqld = failing_initialize(host)
+                elif step == "import":
+                    plan = host.on_migrate
+                    tool = failing_tool(folder, '{"stopped": true}\n')
+                    host.on_migrate = lambda argv, t, i, plan=plan, tool=tool: (
+                        tool if "import-empty" in argv else plan)(argv, t, i)
+                else:
+                    setattr(host, hook, failing_tool(folder, '{"result": "refused"}\n'))
+                try:
+                    receipt = self.run_night(host=host)
+                    self.assertEqual((receipt["status"], receipt["stopped_at"], receipt["reason"]),
+                                     ("stopped", stage, reason))
+                    kept = self.outputs() / "diagnostics-private" / "attempt-1"
+                    self.assertEqual({path.name for path in kept.iterdir()}, expected)
+                    self.assertEqual(receipt["diagnostics"],
+                                     sorted(f"diagnostics-private/attempt-1/{name}" for name in expected))
+                    self.assertIn("MY-010454", (kept / "mysql.log").read_text(encoding="utf-8"))
+                    self.assertIn("Traceback" if step != "mysqld_initialize" else "Aborting",
+                                  (kept / f"{step}.stderr").read_text(encoding="utf-8"))
+                    if folder:
+                        self.assertIn("MySqlImportWarnings",
+                                      (kept / f"{folder}-failure-private.json").read_text(encoding="utf-8"))
+                    # The disposable work directory, with its credentials, is still removed.
+                    self.assertEqual(list(self.outputs().glob("work-*")), [])
+                    if os.name == "posix":
+                        self.assertEqual(kept.stat().st_mode & 0o777, 0o700)
+                        for path in kept.iterdir():
+                            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                finally:
+                    shutil.rmtree(self.outputs(), ignore_errors=True)
+
+    def test_a_clean_night_keeps_no_diagnostics(self):
+        receipt = self.run_night()
+        self.assertEqual(receipt["diagnostics"], [])
+        self.assertFalse((self.outputs() / "diagnostics-private").exists())
+
     def test_memory_guard_uses_the_buffer_pool_size(self):
         config = copy.deepcopy(self.config)
         config["mysql_tuning"]["innodb_buffer_pool_size"] = "8G"
@@ -831,10 +896,15 @@ class NightlyRunnerTests(unittest.TestCase):
         journal = json.loads((self.outputs() / "journal.json").read_bytes())
         work = Path(journal["mysql"]["work"])
         work.mkdir()  # an interrupted process left its private work directory behind
+        (work / "mysql.log").write_text("[ERROR] left by the killed attempt\n", encoding="utf-8")
+        (work / "transfer.json").write_text('{"password": "never kept"}', encoding="utf-8")
         self.host.fail.clear()
         self.run_night()
         self.assertEqual(self.host.stale[0][1], str(work))
         self.assertFalse(work.exists())
+        kept = self.outputs() / "diagnostics-private" / "attempt-1"  # the attempt that left the directory
+        self.assertEqual(sorted(path.name for path in kept.iterdir()), ["export.stderr", "export.stdout", "mysql.log"])
+        self.assertIn("killed attempt", (kept / "mysql.log").read_text(encoding="utf-8"))
 
     # Retention -----------------------------------------------------------
     def test_retention_prunes_only_older_runner_snapshots(self):
