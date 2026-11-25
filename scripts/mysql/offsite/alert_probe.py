@@ -225,13 +225,45 @@ def app_engine(plan: dict) -> tuple[str, str]:
     return cached_engine(raw), "cached config"
 
 
-def sqlite_rows(plan: dict, sql: str, params: tuple = ()) -> list[tuple]:
-    uri = Path(plan["sqlite_database"]).resolve().as_uri() + "?mode=ro"
+def file_stamp(path: Path) -> tuple:
+    info = os.stat(path)
+    return info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def immutable_rows(path: Path, sql: str, params: tuple) -> list[tuple] | None:
+    """Read the database file alone, only while no writer can be changing what it holds.
+
+    With every app connection closed, SQLite has checkpointed the WAL into the file and
+    removed -wal and -shm; this read-only account cannot create -shm, so the normal open
+    fails although the file is complete. immutable=1 reads it with no locks and no -shm.
+    The answer is kept only if no -wal or -journal existed before or after the read and the
+    file did not change during it (a writer that opened since writes to a new -wal first)."""
+    sidecars = [Path(str(path) + suffix) for suffix in ("-wal", "-journal")]
     try:
-        with closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
-            return db.execute(sql, params).fetchall()
-    except sqlite3.Error:
-        raise DetectorError("SQLite read failed") from None
+        if any(os.path.lexists(item) for item in sidecars):
+            return None
+        before = file_stamp(path)
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=10)) as db:
+            rows = db.execute(sql, params).fetchall()
+        if any(os.path.lexists(item) for item in sidecars) or file_stamp(path) != before:
+            return None
+    except (OSError, sqlite3.Error):
+        return None
+    return rows
+
+
+def sqlite_rows(plan: dict, sql: str, params: tuple = ()) -> list[tuple]:
+    path = Path(plan["sqlite_database"]).resolve()
+    for _ in range(3):  # A writer opening or closing between the two reads gets a second chance.
+        try:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=10)) as db:
+                return db.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            pass
+        rows = immutable_rows(path, sql, params)
+        if rows is not None:
+            return rows
+    raise DetectorError("SQLite read failed")
 
 
 def mysql_rows(context: Context, sql: str) -> list[list[str]]:

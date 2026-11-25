@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import os
 from pathlib import Path
@@ -254,6 +255,52 @@ class DetectorTests(unittest.TestCase):
         self.plan["expected_engine"] = "mysql"
         (self.root / "app" / ".env").write_text("DB_CONNECTION=mysql\n")
         self.assertEqual(self.run_probe()["database_down"]["state"], "fail")
+
+    def close_wal_database(self):
+        """The app's WAL database after its last connection closed: SQLite removed -wal and -shm."""
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("INSERT INTO jobs (queue, available_at, reserved_at, created_at) VALUES ('default', ?, NULL, ?)",
+                       (NOW - 60, NOW - 60))
+            db.commit()
+        self.assertFalse(Path(str(self.database) + "-wal").exists())
+        self.assertFalse(Path(str(self.database) + "-shm").exists())
+        # The probe account can read the database folder but not create files in it.
+        self.database.parent.chmod(0o555)
+        self.addCleanup(self.database.parent.chmod, 0o755)
+
+    @unittest.skipUnless(os.name == "posix" and os.geteuid() != 0, "needs a folder this account cannot write")
+    def test_wal_database_with_no_open_connection_reads_without_paging(self):
+        # A deploy that stops the queue workers closes every connection. The read-only open
+        # then cannot create -shm, and database_down (a wake alert) paged although the
+        # database was fine.
+        self.baseline()
+        self.write_access(100, 1)
+        self.close_wal_database()
+        statuses = self.run_probe()
+        self.assertEqual({name for name, item in statuses.items() if item["state"] != "ok"}, set(), statuses)
+        self.assertEqual(statuses["queue_stale"]["detail"], "1 waiting, oldest 60 s")
+
+    @unittest.skipUnless(os.name == "posix" and os.geteuid() != 0, "needs a folder this account cannot write")
+    def test_immutable_read_is_refused_while_a_writer_may_be_active(self):
+        self.baseline()
+        self.write_access(100, 1)
+        self.close_wal_database()
+        self.database.parent.chmod(0o755)
+        Path(str(self.database) + "-wal").write_bytes(b"")  # A writer opened the database.
+        self.database.parent.chmod(0o555)
+        self.assertEqual(self.run_probe()["database_down"]["state"], "fail")
+        self.database.parent.chmod(0o755)
+        Path(str(self.database) + "-wal").unlink()
+        self.database.parent.chmod(0o555)
+        # The file changed while it was read (a checkpoint ran): the answer is not kept.
+        stamps = itertools.cycle([(1, 2, 3, 4), (1, 2, 3, 5)])
+        original = probe.file_stamp
+        probe.file_stamp = lambda _path: next(stamps)
+        try:
+            self.assertEqual(self.run_probe()["database_down"]["state"], "fail")
+        finally:
+            probe.file_stamp = original
 
     def test_wrong_database_engine(self):
         self.induce("wrong_database_engine",
