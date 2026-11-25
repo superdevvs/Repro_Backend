@@ -220,6 +220,35 @@ final class WriterBusinessRacesTest extends TestCase
         $this->assertFalse($this->tokenIsHeld());
     }
 
+    public function test_a_slow_stripe_call_does_not_fail_a_client_editing_the_same_shoot(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id, 'total_quote' => 100, 'payment_status' => 'unpaid']);
+        [$payload, $sessionId] = $this->checkoutCompleted($shoot);
+        // The fake Stripe API answers the payment-intent lookup after eight seconds.
+        $webhook = $this->businessWorker('stripe-event', ['1', $payload, 'slow:8'], ['QUEUE_CONNECTION' => 'database']);
+        $edit = $this->businessWorker('notes-edit', [(string) $shoot->id, (string) $client->id, 'stripe-called']);
+        $this->awaitMarker('ready-1');
+        $this->mark('go');
+
+        $edited = $this->workerResult($edit)['result'];
+        $paid = $this->workerResult($webhook);
+
+        $this->assertSame(200, $edited['status'], 'The client edit failed while Stripe was slow: '.json_encode($edited)
+            .' '.substr($edit->getErrorOutput(), -1200));
+        $this->assertLessThan(4.0, $edited['seconds'], 'The client edit waited for the Stripe call.');
+        $this->assertSame(['status' => 200, 'outcome' => 'processed', 'error' => null], $paid['result']);
+        $this->assertGreaterThanOrEqual(8.0, $paid['seconds'], 'The fake Stripe call must really have been slow.');
+        $this->assertSame('Edited during the slow Stripe call', $this->admin->query('SELECT shoot_notes FROM shoots WHERE id = '
+            .(int) $shoot->id)->fetchColumn());
+        $details = json_decode((string) $this->admin->query('SELECT payment_details FROM payments WHERE stripe_session_id = '
+            .$this->admin->quote($sessionId))->fetchColumn(), true);
+        $this->assertSame('https://pay.stripe.com/receipts/writer-policy-proof', $details['receipt_url'] ?? null,
+            'The payment still records what Stripe returned.');
+        $this->assertSame('ch_writer_policy_proof', $details['charge_id'] ?? null);
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
     /**
      * A writer holds a change open while a later writer commits. A reader that
      * pages by record number in between must not move its cursor past the open one.

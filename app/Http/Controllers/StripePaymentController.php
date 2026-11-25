@@ -1141,6 +1141,9 @@ class StripePaymentController extends Controller
 
         try {
             $requiresStaleRefund = false;
+            // Ask Stripe for the receipt details before the transaction: a slow answer must
+            // not hold the shoot's row lock, or the MySQL writer token, from other writers.
+            $stripeObjects = $this->stripePaymentMetadataService->prefetchStripeObjects($paymentIntentId);
             $processed = DB::transaction(function () use (
                 $shootId,
                 $paymentIntentId,
@@ -1148,6 +1151,7 @@ class StripePaymentController extends Controller
                 $currency,
                 $sessionId,
                 $session,
+                $stripeObjects,
                 &$requiresStaleRefund
             ) {
                 $shoot = Shoot::query()->lockForUpdate()->find($shootId);
@@ -1184,7 +1188,7 @@ class StripePaymentController extends Controller
                     'processed_at' => now(),
                 ]);
 
-                $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
+                $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session, $stripeObjects);
                 $freshShoot = $shoot->fresh(['payments.refunds']);
                 $totalPaidCents = (int) round($freshShoot->calculateCanonicalTotalPaid() * 100);
                 $totalQuoteCents = (int) round(((float) $freshShoot->total_quote) * 100);
@@ -1252,6 +1256,8 @@ class StripePaymentController extends Controller
             // Retrieve the session's line items to get per-shoot amounts
             $this->initStripe();
             $lineItems = StripeSession::allLineItems($sessionId, ['limit' => 100]);
+            // As above: every Stripe call happens before the transaction opens.
+            $stripeObjects = $this->stripePaymentMetadataService->prefetchStripeObjects((string) $paymentIntentId);
 
             $processed = DB::transaction(function () use (
                 $shootIds,
@@ -1260,6 +1266,7 @@ class StripePaymentController extends Controller
                 $sessionId,
                 $lineItems,
                 $session,
+                $stripeObjects,
                 &$requiresStaleRefund
             ) {
                 // Double-check for duplicates inside transaction
@@ -1340,7 +1347,7 @@ class StripePaymentController extends Controller
                         'processed_at' => now(),
                     ]);
 
-                    $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
+                    $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session, $stripeObjects);
                     $paymentEntries->push([
                         'payment' => $payment,
                         'shoot' => $shoot,

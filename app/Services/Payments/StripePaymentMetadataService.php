@@ -12,9 +12,15 @@ class StripePaymentMetadataService
 {
     private ?StripeClient $stripeClient = null;
 
-    public function hydratePaymentRecord(Payment $payment, mixed $session = null): Payment
+    /**
+     * $stripeObjects is what prefetchStripeObjects() returned for this payment's
+     * intent; without it Stripe is asked now.
+     *
+     * @param  array{payment_intent: mixed, charge: mixed, error: ?\Throwable}|null  $stripeObjects
+     */
+    public function hydratePaymentRecord(Payment $payment, mixed $session = null, ?array $stripeObjects = null): Payment
     {
-        $details = $this->mergeStripePaymentDetails($payment, $session);
+        $details = $this->mergeStripePaymentDetails($payment, $session, $stripeObjects);
 
         if (($payment->payment_details ?? null) !== $details) {
             $payment->payment_details = $details;
@@ -50,7 +56,37 @@ class StripePaymentMetadataService
             || empty($details['payment_intent_id']);
     }
 
-    public function mergeStripePaymentDetails(Payment $payment, mixed $session = null): array
+    /**
+     * Look up a payment intent and its latest charge. Call it before opening a
+     * transaction that records the payment, and pass the result to
+     * hydratePaymentRecord(): a slow Stripe answer then holds no row lock and no
+     * MySQL writer token. A failed lookup is kept and logged when it is merged.
+     *
+     * @return array{payment_intent: mixed, charge: mixed, error: ?\Throwable}
+     */
+    public function prefetchStripeObjects(string $paymentIntentId): array
+    {
+        $objects = ['payment_intent' => null, 'charge' => null, 'error' => null];
+        try {
+            $objects['payment_intent'] = $this->stripeClient()->paymentIntents->retrieve(
+                $paymentIntentId,
+                ['expand' => ['latest_charge']]
+            );
+
+            $charge = $objects['payment_intent']->latest_charge ?? null;
+            if (is_string($charge) && $charge !== '') {
+                $charge = $this->stripeClient()->charges->retrieve($charge, []);
+            }
+            $objects['charge'] = $charge;
+        } catch (\Throwable $exception) {
+            $objects['error'] = $exception;
+        }
+
+        return $objects;
+    }
+
+    /** @param  array{payment_intent: mixed, charge: mixed, error: ?\Throwable}|null  $stripeObjects */
+    public function mergeStripePaymentDetails(Payment $payment, mixed $session = null, ?array $stripeObjects = null): array
     {
         $details = $this->applyBasePaymentMetadata(
             $payment,
@@ -80,20 +116,15 @@ class StripePaymentMetadataService
                 }
             }
 
-            $paymentIntent = $this->stripeClient()->paymentIntents->retrieve(
-                $payment->stripe_payment_id,
-                ['expand' => ['latest_charge']]
-            );
-
-            $details['payment_intent_id'] = (string) ($paymentIntent->id ?? $payment->stripe_payment_id);
-            $details['payment_intent_status'] = (string) ($paymentIntent->status ?? ($details['payment_intent_status'] ?? ''));
-            $details['payment_method_id'] = (string) ($paymentIntent->payment_method ?? ($details['payment_method_id'] ?? ''));
-
-            $charge = $paymentIntent->latest_charge ?? null;
-            if (is_string($charge) && $charge !== '') {
-                $charge = $this->stripeClient()->charges->retrieve($charge, []);
+            $stripeObjects ??= $this->prefetchStripeObjects((string) $payment->stripe_payment_id);
+            $paymentIntent = $stripeObjects['payment_intent'] ?? null;
+            if (is_object($paymentIntent)) {
+                $details['payment_intent_id'] = (string) ($paymentIntent->id ?? $payment->stripe_payment_id);
+                $details['payment_intent_status'] = (string) ($paymentIntent->status ?? ($details['payment_intent_status'] ?? ''));
+                $details['payment_method_id'] = (string) ($paymentIntent->payment_method ?? ($details['payment_method_id'] ?? ''));
             }
 
+            $charge = $stripeObjects['charge'] ?? null;
             if (is_object($charge)) {
                 $details['charge_id'] = (string) ($charge->id ?? ($details['charge_id'] ?? ''));
                 $details['hosted_receipt_url'] = (string) ($charge->receipt_url ?? ($details['hosted_receipt_url'] ?? ''));
@@ -111,6 +142,10 @@ class StripePaymentMetadataService
                 if (is_numeric($charge->amount ?? null)) {
                     $details['charged_amount'] = round(((float) $charge->amount) / 100, 2);
                 }
+            }
+
+            if (($stripeObjects['error'] ?? null) instanceof \Throwable) {
+                throw $stripeObjects['error'];
             }
         } catch (\Throwable $exception) {
             Log::warning('Unable to enrich Stripe payment metadata.', [
