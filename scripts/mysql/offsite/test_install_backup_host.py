@@ -320,9 +320,6 @@ class PreviewAndApplyTests(unittest.TestCase):
         self.assertEqual([m for m in system.mutations if m[0] != "run"], [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ToolClosureTests(unittest.TestCase):
     def test_every_installed_tool_finds_its_sibling_modules(self):
@@ -382,3 +379,7 @@ class BundleOwnershipTests(unittest.TestCase):
             os.chmod(middle, 0o775)
             self.assertEqual(protected(), "False", middle)
             os.chmod(middle, 0o755)
+
+
+if __name__ == "__main__":
+    unittest.main()

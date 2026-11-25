@@ -288,9 +288,6 @@ class DetectorTests(unittest.TestCase):
             probe.parse_plan(json.dumps(self.plan).encode())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ExternalAlertContractTests(unittest.TestCase):
     """Synthetic phone observations at each condition's own delivery limit pass summarize_external_alerts."""
@@ -328,3 +325,7 @@ class ExternalAlertContractTests(unittest.TestCase):
     def test_one_millisecond_over_a_limit_fails_the_gate(self):
         with self.assertRaises(check.Failed):
             self.observations(late="queue_stale")
+
+
+if __name__ == "__main__":
+    unittest.main()
