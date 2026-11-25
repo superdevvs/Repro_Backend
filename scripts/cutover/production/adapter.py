@@ -110,7 +110,26 @@ def _sync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def _runtime_directory(directory: Path) -> None:
+    """Recreate a runtime directory that a reboot removed.
+
+    /run is a fresh tmpfs after every boot, so the evidence, scheduler-hold and
+    ingress directories are gone, not only their files. tmpfiles.d recreates
+    them at boot; the controller does it too, in case that file is missing.
+    Root-owned 0755: the guard refuses group or other write bits in its chain,
+    and nginx workers must traverse the ingress directory.
+    """
+    try:
+        directory.mkdir(mode=0o755)
+    except FileExistsError:
+        return
+    # The watchdog service runs with UMask=0077.
+    os.chmod(directory, 0o755)
+    _sync_directory(directory.parent)
+
+
 def _write_atomic(path: Path, value: dict, mode: int) -> None:
+    _runtime_directory(path.parent)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
@@ -348,6 +367,8 @@ class ProductionAdapter:
         """
         if self.paths["ingress_open"].exists() or self.paths["ingress_open"].is_symlink():
             raise UnsafeCutover("Ingress is open. Refresh measures a held host only, for example after a reboot")
+        # The guard checks the evidence directory's chain before it publishes into it.
+        _runtime_directory(self.paths["evidence"].parent)
         state = self.journal.read()
         if state is not None and state.get("phase") == "sqlite_authoritative" and state.get("pending") is None:
             deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,

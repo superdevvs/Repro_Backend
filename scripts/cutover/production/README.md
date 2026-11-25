@@ -14,6 +14,7 @@ approval for each action (handoff item W1).
 | `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.json` | Writer profiles: user, command, action, engine |
 | host config (see below) | `/etc/repro-cutover-fence/host.json` | Paths, queues, host commands, owner options |
 | `systemd/repro-cutover-watchdog.{service,timer}` | `/etc/systemd/system/` | Watchdog tick every minute from boot |
+| `tmpfiles.d/repro-cutover-fence.conf` | `/etc/tmpfiles.d/` | Recreates `/run/repro-cutover-fence` and `/run/repro-cutover-ingress` (root, 0755) at every boot |
 | `systemd/repro-media-archives.service.d/cutover-fence.conf` | `/etc/systemd/system/repro-media-archives.service.d/` | Media worker through the wrapper |
 | `supervisor/laravel-worker.conf.example` | compare with `/etc/supervisor/conf.d/laravel-worker.conf` | System worker group through the wrapper |
 | `sudoers/repro-cutover-admit` | `/etc/sudoers.d/repro-cutover-admit` | Deploy user's Supervisor and cron reach the wrapper only |
@@ -90,8 +91,10 @@ cli.py reopen                                            # after abort, or after
 This adapter covers the SQLite hold, freeze and pre-write rollback only.
 `prepare` and `promote` refuse, so it cannot open MySQL for writes.
 
-**After every reboot.** `/run` is empty, so every writer is held: there is
-no authority proof for the new boot and no open marker. The operator runs
+**After every reboot.** `/run` is a fresh tmpfs, so every writer is held: there is
+no authority proof for the new boot and no open marker. The runtime
+directories themselves are gone too; `tmpfiles.d` recreates them at boot,
+and the controller recreates them before it writes there. The operator runs
 `cli.py refresh`, which measures the host and publishes current-boot evidence
 for a committed `planned` or `sqlite_authoritative` journal through the
 guard, then `cli.py reopen`. There is no automatic reopen at boot (owner

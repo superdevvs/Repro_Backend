@@ -4,6 +4,8 @@ import io
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -362,6 +364,41 @@ class ProductionAdapterTests(unittest.TestCase):
                      action="deploy", expected_engine="sqlite", activation_raw=activation)
         self.assertEqual("sqlite_authoritative", journal.read()["phase"])
 
+    def reboot_without_runtime_directories(self):
+        """A real reboot mounts a fresh /run: the runtime directories are gone, not only their files."""
+        shutil.rmtree(self.root / "run")
+        shutil.rmtree(self.root / "ingress")
+        self.boot.write_text("6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11\n", encoding="ascii")
+
+    def assert_runtime_directories(self):
+        for folder in ("run", "ingress"):
+            info = (self.root / folder).lstat()
+            self.assertTrue(stat.S_ISDIR(info.st_mode))
+            # Root-owned and not writable by others (guard chain); nginx workers must traverse the ingress one.
+            self.assertEqual((0, 0o755), (info.st_uid, stat.S_IMODE(info.st_mode)), folder)
+
+    def test_refresh_and_reopen_recreate_the_runtime_directories_after_a_reboot(self):
+        self.started()
+        self.reboot_without_runtime_directories()
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            code, refreshed = self.cli("refresh")
+        self.assertEqual(0, code, errors.getvalue())
+        self.assertEqual("planned", refreshed["state"]["phase"])
+        self.assertEqual(0, self.cli("reopen")[0])
+        self.assertTrue((self.root / "ingress" / "open").exists())
+        self.assert_runtime_directories()
+
+    def test_watchdog_rolls_back_after_a_reboot_removed_the_runtime_directories(self):
+        journal, adapter, runner = self.started()
+        held = runner.perform("hold", runner.approval_request("hold"))
+        self.reboot_without_runtime_directories()
+        journal, adapter, _ = self.host()
+        late = Runner(journal, IDENTITY, adapter, lambda: held["started_at"] + Runner.DECISION_SECONDS)
+        self.assertEqual("sqlite_authoritative", late.perform("tick")["phase"])
+        self.assertTrue((self.root / "run" / "verified-engine.json").exists())
+        self.assertFalse((self.root / "ingress" / "open").exists())
+
     def test_refresh_on_an_open_host_keeps_the_current_proof(self):
         self.started()
         (self.root / "ingress" / "open").unlink()
@@ -451,6 +488,18 @@ class UnitFileTests(unittest.TestCase):
         required = Runner.CONTROLLER_WAIT_SECONDS + budget + production.MAX_COMMAND_SECONDS
         self.assertEqual(1, len(service["TimeoutStartSec"]))
         self.assertGreaterEqual(self.seconds(service["TimeoutStartSec"][0]), required)
+
+    def test_every_boot_recreates_the_runtime_directories_of_the_guard_and_nginx(self):
+        # /run is a tmpfs. The guard checks the evidence directory's chain, the controller writes
+        # its records there, and nginx looks for the open marker in the ingress directory.
+        config = self.HERE / "tmpfiles.d" / "repro-cutover-fence.conf"
+        lines = [line.split() for line in config.read_text(encoding="ascii").splitlines()
+                 if line.strip() and not line.startswith("#")]
+        self.assertEqual({guard.EVIDENCE.parent.as_posix(), guard.ACTIVATION.parent.as_posix(),
+                          cli.INGRESS_OPEN.parent.as_posix()}, {line[1] for line in lines})
+        for line in lines:
+            with self.subTest(path=line[1]):
+                self.assertEqual(["d", line[1], "0755", "root", "root", "-"], line)
 
     def test_media_archive_drop_in_starts_the_worker_through_the_wrapper(self):
         drop_in = self.entries(self.HERE / "systemd" / "repro-media-archives.service.d" / "cutover-fence.conf")
