@@ -50,6 +50,12 @@ class WeeklyBillingGapDryRun extends Command
                 $periods[] = ['start' => $start->toDateString(), 'end' => $end->toDateString(), 'selections' => $selections];
             }
 
+            $unbilled = array_filter($skipped, fn (array $record) => $record['billed_invoice_ids'] === []);
+            // The invoice run and the payout report can skip the same shoot, so
+            // the per-selection counts list it twice. Distinct counts list it once.
+            $distinct = fn (array $records) => count(array_unique(array_map(
+                fn (array $record) => $record['record_type'].':'.$record['record_id'], $records)));
+
             return [
                 'read_only' => true,
                 'periods' => $periods,
@@ -57,7 +63,9 @@ class WeeklyBillingGapDryRun extends Command
                 'selected_only_by_text' => $onlyText,
                 'totals' => [
                     'skipped' => count($skipped),
-                    'unbilled' => count(array_filter($skipped, fn (array $record) => $record['billed_invoice_ids'] === [])),
+                    'unbilled' => count($unbilled),
+                    'distinct_skipped' => $distinct($skipped),
+                    'distinct_unbilled' => $distinct($unbilled),
                 ],
             ];
         });
@@ -94,8 +102,8 @@ class WeeklyBillingGapDryRun extends Command
             $this->table($headers, array_map($describe, $report['selected_only_by_text']));
         }
         $this->newLine();
-        $this->line(sprintf('%d skipped record(s); %d with no invoice line. Nothing was written.',
-            $report['totals']['skipped'], $report['totals']['unbilled']));
+        $this->line(sprintf('%d skipped record(s) across selections, %d distinct; %d distinct with no invoice line. Nothing was written.',
+            $report['totals']['skipped'], $report['totals']['distinct_skipped'], $report['totals']['distinct_unbilled']));
 
         return self::SUCCESS;
     }

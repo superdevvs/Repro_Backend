@@ -61,7 +61,9 @@ class WeeklyBillingGapDryRunTest extends TestCase
             'recipient_id' => $rep->id,
             'billed_invoice_ids' => [],
         ]], $skipped);
-        $this->assertSame(['skipped' => 2, 'unbilled' => 2], $report['totals']);
+        // The invoice run and the payout report both skip the same shoot: two
+        // records, one shoot.
+        $this->assertSame(['skipped' => 2, 'unbilled' => 2, 'distinct_skipped' => 1, 'distinct_unbilled' => 1], $report['totals']);
 
         // The dry run mirrors today's generator: the real run bills exactly the
         // four shoots the report calls "selected now" and misses the skipped one.
@@ -150,7 +152,7 @@ class WeeklyBillingGapDryRunTest extends TestCase
 
         $skipped = collect($report['skipped'])->firstWhere('selection', 'sales_rep_invoices');
         $this->assertSame([$manual->id], $skipped['billed_invoice_ids']);
-        $this->assertSame(['skipped' => 2, 'unbilled' => 0], $report['totals']);
+        $this->assertSame(['skipped' => 2, 'unbilled' => 0, 'distinct_skipped' => 1, 'distinct_unbilled' => 0], $report['totals']);
     }
 
     public function test_covers_the_last_eight_completed_weeks_by_default(): void
@@ -213,7 +215,10 @@ class WeeklyBillingGapDryRunTest extends TestCase
         $this->artisan('billing:weekly-gap-dry-run', ['--through' => self::THROUGH, '--periods' => 1])
             ->expectsOutputToContain('Read-only dry run')
             ->expectsOutputToContain('Skipped by the current text comparison')
-            ->expectsOutputToContain((string) $shoot->id)
+            // Mockery hands each line to the first matching expectation, so the
+            // narrow summary line is listed before the record row.
+            ->expectsOutputToContain('2 skipped record(s) across selections, 1 distinct; 1 distinct with no invoice line.')
+            ->expectsOutputToContain('shoot '.$shoot->id.' ')
             ->assertSuccessful();
     }
 

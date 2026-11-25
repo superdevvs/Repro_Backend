@@ -164,6 +164,10 @@ recipient, and any invoice lines that already cover it. "none" means no
 invoice line covers it, so it may never have been billed or paid. Report rows
 show "n/a".
 
+The totals count records per selection, so a shoot skipped by both the invoice
+run and the payout report counts twice in `skipped` and `unbilled`.
+`distinct_skipped` and `distinct_unbilled` count each shoot or pay line once.
+
 The command only reads. On SQLite it also sets `PRAGMA query_only` for its own
 connection while it runs, so any write would fail. It changes nothing in the
 generators. Whether to fix the comparison and whether to issue catch-up
