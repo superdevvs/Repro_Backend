@@ -73,7 +73,7 @@ class CrmSnapshotTests(unittest.TestCase):
         self.assertEqual(0, code, report)
         self.assertEqual({"migrations": True, "references": True, "table_counts": True}, report["parity"])
         self.assertEqual(2, report["table_counts"]["crm_contacts"])
-        self.assertEqual(9, report["migrations"]["count"])
+        self.assertEqual(10, report["migrations"]["count"])
         links = report["references"]
         self.assertEqual((1, 1, 0), tuple(links["crm_contacts.client_user_id->users.id"][name]
                                          for name in ("linked", "null", "missing")))
@@ -106,6 +106,16 @@ class CrmSnapshotTests(unittest.TestCase):
             db.execute("CREATE TABLE crm_future_scope(id INTEGER PRIMARY KEY)")
         self.assertEqual("crm-table-set-differs", self.run_audit()[1]["reason"])
 
+    def test_snapshot_without_the_25_november_crm_migration_is_refused(self):
+        # The capture already requires it (nightly-config.json crm_migrations); the audit's
+        # ledger fingerprint and parity must cover it too, not only the 24 November nine.
+        with closing(sqlite3.connect(self.snapshot)) as db, db:
+            db.execute("DELETE FROM migrations WHERE migration=?",
+                       ("2026_11_25_140000_add_replay_identity_to_recruit_application_receipts",))
+        code, report = self.run_audit()
+        self.assertEqual(1, code)
+        self.assertEqual("crm-migration-ledger-differs", report["reason"])
+
     def test_reviewed_tables_references_and_ledger_cover_candidate_layout(self):
         root = Path(__file__).resolve().parents[2]
         sql = (root / "database/schema/mysql-schema.sql").read_text(encoding="utf-8")
@@ -118,8 +128,10 @@ class CrmSnapshotTests(unittest.TestCase):
             self.assertLessEqual(fields.keys(), tables[table])
             for parent in fields.values():
                 self.assertIn("id", tables[parent])
-        migrations = sorted(path.stem for path in (root / "database/migrations").glob("2026_11_24_1*.php"))
-        self.assertEqual(list(crm.MIGRATIONS), migrations)
+        # The nightly capture requires exactly these in the live ledger. test_runner.py ties that
+        # list to every migration that creates or changes a CRM table.
+        config = json.loads((root / "scripts/cutover/nightly/nightly-config.json").read_bytes())
+        self.assertEqual(list(crm.MIGRATIONS), config["crm_migrations"])
 
 
 if __name__ == "__main__":

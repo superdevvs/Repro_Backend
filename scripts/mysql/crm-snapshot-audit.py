@@ -29,7 +29,8 @@ need = schema_drift.need
 q = schema_drift.q
 
 REPORT_SCHEMA = "repro.mysql-crm-snapshot.audit.v1"
-MIGRATION_PREFIX = "2026_11_24_1"
+# Every migration that creates or changes a CRM table, as in crm_migrations of
+# scripts/cutover/nightly/nightly-config.json (a test keeps the two equal).
 MIGRATIONS = (
     "2026_11_24_100000_create_crm_core_tables",
     "2026_11_24_110000_create_crm_event_tables",
@@ -40,6 +41,7 @@ MIGRATIONS = (
     "2026_11_24_160000_create_crm_intake_receipts",
     "2026_11_24_161000_add_booking_details_to_crm_quotes",
     "2026_11_24_180000_add_crm_communication_receipts",
+    "2026_11_25_140000_add_replay_identity_to_recruit_application_receipts",
 )
 CRM_TABLES = frozenset({
     "crm_activities", "crm_ai_proposals", "crm_assignment_changes", "crm_campaign_recipients", "crm_campaigns",
@@ -121,9 +123,10 @@ def add_digest(digest, values):
 
 
 def ledger(db, key):
+    marks = ",".join("?" * len(MIGRATIONS))
     rows = list(db.execute(
-        "SELECT migration, id, batch FROM migrations WHERE instr(migration, ?) = 1 ORDER BY migration COLLATE BINARY",
-        (MIGRATION_PREFIX,),
+        f"SELECT migration, id, batch FROM migrations WHERE migration IN ({marks}) ORDER BY migration COLLATE BINARY",
+        MIGRATIONS,
     ))
     need(tuple(row[0] for row in rows) == MIGRATIONS, "crm-migration-ledger-differs")
     need(all(type(row[1]) is int and type(row[2]) is int for row in rows), "crm-migration-ledger-types-differ")
