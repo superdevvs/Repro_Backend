@@ -71,10 +71,13 @@ final class CrmWebsiteIntakeConcurrencyTest extends TestCase
             file_put_contents($directory.'/start-b', '1');
             // This session sees connection B actually issuing the locking query
             // while A still holds the row and before A can complete the receipt.
+            // With the MySQL writer policy, B waits earlier, for A's writer token.
+            $lockedTable = config('database.connections.mysql.repro_writer_policy') === true
+                ? '`writer_token`' : '`crm_website_intake_receipts`';
             $deadline = microtime(true) + 8;
             do {
                 $waiting = collect(DB::select('SHOW FULL PROCESSLIST'))->contains(fn ($thread) => (int) $thread->Id === $connections[1] && is_string($thread->Info)
-                    && str_contains($thread->Info, '`crm_website_intake_receipts`')
+                    && str_contains($thread->Info, $lockedTable)
                     && str_contains(strtolower($thread->Info), 'for update'));
                 if (! $waiting) {
                     usleep(20_000);

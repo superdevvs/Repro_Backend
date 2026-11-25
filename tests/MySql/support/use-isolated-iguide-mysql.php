@@ -10,4 +10,4 @@ config(['database.default' => 'mysql', 'database.connections.mysql.url' => null,
 $connection = \Illuminate\Support\Facades\DB::connection();
 if ($connection->getDriverName() !== 'mysql' || $connection->getDatabaseName() !== 'repro_mysql_test'
     || $connection->getConfig('username') !== 'repro_test') throw new RuntimeException('Unsafe iGuide fixture connection.');
-$connection->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+// The application fixes READ COMMITTED and five-second lock waits on its MySQL sessions.

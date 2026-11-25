@@ -161,8 +161,14 @@ class IguideLabTourConfigTest extends TestCase
         $database = DB::connection($connection['connection']);
         $this->assertSame($database, $queue->getDatabase());
         // SQLite keeps its bounded lock retries; MySQL uses Laravel's native
-        // database queue and row-lock reservation semantics.
-        $this->assertSame($database->getDriverName() === 'sqlite' ? SqliteDatabaseQueue::class : DatabaseQueue::class, $queue::class);
+        // database queue and row-lock reservation semantics, with claim and
+        // delete skipping the writer token when the writer policy is on.
+        $this->assertSame(match (true) {
+            $database->getDriverName() === 'sqlite' => SqliteDatabaseQueue::class,
+            $database->getConfig('repro_writer_policy') === true => \App\Queue\MySqlDatabaseQueue::class,
+            default => DatabaseQueue::class,
+        }, $queue::class);
+        $this->assertInstanceOf(DatabaseQueue::class, $queue);
         // The studio connection the tour layer uses by default is unchanged.
         $this->assertSame(['driver' => 'database', 'connection' => config('queue.connections.studio.connection'), 'table' => 'jobs',
             'queue' => 'studio', 'retry_after' => 7260, 'after_commit' => true], config('queue.connections.studio'));

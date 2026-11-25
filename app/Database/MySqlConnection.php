@@ -5,24 +5,620 @@ namespace App\Database;
 use App\Services\Scheduling\GoogleRoutesBudget;
 use Closure;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Log;
 use LogicException;
 use PDO;
 use RuntimeException;
 use Throwable;
 
-final class MySqlConnection extends \Illuminate\Database\MySqlConnection
+/**
+ * MySQL connection that keeps SQLite's one-writer-at-a-time rule.
+ *
+ * With 'repro_writer_policy' on, every transaction takes the writer token
+ * (repro_mysql_control.writer_token) straight after BEGIN, and every INSERT,
+ * UPDATE, DELETE or REPLACE at level 0 runs as BEGIN, token, statement, COMMIT.
+ * Only a WriterTokenTimeout raised before the business callback runs is
+ * retried. Errors after the token is held are never retried: the connection
+ * refuses further statements until rollback reaches level 0. Reads never wait.
+ * See docs/mysql-known-differences.md for the behaviour this changes.
+ */
+final class MySqlConnection extends \Illuminate\Database\MySqlConnection implements WriterTokenConnection
 {
+    private const POISONED = 'The failed writer transaction requires an outer rollback before this connection is used again.';
+
+    /** Set after a lock error or a lost session inside a transaction. */
+    private bool $poisoned = false;
+
+    /** The session was lost inside a transaction; Laravel's depth is kept until rollback. */
+    private bool $pdoLost = false;
+
+    /** DDL committed a test's RefreshDatabase wrapper; the test continues in autocommit, as before. */
+    private bool $testWrapperCommitted = false;
+
+    /** @var list<string>|null Tables writable while queue bookkeeping skips the token. */
+    private ?array $exemptTables = null;
+
+    private ?WriterTokenTimeout $acquisitionTimeout = null;
+
+    /** How many token waits one acquisition may use before it gives up. */
+    private int $acquisitionAttempts = 1;
+
+    private ?int $tokenAcquiredAt = null;
+
+    private ?int $tokenHeldNs = null;
+
+    private ?string $sessionServerUuid = null;
+
     protected function getDefaultQueryGrammar()
     {
         return new MySqlQueryGrammar($this);
     }
 
+    public function writerPolicyEnabled(): bool
+    {
+        return $this->getConfig('repro_writer_policy') === true;
+    }
+
+    /**
+     * Run queue bookkeeping without the token, limited to the given tables.
+     * Inside an open transaction the token is already held and nothing changes.
+     */
+    public function withoutWriterToken(array $tables, Closure $callback): mixed
+    {
+        if (! $this->writerPolicyEnabled() || $this->transactions > 0 || $this->exemptTables !== null) {
+            return $callback($this);
+        }
+        $this->exemptTables = array_values($tables);
+        try {
+            return $callback($this);
+        } finally {
+            $this->exemptTables = null;
+        }
+    }
+
+    /** True when the exception is this connection's own acquisition timeout, raised before any callback ran. */
+    public function isAcquisitionTimeout(Throwable $error): bool
+    {
+        return $error instanceof WriterTokenTimeout && $error === $this->acquisitionTimeout;
+    }
+
+    /**
+     * Run the callback once while each token wait on this connection may retry
+     * where it stands, up to $attempts waits. A wait happens before its BEGIN or
+     * statement does anything, so retrying it never replays any work.
+     */
+    public function withAcquisitionAttempts(int $attempts, Closure $callback): mixed
+    {
+        $previous = $this->acquisitionAttempts;
+        $this->acquisitionAttempts = max($previous, $attempts, 1);
+        try {
+            return $callback();
+        } finally {
+            $this->acquisitionAttempts = $previous;
+        }
+    }
+
+    public function beginTransaction()
+    {
+        if (! $this->writerPolicyEnabled() || $this->pretending()) {
+            parent::beginTransaction();
+
+            return;
+        }
+        $this->assertUsable();
+        $level = $this->transactions;
+        try {
+            parent::beginTransaction();
+        } catch (Throwable $error) {
+            // A beginning listener may fail after Laravel registered the level.
+            if ($this->transactions > $level) {
+                $this->rollBack($level);
+            }
+            throw $error;
+        }
+    }
+
+    protected function executeBeginTransactionStatement()
+    {
+        if (! $this->writerPolicyEnabled() || $this->exemptTables !== null || $this->pretending()) {
+            parent::executeBeginTransactionStatement();
+
+            return;
+        }
+        $this->acquireWriterToken();
+    }
+
+    protected function handleBeginTransactionException(Throwable $e)
+    {
+        if ($this->writerPolicyEnabled()) {
+            // Never reconnect and BEGIN again: the caller decides whether to retry.
+            throw $e;
+        }
+
+        parent::handleBeginTransactionException($e);
+    }
+
+    public function transaction(Closure $callback, $attempts = 1)
+    {
+        if (! $this->writerPolicyEnabled() || $this->pretending()) {
+            return parent::transaction($callback, $attempts);
+        }
+
+        // Only the token wait at BEGIN may retry, in place, before the callback
+        // runs. The parent gets one attempt: it never replays the callback or COMMIT.
+        return $this->withAcquisitionAttempts(max(1, (int) $attempts), fn () => parent::transaction(function ($connection) use ($callback) {
+            $result = $callback($connection);
+            $this->assertUsable();
+
+            return $result;
+        }, 1));
+    }
+
+    public function commit()
+    {
+        if (! $this->writerPolicyEnabled() || $this->pretending()) {
+            parent::commit();
+
+            return;
+        }
+        $this->assertUsable();
+        $level = $this->transactions;
+        try {
+            parent::commit();
+        } catch (Throwable $error) {
+            // Laravel lowers the depth only after COMMIT succeeds. If it did not,
+            // the outcome is unknown: discard the session and claim nothing.
+            if ($level === 1 && $this->transactions === 1) {
+                $this->discardSession();
+            }
+            throw $error;
+        }
+    }
+
+    protected function handleCommitTransactionException(Throwable $e, $currentAttempt, $maxAttempts)
+    {
+        if (! $this->writerPolicyEnabled()) {
+            parent::handleCommitTransactionException($e, $currentAttempt, $maxAttempts);
+
+            return;
+        }
+        // An unacknowledged COMMIT may have succeeded. Never retry, roll back or run callbacks.
+        $this->discardSession();
+        throw $e;
+    }
+
+    public function rollBack($toLevel = null)
+    {
+        if (! $this->writerPolicyEnabled() || $this->pretending()) {
+            parent::rollBack($toLevel);
+
+            return;
+        }
+        $toLevel = is_null($toLevel) ? $this->transactions - 1 : $toLevel;
+        if ($toLevel < 0 || $toLevel >= $this->transactions) {
+            return;
+        }
+        if ($this->poisoned || $this->pdoLost) {
+            $this->rollBackFailedTransaction($toLevel);
+
+            return;
+        }
+        try {
+            parent::rollBack($toLevel);
+        } catch (Throwable $error) {
+            $this->discardSession();
+            throw $error;
+        }
+        if ($this->transactions === 0) {
+            $this->testWrapperCommitted = false;
+        }
+    }
+
+    protected function run($query, $bindings, Closure $callback)
+    {
+        if ($this->poisoned && $this->writerPolicyEnabled()) {
+            throw new RuntimeException(self::POISONED);
+        }
+
+        return parent::run($query, $bindings, $callback);
+    }
+
     protected function runQueryCallback($query, $bindings, Closure $callback)
     {
-        if (! $this->guardsRouteBudget($query) || $this->pretending()) {
+        if ($this->guardsRouteBudget($query) && ! $this->pretending()) {
+            return $this->runRouteBudgetReservation($query, $bindings, $callback);
+        }
+        if ($this->pretending()) {
             return parent::runQueryCallback($query, $bindings, $callback);
         }
 
+        $class = WriterStatement::classify($query);
+        $this->assertWritableTable($query, $class);
+        if (! $this->writerPolicyEnabled()) {
+            return parent::runQueryCallback($query, $bindings, $callback);
+        }
+
+        $this->assertUsable();
+        if ($class === WriterStatement::MULTIPLE) {
+            // The token decision covers one statement; the session refuses batches too.
+            throw new LogicException('Run one statement at a time on the MySQL writer connection.');
+        }
+        if ($class === WriterStatement::TRANSACTION_CONTROL) {
+            throw new LogicException('Use Laravel transactions, not raw transaction or table-lock statements, on the MySQL writer connection.');
+        }
+        if ($class === WriterStatement::DDL && $this->transactions > 0) {
+            if (! $this->onlyTestWrapperIsOpen()) {
+                throw new LogicException('DDL, TRUNCATE and other statements that commit implicitly cannot run inside a MySQL transaction.');
+            }
+
+            return $this->runDdlInsideTestWrapper($query, $bindings, $callback);
+        }
+        if ($this->transactions === 0 && $this->exemptTables === null) {
+            if ($class === WriterStatement::WRITE) {
+                return $this->runAutocommitWrite($query, $bindings, $callback);
+            }
+            if ($class === WriterStatement::LOCKING_READ) {
+                $this->refuseLockOutsideTransaction();
+            }
+        }
+
+        try {
+            return parent::runQueryCallback($query, $bindings, $callback);
+        } catch (Throwable $error) {
+            if ($this->transactions > 0) {
+                if ($this->causedByLostConnection($error->getPrevious() ?? $error) || $this->causedByLostConnection($error)) {
+                    $this->loseSessionInsideTransaction();
+                } elseif (in_array(self::driverCode($error), [1205, 1213], true)) {
+                    $this->poisoned = true;
+                }
+            }
+            throw $error;
+        }
+    }
+
+    protected function handleQueryException(QueryException $e, $query, $bindings, Closure $callback)
+    {
+        if ($this->guardsRouteBudget($query)) {
+            throw $e;
+        }
+
+        return parent::handleQueryException($e, $query, $bindings, $callback);
+    }
+
+    public function setPdo($pdo)
+    {
+        $this->sessionServerUuid = null;
+        if ($this->poisoned || $this->pdoLost) {
+            // disconnect() and reconnect() replace the session and Laravel resets the depth
+            // to 0, so no rollback can reach the guard any more. The failed transaction left
+            // with the old session: drop its records without running their callbacks.
+            $this->abandonTransactionRecords();
+            $this->poisoned = false;
+            $this->pdoLost = false;
+            $this->testWrapperCommitted = false;
+            $this->tokenAcquiredAt = null;
+            $this->tokenHeldNs = null;
+        }
+
+        return parent::setPdo($pdo);
+    }
+
+    protected function fireConnectionEvent($event)
+    {
+        if ($event === 'committing' && $this->transactions === 1) {
+            $this->tokenHeldNs = $this->tokenAcquiredAt === null ? null : hrtime(true) - $this->tokenAcquiredAt;
+        }
+        if ($this->transactions === 0 && $this->tokenAcquiredAt !== null) {
+            if ($event === 'committed') {
+                $this->tokenReleased($this->tokenHeldNs);
+            } elseif ($event === 'rollingBack') {
+                $this->tokenReleased();
+            }
+        }
+
+        return parent::fireConnectionEvent($event);
+    }
+
+    private function acquireWriterToken(): void
+    {
+        $this->acquisitionTimeout = null;
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                (new MySqlWriterToken)->beginAndAcquire($this->getPdo(), $this->expectedServerUuid(), $this->getDatabaseName());
+                break;
+            } catch (WriterTokenTimeout $timeout) {
+                // beginAndAcquire confirmed the rollback; this session stays usable.
+                if ($attempt >= $this->acquisitionAttempts) {
+                    $this->acquisitionTimeout = $timeout;
+                    throw $timeout;
+                }
+                $this->report('warning', 'The MySQL writer token is busy; waiting again before anything runs.', ['attempt' => $attempt]);
+            } catch (Throwable $error) {
+                $this->discardSession();
+                throw $error;
+            }
+        }
+        $this->tokenAcquiredAt = hrtime(true);
+        $this->tokenHeldNs = null;
+    }
+
+    private function expectedServerUuid(): string
+    {
+        $configured = $this->getConfig('repro_expected_server_uuid');
+        if (is_string($configured) && $configured !== '') {
+            return $configured;
+        }
+        if ($this->getConfig('repro_require_server_identity') === true) {
+            throw new RuntimeException('The MySQL writer token requires the approved server UUID.');
+        }
+
+        // Outside production the session's own server is the target. The token
+        // row still binds the application database name.
+        return $this->sessionServerUuid ??= (string) $this->getPdo()->query('SELECT @@server_uuid')->fetchColumn();
+    }
+
+    private function runAutocommitWrite(string $query, array $bindings, Closure $callback): mixed
+    {
+        $this->acquireWriterToken();
+        $pdo = $this->getPdo();
+        try {
+            // MySQL's insert callback reads lastInsertId before this COMMIT.
+            $result = parent::runQueryCallback($query, $bindings, $callback);
+        } catch (Throwable $error) {
+            try {
+                if (! $pdo->inTransaction() || ! $pdo->rollBack() || $pdo->inTransaction()) {
+                    throw new RuntimeException('The autocommit write did not confirm its rollback.');
+                }
+                $this->tokenReleased();
+            } catch (Throwable) {
+                // Nothing was committed. Laravel may reconnect and run the write again
+                // only for a lost session, which MySQL has already rolled back.
+                $this->discardSession();
+            }
+            throw $error;
+        }
+
+        try {
+            if (! $pdo->commit() || $pdo->inTransaction()) {
+                throw new RuntimeException('MySQL did not confirm the commit.');
+            }
+        } catch (Throwable $error) {
+            $this->discardSession();
+            throw new RuntimeException('The outcome of a MySQL autocommit write is unknown; it was not retried.', 0, $error);
+        }
+        $this->tokenReleased();
+
+        // Laravel dispatches QueryExecuted after this returns, once the row is committed.
+        return $result;
+    }
+
+    /**
+     * Laravel's RefreshDatabase wraps each test in one transaction under its own
+     * testing manager; production never installs that manager. Migration tests
+     * run DDL there, which MySQL always committed implicitly.
+     */
+    private function onlyTestWrapperIsOpen(): bool
+    {
+        return $this->transactions === 1
+            && $this->transactionsManager instanceof \Illuminate\Foundation\Testing\DatabaseTransactionsManager;
+    }
+
+    /**
+     * Let MySQL commit the test wrapper, exactly as before the policy. The test
+     * then continues in autocommit and RefreshDatabase rebuilds the schema for
+     * the next test when it finds the wrapper gone.
+     */
+    private function runDdlInsideTestWrapper(string $query, array $bindings, Closure $callback): mixed
+    {
+        $result = parent::runQueryCallback($query, $bindings, $callback);
+        if (! $this->getPdo()->inTransaction()) {
+            $this->tokenReleased();
+            $this->testWrapperCommitted = true;
+        }
+
+        return $result;
+    }
+
+    private function refuseLockOutsideTransaction(): void
+    {
+        $mode = $this->getConfig('repro_level0_lock_guard');
+        if ($mode === 'throw') {
+            throw new LogicException('A locking read outside a transaction protects nothing; run it inside DB::transaction().');
+        }
+        if ($mode === 'log') {
+            $this->report('warning', 'MySQL locking read outside a transaction.', ['caller' => self::caller()]);
+        }
+    }
+
+    private function assertUsable(): void
+    {
+        if ($this->poisoned) {
+            throw new RuntimeException(self::POISONED);
+        }
+        if ($this->transactions > 0 && ! $this->pdoLost && ! $this->testWrapperCommitted
+            && $this->pdo instanceof PDO && ! $this->pdo->inTransaction()) {
+            // A raw COMMIT/ROLLBACK or a server-side rollback ended the transaction.
+            // Statements must not continue in autocommit at Laravel's old depth.
+            $this->poisoned = true;
+            throw new LogicException('The MySQL transaction ended outside Laravel; roll back to level 0 before continuing.');
+        }
+    }
+
+    private function assertWritableTable(string $query, string $class): void
+    {
+        $tables = $this->exemptTables ?? $this->getConfig('repro_writer_exempt_tables');
+        if (! is_array($tables) || $class === WriterStatement::READ || $class === WriterStatement::LOCKING_READ
+            || $class === WriterStatement::SESSION) {
+            return;
+        }
+        $target = $class === WriterStatement::WRITE ? WriterStatement::singleTargetTable($query) : null;
+        if ($target === null || ! in_array($target, $tables, true)) {
+            throw new LogicException('This MySQL session skips the writer token and may only write '.implode(', ', $tables).'.');
+        }
+    }
+
+    private function rollBackFailedTransaction(int $toLevel): void
+    {
+        if ($toLevel > 0) {
+            // Savepoints of a failed transaction are not trusted; only a full rollback clears the guard.
+            $this->transactions = $toLevel;
+            if (! $this->pdoLost) {
+                $this->transactionsManager?->rollback($this->getName(), $toLevel);
+            }
+            $this->fireConnectionEvent('rollingBack');
+
+            return;
+        }
+        $pdoLost = $this->pdoLost;
+        if (! $pdoLost) {
+            try {
+                $pdo = $this->getPdo();
+                if ($pdo->inTransaction() && (! $pdo->rollBack() || $pdo->inTransaction())) {
+                    throw new RuntimeException('The failed MySQL transaction did not confirm its rollback.');
+                }
+            } catch (Throwable $error) {
+                $this->discardSession();
+                throw $error;
+            }
+        }
+        // MySQL has rolled back. Clear the guard before any rollback callback runs, as
+        // Laravel lowers the depth first: a callback may use this connection again.
+        $this->transactions = 0;
+        $this->testWrapperCommitted = false;
+        $this->poisoned = false;
+        $this->pdoLost = false;
+        $this->tokenReleased();
+        if (! $pdoLost) {
+            // A lost session already dropped its records without running callbacks.
+            $this->transactionsManager?->rollback($this->getName(), 0);
+        }
+        $this->fireConnectionEvent('rollingBack');
+    }
+
+    /** The session died inside a transaction: MySQL rolled it back. Keep the depth so the caller must roll back. */
+    private function loseSessionInsideTransaction(): void
+    {
+        $this->abandonTransactionRecords();
+        $this->closePdo();
+        $this->pdoLost = true;
+        $this->poisoned = true;
+        $this->tokenAcquiredAt = null;
+    }
+
+    /** Drop the session after an uncertain outcome. Nothing is replayed and no callback runs. */
+    private function discardSession(): void
+    {
+        $this->abandonTransactionRecords();
+        $this->closePdo();
+        $this->transactions = 0;
+        $this->testWrapperCommitted = false;
+        $this->poisoned = false;
+        $this->pdoLost = false;
+        $this->tokenAcquiredAt = null;
+        $this->tokenHeldNs = null;
+    }
+
+    private function closePdo(): void
+    {
+        $pdo = $this->pdo;
+        try {
+            if ($pdo instanceof PDO && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+        } catch (Throwable) {
+            // The session is dropped below either way.
+        }
+        // Not setPdo(): that would reset Laravel's transaction depth.
+        $this->pdo = null;
+        $this->readPdo = null;
+        $this->sessionServerUuid = null;
+    }
+
+    /** Remove this connection's pending and committed records without running their callbacks. */
+    private function abandonTransactionRecords(): void
+    {
+        $manager = $this->transactionsManager;
+        if ($manager === null) {
+            return;
+        }
+        $name = $this->getName();
+        (function () use ($name) {
+            $this->currentTransaction[$name] = null;
+            $this->pendingTransactions = $this->pendingTransactions->reject(fn ($transaction) => $transaction->connection === $name)->values();
+            $this->committedTransactions = $this->committedTransactions->reject(fn ($transaction) => $transaction->connection === $name)->values();
+        })->call($manager);
+    }
+
+    private function tokenReleased(?int $heldNs = null): void
+    {
+        if ($this->tokenAcquiredAt === null) {
+            return;
+        }
+        $heldNs ??= hrtime(true) - $this->tokenAcquiredAt;
+        $this->tokenAcquiredAt = null;
+        $this->tokenHeldNs = null;
+        $limit = (int) $this->getConfig('repro_writer_long_hold_ms');
+        $heldMs = (int) round($heldNs / 1_000_000);
+        if ($limit > 0 && $heldMs > $limit) {
+            $this->report('warning', 'The MySQL writer token was held longer than the limit.', [
+                'held_ms' => $heldMs, 'limit_ms' => $limit, 'caller' => self::caller(),
+            ]);
+        }
+    }
+
+    private function report(string $level, string $message, array $context = []): void
+    {
+        try {
+            Log::log($level, $message, ['connection' => $this->getName()] + $context);
+        } catch (Throwable) {
+            // Diagnostics must never change the outcome of a write.
+        }
+    }
+
+    /** The first application frame outside the database layer, for long-holder and lock reports. */
+    private static function caller(): ?string
+    {
+        return self::callerFrom(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 40));
+    }
+
+    /** @param  list<array{file?: string, line?: int}>  $frames */
+    private static function callerFrom(array $frames): ?string
+    {
+        foreach ($frames as $frame) {
+            // Windows paths use backslashes, which basename() and dirname() on Linux do not split.
+            $file = str_replace('\\', '/', $frame['file'] ?? '');
+            if ($file !== '' && ! str_contains($file, '/vendor/') && ! str_contains($file, '/app/Database/')) {
+                $parts = explode('/', $file);
+
+                return implode('/', array_slice($parts, -2)).':'.($frame['line'] ?? 0);
+            }
+        }
+
+        return null;
+    }
+
+    private static function driverCode(Throwable $error): ?int
+    {
+        for ($current = $error; $current !== null; $current = $current->getPrevious()) {
+            $info = $current instanceof \PDOException || $current instanceof QueryException ? ($current->errorInfo ?? null) : null;
+            if (is_array($info) && isset($info[1]) && is_numeric($info[1])) {
+                return (int) $info[1];
+            }
+        }
+
+        return null;
+    }
+
+    private function guardsRouteBudget($query): bool
+    {
+        // The general policy covers this statement; the pilot path runs only without it.
+        return $query === GoogleRoutesBudget::RESERVATION_SQL
+            && $this->getConfig('repro_route_budget_writer_token') === true
+            && ! $this->writerPolicyEnabled();
+    }
+
+    private function runRouteBudgetReservation($query, $bindings, Closure $callback)
+    {
         if ($this->transactionLevel() !== 0) {
             throw new LogicException('Reserve route usage outside the booking transaction.');
         }
@@ -89,21 +685,6 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection
 
         // Laravel dispatches QueryExecuted from run() after the confirmed commit.
         return $result;
-    }
-
-    protected function handleQueryException(QueryException $error, $query, $bindings, Closure $callback)
-    {
-        if ($this->guardsRouteBudget($query)) {
-            throw $error;
-        }
-
-        return parent::handleQueryException($error, $query, $bindings, $callback);
-    }
-
-    private function guardsRouteBudget($query): bool
-    {
-        return $query === GoogleRoutesBudget::RESERVATION_SQL
-            && $this->getConfig('repro_route_budget_writer_token') === true;
     }
 
     private function prepareRouteBudgetSession(PDO $pdo): ?string

@@ -8,7 +8,8 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Cross-schema writer-token primitive. The route budget pilot is its only runtime caller.
+ * Cross-schema writer-token primitive. MySqlConnection calls it at every BEGIN on the
+ * writer connection; the route budget pilot calls it only when that policy is off.
  * Owns BEGIN on the business PDO; the caller still owns COMMIT or ROLLBACK.
  * Provision the fixed control table separately; runtime never creates or seeds it.
  * Discard the PDO after any failure other than a rolled-back WriterTokenTimeout.

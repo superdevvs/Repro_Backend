@@ -12,8 +12,10 @@ use App\Services\Messaging\ScheduledAutomationDispatcher;
 use App\Services\Messaging\WeeklyAutomationContext;
 use App\Services\Messaging\WeeklyDigestContexts;
 use App\Services\SalesReportService;
+use App\Support\LockedWrite;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class RunSystemAutomations extends Command
@@ -21,6 +23,9 @@ class RunSystemAutomations extends Command
     protected $signature = 'automations:run-system {--trigger=} {--rule=} {--force}';
 
     protected $description = 'Prepare due weekly invoices and reports, then execute their saved automation actions';
+
+    /** A run that started a period this recently still owns it; a run that stopped without finishing releases it after this. */
+    private const RUNNING_CLAIM_MINUTES = 30;
 
     public function handle(ScheduledAutomationDispatcher $dispatcher, WeeklyAutomationContext $contexts): int
     {
@@ -42,23 +47,10 @@ class RunSystemAutomations extends Command
                 continue;
             }
             $periodKey = $rule->trigger_type.'|'.$scheduledFor->toDateString();
-            $dispatch = AutomationDispatch::firstOrNew([
-                'automation_rule_id' => $rule->id,
-                'period_key' => $periodKey,
-            ]);
-            if ($dispatch->status === 'completed' && ! $this->option('force')) {
+            $dispatch = $this->claimPeriod($rule, $periodKey, $scheduledFor);
+            if (! $dispatch) {
                 continue;
             }
-
-            $dispatch->fill([
-                'trigger_type' => $rule->trigger_type,
-                'scheduled_for' => $scheduledFor,
-                'command' => 'workflow:'.$rule->trigger_type,
-                'status' => 'running',
-                'error_message' => null,
-                'started_at' => now(),
-                'completed_at' => null,
-            ])->save();
 
             try {
                 $workflow = app(AutomationWorkflowConverter::class)->getWorkflowDefinition($rule);
@@ -164,6 +156,49 @@ class RunSystemAutomations extends Command
         }
 
         return $failed > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    /**
+     * Claim the rule's period for this run. Returns null when the period is done
+     * (and not forced) or another run started it within the lease, so two
+     * overlapping runs (the scheduler and "Run now", say) never both deliver it.
+     * The read and the write share one transaction: on MySQL it holds the writer
+     * token, and on SQLite the writer is reserved before the read.
+     */
+    private function claimPeriod(AutomationRule $rule, string $periodKey, Carbon $scheduledFor): ?AutomationDispatch
+    {
+        [$dispatch, $runningSince] = LockedWrite::run(fn () => DB::transaction(function () use ($rule, $periodKey, $scheduledFor) {
+            if (DB::connection()->getDriverName() === 'sqlite') {
+                // A zero-row UPDATE takes SQLite's writer before the read; nothing changes.
+                DB::table('automation_dispatches')->whereRaw('1 = 0')->update(['id' => DB::raw('id')]);
+            }
+            $dispatch = AutomationDispatch::query()->where('automation_rule_id', $rule->id)
+                ->where('period_key', $periodKey)->orderBy('id')->lockForUpdate()->first()
+                ?? new AutomationDispatch(['automation_rule_id' => $rule->id, 'period_key' => $periodKey]);
+            if ($dispatch->status === 'completed' && ! $this->option('force')) {
+                return [null, null];
+            }
+            if ($dispatch->status === 'running' && $dispatch->started_at
+                && $dispatch->started_at->gt(now()->subMinutes(self::RUNNING_CLAIM_MINUTES))) {
+                return [null, $dispatch->started_at];
+            }
+            $dispatch->fill([
+                'trigger_type' => $rule->trigger_type,
+                'scheduled_for' => $scheduledFor,
+                'command' => 'workflow:'.$rule->trigger_type,
+                'status' => 'running',
+                'error_message' => null,
+                'started_at' => now(),
+                'completed_at' => null,
+            ])->save();
+
+            return [$dispatch, null];
+        }), 'automations.claim-period');
+        if ($runningSince) {
+            $this->line($rule->name.': skipped; another run started this period at '.$runningSince->toIso8601String().' and has not finished.');
+        }
+
+        return $dispatch;
     }
 
     private function scheduledFor(AutomationRule $rule, Carbon $now): ?Carbon

@@ -36,7 +36,10 @@ if ($db->getDriverName() !== 'mysql' || $db->getDatabaseName() !== 'repro_mysql_
     throw new RuntimeException('The actual CRM worker connection differs from the isolated test database.');
 }
 
-$db->statement('SET SESSION innodb_lock_wait_timeout=12');
+if ($db->getConfig('repro_writer_policy') !== true) {
+    // Without the writer token B waits on the receipt row itself, for longer.
+    $db->statement('SET SESSION innodb_lock_wait_timeout=12');
+}
 $reference = file_get_contents($directory.'/reference');
 $await = static function (string $path, int $seconds): void {
     $deadline = microtime(true) + $seconds;
@@ -53,7 +56,9 @@ $db->listen(static function (QueryExecuted $query) use ($await, $directory, $slo
         || ! str_contains($query->sql, '`crm_website_intake_receipts`') || ! in_array($reference, $query->bindings, true)) {
         return;
     }
-    if ($query->connection->transactionLevel() !== 1 || ! str_contains(strtolower($query->sql), 'for update')) {
+    // LockedWrite takes the writer token in its own transaction first, so the
+    // receipt's DB::transaction may be one level deeper with the policy on.
+    if ($query->connection->transactionLevel() < 1 || ! str_contains(strtolower($query->sql), 'for update')) {
         throw new RuntimeException('The CRM receipt failed to acquire a transactional row lock.');
     }
     // Pause inside the normal application transaction after taking its lock.

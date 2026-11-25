@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the socket-only writer, queue and cache contracts once on the hosted MySQL job.
+# Run the socket-only writer, queue and cache contracts once on the hosted MySQL job,
+# then the multi-process MySQL writer suite (phpunit.mysql-writers.xml).
 set -euo pipefail
 
 if [[ "${GITHUB_ACTIONS:-}" != true || "${RUNNER_OS:-}" != Linux ]]; then
@@ -48,8 +49,8 @@ sudo -n chown 999:"$runner_gid" "$socket_dir"
 sudo -n chmod 2770 "$socket_dir"
 
 container=$(docker run -d --pull never --network none --read-only --cap-drop ALL \
-    --security-opt no-new-privileges --cpus 1 --memory 640m --pids-limit 120 --user mysql \
-    --tmpfs '/var/lib/mysql:rw,exec,size=384m,uid=999,gid=999,mode=0700' \
+    --security-opt no-new-privileges --cpus 1 --memory 1g --pids-limit 200 --user mysql \
+    --tmpfs '/var/lib/mysql:rw,exec,size=640m,uid=999,gid=999,mode=0700' \
     --tmpfs '/tmp:rw,noexec,size=32m,mode=1777' \
     --mount "type=bind,source=$socket_dir,target=$socket_dir" \
     --entrypoint /bin/bash "$image" -c '
@@ -60,7 +61,7 @@ container=$(docker run -d --pull never --network none --read-only --cap-drop ALL
             --pid-file=/tmp/mysql.pid --log-error=/tmp/fixture.log --tmpdir=/tmp \
             --skip-networking --mysqlx=OFF --event-scheduler=OFF --partial-revokes=OFF \
             --default-time-zone=+00:00 --innodb-buffer-pool-size=96M --innodb-redo-log-capacity=16M \
-            --max-connections=12 --skip-log-bin --sync-binlog=1 --innodb-flush-log-at-trx-commit=1
+            --max-connections=40 --skip-log-bin --sync-binlog=1 --innodb-flush-log-at-trx-commit=1
     ')
 sql=(docker exec -i "$container" mysql --no-defaults --no-login-paths --protocol=SOCKET
     --socket="$socket" --user=root --batch --raw --skip-column-names)
@@ -107,12 +108,14 @@ CREATE TABLE repro_mysql_control.writer_token (
 ) ENGINE=InnoDB;
 INSERT INTO repro_mysql_control.writer_token VALUES (1,'repro_mysql_test',1);
 SQL
-    for user in repro_test repro_token_fixture repro_queue_worker repro_queue_broad repro_cache_fixture repro_cache_broad; do
+    for user in repro_test repro_token_reader repro_token_fixture repro_queue_worker repro_queue_broad repro_cache_fixture repro_cache_broad; do
         printf "CREATE USER '%s'@'localhost' IDENTIFIED WITH caching_sha2_password BY '%s';\n" "$user" "$password"
     done
     cat <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON `repro\_mysql\_test`.* TO repro_test@localhost;
 GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO repro_test@localhost;
+GRANT SELECT ON `repro\_mysql\_test`.* TO repro_token_reader@localhost;
+GRANT SELECT ON repro_mysql_control.writer_token TO repro_token_reader@localhost;
 GRANT ALL ON `repro\_mysql\_test`.* TO repro_token_fixture@localhost;
 GRANT ALL ON `repro\_mysql\_control`.* TO repro_token_fixture@localhost;
 SQL
@@ -136,11 +139,13 @@ fixture_php=(
     "REPRO_MYSQL_SCHEDULING_CACHE_PASSWORD=$password"
     "$php"
 )
-"${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
-    --fail-on-phpunit-deprecation -c phpunit.mysql.xml tests/MySql/contracts/LaravelWriterTokenContract.php \
-    --filter test_lost_commit_acknowledgement
+# Every writer-token contract: the primitive, the Laravel fixture and the route-budget pilot.
+for contract in MySqlWriterTokenContract LaravelWriterTokenContract GoogleRoutesBudgetWriterTokenContract; do
+    "${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
+        --fail-on-phpunit-deprecation -c phpunit.mysql.xml "tests/MySql/contracts/$contract.php"
+done
 {
-    printf 'USE repro_mysql_test; DROP TABLE _writer_token_probe;\n'
+    printf 'USE repro_mysql_test; DROP TABLE _writer_token_probe; DROP TABLE IF EXISTS scheduling_route_usage;\n'
     emit_schema_tables jobs
     cat <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON repro_mysql_test.jobs TO repro_queue_worker@localhost;
@@ -166,3 +171,27 @@ SQL
 } | "${sql[@]}"
 "${fixture_php[@]}" vendor/bin/phpunit --no-progress --do-not-cache-result --fail-on-warning --fail-on-risky \
     --fail-on-phpunit-deprecation -c phpunit.mysql.xml tests/MySql/contracts/MySqlSchedulingCacheContract.php
+
+# The one-writer rule through the real application connection, with the policy
+# on and no queue or cache pilot: a fresh application schema, built by the
+# migrator account, then real separate processes (tests/MySqlWriters).
+{
+    printf 'DROP DATABASE repro_mysql_test;\n'
+    printf 'CREATE DATABASE repro_mysql_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin;\n'
+    printf "DELETE FROM repro_mysql_control.writer_token;\n"
+    printf "INSERT INTO repro_mysql_control.writer_token VALUES (1,'repro_mysql_test',1);\n"
+    printf 'SET GLOBAL log_bin_trust_function_creators=1;\n'
+    printf 'GRANT ALL ON `repro\\_mysql\\_test`.* TO repro_test@localhost;\n'
+} | "${sql[@]}"
+writers_php=(
+    sudo -n /usr/bin/unshare --net -- /usr/bin/setpriv
+    --reuid "$runner_uid" --regid "$runner_gid" --clear-groups --no-new-privs
+    /usr/bin/env -i "PATH=$PATH" "HOME=$HOME" APP_ENV=testing "APP_KEY=$key"
+    CACHE_STORE=array SESSION_DRIVER=array MAIL_MAILER=array QUEUE_CONNECTION=sync
+    CLAMAV_SCAN_ON_UPLOAD=false LOG_CHANNEL=stderr PULSE_ENABLED=false TELESCOPE_ENABLED=false
+    DB_CONNECTION=mysql "DB_SOCKET=$socket" DB_DATABASE=repro_mysql_test DB_COLLATION=utf8mb4_0900_bin
+    "DB_PASSWORD=$password" MYSQL_WRITER_POLICY_FIXTURE=isolated-v1 "REPRO_MYSQL_EXPECTED_SERVER_UUID=$uuid"
+)
+"${writers_php[@]}" DB_USERNAME=repro_token_fixture "$php" -d memory_limit=1G artisan migrate:fresh --force
+"${writers_php[@]}" DB_USERNAME=repro_test "$php" -d memory_limit=1G vendor/bin/phpunit --no-progress --do-not-cache-result \
+    --fail-on-warning --fail-on-risky --fail-on-phpunit-deprecation -c phpunit.mysql-writers.xml

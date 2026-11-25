@@ -1,0 +1,311 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Database\WriterTokenTimeout;
+use App\Http\Middleware\RetryDatabaseThrottleRequests;
+use App\Support\LockedWrite;
+use Closure;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\RateLimiter;
+use Illuminate\Cache\Repository;
+use Illuminate\Database\QueryException;
+use Illuminate\Http\Request;
+use Illuminate\Routing\Route;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Mockery;
+use PDOException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
+use Tests\Support\FakeWriterTokenConnection;
+use Tests\TestCase;
+use Throwable;
+
+/**
+ * LockedWrite and the rate limiter retry only a WriterTokenTimeout raised while
+ * taking the token, before any business callback runs. Runs on both engines.
+ */
+class WriterTokenRetryLayersTest extends TestCase
+{
+    private ?FakeWriterTokenConnection $fake = null;
+
+    private function useFakeWriterConnection(int $level = 0, ?Closure $whileWaiting = null): FakeWriterTokenConnection
+    {
+        $this->fake = new FakeWriterTokenConnection($level, $whileWaiting);
+        config(['database.connections.writer-fake' => ['driver' => 'writer-fake', 'name' => 'writer-fake']]);
+        DB::extend('writer-fake', fn () => $this->fake);
+        DB::setDefaultConnection('writer-fake');
+
+        return $this->fake;
+    }
+
+    public function test_locked_write_runs_the_callback_once_and_lets_its_token_waits_retry_in_place(): void
+    {
+        $fake = $this->useFakeWriterConnection();
+        $calls = 0;
+
+        $result = LockedWrite::run(function () use (&$calls, $fake) {
+            $calls++;
+            // Each token wait inside the callback may now retry where it stands.
+            $this->assertSame(LockedWrite::DEFAULT_ATTEMPTS, $fake->acquisitionAttempts);
+            // No transaction of its own: depth and atomicity are as on SQLite.
+            $this->assertSame(0, $fake->transactionLevel());
+
+            return 'saved';
+        }, 'test');
+
+        $this->assertSame('saved', $result);
+        $this->assertSame(1, $calls);
+        $this->assertSame([LockedWrite::DEFAULT_ATTEMPTS], $fake->attemptsRequested);
+        $this->assertSame(1, $fake->acquisitionAttempts, 'The longer patience ends with the callback.');
+    }
+
+    public function test_locked_write_reports_an_exhausted_token_wait_once_and_never_replays_the_callback(): void
+    {
+        $fake = $this->useFakeWriterConnection(whileWaiting: fn (FakeWriterTokenConnection $fake) => $fake->exhaustTokenWait());
+        Log::spy();
+        $calls = 0;
+        try {
+            LockedWrite::run(function () use (&$calls, $fake) {
+                $calls++;
+                $fake->write();
+            }, 'test');
+            $this->fail('An exhausted token wait must surface.');
+        } catch (WriterTokenTimeout $error) {
+            $this->assertTrue($fake->isAcquisitionTimeout($error));
+        }
+        $this->assertSame(1, $calls);
+        Log::shouldHaveReceived('error')->once();
+    }
+
+    public static function failuresAfterTheToken(): array
+    {
+        return [
+            'business timeout' => [fn () => new WriterTokenTimeout('Business code reused the type.')],
+            'native lock wait' => [fn () => self::mysqlError(1205, 'Lock wait timeout exceeded; try restarting transaction')],
+            'native deadlock' => [fn () => self::mysqlError(1213, 'Deadlock found when trying to get lock; try restarting transaction')],
+        ];
+    }
+
+    #[DataProvider('failuresAfterTheToken')]
+    public function test_locked_write_never_replays_a_callback_that_failed_after_the_token(Closure $failure): void
+    {
+        $this->useFakeWriterConnection();
+        $calls = 0;
+        $error = $failure();
+        try {
+            LockedWrite::run(function () use (&$calls, $error) {
+                $calls++;
+                throw $error;
+            }, 'test');
+            $this->fail('The failure must escape.');
+        } catch (Throwable $actual) {
+            $this->assertSame($error, $actual);
+        }
+        $this->assertSame(1, $calls);
+    }
+
+    public function test_locked_write_inside_an_open_transaction_runs_once(): void
+    {
+        $fake = $this->useFakeWriterConnection(level: 1);
+        $calls = 0;
+
+        $this->assertSame('inner', LockedWrite::run(function () use (&$calls, $fake) {
+            $calls++;
+            $this->assertSame(1, $fake->transactionLevel());
+
+            return 'inner';
+        }));
+
+        $this->assertSame(1, $calls);
+    }
+
+    public function test_sqlite_lock_messages_keep_their_old_bounded_retry(): void
+    {
+        $this->useFakeWriterConnection();
+        $calls = 0;
+
+        $this->assertSame('saved', LockedWrite::run(function () use (&$calls) {
+            if (++$calls === 1) {
+                throw new \PDOException('SQLSTATE[HY000]: General error: 5 database is locked');
+            }
+
+            return 'saved';
+        }, 'test'));
+
+        $this->assertSame(2, $calls);
+    }
+
+    public function test_a_writer_token_timeout_is_lock_contention_for_busy_responses(): void
+    {
+        // Callers answer "busy, retry" (503 or 409) when LockedWrite says lock contention.
+        // On MySQL the token wait is what SQLite's "database is locked" was.
+        $timeout = new WriterTokenTimeout('The MySQL writer token is busy.');
+
+        $this->assertTrue(LockedWrite::isLockContention($timeout));
+        $this->assertTrue(LockedWrite::isLockContention(new \RuntimeException('Dispatch failed.', 0, $timeout)));
+        // A lock error after the token is held is a real failure, never "busy".
+        $this->assertFalse(LockedWrite::isLockContention(self::mysqlError(1205, 'Lock wait timeout exceeded; try restarting transaction')));
+        $this->assertFalse(LockedWrite::isLockContention(self::mysqlError(1213, 'Deadlock found when trying to get lock; try restarting transaction')));
+    }
+
+    public function test_locked_write_never_replays_a_callback_for_a_token_timeout_on_any_connection(): void
+    {
+        // The default test connection carries no writer policy: only SQLite's own
+        // lock message may replay the callback.
+        $calls = 0;
+        try {
+            LockedWrite::run(function () use (&$calls) {
+                $calls++;
+                throw new WriterTokenTimeout('The MySQL writer token is busy.');
+            }, 'test');
+            $this->fail('The timeout must escape.');
+        } catch (WriterTokenTimeout) {
+        }
+        $this->assertSame(1, $calls);
+    }
+
+    public static function limiterOperations(): array
+    {
+        return [['tooManyAttempts'], ['hit']];
+    }
+
+    #[DataProvider('limiterOperations')]
+    public function test_limiter_operations_run_once_while_their_token_waits_retry_in_place(string $operation): void
+    {
+        $fake = $this->useFakeWriterConnection();
+        $limiter = Mockery::mock(RateLimiter::class);
+        $limiter->shouldReceive($operation)->once()->andReturnUsing(function () use ($fake, $operation) {
+            // Each token wait inside the operation may retry where it stands.
+            $this->assertSame(LockedWrite::DEFAULT_ATTEMPTS, $fake->acquisitionAttempts);
+
+            return $operation === 'hit' ? 1 : false;
+        });
+        $limiter->shouldReceive($operation === 'hit' ? 'tooManyAttempts' : 'hit')->once()->andReturn(false);
+        $limiter->shouldReceive('retriesLeft')->once()->andReturn(299);
+        $calls = 0;
+
+        $response = (new RetryDatabaseThrottleRequests($limiter))->handle($this->request(), function () use (&$calls, $fake) {
+            $calls++;
+            // Never inside the limiter's patience.
+            $this->assertSame(1, $fake->acquisitionAttempts);
+
+            return response()->json(['saved' => true], 201);
+        }, 300, 1);
+
+        $this->assertSame(1, $calls);
+        $this->assertSame(201, $response->getStatusCode());
+        $this->assertSame(array_fill(0, 3, LockedWrite::DEFAULT_ATTEMPTS), $fake->attemptsRequested);
+    }
+
+    public function test_limiter_whose_token_waits_run_out_returns_503_before_the_controller_without_a_replay(): void
+    {
+        $this->useFakeWriterConnection();
+        $limiter = Mockery::mock(RateLimiter::class);
+        $limiter->shouldReceive('tooManyAttempts')->once()
+            ->andThrow(new WriterTokenTimeout('The MySQL writer token is busy.'));
+        $calls = 0;
+        try {
+            (new RetryDatabaseThrottleRequests($limiter))->handle($this->request(), function () use (&$calls) {
+                $calls++;
+            }, 300, 1);
+            $this->fail('Expected limiter exhaustion.');
+        } catch (ServiceUnavailableHttpException $exception) {
+            $this->assertSame('1', (string) $exception->getHeaders()['Retry-After']);
+        }
+        $this->assertSame(0, $calls);
+    }
+
+    public function test_a_limiter_hit_whose_last_write_waited_for_the_token_counts_once(): void
+    {
+        $fake = $this->useFakeWriterConnection();
+        $store = new class($fake) extends ArrayStore
+        {
+            /** @var array<string, int> Token waits that time out next, per cache write. */
+            public array $busyWaits = [];
+
+            public function __construct(private FakeWriterTokenConnection $fake)
+            {
+                parent::__construct();
+            }
+
+            public function put($key, $value, $seconds)
+            {
+                $this->waitForToken('put');
+
+                return parent::put($key, $value, $seconds);
+            }
+
+            public function increment($key, $value = 1)
+            {
+                $this->waitForToken('increment');
+
+                return parent::increment($key, $value);
+            }
+
+            /** As MySqlConnection does: a timed-out wait retries in place while attempts remain. */
+            private function waitForToken(string $write): void
+            {
+                for ($try = 1; ($this->busyWaits[$write] ?? 0) > 0; $try++) {
+                    $this->busyWaits[$write]--;
+                    if ($try >= $this->fake->acquisitionAttempts) {
+                        throw new WriterTokenTimeout('The MySQL writer token is busy.');
+                    }
+                }
+            }
+        };
+        $middleware = new RetryDatabaseThrottleRequests(new RateLimiter(new Repository($store)));
+
+        // A request whose increment never got the token is turned away; the counter it added stays at 0.
+        $store->busyWaits['increment'] = 100;
+        try {
+            $middleware->handle($this->request(), fn () => $this->fail('The controller must not run.'), 300, 1);
+            $this->fail('Expected a busy limiter.');
+        } catch (ServiceUnavailableHttpException) {
+        }
+        $store->busyWaits = ['put' => 1];
+        $calls = 0;
+
+        // The next request raises that counter to 1; Laravel then rewrites it with a put that waits once.
+        $response = $middleware->handle($this->request(), function () use (&$calls) {
+            $calls++;
+
+            return response('ok');
+        }, 300, 1);
+
+        $this->assertSame(1, $calls);
+        $this->assertSame('299', $response->headers->get('X-RateLimit-Remaining'), 'One request must be one hit, not a replayed hit.');
+        $this->assertSame(1, $fake->acquisitionAttempts, 'The longer patience ends with the limiter operation.');
+    }
+
+    public function test_limiter_never_retries_a_native_mysql_lock_error(): void
+    {
+        config(['database.connections.mysql.driver' => 'mysql']);
+        $error = self::mysqlError(1205, 'Lock wait timeout exceeded; try restarting transaction');
+        $limiter = Mockery::mock(RateLimiter::class);
+        $limiter->shouldReceive('tooManyAttempts')->once()->andThrow($error);
+        try {
+            (new RetryDatabaseThrottleRequests($limiter))->handle($this->request(), fn () => $this->fail('Must not run'), 300, 1);
+            $this->fail('Expected the original exception.');
+        } catch (QueryException $actual) {
+            $this->assertSame($error, $actual);
+        }
+    }
+
+    private static function mysqlError(int $code, string $message): QueryException
+    {
+        $previous = new PDOException('SQLSTATE[HY000]: General error: '.$code.' '.$message);
+        $previous->errorInfo = ['HY000', $code, $message];
+
+        return new QueryException('mysql', 'update `t` set `a` = ?', [1], $previous);
+    }
+
+    private function request(): Request
+    {
+        $request = Request::create('/api/writer-token-probe', 'POST', server: ['REMOTE_ADDR' => '203.0.113.9']);
+        $request->setRouteResolver(fn () => (new Route('POST', '/api/writer-token-probe', []))->bind($request));
+
+        return $request;
+    }
+}

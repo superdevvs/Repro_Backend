@@ -18,7 +18,10 @@ final class DatabaseQueueContractTest extends TestCase
     {
         $name = 'migration-probe-'.Str::uuid();
         $queue = $this->app['queue']->connection('database');
-        $this->assertSame(DatabaseQueue::class, $queue::class);
+        // Laravel's queue; with the MySQL writer policy its claim and delete skip the token.
+        $this->assertInstanceOf(DatabaseQueue::class, $queue);
+        $this->assertSame(DB::connection()->getConfig('repro_writer_policy') === true
+            ? \App\Queue\MySqlDatabaseQueue::class : DatabaseQueue::class, $queue::class);
         $id = $queue->push(new DispatchScheduledMessages, '', $name);
         $directory = sys_get_temp_dir().'/migration-queue-'.Str::uuid();
         mkdir($directory, 0700);

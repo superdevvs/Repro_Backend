@@ -74,6 +74,9 @@ final class GoogleRoutesBudgetWriterTokenContract extends TestCase
             'database.connections.mysql.unix_socket' => '/fixture-socket/mysql.sock',
             'database.connections.mysql.repro_expected_server_uuid' => $uuid,
             'database.connections.mysql.repro_route_budget_writer_token' => $enabled,
+            // This contract covers the standalone pilot. The general writer policy,
+            // on by default for MySQL, covers the same statement in tests/MySqlWriters.
+            'database.connections.mysql.repro_writer_policy' => false,
             'services.google_routes.limit_elements' => 1,
         ]);
         $this->app['db']->purge('mysql');
@@ -280,6 +283,7 @@ final class GoogleRoutesBudgetWriterTokenContract extends TestCase
         config(['database.default' => 'mysql', 'database.connections.mysql.url' => null,
             'database.connections.mysql.repro_expected_server_uuid' => getenv('MYSQL_WRITER_TOKEN_UUID'),
             'database.connections.mysql.repro_route_budget_writer_token' => true,
+            'database.connections.mysql.repro_writer_policy' => false,
             'services.google_routes.limit_elements' => 1]);
         $db = $app['db']->connection();
         if ($db->getDatabaseName() !== 'repro_mysql_test' || $db->getConfig('username') !== 'repro_test'

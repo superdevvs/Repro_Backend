@@ -37,12 +37,14 @@ final class MySqlSchedulingCacheContract extends TestCase
 
     public function test_only_enabled_mysql_scheduling_routes_to_the_new_connection(): void
     {
+        // Without the pilot, MySQL scheduling locks still get their own token-free
+        // session (mysql_cache_locks); cache values stay on the business connection.
         $cases = [
-            ['sqlite', 'true', null],
-            ['mysql', 'false', null],
-            ['mysql', 'true', 'mysql_scheduling_cache'],
+            ['sqlite', 'true', null, null],
+            ['mysql', 'false', null, 'mysql_cache_locks'],
+            ['mysql', 'true', 'mysql_scheduling_cache', 'mysql_scheduling_cache'],
         ];
-        foreach ($cases as [$engine, $enabled, $expected]) {
+        foreach ($cases as [$engine, $enabled, $expected, $expectedLocks]) {
             $environment = $_ENV;
             $server = $_SERVER;
             $overrides = [
@@ -61,7 +63,7 @@ final class MySqlSchedulingCacheContract extends TestCase
             }
 
             self::assertSame($expected, $stores['scheduling']['connection']);
-            self::assertSame($expected, $stores['scheduling']['lock_connection']);
+            self::assertSame($expectedLocks, $stores['scheduling']['lock_connection']);
             self::assertSame('existing-cache', $stores['database']['connection']);
             self::assertSame('existing-locks', $stores['database']['lock_connection']);
         }

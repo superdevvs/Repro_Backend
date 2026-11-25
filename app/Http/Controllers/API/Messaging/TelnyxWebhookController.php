@@ -100,8 +100,10 @@ class TelnyxWebhookController extends Controller
         $knownContact = $knownThread?->contact ?? $this->findContactByPhone($this->normalizePhoneNumber($from));
         $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact): int {
             $contactPhone = $this->normalizePhoneNumber($from);
-            $thread = $knownThread?->fresh();
-            $contact = $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
+            // Look again inside the transaction: a concurrent first text from the
+            // same number may have created the thread since the lookup above.
+            $thread = $knownThread?->fresh() ?? app(\App\Services\Messaging\SmsInboxPolicy::class)->threadForPair($from, $to);
+            $contact = $thread?->contact ?? $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
                 ?? Contact::create([
                     'name' => $this->formatPhoneForDisplay($contactPhone),
                     'phone' => $contactPhone,

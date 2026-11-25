@@ -31,6 +31,11 @@ final class MySqlConnector extends \Illuminate\Database\Connectors\MySqlConnecto
         // SQLite reports matched rows for a no-op UPDATE. Heartbeats and guarded
         // writes rely on that contract, including repeated writes in one second.
         $config['options'] = [PDO::MYSQL_ATTR_FOUND_ROWS => true] + ($config['options'] ?? []);
+        if (($config['repro_writer_policy'] ?? false) === true || is_array($config['repro_writer_exempt_tables'] ?? null)) {
+            // One statement per call: the writer token and the table limit are decided
+            // for the statement the classifier sees, so the server must not run a second one.
+            $config['options'] = [PDO::MYSQL_ATTR_MULTI_STATEMENTS => false] + $config['options'];
+        }
         $pdo = parent::connect($config);
         if ($expectedUuid !== null) {
             $target = $pdo->query('SELECT @@server_uuid AS uuid, VERSION() AS version, @@skip_networking AS local_only')
@@ -42,6 +47,12 @@ final class MySqlConnector extends \Illuminate\Database\Connectors\MySqlConnecto
         }
         if ($schedulingCache) {
             $this->verifySchedulingCache($pdo, $config);
+        }
+        if (isset($config['repro_lock_wait_timeout'])) {
+            // Row and metadata lock waits end after this many seconds, as SQLite's busy wait does.
+            // The writer token refuses a session with any other value.
+            $seconds = (int) $config['repro_lock_wait_timeout'];
+            $pdo->exec("SET SESSION innodb_lock_wait_timeout = {$seconds}, SESSION lock_wait_timeout = {$seconds}");
         }
         if (($config['charset'] ?? 'utf8mb4') === 'utf8mb4') {
             // Table/column collations retain NO PAD binary identifier semantics.
