@@ -9,19 +9,27 @@ use RuntimeException;
 class SchedulerHoldCommand extends Command
 {
     protected $signature = 'scheduler:hold
-        {action : set, release or status}
+        {action : set, release, status or path}
         {owner? : Who holds the scheduler, for example cutover}
         {--only=* : Hold only these scheduled task names (default: all)}
         {--minutes=30 : The hold ends by itself after this many minutes}
         {--reason= : A short note shown by status}';
 
-    protected $description = 'Hold, release or list scheduler holds (config schedule.hold).';
+    protected $description = 'Hold, release or list scheduler holds, or print their folder (config schedule.hold).';
 
     public function handle(): int
     {
         $hold = SchedulerHold::fromConfig();
         $action = (string) $this->argument('action');
         $owner = (string) $this->argument('owner');
+
+        if ($action === 'path') {
+            // Read by Deploy-App.ps1, so its hold lands where the scheduler
+            // looks: the bare folder on one line and nothing else.
+            $this->line($hold->directory());
+
+            return self::SUCCESS;
+        }
 
         try {
             if ($action === 'set') {
@@ -33,7 +41,7 @@ class SchedulerHoldCommand extends Command
                 }
                 $this->info("Scheduler hold '{$owner}' released.");
             } elseif ($action !== 'status') {
-                throw new RuntimeException('Use set, release or status.');
+                throw new RuntimeException('Use set, release, status or path.');
             }
         } catch (RuntimeException $error) {
             $this->error($error->getMessage());

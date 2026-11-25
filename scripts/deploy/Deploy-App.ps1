@@ -201,12 +201,19 @@ preflight="/tmp/repro-stripe-preflight-$commit.php"
 webhook_setup="/tmp/repro-stripe-webhook-$commit.php"
 maintenance=0
 code_replaced=0
-scheduler_hold="$app/storage/framework/scheduler-hold.deploy.json"
+scheduler_hold=""
 hold_set=0
 
 # Scheduler hold for this deploy, read by the app when SCHEDULER_HOLD_ENABLED
 # is on. It expires by itself after 30 minutes and never blocks the deploy.
+# The folder comes from the app's own config (SCHEDULER_HOLD_DIRECTORY), so
+# the hold lands where the scheduler reads; code without that command uses
+# the default folder.
 hold_scheduler() {
+  local directory
+  directory="$(cd "$app" && php artisan scheduler:hold path --no-interaction 2>/dev/null | tail -n 1)" || directory=""
+  case "$directory" in /*) ;; *) directory="$app/storage/framework" ;; esac
+  scheduler_hold="$directory/scheduler-hold.deploy.json"
   if printf '{"hold":["*"],"reason":"deploy %s","expires_at":%s}\n' "$commit" "$(( $(date +%s) + 1800 ))" > "$scheduler_hold.tmp" \
     && mv -f "$scheduler_hold.tmp" "$scheduler_hold"; then
     hold_set=1

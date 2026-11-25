@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Console\Scheduling\HoldAwareSchedule;
 use App\Jobs\DispatchScheduledMessages;
+use App\Support\SchedulerHold;
 use Illuminate\Console\Scheduling\CallbackEvent;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
@@ -119,6 +120,24 @@ class SchedulerHoldTest extends TestCase
         $this->artisan('scheduler:hold', ['action' => 'release', 'owner' => 'cutover'])->assertSuccessful();
         $this->assertFileDoesNotExist($path);
         $this->assertFileExists($this->directory.'/scheduler-hold.deploy.json');
+    }
+
+    public function test_hold_command_prints_the_folder_the_scheduler_reads_for_the_deploy(): void
+    {
+        // Deploy-App.ps1 writes its hold into exactly this folder, so the
+        // line must be the bare path, with no warning around it.
+        config(['schedule.hold.enabled' => false]);
+        $this->artisan('scheduler:hold', ['action' => 'path'])
+            ->expectsOutput($this->directory)
+            ->doesntExpectOutputToContain('SCHEDULER_HOLD_ENABLED')
+            ->assertSuccessful();
+
+        // A relative folder means the same place for PHP-FPM, cron and the deploy.
+        config(['schedule.hold.directory' => 'storage/scheduler-holds']);
+        $this->artisan('scheduler:hold', ['action' => 'path'])
+            ->expectsOutput(base_path('storage/scheduler-holds'))
+            ->assertSuccessful();
+        $this->assertSame(base_path('storage/scheduler-holds'), SchedulerHold::fromConfig()->directory());
     }
 
     public function test_hold_command_refuses_unsafe_owner_names_and_lifetimes(): void

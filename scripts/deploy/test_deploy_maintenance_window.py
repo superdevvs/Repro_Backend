@@ -21,7 +21,7 @@ DEPLOY = Path(__file__).with_name('Deploy-App.ps1')
 STUB_LOG = r'''
 log() { printf '%s | down=%s hold=%s umask=%s\n' "$*" \
   "$([ -e "$FAKE_APP/storage/framework/down" ] && echo 1 || echo 0)" \
-  "$([ -e "$FAKE_APP/storage/framework/scheduler-hold.deploy.json" ] && echo 1 || echo 0)" \
+  "$([ -e "$STUB_HOLD_DIR/scheduler-hold.deploy.json" ] && echo 1 || echo 0)" \
   "$(umask)" >> "$STUB_LOG"; }
 '''
 
@@ -45,7 +45,9 @@ log php "$@"
 if [ "$1" = artisan ]; then
   case "$2" in
     down) mkdir -p "$FAKE_APP/storage/framework"; : > "$FAKE_APP/storage/framework/down"
-          cp "$FAKE_APP/storage/framework/scheduler-hold.deploy.json" "$STUB_DIR/hold-at-down.json" 2>/dev/null || true ;;
+          cp "$STUB_HOLD_DIR/scheduler-hold.deploy.json" "$STUB_DIR/hold-at-down.json" 2>/dev/null || true ;;
+    scheduler:hold) [ "$3" = path ] && [ -z "${STUB_HOLD_PATH_FAILS:-}" ] || exit 1
+          echo "$STUB_HOLD_DIR" ;;
     up) rm -f "$FAKE_APP/storage/framework/down" ;;
     telnyx:replay-spool) exit "${STUB_REPLAY_EXIT:-0}" ;;
   esac
@@ -91,6 +93,8 @@ class DeployMaintenanceWindowTest(unittest.TestCase):
         environment = {
             'PATH': f'{self.stubs}:/usr/bin:/bin', 'HOME': str(self.root),
             'FAKE_APP': str(self.app), 'STUB_DIR': str(self.root), 'STUB_LOG': str(self.root / 'calls.log'),
+            # Where the stub app says the scheduler reads holds.
+            'STUB_HOLD_DIR': str(self.app / 'storage/framework'),
             **env,
         }
         result = subprocess.run(
@@ -145,6 +149,29 @@ class DeployMaintenanceWindowTest(unittest.TestCase):
         for environment in ({}, {'STUB_COMPOSER_EXIT': '1'}):
             self.deploy(**environment)
             self.assertTrue(cutover.exists())
+
+    def test_the_hold_goes_to_the_folder_the_scheduler_reads(self):
+        # SCHEDULER_HOLD_DIRECTORY moved the app's hold folder.
+        holds = self.root / 'configured-holds'
+        holds.mkdir()
+
+        result, log = self.deploy(STUB_HOLD_DIR=str(holds))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        down = self.index(log, 'php artisan down')
+        self.assertLess(self.index(log, 'php artisan scheduler:hold path'), down)
+        self.assertEqual(log[down], 'php artisan down --retry=60 | down=0 hold=1 umask=0022')
+        self.assertEqual(json.loads((self.root / 'hold-at-down.json').read_text())['hold'], ['*'])
+        self.assertEqual(list(holds.iterdir()), [])
+        self.assertFalse((self.app / 'storage/framework/scheduler-hold.deploy.json').exists())
+
+    def test_code_without_the_hold_folder_command_uses_the_default_folder(self):
+        result, log = self.deploy(STUB_HOLD_PATH_FAILS='1')
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log[self.index(log, 'php artisan down')], 'php artisan down --retry=60 | down=0 hold=1 umask=0022')
+        self.assertNotIn('scheduler_hold=unavailable', result.stderr)
+        self.assertFalse((self.app / 'storage/framework/scheduler-hold.deploy.json').exists())
 
     def test_hold_or_replay_problems_never_stop_a_deploy(self):
         (self.app / 'storage/framework/scheduler-hold.deploy.json.tmp').mkdir()

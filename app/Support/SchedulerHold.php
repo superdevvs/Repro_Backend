@@ -22,10 +22,21 @@ final class SchedulerHold
 
     public static function fromConfig(): self
     {
-        return new self(
-            (string) config('schedule.hold.directory', storage_path('framework')),
-            (int) config('schedule.hold.max_minutes', 720),
-        );
+        $directory = rtrim((string) config('schedule.hold.directory', storage_path('framework')), '/');
+        if ($directory === '') {
+            $directory = storage_path('framework');
+        } elseif (! preg_match('#\A(/|[A-Za-z]:[/\\\\])#', $directory)) {
+            // Relative to the app, never to whatever folder cron or a shell started in.
+            $directory = base_path($directory);
+        }
+
+        return new self($directory, (int) config('schedule.hold.max_minutes', 720));
+    }
+
+    /** Where hold files live; the deploy writes its own hold here too. */
+    public function directory(): string
+    {
+        return $this->directory;
     }
 
     /** @return array<string, array{hold: list<string>, reason: string, expires_at: int}> */

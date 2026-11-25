@@ -43,7 +43,8 @@ that reached the app during maintenance: first seen (Eastern time),
 provider, from, to, and the events seen.
 
 **Scheduler hold.** `schedule:run` skips every task named in
-`storage/framework/scheduler-hold.<owner>.json`. `"*"` means all tasks. Each
+`scheduler-hold.<owner>.json` in the hold folder (`storage/framework` unless
+`SCHEDULER_HOLD_DIRECTORY` says otherwise). `"*"` means all tasks. Each
 owner has its own file, so a deploy never clears a cutover hold. Every hold
 ends by itself at `expires_at`, and never later than 12 hours after its file
 was written. A broken file holds nothing.
@@ -52,7 +53,8 @@ was written. A broken file holds nothing.
 
 `scripts/deploy/Deploy-App.ps1` now does this on the server:
 
-1. Writes the `deploy` hold (all tasks, 30 minutes), then `php artisan down --retry=60`.
+1. Asks the app for its hold folder, writes the `deploy` hold there (all
+   tasks, 30 minutes), then `php artisan down --retry=60`.
 2. Copies code, runs Composer, migrations and caches, as before.
 3. Last step before `up`: `telnyx:replay-spool`, with umask 002 in the shell
    that already runs as the `www-data` group.
@@ -75,7 +77,7 @@ Laravel starts, so the receiver cannot run.
 | `TELNYX_MAINTENANCE_SPOOL_PATH` | `storage/app/telnyx-spool` | Spool folder, outside any web or storage disk root. Use an absolute path: PHP-FPM and the deploy run from different folders |
 | `TELNYX_SPOOL_REPLAY_GROUP` | `www-data` | The replay refuses to run under another group. Empty turns the check off |
 | `TELNYX_SPOOL_KEEP_DAYS` | `14` | Replayed, rejected and call files are deleted this many days after they were saved or moved |
-| `SCHEDULER_HOLD_DIRECTORY` | `storage/framework` | Where hold files live. The deploy always writes its hold to `storage/framework`, so leave this unset |
+| `SCHEDULER_HOLD_DIRECTORY` | `storage/framework` | Where hold files live; a relative path is inside the app folder. The deploy asks the app for this folder (`php artisan scheduler:hold path`), so its hold lands where the scheduler reads |
 | `SCHEDULER_HOLD_MAX_MINUTES` | `720` | Longest any hold can last |
 
 Turning a switch on in production is a config change and needs approval.
@@ -97,6 +99,7 @@ sg www-data -c 'umask 0002; php artisan telnyx:replay-spool --dry-run'
 sg www-data -c 'umask 0002; php artisan telnyx:replay-spool'
 php artisan telnyx:missed-calls
 php artisan scheduler:hold status
+php artisan scheduler:hold path      # the folder the scheduler reads
 php artisan scheduler:hold set cutover --minutes=240 --reason="cutover freeze"
 php artisan scheduler:hold set nightly --only=model:prune --only=crm:nightly --minutes=720
 php artisan scheduler:hold release cutover
