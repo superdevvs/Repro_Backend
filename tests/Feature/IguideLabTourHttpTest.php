@@ -856,6 +856,9 @@ class IguideLabTourHttpTest extends TestCase
         unset($configuration['name'], $configuration['read'], $configuration['write']);
         $configuration['url'] = null;
         $configuration['prefix'] = '';
+        // The test's own wrapper transaction holds the writer token. A second
+        // connection that waited for it would wait for its own process.
+        $configuration['repro_writer_policy'] = false;
         config(['database.connections.tour_snapshot_writer' => $configuration,
             'database.connections.tour_snapshot' => array_replace($configuration, ['prefix' => $prefix])]);
         DB::purge('tour_snapshot_writer');

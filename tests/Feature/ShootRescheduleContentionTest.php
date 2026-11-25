@@ -175,6 +175,8 @@ class ShootRescheduleContentionTest extends TestCase
     {
         $path = tempnam(sys_get_temp_dir(), 'reschedule-contention-');
         DB::purge('sqlite');
+        // Locks follow the SQLite file too: on MySQL runs they otherwise use mysql_cache_locks.
+        config(['cache.stores.scheduling.lock_connection' => null, 'cache.stores.database.lock_connection' => null]);
         config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => $path,
             'app.timezone' => 'UTC', 'cache.default' => 'array', 'availability.hybrid_travel_enabled' => true,
             'availability.scheduling_lock_store' => 'array', 'media.archive_prewarm' => false]);

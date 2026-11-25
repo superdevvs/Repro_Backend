@@ -676,7 +676,9 @@ class IguideLabTourEndToEndTest extends TestCase
         $this->assertSame('repro_test', $source->getConfig('username'));
         $this->assertSame('', $source->getTablePrefix());
         $prefix = 't'.bin2hex(random_bytes(3)).'_';
-        $configuration = array_replace($source->getConfig(), ['prefix' => $prefix, 'prefix_indexes' => true]);
+        // The test's own wrapper transaction holds the writer token. A second
+        // connection that waited for it would wait for its own process.
+        $configuration = array_replace($source->getConfig(), ['prefix' => $prefix, 'prefix_indexes' => true, 'repro_writer_policy' => false]);
         config(['database.connections.tour_e2e_snapshot' => array_replace($configuration, ['name' => 'tour_e2e_snapshot']),
             'database.connections.tour_e2e_snapshot_writer' => array_replace($configuration, ['name' => 'tour_e2e_snapshot_writer'])]);
         $previous = DB::getDefaultConnection();
