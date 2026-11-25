@@ -78,15 +78,18 @@ whole rollback; while a tick runs, an operator command is refused with
 
 **Undo.** `cli.py abort` (or the watchdog) re-closes admissions, drains,
 unseals SQLite and publishes boot-bound SQLite authority. `cli.py reopen`
-verifies that authority through the guard, resumes the queues, starts the
-workers, recreates the open marker, writes the activation receipt and lifts
-the deploy fence. After any reboot, run `cli.py refresh` first, then
-`cli.py reopen`. `refresh` refuses while the open marker exists, because the
-guard revokes the current proof before it measures the host. After a reopened
-rollback, `refresh` publishes the deploy fence again before it measures;
-`reopen` lifts it once activation is verified. The watchdog keeps the
-completed SQLite rollback as it is after such a reboot; it does not escalate
-to recovery.
+verifies that authority through the guard, checks the live host again
+(SQLite the only writable engine), resumes the queues, starts the workers,
+recreates the open marker, writes the activation receipt and lifts the
+deploy fence. If its check after opening fails, it closes ingress, pauses
+the queues and stops the workers again. After any reboot, run
+`cli.py refresh` first, then `cli.py reopen`; `tmpfiles.d` recreates the
+`/run` directories at boot. `refresh` refuses while the open marker exists,
+because the guard revokes the current proof before it measures the host; it
+checks that and publishes the deploy fence inside the guard's locks. Deploys
+stay held by the marker from `init` until `reopen` lifts it after a
+completed rollback. The watchdog keeps the completed SQLite rollback as it
+is after such a reboot; it does not escalate to recovery.
 
 ## Readiness text
 
@@ -117,6 +120,8 @@ All runs were local and offline. Linux tests ran as root in a disposable
 | Full SQLite PHPUnit suite (`git archive` of `6aebf499`, extracted in the container, shared read-only vendor volume, `php -d memory_limit=1536M`) | `vendor/bin/phpunit --no-progress` | 9,589 tests: 9,582 passed, 3 skipped, 2 errors and 2 failures. The same four fail identically on the base `a6e799bb` in the same setup (privilege-drop tests that cannot read the root-owned vendor volume as uid 33), so they are pre-existing. This lane changes no PHP application, test or config file, so the MySQL profile has no touched area. The default 512 MB PHP limit ends the whole run with a fatal in a GD image test; the bind-mounted run was stopped after 95 minutes of slow 9p file access. |
 | Full SQLite PHPUnit suite, review run (`git archive` of `695dcbef`, extracted in the container, shared read-only vendor volume, `php -d memory_limit=1536M`; later commits change only `scripts/cutover` Python and docs) | `vendor/bin/phpunit --no-progress` | 9,589 tests in 85 min: 2 errors and 2 failures, 3 skipped. The same four tests (`ListingStudioPaidStorageTest` and `ListingStudioPrivateStorageTest` `test_fpm_upload_and_separate_worker_can_share_private_files`, `WorkspacePhotoLogoPermissionsTest::test_php_can_upload_a_logo_when_worker_outputs_are_not_group_writable`, `IguideLabImportTest::test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk`) fail the same way on `a6e799bb` in the same setup, so they are pre-existing. |
 | All Linux suites, after the Codex round (`e2513923`) | same | runner 43, guard 20, process contract 6, admission wrapper 6, fences 10, adapter and CLI 22, nginx include 1, host replay 3, root-only refresh 10; all passed, none skipped |
+| All Linux suites, after Codex round 2 (`adabedee`) | same | runner 43, guard 20, process contract 6, admission wrapper 6, fences 12, adapter and CLI 30, nginx include 1, host replay 3, root-only refresh 10; launcher exit 0 |
+| Boot directories under systemd 252 | `systemd-tmpfiles --create --root=<tmp>` on `tmpfiles.d/repro-cutover-fence.conf` | exit 0; both `/run` directories created root-owned 0755 |
 | Watchdog units under systemd 252 (Debian 12, offline in the same image) | `systemd-analyze verify` on both units; `calendar minutely`; `timespan 25min` | verify exit 0; `minutely` = `*-*-* *:*:00`; 25min = 1,500 s. Timer firing after a skipped condition still needs a real systemd (W2). |
 | Production nginx include under nginx 1.22.1 | `test_nginx_hold.py` (also in the launcher) | passed: six routes on both vhosts, including the direct `.php` files, return 503 with `Retry-After: 30` while the marker is absent, pass through once it exists, and close again as soon as it is removed, with no reload |
 
@@ -215,8 +220,9 @@ The code implements the safe default and makes each a config value.
 ## What is left
 
 - W1 (needs approval per action): install guard, controller, wrappers,
-  watchdog units, nginx include, sudoers, Supervisor and cron changes on the
-  host; then observe 24 to 48 hours in `planned` (C1).
+  watchdog units, the `tmpfiles.d` entry, nginx include, sudoers, Supervisor
+  and cron changes on the host; then observe 24 to 48 hours in `planned`
+  (C1), with deploys held by the marker.
 - W2 (needs a window): drill with real services, an in-flight request and
   job, restarts and a reboot.
 - The production identity and MySQL probes and an independent live
@@ -244,6 +250,15 @@ The code implements the safe default and makes each a config value.
   A guard fault, or a reboot without `refresh`, holds every writer and the
   site (fail closed). It needs on-call cover.
 - Root ignores file modes, so the SQLite seal does not stop root-run tools.
+  The seal refuses while any other process holds the database files open
+  for writing, and it needs root's `/proc` access to every process
+  (`CAP_SYS_PTRACE`, present for a root systemd service). Without it, or
+  with a stray idle `sqlite3` or tinker session, the freeze is refused and
+  the hold stays until `abort` or the watchdog rollback.
+- From `cli.py init`, the deploy marker holds every deploy for the whole
+  planned observation (C1) and the cutover. Only `reopen` after a completed
+  rollback lifts it. This matches the guard's planned-phase policy, because
+  the policy pins the release.
 - `direct-webhook` evidence: behind a stale open marker, the PHP gate holds
   the write but the file has already answered 200, so the event is lost.
   Only the nginx server-level hold protects those two files.
@@ -298,3 +313,17 @@ fail for the stated reason before its fix.
 - reviewer#5 (old release pinned after an aborted cutover): owner decision. Before the next deploy, either retire the installed fences or start a new run with a new policy. See Risks.
 - reviewer#6 (`crontab.py` dropped chained commands): fixed in `e2513923`. Such lines are now refused; `test_commands_chained_after_a_matched_entry_are_refused_not_dropped`.
 - reviewer#7 (no real systemd, Supervisor, crontab or visudo): needs W1 and W2, each with owner approval. None can be tested offline here.
+
+### Round 2
+
+Codex reviewed `68f90752` (whole branch against `a6e799bb`). Every fix below
+has a test that was run and seen failing for the stated reason first.
+
+- r2#1 (P1, reopen opened before checking the live host): fixed in `d0eb91c2`. Live check before any writer is let in, and ingress, queues and workers closed again if the check after opening fails; `test_reopen_refuses_when_mysql_became_writable_after_the_proof`, `test_reopen_closes_ingress_again_when_the_live_check_fails_after_opening` (red: ingress left open).
+- r2#2 (P1, idle SQLite handle survives the seal): fixed in `adabedee`. The seal refuses while another process holds the files open for writing, before and after the chmod, and refuses if `/proc` cannot be read; `test_seal_refuses_while_an_idle_connection_keeps_the_database_open` (red: the uid-33 session wrote after the seal), `test_seal_finds_writable_descriptors_and_ignores_read_only_ones`.
+- r2#3 (P1, `/run` directories gone after a reboot): fixed in `cca8c823`. `tmpfiles.d/repro-cutover-fence.conf`, and the controller recreates a missing runtime directory; `test_refresh_and_reopen_recreate_the_runtime_directories_after_a_reboot`, `test_watchdog_rolls_back_after_a_reboot_removed_the_runtime_directories` (red: refresh refused, rollback crashed), `test_every_boot_recreates_the_runtime_directories_of_the_guard_and_nginx`.
+- r2#4 (P1, planned deploys reported held but not fenced): fixed in `02e17ad8`. `init` and `refresh` publish the marker Deploy-App checks; the probe counts only the marker; `test_planned_journal_holds_deploys_with_the_marker_deploy_app_checks` (red: init left deploys open).
+- r2#5 (P2, refresh raced a reopen): fixed in `c065ab14`. The guard's refresh takes a precondition run inside both locks before any revocation; `test_refresh_racing_a_reopen_neither_fences_deploys_nor_revokes_the_proof` (red: fence republished on the reopened host), `test_reopen_racing_inside_the_refresh_locks_is_refused`.
+- writer-hold#2 recheck (already fixed): holds. After the reboot the tick returns `sqlite_authoritative` without writing, so the refreshed proof still matches the journal; refresh and reopen pass with the `/run` directories removed too.
+- writer-hold#3 recheck (already fixed): holds. `queue:work` exits 0 (restart, `--max-time`), 12 (memory) or 1 (timeout), never 75. A held wrapper that exits 75 within `startsecs=5` goes BACKOFF then FATAL and stays down, and `reopen` starts it again.
+- reviewer#2 recheck (documented): holds. `prepare`, `evidence` and `seal_mysql` still refuse, so this adapter cannot reach `mysql_authoritative`.
