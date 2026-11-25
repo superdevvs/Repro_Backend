@@ -28,6 +28,10 @@ After any `.env` change, run `php artisan config:cache` (each deploy already doe
   (`SCHEMA_CACHE_NEGATIVE_TTL`, 0 never keeps it).
 - The key is a fingerprint of the migration file names, frozen by `config:cache`, so each
   release with a new migration starts fresh. `SCHEMA_CACHE_RELEASE` overrides it.
+- If a table or column goes away without a new release (for example a manual
+  `migrate:rollback`), set `SCHEMA_CACHE_RELEASE` to a new value and run
+  `php artisan config:cache`. Otherwise "it exists" can be served for up to a day.
+  Clearing the whole cache store also works, but drops anything else kept there.
 - With it on, a signed-in request asks the database no layout questions once the cache
   is warm (with it off, it sends eight such queries).
 
