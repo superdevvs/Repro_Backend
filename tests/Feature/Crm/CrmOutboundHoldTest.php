@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Crm;
 
+use App\Exceptions\Messaging\EmailProviderRejectedException;
 use App\Models\Crm\CrmCampaign;
+use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmDripCampaign;
 use App\Models\Crm\CrmDripEnrollment;
 use App\Models\Crm\CrmEmailEvent;
@@ -15,6 +17,8 @@ use App\Services\Crm\Email\CrmEmailSender;
 use App\Services\Crm\Email\CrmSendBlocked;
 use App\Services\Crm\Email\CrmSignatureService;
 use App\Services\Crm\Email\CrmTemplateService;
+use App\Services\Messaging\OutboundDeliveryGuard;
+use App\Services\Messaging\Providers\ResendProvider;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -186,6 +190,54 @@ class CrmOutboundHoldTest extends CrmTestCase
         $this->assertSame(1, $report['blocking']['permanent_bounces_or_complaints_not_suppressed']);
         $this->assertSame(1, $report['blocking']['due_enrolments_that_should_stop']);
         $this->assertSame(1, $report['info']['due_enrolments']);
+    }
+
+    /**
+     * Only a forward Resend accepted puts a reply in the rep's inbox. A forward
+     * that was blocked, rejected or only logged keeps the reply blocking until
+     * a person records its disposition; a reply that could not be forwarded at
+     * all (no rep to send it to) is reviewed on the send it answered.
+     */
+    public function test_a_reply_blocks_until_its_forward_is_accepted_or_reviewed(): void
+    {
+        $rep = $this->signedRep();
+        $contact = $this->contactFor($rep, ['email' => 'kim@example.test']);
+        $since = now()->subMinute()->toIso8601String();
+        Http::fake(['api.resend.com/emails/receiving/*' => Http::response(['text' => 'Thursday works'])]);
+        $reply = function (string $token, ?CrmContact $contact, ?User $sender): array {
+            $send = CrmEmailSend::create(['contact_id' => $contact?->id, 'sender_user_id' => $sender?->id, 'source_type' => 'one_off',
+                'from_email' => 'maya@reprophotos.com', 'to_email' => 'kim@example.test', 'subject' => 'Hello', 'html' => 'x', 'text' => 'x',
+                'transport' => 'resend', 'status' => 'sent', 'provider_message_id' => 're-'.$token, 'reply_token' => $token]);
+            $this->webhook(['type' => 'email.received', 'data' => ['email_id' => 'in-'.$token, 'from' => 'kim@example.test',
+                'to' => ['r+'.$token.'@reply.reprophotos.com'], 'subject' => 'Re: Hello']], 'msg-'.$token)->assertOk();
+
+            return [$send, CrmEmailSend::query()->where('source_type', 'reply_fwd')->where('source_id', $send->id)->first()];
+        };
+        [, $accepted] = $reply('acceptedtoken0001', $contact, $rep);
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting(false);
+        [, $blocked] = $reply('blockedtoken00001', $contact, $rep);
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        config(['crm.email.transport' => 'log']);
+        [, $logged] = $reply('loggedtoken000001', $contact, $rep);
+        config(['crm.email.transport' => 'resend']);
+        $this->mock(ResendProvider::class)->shouldReceive('send')->andThrow(new EmailProviderRejectedException('Recipient rejected'));
+        [, $rejected] = $reply('rejectedtoken0001', $contact, $rep);
+        [$noRep, $none] = $reply('noreptoken0000001', null, null);
+        $this->assertSame(['sent', 'blocked', 'logged', 'failed', null],
+            [$accepted->status, $blocked->status, $logged->status, $rejected->status, $none?->status]);
+        $check = function () use ($since): array {
+            $exit = Artisan::call('crm:outbound-release-check', ['--since' => $since, '--json' => true]);
+
+            return [$exit, json_decode(Artisan::output(), true)['blocking']['replies_not_forwarded']];
+        };
+
+        $this->assertSame([1, 4], $check());
+
+        foreach ([$blocked, $logged, $rejected, $noRep] as $send) {
+            $this->artisan('crm:send-disposition', ['send' => $send->id, 'disposition' => 'not_delivered', '--note' => 'Rep read it in Conversations'])
+                ->assertSuccessful();
+        }
+        $this->assertSame([0, 0], $check());
     }
 
     public function test_release_check_is_read_only(): void

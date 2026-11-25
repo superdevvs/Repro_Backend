@@ -75,10 +75,31 @@ class CrmOutboundReleaseCheck extends Command
         return $report['ready'] ? self::SUCCESS : self::FAILURE;
     }
 
+    /**
+     * A reply is settled when Resend accepted its forward to the rep, or a person
+     * recorded a disposition with crm:send-disposition: on the forward send, or on
+     * the replied-to send when no forward send exists (no rep, or no address).
+     * A forward that failed, was blocked, only logged or is still queued is not.
+     */
     private function repliesNotForwarded(Carbon $since): int
     {
-        return DB::table('crm_email_events')->where('type', 'replied')->where('created_at', '>=', $since)->get(['payload'])
-            ->filter(fn ($event) => empty((json_decode((string) $event->payload, true) ?: [])['forward_status'] ?? null))->count();
+        return DB::table('crm_email_events')->where('type', 'replied')->where('created_at', '>=', $since)->get(['send_id', 'payload', 'created_at'])
+            ->reject(function ($reply) {
+                // The key CrmInboundReply::forward() gives the forward; the log transport hashes it.
+                $key = 'crm-reply-fwd-'.$reply->send_id.'-'.md5((string) ((json_decode((string) $reply->payload, true) ?: [])['email_id'] ?? ''));
+                $forward = DB::table('crm_email_sends')->where('source_type', 'reply_fwd')
+                    ->whereIn('idempotency_key', [$key, 'preview-'.hash('sha256', $key)])->first(['id', 'status']);
+
+                return $forward
+                    ? $forward->status === 'sent' || $this->reviewed((int) $forward->id)
+                    : $this->reviewed((int) $reply->send_id, (string) $reply->created_at);
+            })->count();
+    }
+
+    private function reviewed(int $sendId, ?string $after = null): bool
+    {
+        return DB::table('crm_email_events')->where('send_id', $sendId)->where('type', 'disposition')
+            ->when($after, fn ($q) => $q->where('created_at', '>=', $after))->exists();
     }
 
     private function bouncesNotSuppressed(Carbon $since): int
