@@ -466,6 +466,19 @@ class EnginePreflightTest(unittest.TestCase):
         requirements = self.run_preflight('mysql')
         self.assertNotIn(self.app / 'database', [path for path, _ in requirements])
 
+    def test_mysql_preflight_reserves_room_for_a_dump_like_the_newest_one(self):
+        backups = Path(self.temporary.name) / 'backups'
+        (backups / 'backend').mkdir(parents=True)
+        with patch.object(guard, 'BASE', backups):
+            baseline = dict(self.run_preflight('mysql'))[backups / 'backend']
+            for stamp, size in (('20261020-100000', 1000), ('20261021-100000', 4000)):
+                (backups / 'backend' / stamp).mkdir()
+                (backups / 'backend' / stamp / 'database.sql.gz').write_bytes(b'x' * size)
+            # A newer bundle without a dump (a failed deploy) does not hide the last dump.
+            (backups / 'backend' / '20261022-100000').mkdir()
+            requirements = dict(self.run_preflight('mysql'))
+        self.assertEqual(requirements[backups / 'backend'] - baseline, 5000)
+
     def test_sqlite_preflight_still_requires_a_regular_file(self):
         (self.app / 'database/database.sqlite').mkdir()
         with self.assertRaisesRegex(RuntimeError, 'regular, non-hardlinked'):
