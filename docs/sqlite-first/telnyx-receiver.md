@@ -72,10 +72,10 @@ Laravel starts, so the receiver cannot run.
 | --- | --- | --- |
 | `TELNYX_MAINTENANCE_CAPTURE_ENABLED` | `false` | Turns the receiver on |
 | `SCHEDULER_HOLD_ENABLED` | `false` | Makes `schedule:run` honour hold files |
-| `TELNYX_MAINTENANCE_SPOOL_PATH` | `storage/app/telnyx-spool` | Spool folder, outside any web or storage disk root |
+| `TELNYX_MAINTENANCE_SPOOL_PATH` | `storage/app/telnyx-spool` | Spool folder, outside any web or storage disk root. Use an absolute path: PHP-FPM and the deploy run from different folders |
 | `TELNYX_SPOOL_REPLAY_GROUP` | `www-data` | The replay refuses to run under another group. Empty turns the check off |
 | `TELNYX_SPOOL_KEEP_DAYS` | `14` | Replayed, rejected and call files are deleted this many days after they were saved or moved |
-| `SCHEDULER_HOLD_DIRECTORY` | `storage/framework` | Where hold files live |
+| `SCHEDULER_HOLD_DIRECTORY` | `storage/framework` | Where hold files live. The deploy always writes its hold to `storage/framework`, so leave this unset |
 | `SCHEDULER_HOLD_MAX_MINUTES` | `720` | Longest any hold can last |
 
 Turning a switch on in production is a config change and needs approval.
