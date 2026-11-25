@@ -43,7 +43,9 @@ the copy; it belongs in the recovery kit (item 1c).
 As `maverick` on the server:
 
 1. Check free space: `df -h /mnt/16tb`. Each copy is about the size of the live
-   file minus its free pages (roughly 3.7 to 4.5 GB).
+   file minus its free pages (roughly 3.7 to 4.5 GB). Check the database file's
+   group with `stat -c '%G' /var/www/backend/database/database.sqlite`; the
+   templates assume `www-data`.
 2. `mkdir -m 0700 /mnt/16tb/repro-db-backups`
 3. Run one copy by hand:
 
