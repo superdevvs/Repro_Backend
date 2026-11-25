@@ -157,17 +157,6 @@ final class DatabaseDialectScanner
     }
 
     /**
-     * @param  list<array{file:string,rule:string,text:string}>  $findings
-     * @return list<array{file:string,rule:string,text:string,count:int}>
-     */
-    public static function group(array $findings): array
-    {
-        $counts = self::count($findings);
-
-        return array_map(fn (string $key) => self::entry($key, $counts[$key]), array_keys($counts));
-    }
-
-    /**
      * Compares findings with allowed entries ({file, rule, text, count}).
      *
      * @return array{new: list<array>, stale: list<array>}
@@ -191,6 +180,27 @@ final class DatabaseDialectScanner
         }
 
         return ['new' => $new, 'stale' => $stale];
+    }
+
+    /**
+     * The allowed entries that still exist, for rewriting the baseline. It never adds an entry,
+     * so new findings stay outside the baseline and the guard still fails on them.
+     *
+     * @return list<array{file:string,rule:string,text:string,count:int}>
+     */
+    public static function shrink(array $findings, array $allowed): array
+    {
+        $found = self::count($findings);
+        $kept = [];
+
+        foreach (self::count($allowed) as $key => $count) {
+            $keep = min($count, $found[$key] ?? 0);
+            if ($keep > 0) {
+                $kept[] = self::entry($key, $keep);
+            }
+        }
+
+        return $kept;
     }
 
     /**

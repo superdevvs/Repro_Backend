@@ -16,7 +16,8 @@ use Tests\Support\DatabaseDialectScanner;
  *   or 'mysql' names and DSNs) must be listed in tests/database-engine-branches.json, marked
  *   "safe" or "to-fix" with a reason.
  *
- * Regenerate the baseline after removing SQLite-only SQL:
+ * Regenerate the baseline after removing SQLite-only SQL. This only removes entries that are
+ * gone; it never adds new SQL, so the guard still fails on it:
  *   DIALECT_GUARD_WRITE_BASELINE=1 php vendor/bin/phpunit tests/Unit/DatabaseDialectGuardTest.php
  */
 class DatabaseDialectGuardTest extends TestCase
@@ -106,6 +107,17 @@ PHP;
         $this->assertSame([['file' => 'app/B.php', 'rule' => 'json-each', 'text' => 'y', 'count' => 1]], $result['stale']);
     }
 
+    public function test_rewriting_the_baseline_removes_stale_entries_but_never_adds_new_ones(): void
+    {
+        $finding = fn (string $file, string $text) => ['file' => $file, 'line' => 1, 'rule' => 'json-each', 'text' => $text];
+        $allowed = [['file' => 'app/A.php', 'rule' => 'json-each', 'text' => 'x', 'count' => 2],
+            ['file' => 'app/B.php', 'rule' => 'json-each', 'text' => 'y', 'count' => 1]];
+
+        $baseline = DatabaseDialectScanner::shrink([$finding('app/A.php', 'x'), $finding('app/C.php', 'z')], $allowed);
+
+        $this->assertSame([['file' => 'app/A.php', 'rule' => 'json-each', 'text' => 'x', 'count' => 1]], $baseline);
+    }
+
     public function test_app_has_no_sqlite_only_sql_outside_the_baseline(): void
     {
         $findings = array_values(array_filter(
@@ -114,9 +126,10 @@ PHP;
         ));
 
         if (getenv('DIALECT_GUARD_WRITE_BASELINE') === '1') {
+            // Only removes entries that are gone. New SQLite-only SQL is never written in.
             $this->writeJson(self::BASELINE, [
                 'about' => 'SQLite-only SQL that already exists in app/. This list may only shrink. See tests/Unit/DatabaseDialectGuardTest.php.',
-                'findings' => DatabaseDialectScanner::group($findings),
+                'findings' => DatabaseDialectScanner::shrink($findings, $this->readJson(self::BASELINE)['findings']),
             ]);
         }
 
