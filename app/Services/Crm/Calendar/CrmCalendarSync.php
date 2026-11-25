@@ -24,6 +24,11 @@ use Illuminate\Support\Facades\DB;
  */
 class CrmCalendarSync
 {
+    /** The poll only pulls planned follow-ups starting in this window (crm:calendar-reconcile reports outside it). */
+    public const POLL_PAST_DAYS = 1;
+
+    public const POLL_FUTURE_DAYS = 60;
+
     public function __construct(
         private readonly GoogleCalendarService $google,
         private readonly CrmActivityLogger $activity,
@@ -56,6 +61,7 @@ class CrmCalendarSync
                     $oldAccount = $this->connection((int) $oldLink->user_id);
                     if (! $oldAccount) {
                         $oldLink->forceFill(['push_pending' => true, 'last_error' => 'Reconnect the previous calendar to remove this follow-up.'])->save();
+
                         continue;
                     }
                     $this->google->deleteEvent($oldAccount, $oldLink->calendar_id, $oldLink->google_event_id);
@@ -95,6 +101,7 @@ class CrmCalendarSync
             if ($link->push_pending) {
                 $link->forceFill(['push_pending' => false, 'last_error' => null])->save();
             }
+
             return;
         }
         $link->forceFill(['push_pending' => true])->save();
@@ -129,7 +136,7 @@ class CrmCalendarSync
 
         $links = DB::table('crm_event_calendar_links as l')->join('crm_events as e', 'e.id', '=', 'l.event_id')
             ->whereNotNull('l.google_event_id')->where('l.push_pending', false)->whereColumn('l.user_id', 'e.assigned_user_id')->where('e.status', 'planned')
-            ->whereBetween('e.starts_at', [now()->subDay(), now()->addDays(60)])
+            ->whereBetween('e.starts_at', [now()->subDays(self::POLL_PAST_DAYS), now()->addDays(self::POLL_FUTURE_DAYS)])
             ->orderBy('l.last_synced_at')->limit($limit)->get(['l.id as link_id', 'l.user_id', 'l.calendar_id', 'l.google_event_id', 'e.id as event_id']);
 
         foreach ($links as $row) {
@@ -153,6 +160,7 @@ class CrmCalendarSync
         }
         try {
             $remote = $this->google->getEvent($connection, $row->google_event_id, $row->calendar_id);
+
             return DB::transaction(function () use ($row, $remote) {
                 $event = CrmEvent::query()->lockForUpdate()->find($row->event_id);
                 $link = CrmEventCalendarLink::query()->lockForUpdate()->find($row->link_id);
@@ -163,10 +171,12 @@ class CrmCalendarSync
                 // An edit can commit while Google's HTTP response is in flight.
                 if ($link->fingerprint !== hash('sha256', json_encode($this->payload($event)))) {
                     $link->forceFill(['push_pending' => true])->save();
+
                     return null;
                 }
                 if ($remote === null) {
                     $link->forceFill(['google_event_id' => null, 'fingerprint' => null, 'last_error' => null, 'last_synced_at' => now()])->save();
+
                     return 'unlinked';
                 }
                 $outcome = 'checked';
@@ -185,11 +195,13 @@ class CrmCalendarSync
                     }
                 }
                 $link->forceFill(['fingerprint' => hash('sha256', json_encode($this->payload($event))), 'last_synced_at' => now(), 'last_error' => null])->save();
+
                 return $outcome;
             });
         } catch (\Throwable $e) {
             report($e);
             CrmEventCalendarLink::query()->whereKey($row->link_id)->update(['last_error' => mb_substr($e->getMessage(), 0, 255), 'last_synced_at' => now()]);
+
             return 'checked';
         }
     }
