@@ -1,6 +1,5 @@
 """Linux subprocess rehearsal of journal fencing and interrupted authority publication."""
 
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -281,6 +280,8 @@ class CutoverProcessContractTests(unittest.TestCase):
         # and the publishing controller still holds the writer lock exclusively.
         self.call("check", "sqlite", error="unfinished action")
         self.call("check", "mysql", error="unfinished action")
+        import fcntl  # Linux only; this class is skipped elsewhere.
+
         with (self.directory / guard.WRITER_LOCK).open("a+b") as lock, self.assertRaises(BlockingIOError):
             fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         pending_bytes = self.journal.path.read_bytes()
