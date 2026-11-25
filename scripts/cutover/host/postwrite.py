@@ -239,5 +239,5 @@ def exercise(adapter):
 
 
 if __name__ == "__main__":
-    with closing(PostWriteRehearsal(load_pymysql(), *sys.argv[1:])) as adapter:
+    with closing(PostWriteRehearsal(load_pymysql(), *sys.argv[1:3])) as adapter:
         print(json.dumps(exercise(adapter), sort_keys=True))
