@@ -55,6 +55,15 @@ $result = match ($mode) {
 
         return (int) $db->table('_writer_policy_probe')->where('id', 1)->value('counter');
     })(),
+    // Race for the last Google Routes quota unit through the real service.
+    'route-reserve' => (function () use ($mark, $await, $arguments) {
+        config(['services.google_routes.limit_elements' => 1]);
+        $budget = app(App\Services\Scheduling\GoogleRoutesBudget::class);
+        $mark('ready-'.$arguments[0]);
+        $await('go', 30);
+
+        return $budget->reserve();
+    })(),
     default => throw new RuntimeException('Unknown worker mode.'),
 };
 
