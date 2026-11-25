@@ -1,5 +1,118 @@
 # MySQL production readiness
 
+## November 25 post-cleanup rehearsal
+
+**Hold.** The fresh online copy came from the live SQLite release
+`8bb478e66b3c1eb8a78969f513e38901a2d860e8` after the approved failed-job
+and AI payload cleanup. The checksum-bound copy completed at 05:01:30
+UTC. It contains 328 tables, 1,916,750 application rows, nine CRM
+migrations, 37 CRM-related tables, 4,828 CRM rows and 1,206 linked
+client contacts. Its SHA-256 is
+`9db47294c239c6c784803f41ec3026e7ce707c38cdce59ea3559909130211d98`.
+The fresh scope audit, schema and reverse template checks matched the
+reviewed layout. The eight historical exception sets matched again.
+The application candidate incorporates that source release at
+`f026eadfe45893afa07ac8aa092255ca02cae979`.
+The Dashboard frontend release was `cff56754d65efe6334b3e8875b2738481fe9a441`.
+The effective flags showed CRM, Resend sending, reply tracking and Google
+Calendar sync enabled, CRM SMS disabled, and the dedicated receiving
+credential configured.
+[Exact application CI](https://github.com/superdevvs/Repro_Backend/actions/runs/45550749626)
+· [Exact frontend CI](https://github.com/superdevvs/Repro-Frontend/actions/runs/45536570185)
+
+The isolated native MySQL 8.4.13 import used durable full-row binlogs.
+The converter and independent PHP reader matched all 1,916,750 rows and
+31,253,958 fields with zero differences or warnings in 596.700 seconds.
+The sealed reverse export verified all 36 trigger definitions and passed
+independent field and CRM relationship comparisons in 346.550 seconds.
+The separate private finance clone started during the reverse run. Preserve
+that overlap in the timing record. The tables contained one applicant and no
+applicant file rows, so actual production attachment recovery remains open.
+The temporary native MySQL instance was removed. The redacted forward and
+reverse receipt SHA-256 is
+`337974acb04914f3a3873b3da4a2094703a7053c6951200bcc004ae00c05db25`.
+
+The private finance rehearsal on application commit `f026eadf` matched
+eight report weeks, past-due amounts, the photographer reconciliation,
+six sampled client invoices, weekly payout invoices, editor payouts and
+allocated work. The CRM client-import dry run matched across the two
+engines. The independent reader checked each named comparison and confirmed
+zero external effects and cleanup of the transient unit and scratch data.
+The first attempt stopped at an incorrectly formatted date before reading
+reports. The rerun used the pinned UTC capture time. The passing receipt
+SHA-256 is `2025b479fef9228ef307eb650cbc68251912b22baeecb7a76117cadbb46e086b`.
+
+An isolated PHP probe read all eight copied Google Calendar access and
+refresh token pairs using the installed encryption configuration with
+no provider access. The copy had zero pending encrypted website intake
+payloads. A synthetic intake document passed encryption and decryption
+in memory. No key, token, ciphertext or plaintext left Maverick. Field
+verification compares the stored ciphertext as it does any other field.
+The redacted encryption receipt SHA-256 is
+`3d537e1761d2d0c6b29670fe775a28cb22454b0f31ae7d6d46cfb2bb06b55c25`.
+
+The isolated writer fixture rejected writes after a PHP server restart
+and fresh queue invocations under a held journal, missing proof, invalid
+proof and stale boot proof. An exclusive operator lease also denied both
+entry points. Fresh proof reopened SQLite and the queued job ran once.
+The receipt SHA-256 is
+`3a02995c2af425fb956b85f00d523c3af22d6a0c231bf8ee4f6aeb198e9f7c1e`.
+The fixture uses PHP's CLI server and one-shot Laravel queues. Production
+nginx, PHP-FPM, the trusted authority publisher, systemd and long-lived
+workers still need their own restart and drain evidence. The subsequent
+network-disabled fixture used nginx and PHP-FPM over private Unix sockets.
+Three ingress probes returned 503 without reaching FPM. Seven FPM cohorts
+drained cleanly across restarts, and a stale open nginx marker did not bypass
+the frozen, missing, invalid or stale authority evidence. Verified SQLite
+authority reopened admission and processed the queued job once. The private
+FastCGI report on integrated tooling commit `7f7d9d77` has SHA-256
+`4fa9c06581eebb8df4aaa31557d6c1c271360de8c53f43e26be37f20defec045`.
+On the same commit, a second fixture preserved one acknowledged MySQL
+write and excluded an uncommitted write in a new verified SQLite file.
+It reopened the fixture application and ran one recovered job. That report
+SHA-256 is `552cabd501f0716f1325557f90a2ebdf0c9ed190ca65b9b12f6df0ea26f4d93c`.
+Both fixtures removed their containers and volumes. Use the deployed vhosts,
+root publisher and actual systemd worker and scheduler controls for the
+host acceptance run.
+
+The producer replay fixture used the committed RE Pro Photos website source
+at `4011d53a8d82af72ef4247af6034a0c0751cbe60` and a disposable PostgreSQL
+database. Recruiting retried a fenced 503 across new processes, reclaimed
+a lease after process loss, refused a stale update and retained exactly one
+synthetic receiver effect for an unchanged application. Editing the
+application before retry changed the payload under the same reference.
+Turning forwarding off prevented new applications from entering the outbox.
+Booking retained the original quote, reference and body across retry and
+reconciled a lost response. A fenced catalog lookup left an unquoted booking
+pending with no Dashboard submission. Contact saved the inquiry and its
+reference with an uncertain forwarding disposition. Contact replay still
+requires operator reconciliation. The redacted receipt SHA-256 is
+`e801c730931095ea8d0f3d477efc056658b5d9f7e9f80fe8fd4b50eab367e940`.
+Subsequent read-only checks confirmed the live Supabase outbox, claim
+function and enqueue trigger, with forwarding enabled and one aggregate
+recorded delivery on November 24. The deployed code SHA, recurring scheduler
+identity and schedule remain unverified. The runtime receipt SHA-256 is
+`5d6143440c46be522f423a1efca68bd1d4a684e281ec1b5f6b23861046ae2993`.
+The offline ledger comparison accepted matching booking and recruiting
+effects and refused changed recruiting bytes, an uncertain contact and an
+omitted contact in the exact-source synthetic runs. Its receipt SHA-256 is
+`3424543b79632f06d33476544e9713ea175d9839444a9fd9f7cb3eed23d91b17`.
+The actual scheduler hold, operator replay coverage and applicant attachment
+replay still need acceptance.
+
+The fresh copy supplied 77,937 observed API traces within the preceding
+24-hour window, including 296 for staff CRM. The p95 active minute had
+125 requests and the peak had 237. Use these samples with the reviewed
+route and role inventory when setting the dress rehearsal workload.
+This observed profile does not establish complete coverage of public webhooks
+or write-on-read routes.
+
+The dated capture passed independent receipt review. Its redacted proof
+SHA-256 is `20355a58e988e6c650ecf3b75010d501cce69c39fafe7751ff0f30c2e7bdecb7`.
+Capture evidence by itself does not qualify a night. Five complete nightly
+parity runs, seven days of backup evidence on the designated destination,
+independent restore drills and the missed-check-in phone receipt remain open.
+
 ## November 25 Sales CRM rehearsal
 
 **Hold.** The deployed backend `3ceb1f3e` and frontend `2240555e` were

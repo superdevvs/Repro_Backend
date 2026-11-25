@@ -94,6 +94,42 @@ before submission. The consumer can accept changed bytes as a different
 file. Verify producer restart and retry of a fenced HTTP 503 before
 using the website's outbox as an acceptance gate.
 
+The reviewed website source at `4011d53a8d82af72ef4247af6034a0c0751cbe60`
+has different recovery paths for the three producers. Confirm the actual
+deployed revision and Supabase migration, scheduler and forwarding settings
+before a timed rehearsal.
+
+- Recruiting acquires durable leases and retries fenced 503s. Hold and drain
+  the scheduler while preserving the existing enabled capture setting if it
+  is active. Disabling that setting stops the insert trigger from capturing
+  new applications. The retry worker reads the current application and
+  forwards JSON fields. Save the original submitted fields and original
+  attachment bytes under access controls so an edit cannot change the
+  replay behind the same reference. Route any mismatch to review.
+- Booking can retry with the original website UUID and saved quote. Include
+  a durable recovery path for pending bookings after the browser session is
+  gone. A fenced catalog lookup may leave a booking saved without a frozen
+  quote or a downstream POST. Resolve those cases before constructing a
+  replay. Record the original payload, the downstream booking disposition,
+  and whether a confirmation was sent before replaying an uncertain outcome.
+- Contact saves the inquiry with a reference and preserves an uncertain
+  forwarding disposition. Reconcile and replay it through an approved
+  operator path using the same reference. The website does not automatically
+  replay these submissions.
+
+For resolved website replays, compare two independently pinned ledgers with
+`python -B -m scripts.cutover.verify_website_replay`. The capture and replay
+files share `site_commit` and `freeze_sha256` at the top level. Use schemas
+`repro.website-capture.v1` and `repro.website-replay.v1` respectively. Each
+`rows` entry includes `producer`, `reference_sha256`, `payload_sha256`, and
+the ordered `attachment_sha256s`. The replay entry adds the independently
+observed `verified_business_effects` count. Hash the same original request
+encoding in both files. Preserve the raw materials separately under the
+private replay controls. Compare by producer and original reference. Any
+missing row, byte difference or multiple effect requires reconciliation.
+This offline comparison assumes an independently verified producer capture
+inventory and does not close the live ingress gate.
+
 During the approved reconciliation window, verify
 `CRM_DEFER_REPLY_FORWARDING=true` in the effective configuration of the
 FPM instances permitted to replay. A verified reply can be fetched and
