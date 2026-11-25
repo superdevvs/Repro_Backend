@@ -48,6 +48,26 @@ final class WorkerHygieneTest extends TestCase
         $this->assertFalse($this->tokenIsHeld());
     }
 
+    public function test_a_job_that_leaks_a_transaction_and_fails_on_its_last_try_is_failed_once(): void
+    {
+        $this->admin->exec('DELETE FROM failed_jobs');
+        app('queue')->connection('database')->push(new ProbeJob(1, leaveTransactionOpen: true, failAfter: true));
+
+        $worker = new Process([PHP_BINARY, base_path('artisan'), 'queue:work', 'database', '--stop-when-empty',
+            '--sleep=0', '--tries=1', '--timeout=60'], base_path(), ['QUEUE_CONNECTION' => 'database']);
+        $worker->setTimeout(60);
+        $worker->run();
+
+        $this->assertTrue($worker->isSuccessful(), $worker->getErrorOutput().$worker->getOutput());
+        $this->assertStringContainsString('left a database transaction open', $worker->getErrorOutput());
+        $this->assertSame(0, $this->counter(1), 'The leaked work was rolled back.');
+        $this->assertSame(1, (int) $this->admin->query('SELECT COUNT(*) FROM failed_jobs')->fetchColumn());
+        // Otherwise the reserved row comes back after retry_after and is failed and recorded again.
+        $this->assertSame(0, (int) $this->admin->query('SELECT COUNT(*) FROM jobs')->fetchColumn(),
+            'A job failed for good must stay deleted.');
+        $this->assertFalse($this->tokenIsHeld());
+    }
+
     public function test_the_watchdog_reports_a_token_holder_older_than_the_limit(): void
     {
         config(['database.connections.mysql_monitor' => [

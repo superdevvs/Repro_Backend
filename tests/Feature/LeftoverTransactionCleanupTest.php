@@ -14,6 +14,7 @@ use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\Looping;
+use Illuminate\Queue\Jobs\DatabaseJob;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
@@ -74,6 +75,25 @@ class LeftoverTransactionCleanupTest extends TestCase
         event(new JobExceptionOccurred('database', $job, new RuntimeException('Job failed.')));
 
         $this->assertSame($start, DB::transactionLevel());
+    }
+
+    public function test_a_job_that_leaks_a_transaction_and_fails_for_good_stays_deleted(): void
+    {
+        $this->useMode('rollback');
+        $queue = app('queue')->connection('database');
+        $queue->push(new RenameUserJob(1, 'Never'));
+        $job = $queue->pop();
+        $this->assertInstanceOf(DatabaseJob::class, $job);
+        $start = DB::transactionLevel();
+
+        event(new JobProcessing('database', $job));
+        DB::beginTransaction();
+        // The worker on a last try: delete the job, run its failed handler, then fire JobFailed.
+        $job->fail(new RuntimeException('Failed for good.'));
+
+        $this->assertSame($start, DB::transactionLevel());
+        $this->assertSame(0, DB::table('jobs')->count(),
+            'The rollback must not bring back a job Laravel failed and deleted: the worker would fail it again.');
     }
 
     public function test_log_mode_reports_without_rolling_back(): void

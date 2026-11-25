@@ -13,6 +13,7 @@ use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\Looping;
+use Illuminate\Queue\Jobs\DatabaseJob;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -35,8 +36,9 @@ final class LeftoverTransactions
     public function register(Dispatcher $events): void
     {
         $events->listen(JobProcessing::class, fn (JobProcessing $event) => $this->started($event->job));
-        $events->listen([JobProcessed::class, JobExceptionOccurred::class, JobFailed::class],
+        $events->listen([JobProcessed::class, JobExceptionOccurred::class],
             fn ($event) => $this->finished($event->job, 'A queued job', ['job' => $event->job->resolveName()]));
+        $events->listen(JobFailed::class, fn (JobFailed $event) => $this->failed($event->job));
         $events->listen(Looping::class, fn () => $this->settleAll('Something before this worker loop'));
         $events->listen(ScheduledTaskStarting::class, fn (ScheduledTaskStarting $event) => $this->started($event->task));
         $events->listen([ScheduledTaskFinished::class, ScheduledTaskFailed::class],
@@ -52,16 +54,45 @@ final class LeftoverTransactions
         $this->starts[spl_object_id($unit)] = $depths;
     }
 
-    public function finished(object $unit, string $what, array $context = []): void
+    /** True when a transaction the unit left open was rolled back. */
+    public function finished(object $unit, string $what, array $context = []): bool
     {
         $id = spl_object_id($unit);
         if (! isset($this->starts[$id])) {
-            return;
+            return false;
         }
         $start = $this->starts[$id];
         unset($this->starts[$id]);
+        $rolledBack = false;
         foreach ($this->db->getConnections() as $name => $connection) {
-            $this->settle($name, $connection, $start[$name] ?? 0, $what, $context);
+            $rolledBack = $this->settle($name, $connection, $start[$name] ?? 0, $what, $context) || $rolledBack;
+        }
+
+        return $rolledBack;
+    }
+
+    /**
+     * Laravel deletes a job it fails, then runs its failed handler, inside whatever
+     * the job left open, and only then fires JobFailed. Rolling that back restores
+     * the reserved row, so the worker would fail and record the job again after
+     * retry_after. Delete it again once the transaction is gone.
+     */
+    private function failed(object $job): void
+    {
+        if (! $this->finished($job, 'A queued job', ['job' => $job->resolveName()])
+            || ! $job instanceof DatabaseJob || ! $job->isDeleted()) {
+            return;
+        }
+        try {
+            $job->delete();
+        } catch (Throwable $error) {
+            try {
+                Log::error('A failed job could not be deleted again after its leftover transaction was rolled back.', [
+                    'job' => $job->resolveName(), 'error' => $error->getMessage(),
+                ]);
+            } catch (Throwable) {
+                // Reporting must not stop the remaining JobFailed listeners.
+            }
         }
     }
 
@@ -73,11 +104,11 @@ final class LeftoverTransactions
         }
     }
 
-    private function settle(string $name, $connection, int $start, string $what, array $context): void
+    private function settle(string $name, $connection, int $start, string $what, array $context): bool
     {
         $level = $connection->transactionLevel();
         if ($level <= $start) {
-            return;
+            return false;
         }
         $action = $this->config->get('database.repro_leftover_transactions') === 'rollback' ? 'rollback' : 'log';
         try {
@@ -88,7 +119,7 @@ final class LeftoverTransactions
             // Reporting must not stop the cleanup.
         }
         if ($action !== 'rollback') {
-            return;
+            return false;
         }
         try {
             $connection->rollBack($start);
@@ -96,5 +127,7 @@ final class LeftoverTransactions
             // Never reuse a session whose rollback was not confirmed.
             $this->db->purge($name);
         }
+
+        return true;
     }
 }
