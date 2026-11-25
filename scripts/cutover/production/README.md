@@ -74,6 +74,17 @@ must observe the deployed release, artifact, source and configuration digests
 independently of the pinned policy. The MySQL probe must report
 `writable` and `business_activity` for the target.
 
+On production the queue pause flags live in the file cache
+(`storage/framework/cache/data`), in folders owned by `www-data`. Run as
+the deploy user, `queue:pause` cannot write there; run as root, it leaves
+root-owned files and folders that `www-data` cannot write later. So the
+`queue_pause` and `queue_resume` prefixes run as `www-data` and set their
+own umask, because the watchdog runs with `UMask=0077`:
+`["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", "umask 0002 && exec /usr/bin/php /var/www/backend/artisan queue:pause \"$1\"", "repro-queue-pause"]`.
+The adapter appends the `connection:queue` argument, which becomes `$1`.
+The runbook (`docs/mysql-production-cutover.md`) has the full `host.json`
+entry.
+
 ## Owner options (defaults are the safe choice)
 
 | Option | Default | Meaning |
