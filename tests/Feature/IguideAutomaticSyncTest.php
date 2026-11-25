@@ -157,8 +157,12 @@ class IguideAutomaticSyncTest extends TestCase
         [$shoot, , $iguideLine, $legacy] = $this->shootWithLegacyUnscopedIguideFloorplans();
         $media = app(ShootMediaMutationSupportService::class);
         $revision = $media->currentMediaRevision($shoot);
-        Cache::put('shoots_index_cache_keys', ['shoots_index_cached_page']);
-        Cache::put('shoots_index_cached_page', ['stale' => true]);
+        // Saving the synced shoot already drops shoot lists; a list request can still cache the
+        // old assignment between that save and the move.
+        Shoot::saved(function (): void {
+            Cache::put('shoots_index_cache_keys', ['shoots_index_cached_page']);
+            Cache::put('shoots_index_cached_page', ['stale' => true]);
+        });
 
         (new SyncShootIguideJob($shoot->id, null, true))->handle(app(IguideService::class));
 
