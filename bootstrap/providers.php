@@ -2,6 +2,7 @@
 
 return [
     App\Providers\PrivacyLoggingServiceProvider::class,
+    App\Providers\DatabaseEngineServiceProvider::class,
     App\Providers\AppServiceProvider::class,
     App\Providers\ServerMonitorServiceProvider::class,
     App\Providers\EventServiceProvider::class,
