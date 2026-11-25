@@ -43,7 +43,7 @@ Suggested text for the dress-rehearsal gates:
 > rehearsals, in addition to the earlier engineering thresholds. Speed: none
 > of the 50 busiest requests makes a layout lookup, at least 45 are within
 > 20 ms of SQLite at p95 and none is more than 100 ms slower. Stress and crash:
-> ten minutes at 20 clients while workers clear a backlog with no server error,
+> ten minutes at 20 clients while workers shrink a queue backlog, with no server error,
 > unhandled lock error, missing confirmed write or duplicate, then three
 > mid-write MySQL kills each recovered within 60 seconds. Data: import and both
 > verifications within 12 minutes, clean scan, zero errors, warnings, notes and
@@ -183,6 +183,36 @@ Tests run in this lane. Results are filled in below.
 Mutation checks on the runner: dropping `--sync-binlog=1`, the import timeout,
 the MySQL stop before finance, the deploy lock check, the evidence check or the
 pre-capture date check each made at least one test fail.
+
+## Independent review
+
+A second session reviewed this lane's commits against the item details and
+tried to refute each claim. The claims hold, with these fixes, each made test
+first as a new commit:
+
+| Commit | Defect found | Fix |
+| --- | --- | --- |
+| `efa1d667` | A host refusal inside a stage (for example `deploy-meta.json` unreadable when re-read after the copy) escaped the journal: no `run-receipt.json`, the journal stayed `running`, and the production copy stayed on disk. A copy cut short by its timeout or a signal also stayed on disk until a resume. A resume found a leftover `mysqld` only by its journaled pid, so a runner stopped between starting `mysqld` and journaling the pid left the server running after its work directory was deleted. | Refusals become journaled stops. The capture removes the copy and its receipt on any failure. The real host finds leftover servers by this night's exact `--datadir` and refuses to continue if one will not stop. |
+| `f143435b` | The stress gate passed a backlog that never shrank (end depth equal to start depth), and the fixture used exactly that case. | The end depth must be below the start depth. |
+| `5b7bc173` | Five claimed runner checks had no test: removing any of them left every test green (durable settings read back from the server, the CRM ledger on the copy, finance receipt validation, refusal to resume after a config or candidate change). | Tests added; each fails when its check is removed. |
+| `83bf3206` | The clean-checkout probe ran git with `HOME` set to the candidate, so a stray `.gitconfig` there (invisible to `--untracked-files=no`) was read; a `core.fsmonitor` hook in it ran during the probe. | The probe ignores global and `$HOME` git config. |
+
+Also checked: the runner's mysqld runtime flags and identity probe on a real
+MySQL 8.4.13 server (local image, socket only, network none) return exactly
+the tuple the runner requires, and the seal reads back `1 1`. The builder's
+mutation claims were repeated and hold.
+
+Notes left open (not defects of the stated items):
+
+- A second SIGTERM or SIGHUP while cleanup waits for `mysqld` to stop leaves
+  the journal at `running` without a receipt. A resume recovers it.
+- The deploy lock is probed only before the copy. A deploy that starts during
+  the 21-second copy is caught only if `deploy-meta.json` changes before the
+  copy ends; a mid-migration schema then fails the reviewed layout pin.
+- A dress rehearsal's `data` record is not bound to the rehearsal's own
+  snapshot digest.
+- The 50 busiest endpoints, the finance step and the reverse trigger helper are
+  still unset, as listed above.
 
 ## Left to do
 

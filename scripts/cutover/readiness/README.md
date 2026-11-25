@@ -51,7 +51,7 @@ in addition to the engineering thresholds above.
 | Record | Plan mark | Fields |
 | --- | --- | --- |
 | `busiest_p95_us` | Speed | One entry for each of the policy's 50 `busiest_endpoints`, with integer microsecond `sqlite` and `mysql` p95 and `mysql_layout_lookups`. No entry may make a layout lookup. At least 45 must be at most 20 ms slower on MySQL, and none more than 100 ms slower. |
-| `stress` | Stress and crash | `duration_ms` of at least ten minutes, `parallel_clients` of at least 20, `backlog_start_depth` of at least one and `backlog_end_depth` no higher, and zero `server_errors`, `unhandled_lock_errors`, `confirmed_writes_missing` and `duplicate_business_effects`. |
+| `stress` | Stress and crash | `duration_ms` of at least ten minutes, `parallel_clients` of at least 20, `backlog_start_depth` of at least one and a lower `backlog_end_depth` (the backlog must shrink), and zero `server_errors`, `unhandled_lock_errors`, `confirmed_writes_missing` and `duplicate_business_effects`. |
 | `mysql_kills` | Stress and crash | At least three records. Each has `killed_during_write: true`, `recovery_ms` of at most 60 seconds, and zero `confirmed_writes_missing` and `duplicate_business_effects`. |
 | `data` | Data | `import_and_verify_ms` of at most 12 minutes, each zero counter in `NIGHTLY_COUNTERS`, and each boolean in `DRESS_DATA_PROOFS`. |
 | `way_back` | Way back | Each boolean in `DRESS_WAY_BACK_PROOFS`: reverse SQLite parity and the weekly invoice and payout runs on the exported file. |

@@ -53,7 +53,8 @@ copy stops the night.
   and free space is above `max(45 GB, 9 x live size)`. Before MySQL starts:
   `MemAvailable` covers the buffer pool plus an 8 GiB margin (at least 12 GiB).
 - The capture must finish on the scheduled UTC date. A copy that crosses
-  midnight is deleted.
+  midnight, fails a check or is cut short by a timeout or signal is deleted
+  at once.
 - Every command runs under `nice` and `ionice`. MySQL runs with
   `--skip-networking`. A test checks that no command names ssh, curl, rclone,
   sudo, systemctl or a URL.
@@ -103,8 +104,8 @@ same night again:
 - refuses if any journaled output changed, or the config or candidate changed;
 - reuses the capture and plan;
 - restarts `target`, `import_and_verify` and `reverse` together, because they
-  share one disposable MySQL, after stopping a leftover `mysqld` that belongs to
-  this night's work directory;
+  share one disposable MySQL, after stopping any leftover `mysqld` found by
+  this night's `--datadir` (even when its pid was never journaled);
 - returns the stored receipt without running anything once the night is done.
 
 ## Configuration
