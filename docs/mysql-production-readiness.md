@@ -9,6 +9,12 @@ refuses `prepare`, `evidence` and `seal_mysql`, every writer profile is
 pinned to SQLite, and the watchdog rolls back at 45 minutes. Until the
 [MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built)
 is built, any run is a SQLite dress rehearsal that ends in abort and reopen.
+Even that needs W1, which needs the host identity and MySQL probes (not
+written). And the abort from `frozen` is safe only once the read-only check
+shows the queue pause flags in the `file` cache store, or the rollback
+order changes: with the default `database` store, the rollback's
+`queue_pause` tries to write the sealed SQLite file before it unseals it
+(as the deploy user it fails on every tick and the site stays held).
 
 **Hold.** Five lanes, each based on `a6e799bb`, were merged into the release
 candidate at `e9679aed` (draft PR 46). All lane work was local and offline.

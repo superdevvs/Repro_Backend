@@ -21,8 +21,19 @@ approval gate. The previous Docker-based rehearsal is historical evidence.
 >
 > Until the [MySQL adapter lane](#mysql-adapter-lane-not-built) is built,
 > any run at this candidate is a SQLite dress rehearsal that ends in
-> `cli.py abort` and `cli.py reopen`. Even that needs W1, and W1 needs the
-> host identity and MySQL probes, which are not written yet.
+> `cli.py abort` and `cli.py reopen`. Even that has two conditions:
+>
+> - It needs W1, and W1 needs the host identity and MySQL probes, which are
+>   not written yet.
+> - The abort from `frozen` runs `queue_pause` for every queue (adapter
+>   `close_admissions`) before it unseals SQLite (`Runner._rollback`). If
+>   the queue pause flags live in the `database` cache store, the code
+>   default, that write goes to the sealed SQLite file: as the deploy user
+>   it fails on every watchdog tick and the site stays held; as root it
+>   writes the sealed file. The abort is safe only once the read-only
+>   cache-store check under "Read-only checks before the night" in
+>   [Freeze all writers](#freeze-all-writers) shows `file`, or the rollback
+>   order changes.
 
 Use the separate native **MySQL 8.4.13** target from
 [`scripts/mysql/native`](../scripts/mysql/native/README.md). The existing 8.0.46
@@ -1055,11 +1066,13 @@ nothing; each still needs its own approval.
   `CACHE_DRIVER`, the Laravel 10 name, which this release never reads. If
   the answer is `database`, the flags sit in the SQLite `cache` table.
   Then a rollback from `frozen` runs `queue_pause` again (adapter
-  `close_admissions`) before it unseals SQLite. Run as the deploy user,
-  that write to the sealed file fails, on every watchdog tick; run as root,
-  it writes the sealed file. A switch of `DB_CONNECTION` also moves the
-  flags to MySQL. Open: confirm `file`, or change the store, or change
-  the rollback order, before W1.
+  `close_admissions`) before it unseals SQLite, and so does a watchdog
+  re-close after a reboot while `frozen`. Run as the deploy user, that
+  write to the sealed file fails, on every watchdog tick; run as root, it
+  writes the sealed file. A switch of `DB_CONNECTION` also moves the
+  flags to MySQL, where the closed write gate refuses them (MySQL adapter
+  lane item 10). Open: confirm `file`, or change the store, or change the
+  rollback order, before W1. The SQLite dress rehearsal depends on it.
 - OPcache in FPM: `grep -rhE 'opcache\.(enable|validate_timestamps|revalidate_freq)' /etc/php/8.3/fpm/`
   and the FPM unit name: `systemctl list-units --all 'php*-fpm*'`. This
   runbook assumes `php8.3-fpm`; with `validate_timestamps=0` FPM keeps the
