@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Providers\TransactionTimingServiceProvider;
+use App\Support\TransactionTimingLog;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -141,6 +142,48 @@ class TransactionTimingLogTest extends TestCase
         $records = $this->records();
         $this->assertCount(1, $records);
         $this->assertSame(2, $records[0]['context']['writes']);
+    }
+
+    public function test_a_transaction_opened_by_an_after_commit_hook_does_not_hide_the_slow_one(): void
+    {
+        $this->enable();
+
+        // After-commit hooks run after COMMIT but before the outer
+        // "committed" event, so a transaction they open starts in between.
+        $line = __LINE__ + 1;
+        DB::transaction(function () {
+            DB::table('timing_probes')->insert(['name' => 'outer']);
+            DB::afterCommit(fn () => DB::transaction(fn () => DB::table('timing_probes')->insert(['name' => 'after commit'])));
+            usleep(120_000);
+        });
+
+        $records = $this->records();
+        $this->assertCount(1, $records);
+        $context = $records[0]['context'];
+        $this->assertSame('tests/Feature/TransactionTimingLogTest.php:'.$line, $context['origin']);
+        $this->assertSame(1, $context['writes']);
+        $this->assertGreaterThanOrEqual(115, $context['duration_ms']);
+        $this->assertSame(2, DB::table('timing_probes')->count());
+    }
+
+    public function test_transactions_that_end_without_an_event_are_not_kept_forever(): void
+    {
+        $this->enable();
+        $connection = DB::connection();
+
+        for ($i = 0; $i < 20; $i++) {
+            $connection->beginTransaction();
+            // A failed COMMIT: Laravel lowers the level but fires no event.
+            $connection->getPdo()->rollBack();
+            (function () {
+                $this->transactions = 0;
+            })->call($connection);
+        }
+
+        $open = (function () {
+            return $this->open;
+        })->call($this->app->make(TransactionTimingLog::class));
+        $this->assertLessThanOrEqual(8, count($open[$connection->getName()] ?? []));
     }
 
     public function test_a_read_only_transaction_has_no_write_timings(): void

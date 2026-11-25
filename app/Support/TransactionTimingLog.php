@@ -29,7 +29,16 @@ final class TransactionTimingLog
         'app/Providers/TransactionTimingServiceProvider.php',
     ];
 
-    /** @var array<string, array{started: int, ending: ?int, first_write: ?int, queries: int, writes: int, origin: ?string}> */
+    /** A COMMIT that fails fires no event, so its entry is never removed; keep only a few. */
+    private const MAX_OPEN = 8;
+
+    /**
+     * Outermost transactions per connection, newest last. After-commit hooks
+     * run between COMMIT and the "committed" event, so a transaction they open
+     * begins while the one that committed still waits for its event.
+     *
+     * @var array<string, list<array{started: int, ending: ?int, first_write: ?int, queries: int, writes: int, origin: ?string}>>
+     */
     private array $open = [];
 
     public function began(TransactionBeginning $event): void
@@ -38,7 +47,8 @@ final class TransactionTimingLog
             return;
         }
 
-        $this->open[$event->connection->getName()] = [
+        $name = $event->connection->getName();
+        $this->open[$name][] = [
             'started' => hrtime(true),
             'ending' => null,
             'first_write' => null,
@@ -46,15 +56,16 @@ final class TransactionTimingLog
             'writes' => 0,
             'origin' => $this->origin(),
         ];
+        $this->open[$name] = array_slice($this->open[$name], -self::MAX_OPEN);
     }
 
     public function queried(QueryExecuted $event): void
     {
-        if (! isset($this->open[$event->connectionName]) || $event->connection->transactionLevel() < 1) {
+        if (empty($this->open[$event->connectionName]) || $event->connection->transactionLevel() < 1) {
             return;
         }
 
-        $state = &$this->open[$event->connectionName];
+        $state = &$this->open[$event->connectionName][array_key_last($this->open[$event->connectionName])];
         $state['queries']++;
         if (self::isWrite($event->sql)) {
             $state['writes']++;
@@ -66,8 +77,8 @@ final class TransactionTimingLog
     public function committing(TransactionCommitting $event): void
     {
         $name = $event->connection->getName();
-        if (isset($this->open[$name]) && $event->connection->transactionLevel() === 1) {
-            $this->open[$name]['ending'] = hrtime(true);
+        if (! empty($this->open[$name]) && $event->connection->transactionLevel() === 1) {
+            $this->open[$name][array_key_last($this->open[$name])]['ending'] = hrtime(true);
         }
     }
 
@@ -84,12 +95,14 @@ final class TransactionTimingLog
     private function finish(Connection $connection, string $outcome): void
     {
         $name = $connection->getName();
-        if ($connection->transactionLevel() !== 0 || ! isset($this->open[$name])) {
+        if ($connection->transactionLevel() !== 0 || empty($this->open[$name])) {
             return;
         }
 
-        $state = $this->open[$name];
-        unset($this->open[$name]);
+        $state = array_pop($this->open[$name]);
+        if ($this->open[$name] === []) {
+            unset($this->open[$name]);
+        }
 
         $ending = $state['ending'] ?? hrtime(true);
         $duration = self::milliseconds($ending - $state['started']);
