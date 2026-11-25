@@ -5,7 +5,7 @@
  *
  * While ingress_hold is on, the listed producer routes answer 503 with
  * Retry-After before any middleware or controller can write, so the website
- * outbox, the booking forwarder, the contact form and Resend keep their own
+ * outbox, the booking forwarder, the contact form, Resend, Stripe and Aryeo keep their own
  * copy and retry later. Off by default. See docs/mysql-lanes/producer-replay.md.
  */
 
@@ -20,5 +20,9 @@ return [
         'api/external/website-email',
         'api/external/book-shoot',
         'api/webhooks/resend',
+        // Stripe retries for up to three days; Aryeo's retry window is unconfirmed.
+        'api/webhooks/stripe',
+        'api/webhooks/stripe/listing-studio',
+        'api/integrations/aryeo/webhooks/*',
     ],
 ];
