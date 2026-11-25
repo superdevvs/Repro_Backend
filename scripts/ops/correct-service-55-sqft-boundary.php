@@ -10,7 +10,7 @@ $apply = array_key_exists('apply', $options);
 
 try {
     require __DIR__.'/bootstrap-app.php';
-    $driver = App\Support\DatabaseEngine::driver();
+    $driver = App\Support\DatabaseDriver::driver();
     if ($driver !== 'sqlite') {
         throw new RuntimeException("This script corrects a SQLite file, but the live database is {$driver}. Make the correction through the live database instead.");
     }

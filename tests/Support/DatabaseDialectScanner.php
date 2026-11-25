@@ -19,7 +19,7 @@ final class DatabaseDialectScanner
 
     /**
      * PHP identifiers that read or test the database engine, including the engine helpers
-     * (App\Support\DatabaseEngine::isSqlite()). Their declarations do not count.
+     * (App\Support\DatabaseDriver::isSqlite()). Their declarations do not count.
      */
     private const BRANCH_IDENTIFIERS = '/^(?:getDriverName|ATTR_DRIVER_NAME|is(?:Sqlite|MySql|MariaDb))$/i';
 

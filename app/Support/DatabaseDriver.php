@@ -8,7 +8,7 @@ namespace App\Support;
  * Code that only works on SQLite (opening the SQLite file or a SQLite backup directly) checks
  * this first and refuses clearly on MySQL, instead of quietly reading a stale SQLite file.
  */
-final class DatabaseEngine
+final class DatabaseDriver
 {
     public static function driver(?string $connection = null): string
     {

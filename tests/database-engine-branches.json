@@ -1,5 +1,5 @@
 {
-    "about": "Every place in app/ that branches on the database engine (getDriverName(), PDO::ATTR_DRIVER_NAME, DatabaseEngine::isSqlite()) or names an engine ('sqlite', 'mysql', a DSN). Each entry is marked safe (correct on SQLite and MySQL 8.4) or to-fix (must change before the MySQL cutover). Checked by tests/Unit/DatabaseDialectGuardTest.php.",
+    "about": "Every place in app/ that branches on the database engine (getDriverName(), PDO::ATTR_DRIVER_NAME, DatabaseDriver::isSqlite()) or names an engine ('sqlite', 'mysql', a DSN). Each entry is marked safe (correct on SQLite and MySQL 8.4) or to-fix (must change before the MySQL cutover). Checked by tests/Unit/DatabaseDialectGuardTest.php.",
     "branches": [
         {
             "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
@@ -20,7 +20,7 @@
         {
             "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
             "rule": "engine-branch",
-            "text": "$this->require(DatabaseEngine::isSqlite(), 'Apply checks a SQLite safety backup, but the live database is '.DatabaseEngine::driver().'. Nothing was changed.');",
+            "text": "$this->require(DatabaseDriver::isSqlite(), 'Apply checks a SQLite safety backup, but the live database is '.DatabaseDriver::driver().'. Nothing was changed.');",
             "count": 1,
             "status": "safe",
             "reason": "The refusal itself: --apply stops before any read or write unless the live database is SQLite, because its safety backup is a SQLite file (H-1)."
@@ -60,7 +60,7 @@
         {
             "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
             "rule": "engine-branch",
-            "text": "$this->require(! $this->option('apply') || DatabaseEngine::isSqlite(),",
+            "text": "$this->require(! $this->option('apply') || DatabaseDriver::isSqlite(),",
             "count": 1,
             "status": "safe",
             "reason": "The refusal itself: --apply stops before any read or write unless the live database is SQLite, because its safety backup is a SQLite file (H-1)."
@@ -170,7 +170,7 @@
             "reason": "Chooses CAST AS TEXT on SQLite and CAST AS CHAR on MySQL. Both engines get the same text."
         },
         {
-            "file": "app/Support/DatabaseEngine.php",
+            "file": "app/Support/DatabaseDriver.php",
             "rule": "engine-branch",
             "text": "return self::driver($connection) === 'sqlite';",
             "count": 1,

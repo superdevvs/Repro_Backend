@@ -10,7 +10,7 @@ use PHPUnit\Framework\TestCase;
  * After the move to MySQL that file is a stale copy, so they now use the app's configured
  * database connection, or refuse clearly when they can only work on SQLite.
  */
-class OpsScriptsDatabaseEngineTest extends TestCase
+class OpsScriptsDatabaseDriverTest extends TestCase
 {
     private array $files = [];
 

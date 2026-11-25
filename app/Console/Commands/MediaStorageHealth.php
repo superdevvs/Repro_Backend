@@ -4,7 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\Media\MediaStorage;
 use App\Services\Media\OriginalsStorageGuard;
-use App\Support\DatabaseEngine;
+use App\Support\DatabaseDriver;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -93,7 +93,7 @@ class MediaStorageHealth extends Command
     private function databaseRoot(): string|false
     {
         $connection = (string) config('database.default');
-        $driver = DatabaseEngine::driver($connection);
+        $driver = DatabaseDriver::driver($connection);
 
         if ($driver === 'sqlite') {
             $databaseFile = (string) config("database.connections.{$connection}.database", ':memory:');

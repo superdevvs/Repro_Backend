@@ -5,7 +5,7 @@ namespace App\Console\Commands;
 use App\Models\{ClientDeliveryNotification, Shoot, ShootActivityLog, User};
 use App\Services\Messaging\{ShootDeliveryCycle, ShootDeliveryNotificationOutbox};
 use App\Services\Shoots\{DeliveryPlanService, ReviewedTravelFeeCatalog, ShootActiveWorkLifecycle, ShootListingService};
-use App\Support\{DatabaseEngine, EditingDispatchWriteLock, LockedWrite};
+use App\Support\{DatabaseDriver, EditingDispatchWriteLock, LockedWrite};
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\{DB, Schema};
 use PDO;
@@ -35,7 +35,7 @@ class ClassifyReviewedTravelFees extends Command
                 return self::SUCCESS;
             }
             // The safety backup is a SQLite file; on any other engine it would not be a backup of the live data.
-            $this->require(DatabaseEngine::isSqlite(), 'Apply checks a SQLite safety backup, but the live database is '.DatabaseEngine::driver().'. Nothing was changed.');
+            $this->require(DatabaseDriver::isSqlite(), 'Apply checks a SQLite safety backup, but the live database is '.DatabaseDriver::driver().'. Nothing was changed.');
             $actor = User::find($this->option('actor'));
             $this->require($actor && in_array($actor->role, ['admin', 'superadmin', 'super_admin'], true)
                 && $delivery->canFinalize($actor), 'Apply requires an existing authorized administrator.');
