@@ -458,7 +458,8 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
 
             return;
         }
-        if (! $this->pdoLost) {
+        $pdoLost = $this->pdoLost;
+        if (! $pdoLost) {
             try {
                 $pdo = $this->getPdo();
                 if ($pdo->inTransaction() && (! $pdo->rollBack() || $pdo->inTransaction())) {
@@ -468,13 +469,19 @@ final class MySqlConnection extends \Illuminate\Database\MySqlConnection impleme
                 $this->discardSession();
                 throw $error;
             }
-            $this->transactionsManager?->rollback($this->getName(), 0);
         }
+        // MySQL has rolled back. Clear the guard before any rollback callback runs, as
+        // Laravel lowers the depth first: a callback may use this connection again.
         $this->transactions = 0;
+        $this->testWrapperCommitted = false;
         $this->poisoned = false;
         $this->pdoLost = false;
-        $this->fireConnectionEvent('rollingBack');
         $this->tokenReleased();
+        if (! $pdoLost) {
+            // A lost session already dropped its records without running callbacks.
+            $this->transactionsManager?->rollback($this->getName(), 0);
+        }
+        $this->fireConnectionEvent('rollingBack');
     }
 
     /** The session died inside a transaction: MySQL rolled it back. Keep the depth so the caller must roll back. */

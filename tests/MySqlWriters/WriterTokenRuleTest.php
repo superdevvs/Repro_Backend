@@ -370,6 +370,37 @@ final class WriterTokenRuleTest extends TestCase
         $this->assertSame(3, $this->counter());
     }
 
+    public function test_rollback_callbacks_after_a_lock_error_run_on_a_clean_connection(): void
+    {
+        // The admin session holds a business row, so the second write times out after the token.
+        $this->admin->beginTransaction();
+        $this->admin->exec('UPDATE _writer_policy_probe SET counter = 1 WHERE id = 2');
+        $seen = [];
+        try {
+            // Not an arrow function: it would copy $seen before the callback writes to it.
+            $error = $this->failureOf(function () use (&$seen) {
+                $this->db()->transaction(function ($db) use (&$seen) {
+                    $db->afterRollBack(function () use ($db, &$seen) {
+                        // MySQL has already rolled back: a callback may query, as with Laravel's own rollback.
+                        $seen[] = [$db->transactionLevel(), (int) $db->table('_writer_policy_probe')->where('id', 1)->value('counter')];
+                    });
+                    $db->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 7]);
+                    $db->table('_writer_policy_probe')->where('id', 2)->update(['counter' => 2]);
+                });
+            });
+        } finally {
+            $this->admin->rollBack();
+        }
+
+        $this->assertInstanceOf(QueryException::class, $error, 'The caller sees the lock error, not a refusal raised by the callback.');
+        $this->assertSame(1205, (int) $error->errorInfo[1]);
+        $this->assertSame([[0, 0]], $seen);
+        $this->assertSame(0, $this->db()->transactionLevel());
+        $this->assertFalse($this->tokenIsHeld());
+        $this->db()->table('_writer_policy_probe')->where('id', 1)->update(['counter' => 3]);
+        $this->assertSame(3, $this->counter());
+    }
+
     public static function commitStyles(): array
     {
         return ['manual' => ['manual'], 'closure' => ['closure']];
