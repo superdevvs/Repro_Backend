@@ -24,7 +24,9 @@ How it works:
   leaves a copy without one; it is not counted and is removed once it is older
   than the kept copies.
 - Every run writes `last-run.json` in the copy folder (`status`, `finished_at`,
-  `file`, `bytes`, `sha256`). Use it for the backup-age alert.
+  `file`, `bytes`, `sha256`). Use it for the backup-age alert. The file is 0600
+  inside the 0700 folder, so only `maverick` can read it: the backup-age check
+  (item 11) must run as `maverick`, not as `www-data`.
 
 It refuses to run when:
 
@@ -50,7 +52,11 @@ As `maverick` on the server:
 1. Check free space: `df -h /mnt/16tb`. Each copy is about the size of the live
    file minus its free pages (roughly 3.7 to 4.5 GB). Check the database file's
    group with `stat -c '%G' /var/www/backend/database/database.sqlite`; the
-   templates assume `www-data`.
+   templates assume `www-data`. Check the copy disk supports hard links:
+   `stat -f -c %T /mnt/16tb` should print `ext2/ext3` (ext4), `xfs` or
+   `btrfs`. The copy publishes with `link()`, so on exFAT or vfat every run
+   fails closed. Deploy backup compression also uses `link()`; run the same
+   check on `/home/maverick/repro-deploy-backups`.
 2. `mkdir -m 0700 /mnt/16tb/repro-db-backups`
 3. Run one copy by hand:
 
@@ -185,6 +191,11 @@ invoices or payouts are owner decisions (item 8b).
 To run it on the private snapshot, use a network-disabled copy of the app
 pointed at a copy of the snapshot, and share only counts and record IDs.
 
+On MySQL the DATE and DATETIME columns store one shape, so the dry run finds
+no gap there. The tests that build the two text shapes run only on SQLite; a
+mid-week test checks the selections against the real sales-rep run on both
+engines.
+
 ## Flags and decisions
 
 | Flag or setting | Default | Where |
@@ -198,3 +209,19 @@ Owner decisions: when to switch on each flag (switching on `tiered_retention`
 deletes old bundles), how many nightly copies to keep, whether to fix the text
 date comparison in the weekly runs, and whether to issue catch-up invoices or
 payouts for anything the dry run lists.
+
+## Codex review round (25 Nov)
+
+Codex reviewed `60995685`; fixes are on top of `ab30dbca`.
+
+- `sqlite-backups-billing#1` (copy without `.sha256` counted toward `--keep`): fixed in `2aa5563f`; only complete pairs count.
+- `sqlite-backups-billing#2` (sales-rep pay on standard shoots listed as a gap): fixed in `2a84cae0`; on MySQL too in `ba005bd4`.
+- `sqlite-backups-billing#3` (stale partial gzip kept forever): the compress step already cleared it (`acde9e27`); applied retention now clears it too, so switching the flag off after a crash no longer strands the bundle (`accc51e9`).
+- `sqlite-backups-billing#4` (Linux-only copy tests fail on Windows): fixed in `b0478f44`; they skip without Linux and posix, and CI's `--fail-on-skipped` still catches a missing posix.
+- Reviewer 1 (full suite at `0ac446c9`): checked. 9,555 tests; the only failures are the known environment-only ones (email DNS, uid-33 file sharing, live ClamAV, the timing-flaky iGUIDE import retry). The container is gone.
+- Reviewer 2 (preflight reads the cached config with bare `php`): works on today's config and fails closed. A CI test now catches a config value that would need the autoloader (`01536cbb`).
+- Reviewer 3 (rotation counts a copy whose `.sha256` write crashed; `last-run.json` unreadable by `www-data`): rotation fixed with #1. The backup-age check must run as `maverick` (noted above).
+- Reviewer 4 (`link()` fails on filesystems without hard links): install step 1 now checks the filesystem type. To check on the server in item 1b.
+- Reviewer 5 (tiered day kept a newer source-only bundle): fixed in `d768a959`. Without a verified bundle, the day keeps its newest bundle that holds a database.
+- Reviewer 6: the private-snapshot run (item 8), the production install and apply (items 1b and 3b), and the catch-up decision (item 8b) still need owner approval.
+- Found while running on MySQL 8.4.13: five billing tests that build SQLite text dates failed there, already at `ab30dbca`. They now skip off SQLite (`ba005bd4`).
