@@ -319,6 +319,60 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("runs as root", result.stderr)
 
 
+@unittest.skipUnless(LINUX_ROOT, "Needs Linux root: the probe runs as root")
+class ClassifiedRowsTests(unittest.TestCase):
+    """The root SQL for an unrecognised state comes from the rows the probe classified (mysql_probe.read_gate):
+    one read as the probe account, never a second one, and nothing from another account's view (D05, D06).
+
+    Against D05's root-owned stand-in for the 8.4.13 client (test_mysql_probe.FakeServer), which logs every
+    statement it is given; no MySQL needed."""
+
+    ROLE = {"user": "repro_app", "host": "localhost", "other_user": "repro_test_role", "other_host": "%"}
+
+    def setUp(self):
+        import gate
+
+        self.gate = gate
+        self.fake = probe_tests.FakeServer()
+        self.addCleanup(shutil.rmtree, self.fake.root)
+        self.host = probe_tests.ProbeHost(self.fake)
+        self.addCleanup(shutil.rmtree, self.host.root)
+        self.host.config["mysql"]["client"] = str(self.fake.client)
+        self.fake.state = {**probe_tests.gate_state(), "role_edges": [self.ROLE]}
+
+    def refused(self) -> "gate.GateRefused":
+        self.fake.save()
+        with self.assertRaises(self.gate.GateRefused) as caught:
+            self.gate.read(self.host.config)
+        self.assertNotIsInstance(caught.exception, self.gate.GateUnreachable)
+        return caught.exception
+
+    def test_root_sql_comes_from_the_one_classified_read(self):
+        refusal = self.refused()
+        self.assertIn("REVOKE 'repro_test_role'@'%' FROM 'repro_app'@'localhost';", refusal.root_sql or "")
+        self.assertIn(refusal.root_sql, str(refusal))
+        self.assertEqual("unrecognised", refusal.reading["gate"])
+        self.assertEqual(1, len(self.fake.calls()), self.fake.calls())
+
+    def test_rows_read_as_another_account_give_no_root_sql(self):
+        # A defaults file holding another account (root could read anything): the probe reads unrecognised,
+        # and nothing is derived from that view.
+        self.fake.server = {**self.fake.server, "current_user": "root@localhost"}
+        refusal = self.refused()
+        self.assertIsNone(refusal.root_sql, str(refusal))
+        self.assertIn("CURRENT_USER", str(refusal))
+        self.assertIn("not read as the probe account", str(refusal))
+        self.assertEqual(1, len(self.fake.calls()), self.fake.calls())
+
+    def test_rows_gate_sql_cannot_quote_go_to_the_administrator_by_hand(self):
+        edge = {**self.ROLE, "other_user": "repro'; DROP USER x; --"}
+        self.fake.state = {**probe_tests.gate_state(), "role_edges": [edge]}
+        refusal = self.refused()
+        self.assertIn("remove it by hand", refusal.root_sql or "")
+        self.assertNotIn("DROP USER x;\n", refusal.root_sql)
+        self.assertEqual(1, len(self.fake.calls()), self.fake.calls())
+
+
 @unittest.skipUnless(LINUX_ROOT and FIXTURE, "Needs Linux root and the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
 class GateProcedureTests(unittest.TestCase):
     """gate.py against the fixture built from accounts.sql (design 2.3 and 2.4)."""

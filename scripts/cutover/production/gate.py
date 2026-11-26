@@ -302,28 +302,21 @@ def _client(config: dict, defaults_key: str, statements: list[str], *,
         raise GateRefused("The MySQL client did not finish; the gate state is unknown until the next reading") from None
 
 
-def _probe_state(config: dict) -> dict:
-    """The probe's rows behind an unrecognised reading, for root_sql only; the classification stays the probe's.
+def _classified_rows(config: dict, refusal: probe.Refusal) -> dict:
+    """The rows behind an unrecognised reading, for root_sql only: the very state document the probe classified
+    (mysql_probe.read_gate hands it out on the refusal; it is never printed), so no second read is needed.
 
-    An adapter (open item for slice D05): mysql_probe.read() does not hand out the rows it classified.
-    Same account, server statement and state statement as the probe; refused unless the login is the
-    probe account on the target server, so nothing is derived from another account's view.
+    Refused unless they were read as the probe account on the target server, so nothing is derived from another
+    account's view: a CURRENT_USER() mismatch only makes the gate unrecognised (mysql_probe.Reading).
     """
-    accounts = [tuple(account.split("@")) for account in config["mysql"]["gated_accounts"]]
-    result = _client(config, "probe_defaults", [probe.server_statement(), probe.state_statement(accounts)])
-    lines = result.stdout.splitlines()
-    server = state = None
-    if result.returncode == 0 and len(lines) == 2:
-        try:
-            server, state = json.loads(lines[0]), json.loads(lines[1])
-        except ValueError:
-            pass
-    _refuse_unless(isinstance(server, dict) and isinstance(state, dict) and state.keys() == probe.STATE_KEYS,
-                   f"The probe's rows could not be read again: {result.stderr.strip()[:300]}")
-    _refuse_unless(server.get("current_user") == probe.PROBE_ACCOUNT
-                   and server.get("server_uuid") == config["mysql"]["target_uuid"],
+    reading = refusal.reading
+    _refuse_unless(reading is not None and isinstance(reading.state, dict)
+                   and reading.state.keys() == probe.STATE_KEYS and isinstance(reading.server, dict),
+                   "The probe handed out no rows for this reading")
+    _refuse_unless(reading.server.get("current_user") == probe.PROBE_ACCOUNT
+                   and reading.server.get("server_uuid") == config["mysql"]["target_uuid"],
                    "The rows were not read as the probe account on the target server")
-    return state
+    return reading.state
 
 
 def _present(config: dict, open_privileges) -> dict:
@@ -350,7 +343,7 @@ def read(config: dict) -> Reading:
         if refusal.code == probe.EXIT_UNRECOGNISED and output.get("gate") == "unrecognised":
             message = f"The gate state is unrecognised: {'; '.join(output.get('problems') or [])}"
             try:
-                sql = root_sql(config, _probe_state(config))
+                sql = root_sql(config, _classified_rows(config, refusal))
             except GateRefused as unreadable:
                 raise GateRefused(f"{message}. No root SQL: {unreadable}", reading=output) from None
             raise GateRefused(message, reading=output, root_sql=sql) from None

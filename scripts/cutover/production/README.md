@@ -602,8 +602,9 @@ without a change to that script.
 - D10: run `--since` with `--since-gtid` (or compare the sets itself), and
   record the drill coordinate after `complete-schema` and
   `cutover:smoke-fixtures --create` (the contract above).
-- D06/integrator: `gate.py` can replace its `_probe_state` adapter with
-  `refusal.reading.state` from `read_gate` (keeping its `CURRENT_USER()` check).
+- Done at the lane merge: `gate.py` builds its root SQL from
+  `refusal.reading.state` (the rows `read_gate` classified), with its own
+  `CURRENT_USER()` and server UUID check, and no second read.
 
 ## Write gate procedures: `gate.py` (design 2.3, 2.4)
 
@@ -648,7 +649,9 @@ approvals); `gate.py` decides how.
 - **Refusals.** `GateUnreachable` (probe exit 3, nothing changed: the caller
   decides whether a skip is allowed and records it) is a `GateRefused`, which
   is an `UnsafeCutover`. An unrecognised state is refused with no change and
-  `root_sql`: statements built from the probe's rows (roles and proxies
+  `root_sql`: statements built from the rows the probe classified
+  (`refusal.reading.state` from `mysql_probe.read_gate`, never a second read;
+  roles and proxies
   either way, default roles, the lock, `REVOKE ALL PRIVILEGES, GRANT OPTION`,
   a column row left by direct DML, `mandatory_roles`, the probe's `PROCESS`)
   ending with the two closed grants of `accounts.sql`. It is also in the
