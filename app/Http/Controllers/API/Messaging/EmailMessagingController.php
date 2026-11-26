@@ -655,7 +655,7 @@ class EmailMessagingController extends Controller
     private function applyTemplateIfNeeded(array $data, ?User $recipient): array
     {
         if (empty($data['template_id'])) {
-            return $data;
+            return $this->personalizeDraftRecipient($data, $recipient);
         }
 
         $template = MessageTemplate::find($data['template_id']);
@@ -714,6 +714,36 @@ class EmailMessagingController extends Controller
         $data['subject'] = $rendered['subject'] ?? $data['subject'] ?? $template->subject;
         $data['body_html'] = $rendered['body_html'] ?? $data['body_html'] ?? $template->body_html;
         $data['body_text'] = $rendered['body_text'] ?? $data['body_text'] ?? $template->body_text;
+
+        return $data;
+    }
+
+    /**
+     * Resolve the supported salutation fields without wrapping ordinary emails
+     * or interpreting their unrelated braces, content, or template variables.
+     */
+    private function personalizeDraftRecipient(array $data, ?User $recipient): array
+    {
+        $name = trim((string) $recipient?->name) ?: 'there';
+        $parts = preg_split('/\s+/', $name) ?: [$name];
+        $firstName = array_shift($parts);
+        $values = [
+            'recipient_name' => $name,
+            'recipient_first_name' => $firstName,
+            'recipient_last_name' => implode(' ', $parts),
+            'greeting' => 'Hi '.$firstName,
+        ];
+        $keys = implode('|', array_keys($values));
+        $pattern = '/\{\{\s*('.$keys.')\s*\}\}|\[('.$keys.')\]/';
+        foreach (['subject', 'body_html', 'body_text'] as $field) {
+            if (isset($data[$field]) && is_string($data[$field])) {
+                $data[$field] = preg_replace_callback($pattern, function (array $match) use ($values, $field): string {
+                    $value = $values[$match[1] !== '' ? $match[1] : $match[2]];
+
+                    return $field === 'body_html' ? e($value) : $value;
+                }, $data[$field]);
+            }
+        }
 
         return $data;
     }

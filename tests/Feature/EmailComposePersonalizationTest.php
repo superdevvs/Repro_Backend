@@ -184,6 +184,74 @@ class EmailComposePersonalizationTest extends TestCase
         $this->assertSame($source, $template->fresh()->getAttributes());
     }
 
+    public function test_plain_bulk_compose_personalizes_only_recipient_greeting_fields_without_a_saved_template(): void
+    {
+        $alex = $this->photographer('Alex& Rivera');
+        $priya = $this->photographer('Priya Shah');
+        $source = [
+            'to' => [$alex->email, $priya->email, 'unknown@example.test'],
+            'subject' => 'Thanks, {{ recipient_first_name }} / [recipient_name]',
+            'body_html' => '<p>[greeting], {{recipient_last_name}}.</p><p>{{recipient_name}} {{client_first_name}} [First Name]</p>',
+            'body_text' => '{{greeting}}, {{recipient_last_name}}. {{recipient_name}} {{client_first_name}} [First Name]',
+            'variables' => ['recipient_name' => 'Wrong Person', 'recipient_first_name' => 'Wrong', 'greeting' => 'Hello Wrong', 'client_first_name' => 'Unrelated'],
+        ];
+
+        $this->postJson('/api/messaging/email/compose', $source)->assertOk()->assertJsonPath('sent', 3);
+
+        $this->assertCount(3, $this->sent);
+        foreach ([['Alex&', 'Rivera', 'Alex& Rivera'], ['Priya', 'Shah', 'Priya Shah'], ['there', '', 'there']] as $index => [$first, $last, $name]) {
+            $this->assertSame('Thanks, '.$first.' / '.$name, $this->sent[$index]['subject']);
+            $this->assertSame('<p>Hi '.e($first).', '.e($last).'.</p><p>'.e($name).' {{client_first_name}} [First Name]</p>', $this->sent[$index]['html']);
+            $this->assertSame('Hi '.$first.', '.$last.'. '.$name.' {{client_first_name}} [First Name]', $this->sent[$index]['text']);
+        }
+        $this->assertSame('Thanks, {{ recipient_first_name }} / [recipient_name]', $source['subject']);
+        $this->assertSame(0, Message::query()->whereNotNull('template_id')->count());
+    }
+
+    public function test_plain_scheduled_bulk_email_keeps_per_recipient_snapshots_without_a_saved_template(): void
+    {
+        $alex = $this->photographer('Alex Rivera');
+        $priya = $this->photographer('Priya Shah');
+
+        $this->postJson('/api/messaging/email/schedule', [
+            'to' => [$alex->email, $priya->email, 'unknown@example.test'],
+            'subject' => 'Thanks, {{recipient_first_name}}',
+            'body_html' => '<p>Hello {{recipient_first_name}}.</p>',
+            'body_text' => 'Hello {{recipient_first_name}}.',
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ])->assertOk()->assertJsonPath('scheduled', 3);
+
+        $messages = Message::query()->orderBy('id')->get();
+        $this->assertSame(['Thanks, Alex', 'Thanks, Priya', 'Thanks, there'], $messages->pluck('subject')->all());
+        $this->assertCount(0, $this->sent);
+        $alex->update(['name' => 'Changed After Scheduling']);
+        $this->travel(2)->hours();
+        foreach ($messages as $index => $message) {
+            app(MessagingService::class)->dispatchScheduledMessage($message);
+            $this->assertSame($message->body_html, $this->sent[$index]['html']);
+            $this->assertSame($message->body_text, $this->sent[$index]['text']);
+        }
+        $this->assertCount(3, $this->sent);
+        $this->assertSame('Hello Alex.', $this->sent[0]['text']);
+    }
+
+    public function test_plain_email_without_recipient_tokens_is_not_rewritten_or_wrapped(): void
+    {
+        $person = $this->photographer('Priya Shah');
+        $html = '<!doctype html><html><body><p>Hello team &amp; friends.</p><p>{{client_name}}</p></body></html>';
+        $text = "Hello team & friends.\n\n{{client_name}}";
+
+        $this->postJson('/api/messaging/email/compose', [
+            'to' => $person->email, 'subject' => 'General update', 'body_html' => $html, 'body_text' => $text,
+            'variables' => ['client_name' => 'Do not substitute'],
+        ])->assertOk();
+
+        $this->assertCount(1, $this->sent);
+        $this->assertSame($html, $this->sent[0]['html']);
+        $this->assertSame($text, $this->sent[0]['text']);
+        $this->assertSame('General update', $this->sent[0]['subject']);
+    }
+
     private function photographer(string $name): User
     {
         return User::factory()->create(['role' => 'photographer', 'name' => $name]);

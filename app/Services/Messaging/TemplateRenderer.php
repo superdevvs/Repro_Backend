@@ -84,10 +84,12 @@ class TemplateRenderer
         $html = $this->normalizeLegacyUrls($html);
         $text = $this->normalizeLegacyUrls($text);
         $subject = $this->normalizeLegacyUrls($subject);
-        $html = $this->stripLeadingGreeting($html);
+        if (($template->editor_document_json['format'] ?? null) !== 'sections') {
+            $html = $this->stripLeadingGreeting($html);
+            $text = $this->stripLeadingGreetingFromText($text);
+        }
         $html = $this->stripLeadingGreetingArtifacts($html);
         $html = $this->normalizeLegacySuccessColors($html);
-        $text = $this->stripLeadingGreetingFromText($text);
         $text = $this->stripLeadingTextGreetingArtifacts($text);
 
         if ($template->channel === 'EMAIL' && $html !== '') {

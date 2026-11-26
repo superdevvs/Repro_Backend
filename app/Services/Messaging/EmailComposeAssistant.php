@@ -25,7 +25,18 @@ class EmailComposeAssistant
 
         $content = (string) ($response['choices'][0]['message']['content'] ?? '');
 
-        return $this->parse($content, $instruction);
+        $draft = $this->parse($content, $instruction);
+        if ($mode === 'subject' && trim($body) !== '') {
+            $draft['body'] = $body;
+
+            return $draft;
+        }
+        $greeting = app(EmailRecipientGreeting::class);
+        $draft['body'] = in_array($mode, ['write', 'from_shoot'], true)
+            ? $greeting->forNewDraft($draft['body'], $instruction)
+            : $greeting->preserveOpening($body, $draft['body']);
+
+        return $draft;
     }
 
     private function systemPrompt(): string
@@ -35,6 +46,9 @@ You write outbound email for R/E Pro Photos, a real-estate photography company.
 The user message is an instruction to you. Never paste that instruction into the email.
 Return only JSON with this shape: {"subject":"...","body":"..."}
 body is plain text the recipient will read, with a greeting, the point, and a short close. Use blank lines between paragraphs.
+For write and from_shoot, open with exactly Hi {{recipient_first_name}}, on its own line. This field is filled separately for every recipient at delivery. Never invent a name, use an example name from context, or write [First Name]. Omit the greeting when explicitly requested, and honor an explicitly requested generic greeting without adding a name.
+For shorter, warmer, clearer, and subject, preserve the existing greeting and every {{personalization_field}} exactly. Keep subject changes focused on the subject.
+This composer writes plain email copy. Do not generate HTML, CSS, or a designed layout; custom layouts are created in the Email Template Workspace.
 Do not use markdown, labels, or commentary.
 PROMPT;
     }

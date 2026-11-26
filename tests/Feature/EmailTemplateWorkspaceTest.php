@@ -3,8 +3,11 @@
 namespace Tests\Feature;
 
 use App\Jobs\GenerateEmailTemplateArtwork;
+use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
 use App\Models\User;
+use App\Services\Messaging\OutboundDeliveryGuard;
+use App\Services\Messaging\Providers\LocalSmtpProvider;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\ReproAi\LlmClient;
 use App\Services\Studio\Providers\OpenAiImageProvider;
@@ -78,6 +81,76 @@ class EmailTemplateWorkspaceTest extends TestCase
         $count = MessageTemplate::count();
         $this->postJson('/api/messaging/templates/preview', ['template' => $this->draft()])->assertOk()->assertJsonPath('subject', 'A few useful tips');
         $this->assertSame($count, MessageTemplate::count());
+    }
+
+    public function test_robbie_layout_keeps_editable_cards_and_personalizes_each_delivery(): void
+    {
+        $this->login();
+        $draft = $this->draft();
+        $draft['subject'] = '';
+        $draft['editor_document_json'] = ['version' => 2, 'format' => 'sections', 'sections' => []];
+        $video = 'https://vimeo.com/1243847479';
+        $proposal = [
+            'subject' => 'A Thanksgiving note',
+            'preheader' => 'Thank you for a wonderful year.',
+            'sections' => [
+                ['id' => 'title', 'type' => 'hero', 'heading' => 'Happy Thanksgiving!', 'body' => 'A note of gratitude', 'styles' => ['background' => '#F8F3EB', 'color' => '#17324C', 'padding' => 24]],
+                ['id' => 'letter', 'type' => 'text', 'body' => "Hi [First Name],\n\nThank you for a wonderful year."],
+                ['id' => 'video', 'type' => 'video', 'video_url' => $video, 'image_url' => 'https://example.test/poster.jpg'],
+                ['id' => 'cards', 'type' => 'columns', 'columns' => [
+                    [['id' => 'dashboard', 'type' => 'text', 'heading' => 'Client dashboard', 'body' => 'See your orders.']],
+                    [['id' => 'studio', 'type' => 'text', 'heading' => 'Listing Studio', 'body' => 'Polish a listing.']],
+                ]],
+                ['id' => 'signature', 'type' => 'signature', 'body' => 'The R/E Pro Photos team'],
+            ],
+        ];
+        $this->mock(LlmClient::class)->shouldReceive('chatCompletion')->once()->withArgs(function (array $messages): bool {
+            $context = json_decode($messages[1]['content'], true);
+
+            return $context['new_custom_email']
+                && $context['design_brief']['purpose'] === 'gratitude'
+                && str_contains($messages[0]['content'], 'Hi {{recipient_first_name}},');
+        })->andReturn(['choices' => [['message' => ['content' => json_encode($proposal)]]]]);
+
+        $suggestion = $this->postJson('/api/messaging/templates/assist', [
+            'draft' => $draft, 'instruction' => 'Create an editable Thanksgiving letter.', 'scope' => 'email',
+            'video_urls' => [$video],
+        ])->assertOk()->json('draft');
+        $this->assertSame('A note of gratitude', $suggestion['editor_document_json']['sections'][0]['body']);
+        $this->assertSame("Hi {{recipient_first_name}},\n\nThank you for a wonderful year.", $suggestion['editor_document_json']['sections'][1]['body']);
+        $saved = $this->postJson('/api/messaging/templates', $suggestion)->assertCreated()
+            ->assertJsonPath('editor_document_json.sections.3.columns.1.0.heading', 'Listing Studio')
+            ->assertJsonPath('editor_document_json.sections.2.video_url', $video)->json();
+
+        $preview = $this->postJson('/api/messaging/templates/'.$saved['id'].'/preview')->assertOk()->json();
+        $this->assertSame(1, substr_count($preview['html'], 'Hi Jamie,'));
+        $this->assertStringContainsString('ews-email-column', $preview['html']);
+        $this->assertStringContainsString('#F8F3EB', $preview['html']);
+
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        MessageChannel::create([
+            'type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'Fixture email',
+            'from_email' => 'team@example.test', 'is_default' => true, 'owner_scope' => 'GLOBAL',
+        ]);
+        $payloads = [];
+        $this->mock(LocalSmtpProvider::class)->shouldReceive('send')->twice()
+            ->andReturnUsing(function (MessageChannel $channel, array $payload) use (&$payloads): string {
+                $payloads[$payload['to']] = $payload;
+
+                return 'fixture-email-'.count($payloads);
+            });
+        $alex = User::factory()->create(['role' => 'photographer', 'name' => 'Alex Morgan']);
+        $priya = User::factory()->create(['role' => 'photographer', 'name' => 'Priya Shah']);
+        $this->postJson('/api/messaging/email/compose', [
+            'template_id' => $saved['id'], 'to' => [$alex->email, $priya->email],
+            'subject' => $saved['subject'], 'body_html' => $saved['body_html'], 'body_text' => $saved['body_text'],
+        ])->assertOk()->assertJsonPath('sent', 2);
+        foreach ([$alex->email => 'Alex', $priya->email => 'Priya'] as $email => $firstName) {
+            $this->assertStringContainsString('Hi '.$firstName.',', $payloads[$email]['html']);
+            $this->assertStringContainsString('Hi '.$firstName.',', $payloads[$email]['text']);
+            $this->assertStringContainsString('Listing Studio', $payloads[$email]['html']);
+            $this->assertStringNotContainsString('[First Name]', $payloads[$email]['html']);
+        }
     }
 
     public function test_section_links_and_document_shape_are_validated(): void
