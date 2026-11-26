@@ -285,6 +285,60 @@ placeholder (`app`, `maint`, `migrator`, `reader`, `check`, `probe`, `gate`,
 filled. The probe account reads only the columns it needs (never
 `authentication_string`).
 
+## Write gate procedures: `gate.py` (design 2.3, 2.4)
+
+Installed with the probe in `/opt/repro-cutover-fence/production/`; the gate
+account's defaults file is `mysql.gate_defaults`
+(`/etc/repro-cutover-fence/mysql-gate.cnf`, root 0600, checked like the
+probe's). A library for the controller, under its lock: `open_gate(config)`
+for `seal_mysql`; `close_gate(config)` for `seal_sqlite`, `way-back close`
+and `gate-normalise`. The caller decides when each is allowed (phases,
+approvals); `gate.py` decides how.
+
+- **Reading.** Always `mysql_probe.read()` as the probe account, in measured
+  mode whatever the journal says (an open gate found in `planned` is still
+  closed, not left open). The gate account runs only `GRANT`, `REVOKE` and
+  `KILL`; it cannot read the grant tables.
+- **Close.** Closed with no app session: done, no gate-account login. Open or
+  partial: one `REVOKE` per level naming exactly the privileges present (a
+  full-set revoke of a partial gate fails with 1141 and revokes nothing). Then
+  the app sessions the probe lists after the revoke are `KILL`ed (1094 is
+  fine) and only those IDs are waited for, 10 s at most, so a reconnecting
+  reader cannot hold the close up; the probe must read closed. A closed gate
+  with app sessions also gets the kill (a close that crashed between its
+  revoke and its kill leaves sessions that still write).
+- **Open.** Refused before any MySQL login unless `mysql.mode` is `cutover`
+  and the journal reads `writes_possible` (the runner commits it just before
+  `seal_mysql`; in drill mode, or any other phase, the gate never opens).
+  From closed: the two `GRANT`s, then every app session listed afterwards is
+  killed (it holds the closed privileges); from open: no `GRANT`, the kill
+  only; the probe must read open. Partial is refused.
+- **Results.** `close_gate` returns `{"before", "revoked", "killed"}`,
+  `open_gate` `{"before", "granted", "killed"}`, for the caller's records.
+- **Refusals.** `GateUnreachable` (probe exit 3, nothing changed: the caller
+  decides whether a skip is allowed and records it) is a `GateRefused`, which
+  is an `UnsafeCutover`. An unrecognised state is refused with no change and
+  `root_sql`: statements built from the probe's rows (roles and proxies
+  either way, default roles, the lock, `REVOKE ALL PRIVILEGES, GRANT OPTION`,
+  a column row left by direct DML, `mandatory_roles`, the probe's `PROCESS`)
+  ending with the two closed grants of `accounts.sql`. It is also in the
+  exception's message. A missing account gets comments only (recreate it as
+  `accounts.sql` does, with its password); a reading not made as the probe
+  account gets no SQL. Names that would need quoting appear only as JSON in a
+  comment.
+- **Lint.** `gate.py --config <host.json> check` (root, read-only, no gate
+  login) prints the reading as JSON, with `root_sql`, and exits 0 for closed
+  or open, 3 unreachable, 4 otherwise, 1 on a failure.
+
+`test_gate.py` judges each procedure from the server side (the probe as the
+controller runs it, `SHOW GRANTS`, the binary log's account statements,
+`performance_schema.accounts` logins and `processlist`) on the fixture that
+`mysql/fixture.sh serve` builds from `accounts.sql`, with
+`REPRO_MYSQL_PROBE_FIXTURE` as for the probe. Without it those tests skip
+and a `WARNING` line names them at the end of the file's run; with
+`REPRO_REQUIRE_PROBE_FIXTURE=1` (`run-probe-fixture-tests.sh --linux-suite`)
+the run fails instead. The statement and quoting tests run anywhere.
+
 ## Telnyx while held (design 5.2)
 
 While the hold is in force, nginx answers 503 before Laravel and the freeze
