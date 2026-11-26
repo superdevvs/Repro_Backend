@@ -15,7 +15,10 @@ prefix, and no other, is carried over in front of the wrapper, so the guard
 still runs before every wrapped command.
 
 Entries that touch the application but match no rule are returned too, so an
-unknown writer is never left unfenced by accident. `--reverse` turns wrapped
+unknown writer is never left unfenced by accident. A rule that leaves its
+lines as they are (allow) names its exact command as well: a line is kept
+only when it holds that command alone, behind the same guard and before the
+same kind of trailer, so nothing rides along unfenced. `--reverse` turns wrapped
 lines back into the rule's command byte for byte; the forward rewrite refuses
 any line it could not turn back exactly.
 """
@@ -29,22 +32,35 @@ import sys
 from pathlib import Path
 
 SCHEDULE = re.compile(r"^(\s*(?:@\w+|\S+\s+\S+\s+\S+\s+\S+\s+\S+))(\s+)(\S.*)$")
-TRAILER = re.compile(r"((?:\s+(?:>>?|2>>?)\s*[^\s'\"]+)*(?:\s+2>&1)?)(\s+#[^'\"]*)?$")
+# What may follow a rule's command: output redirections to plain paths, 2>&1 and a marker comment. Nothing in
+# it can run or feed another command (no ;, &, |, $, quotes or backquotes in a target, no cron % anywhere).
+TRAILER = re.compile(r"((?:\s+(?:>>?|2>>?)\s*[A-Za-z0-9_./-]+)*(?:\s+2>&1)?)(\s+#[^'\"%]*)?$")
 ASSIGNMENT = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=")
 # The only prefix carried over in front of the wrapper, byte for byte.
 STORAGE_GUARD = "/usr/local/sbin/repro-storage-guard --live && "
+STORAGE_GUARD_PATH = STORAGE_GUARD.split()[0]
 
 
 def _checked(rules: dict) -> list[tuple[re.Pattern, dict]]:
-    """The compiled rules; each either allows its lines as they are or names a profile and the exact command."""
+    """The compiled rules; each names the exact command it either leaves as it is (allow) or replaces (profile)."""
     compiled = []
     for rule in rules["rules"]:
         keys = set(rule) if isinstance(rule, dict) else None
-        if keys not in ({"match", "allow"}, {"match", "profile", "command"}) \
+        if keys not in ({"match", "allow", "command"}, {"match", "profile", "command"}) \
                 or not all(isinstance(value, str) and value for value in rule.values()):
-            raise ValueError(f"Each cron rule needs match and either allow, or profile and command: {rule!r}")
+            raise ValueError(f"Each cron rule needs match, command and either allow or profile: {rule!r}")
+        if rule["command"].startswith(STORAGE_GUARD_PATH):
+            raise ValueError(f"A cron rule's command starts with the storage guard, which is carried over "
+                             f"separately; name the command after '{STORAGE_GUARD}': {rule!r}")
         compiled.append((re.compile(rule["match"]), rule))
     return compiled
+
+
+def _parts(command: str) -> tuple[str, str, str]:
+    """The exact storage guard in front (or nothing), the command it guards and the trailer after it."""
+    guard = STORAGE_GUARD if command.startswith(STORAGE_GUARD) else ""
+    trailer = TRAILER.search(command).start()
+    return guard, command[len(guard):trailer], command[trailer:]
 
 
 def _split(text: str) -> list[str]:
@@ -97,12 +113,15 @@ def wrap(text: str, rules: dict, wrapper: str) -> tuple[str, list[str]]:
                 unknown.append(line)
             lines.append(line)
             continue
+        guard, exact, trailer = _parts(command)
         if "allow" in rule:
+            # Left as it is only when its command is exactly the rule's, alone or behind the exact storage guard,
+            # with only the trailer after it; anything else chained to an allowed command is refused (review C2-8).
+            if exact != rule["command"]:
+                unknown.append(line)
             lines.append(line)
             continue
-        trailer = TRAILER.search(command)
-        guard = STORAGE_GUARD if command.startswith(STORAGE_GUARD) else ""
-        wrapped = f"{schedule}{separator}{guard}{wrapper} {rule['profile']}{command[trailer.start():]}"
+        wrapped = f"{schedule}{separator}{guard}{wrapper} {rule['profile']}{trailer}"
         # The wrapper runs only the profile's command. The wrapped line is installed only when it turns back
         # into exactly this line: the rule's command, alone or behind the exact storage guard. Any other
         # prefix, anything chained, piped or substituted after it, or another option would be dropped.
@@ -144,7 +163,8 @@ def main(argv: list[str]) -> int:
     try:
         rules = json.loads(args.rules.read_text(encoding="utf-8"))
         result, unknown = (unwrap if args.reverse else wrap)(text, rules, args.wrapper)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, re.error) as error:
+        # re.error (a match that is not a regular expression) is no ValueError before Python 3.13.
         print(f"Refusing: the cron rules cannot be used: {error}", file=sys.stderr)
         return 2
     if unknown:

@@ -8,7 +8,9 @@
      "command": "cd /var/www/backend && /usr/bin/php artisan auth:prune-security-limits --limit=1000"},
     {"match": "artisan cubicasa:refresh-deliveries", "profile": "cubicasa-poll",
      "command": "/usr/bin/flock -n /home/maverick/.repro-cubicasa-revision-poll/poll.lock /usr/bin/sg www-data -c 'umask 0002; cd /var/www/backend && /usr/bin/php artisan cubicasa:refresh-deliveries --limit=25'"},
-    {"match": "/ensure-supervisor\\.sh", "allow": "Starts the user Supervisor, whose writer programs are wrapped"},
-    {"match": "scripts/deploy/deployment-storage\\.py", "allow": "Deploy backup retention; never opens the live database"}
+    {"match": "/ensure-supervisor\\.sh", "allow": "Starts the user Supervisor, whose writer programs are wrapped",
+     "command": "/home/maverick/.local/share/repro-studio/ensure-supervisor.sh"},
+    {"match": "scripts/deploy/deployment-storage\\.py", "allow": "Deploy backup retention; never opens the live database",
+     "command": "/usr/bin/python3 /var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention"}
   ]
 }

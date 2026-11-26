@@ -55,7 +55,7 @@ start again through the wrapper.
 | User Supervisor: studio, lab-tour (when installed), voice-realtime, voice-notifications, voice-transcripts | `sudo -n ... admit.py <profile>` |
 | `repro-media-archives.service` | systemd drop-in `ExecStart=+... admit.py media-archives` |
 | Laravel scheduler (cron `schedule:run`) | `admit.py scheduler`; background commands keep the lease |
-| Other application cron lines | `crontab.py` rewrites lines that match a rule exactly, keeping the storage guard in front of the wrapper; any other application line is refused (below) |
+| Other application cron lines | `crontab.py` rewrites lines that match a rule exactly, keeping the storage guard in front of the wrapper, and keeps an allowed line only when it is exactly its rule's command; any other application line is refused (below) |
 | Deployments | `/etc/repro-database-cutover/active`, published under both deploy locks from `init` (Deploy-App checks only this file, never the guard) until reopening a completed rollback lifts it |
 | Manual `sqlite3` or tinker as the deploy or web user | SQLite seal: no write bits on the database files during the freeze. Write bits stop new opens only, so the seal first refuses while any other process holds the database, `-wal` or `-shm` open for writing (an idle session opened earlier), and checks again after the modes change. It needs root's `/proc` access to every process (`CAP_SYS_PTRACE`); an unreadable process also refuses |
 
@@ -63,14 +63,22 @@ Root bypasses file modes. Root-run tools are fenced by the runbook only.
 
 ### Cron lines (`crontab.py`, D20)
 
-A rule in `cron-rules.json` either leaves its lines as they are (`match`
-and `allow`, the reason) or rewrites them (`match`, `profile` and
-`command`, the exact command text the profile replaces); any other shape is
-refused (exit 2). A line that a rewriting rule matches is wrapped only when
-its command is exactly the rule's `command`, alone or behind the storage
-guard `/usr/local/sbin/repro-storage-guard --live && ` (that form, byte for
-byte), followed only by output redirections and a marker comment. The guard
-is carried over in front of the wrapper, so it still runs first:
+A rule in `cron-rules.json` names the exact command text of its lines
+(`command`) and either leaves them as they are (`match`, `allow` with the
+reason, `command`) or rewrites them (`match`, `profile`, `command`, the
+command the profile replaces); any other shape is refused (exit 2). A
+rule's `command` never includes the storage guard, which is carried over
+separately: a `command` that starts with `/usr/local/sbin/repro-storage-guard`
+is refused (exit 2), and so is a `match` that is not a valid regular
+expression. A line that a rule matches is kept or wrapped only when its
+command is exactly the rule's `command`, alone or behind the storage guard
+`/usr/local/sbin/repro-storage-guard --live && ` (that form, byte for
+byte), followed only by output redirections to plain paths (letters,
+digits, `_`, `.`, `/`, `-`), `2>&1` and a marker comment without `%`.
+That holds for `allow` rules too: an allowed script with an artisan command
+chained before or after it, or the retention line with `sqlite3` after it,
+is refused like any other line. The guard is carried over in front of the
+wrapper, so it still runs first:
 
 ```text
 * * * * * /usr/local/sbin/repro-storage-guard --live && cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1
@@ -89,10 +97,21 @@ crontab byte for byte (input and output are bytes, with no newline or
 encoding translation). Lines that are already wrapped are left alone.
 
 The example's commands are the repository installers' forms. At W1, check
-each rule's `command` against the live crontab (only schedules and command
-names were read on 25 November); a live line that differs is refused, and
-the rule is corrected, not the line. Write to a file and install only on
-exit 0:
+each rule's `command` against the live crontab, the `allow` rules included:
+production's `ensure-supervisor.sh` and backup retention lines must be
+compared with their rules like the wrapped ones (only schedules and command
+names were read on 25 November). A live line that differs is refused, and
+the rule is corrected, not the line.
+
+The `cubicasa-poll` line keeps the cron guard in front of the wrapper, and
+its profile in `wrappers.example.json` runs
+`/usr/local/sbin/repro-storage-guard --live` again before the command. The
+guard is installed by hand on production and its source is not in this
+repository, so this checkout cannot show that a second run is harmless (a
+read-only check). Both stay for now; at W1, read the installed guard
+(read-only) and drop the profile's copy if the guard writes anything.
+
+Write to a file and install only on exit 0:
 
 ```sh
 wrapper='/usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py'
