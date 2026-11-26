@@ -153,7 +153,9 @@ checked in the very file the identity probe reads.
 **Queue commands.** The pause flags live in `www-data`'s 0755 folders under
 `storage/framework/cache/data`, and the watchdog runs with `UMask=0077`,
 which `runuser` keeps; a 0600 flag reads as "not paused" to the deploy user's
-workers. So `queue_pause` and `queue_resume` must be exactly
+workers. Run as the deploy user, `queue:pause` cannot write there; run as
+root, it leaves root-owned files and folders that `www-data` cannot write
+later. So `queue_pause` and `queue_resume` must be exactly
 `["/usr/sbin/runuser", "-u", "www-data", "--", "/bin/sh", "-c", SCRIPT, NAME]`.
 `SCRIPT` is matched by structure, not searched as text: split on ` && `
 only, it is exactly three steps, `cd <app_root>` and `umask 0022` (in either
@@ -170,8 +172,12 @@ the `connection:queue` argument, which becomes `$1`:
   "cd /var/www/backend && umask 0022 && exec /usr/bin/php artisan queue:pause \"$1\"", "repro-queue"]
 ```
 
-**Queue flags for the deploy user** (design 5.1). The pre-hold pauses and
-the undo list's resumes run as the deploy user through one sudoers line:
+**Queue flags for the deploy user** (design 5.1). The pre-hold pauses (the
+runbook's 9:20 pm step) and the undo list's resumes (when the night is
+called off) run as the deploy user through one sudoers line. The runbook
+(`docs/mysql-production-cutover.md`) has the full `host.json` entry; W1
+installs the helper and its sudoers file and checks the file with
+`visudo -cf /etc/sudoers.d/repro-queue-flag`:
 
 ```text
 sudo -n /usr/local/sbin/repro-queue-flag pause database:media-archives

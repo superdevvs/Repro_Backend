@@ -28,7 +28,8 @@
     "2026_11_24_150000_create_crm_feature_tables",
     "2026_11_24_160000_create_crm_intake_receipts",
     "2026_11_24_161000_add_booking_details_to_crm_quotes",
-    "2026_11_24_180000_add_crm_communication_receipts"
+    "2026_11_24_180000_add_crm_communication_receipts",
+    "2026_11_25_140000_add_replay_identity_to_recruit_application_receipts"
   ],
   "budget": {
     "import_and_verify_ms": 720000,

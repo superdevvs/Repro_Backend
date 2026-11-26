@@ -645,7 +645,8 @@ class CutoverHoldTests(CutoverFixture):
 
     def test_held_site_after_the_hold_is_expected_within_the_60_minute_write_outage(self):
         # 50 min is past the 45 min decision deadline, which ends with the hold itself.
-        for phase in ("sqlite_authoritative", "mysql_authoritative"):
+        # writes_possible is the promotion in progress, between Approval 2 and MySQL authority.
+        for phase in ("sqlite_authoritative", "writes_possible", "mysql_authoritative"):
             with self.subTest(phase):
                 self.hold_ended(phase, started=NOW - 50 * 60)
                 status = self.run_probe()["site_held"]
@@ -653,7 +654,7 @@ class CutoverHoldTests(CutoverFixture):
                 self.assertIn("50 of 60 min", status["detail"])
 
     def test_held_site_after_the_hold_pages_at_the_60_minute_write_outage(self):
-        for phase in ("sqlite_authoritative", "mysql_authoritative"):
+        for phase in ("sqlite_authoritative", "writes_possible", "mysql_authoritative"):
             with self.subTest(phase):
                 self.hold_ended(phase, started=NOW - Runner.WINDOW_SECONDS)
                 status = self.run_probe()["site_held"]
@@ -849,13 +850,32 @@ class WriterTokenTests(CutoverFixture):
         self.view(phase="mysql_authoritative")
         self.open_site()
         (self.root / "app" / ".env").write_text("DB_CONNECTION=mysql\n")
-        self.assertEqual(self.run_probe()["writer_token_held_too_long"]["state"], "ok")
+        status = self.run_probe()["writer_token_held_too_long"]
+        self.assertEqual((status["state"], status["detail"]), ("ok", "no session held the writer token for 30 s or more"))
         query = [sql for sql in self.sent if "data_locks" in sql][-1]
         self.assertIn(">= 30", query)
         self.assertIn("'repro_mysql_control'", query)
         self.holders = [["1", "47"]]
         status = self.run_probe()["writer_token_held_too_long"]
-        self.assertEqual((status["state"], status["detail"]), ("fail", "1 session held the writer token over 30 s (oldest 47 s)"))
+        self.assertEqual((status["state"], status["detail"]),
+                         ("fail", "1 session held the writer token for 30 s or more (oldest 47 s)"))
+
+    def test_token_query_keeps_the_condition_of_the_php_watchdog(self):
+        # The probe repeats `php artisan db:writer-token-holders` without its processlist join, which only
+        # adds display columns (a LEFT JOIN keeps every row) and would need another grant.
+        php = (REPO / "app" / "Console" / "Commands" / "WriterTokenHolders.php").read_text(encoding="utf-8")
+        select = re.search(r'\$connection->select\("(.*?)", \[\$limit\]\)', php, re.DOTALL)
+        self.assertIsNotNone(select, "db:writer-token-holders no longer runs its query in one select() call")
+
+        def clauses(sql):
+            found = re.fullmatch(r"SELECT .*? FROM (.*?) WHERE (.*?)(?: ORDER BY .*)?", " ".join(sql.split()))
+            self.assertIsNotNone(found, sql)
+            return found.groups()
+
+        php_from, php_where = clauses(select.group(1))
+        probe_from, probe_where = clauses(probe.TOKEN_HOLDERS.format(limit="?"))
+        self.assertEqual(probe_where, php_where)
+        self.assertTrue(php_from.startswith(probe_from + " LEFT JOIN "), (probe_from, php_from))
 
     def test_a_token_query_that_fails_is_a_failure(self):
         self.view(phase="mysql_authoritative")
