@@ -61,7 +61,6 @@ try:
     from fence import guard  # Repository layout.
 except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
     import guard
-import admit  # noqa: E402
 import binlog_scan  # noqa: E402
 import config_build  # noqa: E402
 import deploy_marker  # noqa: E402
@@ -1246,9 +1245,12 @@ class ProductionAdapter:
         profile's name: what admit.py gives a profile's writer (user, group and its supplementary groups, cwd, umask,
         environment) and the php and artisan it runs. A profile that does not run `<php> <app_root>/artisan` is a
         shell script: it is probed with QUEUE_PHP and the app's artisan, for its user and cwd (design 3.2 step 11).
-        admit.load_profile checks each, so a root user or group refuses as admit.py would."""
+        admit.load_profile checks each, so a root user or group refuses as admit.py would. admit, like pwd and grp,
+        is imported here: `import adapter` needs no Unix account module (test_config_build)."""
         import grp
         import pwd
+
+        import admit
 
         raw = self._protected(self.paths["wrappers"], "wrapper profiles")
         try:
