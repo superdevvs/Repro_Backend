@@ -907,6 +907,10 @@ Not yet here (later slices):
   and always runs the stop: nginx holds every request by then (review
   A2-2). A freeze with no
   `drain_fpm` command refuses; a rollback with none returns no record.
+  A rollback that has less than `fpm.drain_seconds` plus 12 s left before
+  its deadline when the FPM drain would start skips `fpm_drain.py` and runs
+  the FPM stop at once, recording outcome `skipped` (D12; "`seal_sqlite`,
+  the full undo" below). A freeze is unchanged.
   `drain` returns the record and the runner journals it: it goes into the
   pending `freeze` or `abort` action, so that action's **history entry**
   carries it as `fpm_drain` (the journal's `evidence` key is the target
@@ -934,13 +938,6 @@ Not yet here (later slices):
   which this adapter still refuses, leads the runner to a MySQL publication.
 
 Not yet here:
-- D12 (rollback timing): `drain` does not check that the runner's deadline
-  leaves `fpm.drain_seconds` plus 12 s for `fpm_drain.py`. With less left,
-  `_run` kills `fpm_drain.py` at the deadline, the FPM stop never runs, and
-  the rollback retries on the next tick. `load_config` checks the same
-  margin against `command_seconds` only (and refuses `fpm.status_socket`
-  equal to `fpm.socket` and a `config_build` command other than design
-  1.3's); the behaviour is unchanged here.
 - Review C2-4: measured publication makes correct pins a precondition of the
   W1 drill init sequence (marker, `init`, `rehold`, `refresh`, reopen). D14's
   W1 sequence must refuse before `rehold` unless `live_config.py --app-root`
@@ -948,12 +945,10 @@ Not yet here:
   `sqlite_live_config_sha256` (read-only), and D18 must exercise that order.
   `pin-config` is D14.
 - Review C2-7: (1) `config_build.check_command` in `load_config`: done;
-  (2) `reopen()` (SQLite) still accepts a fallback live config (D13), and
-  the unseal proof (3.5 step 7) and `seal_sqlite` must read
-  `paths.sealed_hash`, check `run_id`, `hold_id`, `started_at` and `database`,
-  and compare `sqlite_seal.file_sha256(database)` with `sha256` (D12), as
-  `prepare` step 3 does (D10); `seal_sqlite` step 6 must refuse a fallback
-  config itself (D12), as `prepare` step 8 does (D10); (3) with MySQL down, `observe()` reads false/false in
+  (2) `reopen()` (SQLite) still accepts a fallback live config (D13); the
+  unseal proof against `paths.sealed_hash`, and `seal_sqlite` rebuilding a
+  fallback config and never unsealing on one, are done (D12, "`seal_sqlite`,
+  the full undo" below); (3) with MySQL down, `observe()` reads false/false in
   `frozen` and `ready` while `writes_possible` is false, so `before.frozen()`
   holds in `_promote`: `evidence()` must require a reachable, closed target
   reading before `writes_possible` is written (D11, C02). D11's evidence also
@@ -1010,7 +1005,7 @@ Steps 1 to 4 change nothing (step 4 may end app sessions, which hold no
 grant), and the run stays `frozen` with its pending `prepare` until `abort`.
 Step 5 refuses a `.env` that steps 6 and 7 would refuse before it writes
 the record. From the record on a failure leaves the switch partly done, for
-`seal_sqlite` to undo (D12; until then see "Not yet here" below).
+`seal_sqlite` to undo ("`seal_sqlite`, the full undo" below).
 
 **The history scan** (steps 4 and 10, the `--since` contract above):
 `commands.mysql` with `--since <backup file>:<position> --since-gtid
@@ -1135,27 +1130,160 @@ A controller killed inside a step (`PrepareHost.kill_inside`) can also leave:
 
 From any of these states a new `prepare` finishes the switch
 (`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step`,
-`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes`).
+`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes`), and
+an `abort` or the watchdog undoes it ("`seal_sqlite`" below).
 
 Not yet here:
 - D11: steps 11 and 12, `evidence()`, `check-evidence --write` (which writes
   the manifest above through `check_inputs`).
-- D12: `seal_sqlite`'s full undo (design 3.5 steps 2 to 7). Until then
-  `seal_sqlite` only unseals SQLite and lifts the ingress marker, and with a
-  switch record it first removes `.env.repro-<32 hex>` leftovers and then
-  refuses, before it unseals anything, while `.env` no longer holds the
-  record's SQLite values (review D10R-1). So from step 7's rename on, an
-  `abort` or the watchdog stops with "The .env holds the MySQL switch" and
-  the site stays held (SQLite sealed, the run `frozen` with a pending
-  `abort` that every retry refuses the same way) instead of reopening
-  SQLite under a MySQL `.env`, whatever `config.php` reads. Before the rename (a crash
-  after step 5 or 6, or a kill inside step 7) the rollback reopens SQLite.
-  `test_abort_never_reopens_sqlite_under_the_switched_env` covers both;
-  D12 replaces that test's refusal with the undo, from every state in the
-  two tables above. Do not run `prepare` on a host before D12.
 - Step 9 does not wait for the FPM socket; D11's FastCGI probe (step 11) is
   its first reader and owns that bounded wait.
 - D14: `cli.py prepare`.
+
+## `seal_sqlite`, the full undo (design 3.5, D12)
+
+`adapter.seal_sqlite(lease, deadline)` runs inside every rollback
+(`runner._rollback`: `abort`, the watchdog's tick at 0:45, an expiry timer's
+conditional abort), after the runner closed admissions, ran the drain with
+purpose `rollback` (FPM stopped) and drained the writers, and before it
+publishes SQLite authority. It undoes whatever part of `prepare` ran,
+whether `prepare` never ran, stopped between or inside any step (the two
+tables above), or finished. The steps are `adapter.SEAL_SQLITE_STEPS`, one
+method `_seal_sqlite_<name>` each; before each, the lease must still be
+current and the deadline not passed.
+
+| Step | Name | What |
+| --- | --- | --- |
+| 1 | `writers_drained` | `lease.require_writers_drained()` |
+| 2 | `gate` | `gate.close_gate` (design 2.3): a closed gate with no app session needs no login; app sessions are ended; an open or partial gate is closed. Nothing listening (`GateUnreachable`): skipped, and `gate_close_skipped` recorded, only while the journal's `writes_possible` is exactly false (else refused). Any other refusal (an unrecognised state) stops the rollback here |
+| 3 | `env` | The `.env` (below) |
+| 4 | `config` | `config_build.build(config, expected_engine="sqlite", expected_sha256=<SQLite pin>, deadline=...)` when step 3 restored `.env`, the live config is the `.env` fallback (a missing or refused `config.php`, design 4.7), or this run's switch left a cache off the SQLite pin. A failed build leaves `config.php` as it was |
+| 5 | `fpm` | `commands.fpm_reload` (`systemctl try-reload-or-restart`, never a plain `reload`), wherever this run's switch record exists or steps 3 and 4 changed something: a running FPM reloads onto the SQLite config, a stopped one stays stopped |
+| 6 | `verify` | The live config: engine `sqlite`, source `cache`, and the SQLite pin wherever this run switched or step 4 built; the `.env`: this run's record's values (every switch key), or no MySQL (below); the identity probe's `config_sha256` equal to the pin's |
+| 7 | `unseal_proof` | `paths.unseal_proof` (below) |
+| 8 | `unseal` | `sqlite_seal.unseal` |
+| 9 | `markers` | The ingress open marker and `paths.scheduler_release` removed |
+
+Every refusal comes before step 8, so SQLite is never unsealed while `.env`
+or the live config routes to MySQL (review D10R-1): the run stays in its
+held phase with its pending `abort`, SQLite sealed, no authority published,
+and the next tick retries. The receipt is not touched: it stays armed until
+the SQLite reopen retires it (design 3.7), so the runner's publication
+after this step still reads real business activity (critic RC-L10). The
+switch record and `sealed_hash` stay until `retire`.
+
+**The `.env`** (step 3). With any run's switch record, first the
+temporary files an interrupted `envfile.replace` left are removed
+(`envfile.remove_leftovers`, review D10R-5), and the `.env` must be a
+regular file whose switch keys `envfile.values` can read (one line each);
+otherwise the rollback stops (review D10V-1).
+- This run's record: `envfile.assign(<.env>, record values)` sets each
+  switch key back to its SQLite value (removing the keys that had none) and
+  keeps every other line, the night flags included; the result's
+  `envfile.digest` without the night flags must equal the record's
+  `env_sha256` (else "does not match the .env": the record or the file was
+  edited); if it differs from the current file, `envfile.replace` writes it
+  (atomic, owner, group, mode and ACL kept). With no night flag turned
+  since `prepare`, the `.env` is then the SQLite file byte for byte.
+- Another run's record is never used or replaced, and neither does it stop
+  a rollback by itself: this run's `prepare` refuses at step 5 with another
+  run's record, so nothing of this run was switched.
+- No record of this run: the `.env` (when there is one) must not name
+  another `DB_CONNECTION` than `sqlite`, and the live config's engine must
+  be `sqlite`; otherwise the `.env` or `config.php` was switched by hand,
+  nothing records the SQLite values, and the rollback stops ("switched by
+  hand"). Step 6 checks the same again.
+
+**A cache off the pin without a switch.** Without a switch record of this
+run, a parsed SQLite `config.php` whose route hash is not the SQLite pin is
+left as it is (design 3.5 step 4 would rebuild it): the publication
+measures it, the guard admits nobody on it, and `refresh` measures again
+once the pinned cache is back (`test_adapter.py`
+`test_publication_records_measured_hash_and_identity`). Only a missing or
+refused cache is rebuilt there.
+
+**The rollback's record** (`paths.unseal_proof`, root 0600; the "seal
+record" of design 3.5 step 2 and 3.7), written on every pass of step 7:
+
+```json
+{"version": 1, "run_id": "<run>", "hold_id": "<journal hold>", "started_at": 1764000000,
+ "database": "/var/www/backend/database/database.sqlite",
+ "sha256": "<the file now>", "sealed_sha256": "<paths.sealed_hash sha256>", "unchanged": true, "problem": null,
+ "gate": {"before": "closed", "revoked": {}, "killed": []}, "gate_close_skipped": false, "at": 1764000300}
+```
+
+`sha256` is `sqlite_seal.file_sha256` of the sealed file before it is
+unsealed. `sealed_sha256` is `paths.sealed_hash`'s, only when that record is
+this run's, this hold's (`hold_id`, `started_at`) and this `database`'s;
+otherwise both it and `unchanged` are `null` and `problem` says why (a
+rollback from `holding` has no freeze). A file that changed after the freeze
+(`unchanged` false) is recorded, printed as one `WARNING` line on stderr
+(the watchdog's journal), and does not stop the rollback: SQLite is still
+the only copy with every confirmed write. `gate` is `gate.close_gate`'s
+result (account and privilege names, session IDs; no secret), `null` with
+`gate_close_skipped` true when nothing listened. The SQLite reopen (D13)
+must then require a reachable, closed reading with no business activity
+(design 3.7 step 1). The drill's pass mark is `sha256` equal to
+`sealed-hash.json`'s.
+
+**PHP-FPM after a rollback** is stopped: the rollback's drain stops it
+(`drain_fpm`'s last command), and step 5's `try-reload-or-restart` leaves a
+stopped FPM stopped. The SQLite reopen starts it (`start_workers`, design
+5.4) and probes it through FastCGI before the marker (design 3.7). There is
+no FastCGI reading of FPM between the rollback and the reopen.
+
+**A rollback under a short deadline.** The runner gives every rollback at
+least 10 minutes (`ROLLBACK_SECONDS`, even for a late watchdog), so a short
+deadline only comes from host commands before the drain that used most of
+it (`close_admissions`, `stop_workers`, each bounded by `command_seconds`).
+`drain` checks the time left when the FPM drain would start: with less than
+`fpm.drain_seconds` plus 12 s (what `fpm_drain.py` needs inside
+`command_seconds`) a rollback does not start `fpm_drain.py`, whose kill at
+the deadline would leave the FPM stop unrun and the rollback failing until
+the next tick; it runs the stop at once and records `{"purpose":
+"rollback", "outcome": "skipped", "waited_seconds": 0, "polls": 0,
+"problem": "<n> s were left ..."}` in the `abort` history entry. nginx
+holds every request by then (review A2-2), and a request the stop ends
+mid-write is rolled back by SQLite (design 5.4). A freeze is unchanged: its
+deadline is the 0:45 point or `max_drain_seconds`, and `fpm_drain.py` killed
+at the deadline refuses the freeze before the FPM stop (the hold stays and
+the rollback follows).
+
+**Host commands that start their own session.** `_execute` and
+`config_build` run every host command in its own session and process group
+and kill the whole group on a timeout or an interrupt. A command that calls
+`setsid` itself (or daemonizes into a new session) would leave that group
+and outlive the kill. None does: the queue commands, the config build,
+`fpm_drain.py`, `systemctl` and the identity and MySQL probes stay in the
+group they were started in (`runuser` keeps its child in its own group and
+session; D19 checks that read-only on production's util-linux). A new host
+command must keep it that way.
+
+**What a crash inside the undo leaves.** Each step is safe to run twice: a
+closed gate needs no login, a restored `.env` is not replaced again, a
+cache on the SQLite pin is not built again, `try-reload-or-restart` and the
+unseal are idempotent, and the proof is rewritten. A rollback killed
+anywhere is finished by the next `abort` or tick from what is on disk: a
+kill inside step 3 before the rename leaves `.env.repro-<32 hex>` (the
+restored SQLite `.env`), which the next pass removes; after the rename,
+`.env` is SQLite and the cache still MySQL, which the next pass builds
+again (this run's cache off the SQLite pin); a kill inside step 4 leaves
+`.config.php.repro-<32 hex>` (removed by the next build) or the SQLite
+cache. Before step 8 SQLite stays sealed; after it, `.env` and the cache
+already read SQLite on the pin.
+
+Tests: `SealSqliteTests` in `test_adapter_mysql.py` (the scripted probe)
+and `SealSqliteFixtureTests` (the real gate close and the real probe's
+armed receipt on D04's fixture; they skip without it and fail when
+`REPRO_REQUIRE_PROBE_FIXTURE=1`). `UndoHost` extends `PrepareHost`: a
+`systemctl` stand-in that keeps `php8.3-fpm.service`'s state
+(`try-reload-or-restart` reloads only a running FPM and records the live
+config it read), `drain_fpm` as `fpm_drain.py`'s stand-in then the FPM
+stop, a scripted `gate.close_gate` (exit 3: not listening), a probe that
+reads business activity only while the receipt is armed, a runner at a
+chosen clock (the watchdog at 0:45, a late tick after 1:00), and a
+rollback stopped between (`crash_rollback_after(n)`) or killed inside
+(`kill_rollback_inside(point)`) seal_sqlite's steps.
 
 ## Telnyx while held (design 5.2)
 
@@ -1317,9 +1445,10 @@ cli.py refresh                                           # after a reboot (plann
 cli.py reopen                                            # after abort, or after refresh
 ```
 
-This adapter covers the SQLite hold, freeze, pre-write rollback and
-`prepare`'s switch (steps 1 to 10, above). `evidence()` and `seal_mysql`
-refuse, so `promote` cannot pass and MySQL is never opened for writes.
+This adapter covers the SQLite hold, freeze, pre-write rollback with
+`seal_sqlite`'s full undo of a `prepare`, and `prepare`'s switch (steps 1
+to 10, above). `evidence()` and `seal_mysql` refuse, so `promote` cannot
+pass and MySQL is never opened for writes.
 
 **After every reboot.** `/run` is a fresh tmpfs, so every writer is held: there is
 no authority proof for the new boot and no open marker. The runtime
@@ -1429,7 +1558,8 @@ fixture on its shared socket volume (`PrepareFixtureTests`). A prepare can
 be stopped between two steps (`crash_after(n)`) or killed with SIGKILL
 inside step 7 or 8 (`kill_inside(point)`, a forked controller), for D12's
 abort tests. The file's docstring has the parts table and how a later slice
-extends it.
+extends it. D12's `SealSqliteTests` and `SealSqliteFixtureTests` run on
+`UndoHost` (section "`seal_sqlite`, the full undo").
 `../run-linux-tests.sh` runs both files after its production loop; without
 the fixture the prepare fixture tests skip and `test_adapter_mysql.py
 --fixture-check` names them in its own WARNING line before any suite (or

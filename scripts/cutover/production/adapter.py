@@ -9,8 +9,11 @@ Every effect is idempotent and re-observable, as the runner requires:
   process remains, and returns the drain report's record for the journal; a
   freeze refuses a pool the drain could not watch, a rollback always stops it;
 - freeze seals the SQLite file and records its SHA-256 for this run and hold
-  (design 3.2 step 3); seal_sqlite restores its modes for rollback, but never
-  while the .env holds a prepare's switch (D12 brings the full undo);
+  (design 3.2 step 3);
+- seal_sqlite, in every rollback, undoes any part of prepare (design 3.5): the gate
+  closed, the .env restored from the run's switch record, the SQLite config cache
+  rebuilt to the pin, FPM reloaded only if it runs, all checked before SQLite is
+  unsealed; the unseal proof records the sealed file against the freeze's hash;
 - prepare (steps 1 to 10, design 3.2) switches the frozen host to MySQL behind the
   closed gate: bound inputs, the sealed file unchanged, no app-schema event since
   the verified backup, the switch record, the `.env` switch (envfile.py), the MySQL
@@ -178,6 +181,16 @@ SECRET_VALUE = r"[A-Za-z0-9._~+/=-]{16,256}"
 # Bounded retries of a MySQL probe that finds nothing listening (design 3.2, critic HO-L6).
 PROBE_ATTEMPTS = 3
 PROBE_RETRY_SECONDS = 1.0
+# seal_sqlite, the rollback's undo of any part of prepare (design 3.5 steps 1 to 9). Each step is the method
+# `_seal_sqlite_<name>` and is safe to run again; a rollback stopped anywhere, inside a step too, is finished by the
+# next one (README "seal_sqlite").
+SEAL_SQLITE_STEPS = ((1, "writers_drained"), (2, "gate"), (3, "env"), (4, "config"), (5, "fpm"), (6, "verify"),
+                     (7, "unseal_proof"), (8, "unseal"), (9, "markers"))
+# The rollback's record, paths.unseal_proof (design 3.5 step 7, and step 2's skipped gate close, which 3.7 reads).
+UNSEAL_PROOF_KEYS = {"version", "run_id", "hold_id", "started_at", "database", "sha256", "sealed_sha256", "unchanged",
+                     "problem", "gate", "gate_close_skipped", "at"}
+# The drain record of a rollback that had no time for fpm_drain.py and stopped FPM at once (README "seal_sqlite").
+DRAIN_SKIPPED = "skipped"
 
 
 def _argv(value) -> bool:
@@ -660,6 +673,20 @@ class PrepareRun:
     switched: bytes | None = None
 
 
+@dataclass
+class SealRun:
+    """What one seal_sqlite call carries from step to step, in memory only: a retried rollback runs every step
+    again from what is on disk."""
+
+    lease: Lease
+    deadline: float
+    record: dict | None = None  # this run's switch record, when prepare wrote one
+    env_restored: bool = False
+    config_built: bool = False
+    gate: dict | None = None  # gate.close_gate's result: before, revoked, killed
+    gate_close_skipped: bool = False
+
+
 class ProductionAdapter:
     def __init__(self, config: dict, journal: Journal, *, proc: Path = Path("/proc"), clock=time.time):
         self.config = config
@@ -684,6 +711,8 @@ class ProductionAdapter:
         The command runs in its own session and process group. runuser does not pass SIGKILL on to the
         command it started, so a timeout, or anything else that ends the wait (an interrupt), kills the
         whole group before it is reported: no queue command keeps running to change a flag afterwards.
+        A command that calls setsid itself would leave the group and outlive the kill; no host command
+        does, and a new one must not (README "seal_sqlite": host commands that start their own session).
         """
         seconds = self.config["command_seconds"]
         if deadline is not None:
@@ -865,6 +894,11 @@ class ProductionAdapter:
         with polls 0 included (review W2F-6). A rollback records any outcome and always runs the stop: nginx
         holds every request by then, so a pool it cannot watch protects nothing (review A2-2). With no drain_fpm
         command a rollback returns None and a freeze refuses.
+
+        A rollback that has less than fpm.drain_seconds plus FPM_DRAIN_MARGIN_SECONDS left before its deadline when
+        the FPM drain would start does not start fpm_drain.py: the deadline would kill it, and the FPM stop after it
+        would never run. It runs the rest of drain_fpm (the stop) at once and records outcome "skipped" (README
+        "seal_sqlite": the rollback under a short deadline). A freeze is unchanged.
         """
         if purpose not in DRAIN_PURPOSES:
             raise UnsafeCutover("The drain purpose must be freeze or rollback")
@@ -875,6 +909,17 @@ class ProductionAdapter:
         for argv in commands["stop_workers"]:
             self._run(argv, deadline)
         record = None
+        left = deadline - self.clock()
+        needed = self.config["fpm"]["drain_seconds"] + FPM_DRAIN_MARGIN_SECONDS
+        if purpose == "rollback" and commands["drain_fpm"] and left < needed:
+            record = {"purpose": purpose, "outcome": DRAIN_SKIPPED, "waited_seconds": 0, "polls": 0,
+                      "problem": f"{max(0, int(left))} s were left before the rollback's deadline, fewer than "
+                                 f"fpm.drain_seconds plus {FPM_DRAIN_MARGIN_SECONDS} s: FPM was stopped without the "
+                                 "drain"}
+            for argv in commands["drain_fpm"][1:]:
+                self._run(argv, deadline)
+            self._wait_absent(self.config["writer_processes"], deadline, "Writers are still running after the stop")
+            return record
         for index, argv in enumerate(commands["drain_fpm"]):
             output = self._run(argv, deadline)
             if index == 0:
@@ -1225,32 +1270,204 @@ class ProductionAdapter:
     def seal_mysql(self, lease: Lease, deadline: int) -> None:
         raise UnsafeCutover(NOT_SUPPORTED)
 
+    # seal_sqlite (design 3.5): the rollback's undo of any part of prepare, then SQLite unsealed.
+
     def seal_sqlite(self, lease: Lease, deadline: int) -> None:
-        """The rollback's seal: SQLite unsealed, the ingress marker lifted (design 3.5 steps 8 and 9).
+        """Undo whatever part of prepare ran, then unseal SQLite (design 3.5 steps 1 to 9, SEAL_SQLITE_STEPS).
 
-        D12 adds the full undo of a prepare (design 3.5 steps 2 to 7). Until then a prepare that wrote its switch
-        record is only checked here: what an interrupted .env replacement left is removed (review D10R-5), and
-        while the .env no longer holds the record's SQLite values the rollback refuses before it unseals SQLite
-        (review D10R-1), so the site stays held and the watchdog retries.
+        Called by every rollback (abort, the watchdog at 0:45, an expiry timer) and retried on every tick until it
+        passes. Whether prepare never ran, ran partly or finished, and wherever an earlier seal_sqlite stopped, each
+        step redoes or keeps its part from what is on disk. Everything that can refuse comes before step 8: SQLite
+        is unsealed only once the .env and the live config read SQLite on the pin (never under a MySQL .env, review
+        D10R-1). The receipt stays armed until the SQLite reopen (critic RC-L10); the switch record and the sealed
+        hash stay until retire.
         """
-        lease.require_writers_drained()
-        self._refuse_a_switched_env()
-        sqlite_seal.unseal(self.database, self.paths["sqlite_seal_record"])
-        _remove(self.paths["ingress_open"])
+        run = SealRun(lease, deadline)
+        for number, name in SEAL_SQLITE_STEPS:
+            lease.require_current()
+            _require(self.clock() < deadline,
+                     f"seal_sqlite ran out of time before step {number} ({name.replace('_', ' ')})")
+            getattr(self, f"_seal_sqlite_{name}")(run)
 
-    def _refuse_a_switched_env(self) -> None:
-        record = self._switch_record()
-        if record is None:
-            return
-        path = self._env_path()
+    def _seal_sqlite_writers_drained(self, run: SealRun) -> None:
+        """Step 1."""
+        run.lease.require_writers_drained()
+
+    def _seal_sqlite_gate(self, run: SealRun) -> None:
+        """Step 2: the gate closed and the app sessions ended (gate.close_gate, design 2.3). A server that is not
+        listening cannot be written; the close is skipped, and recorded, only while the journal says no MySQL
+        write was ever possible. Any other refusal stops the rollback before any undo, for the next tick."""
+        import gate
+
         try:
-            envfile.remove_leftovers(path)
-            current = envfile.values(envfile.read(path), record["values"])
+            run.gate, run.gate_close_skipped = gate.close_gate(self.config), False
+        except gate.GateUnreachable:
+            _require(self._writes_impossible(), "The MySQL target is unreachable while MySQL writes may be possible: "
+                                                "the gate close is not skipped, and the rollback stops")
+            run.gate, run.gate_close_skipped = None, True
+
+    def _seal_sqlite_env(self, run: SealRun) -> None:
+        """Step 3: this run's switch record restores each switch key's SQLite value in .env, through envfile, and
+        keeps every other line (the night flags included); then the file is the SQLite .env byte for byte. Any run's
+        record also clears what an interrupted replacement left (review D10R-5) and needs a .env it can be checked
+        against (review D10V-1). Another run's record is never used. Without a record of this run nothing of this
+        run was switched: a .env or a live config that names MySQL was switched by hand, and nothing records the
+        SQLite values, so the rollback stops and the site stays held."""
+        record, path = self._switch_record(), self._env_path()
+        try:
+            if record is not None:
+                envfile.remove_leftovers(path)
+            env = envfile.read(path)
+        except FileNotFoundError:
+            env = None
         except (envfile.Refused, OSError) as error:
+            raise UnsafeCutover(f"The app's .env cannot be read to undo the switch: {error}") from None
+        if record is not None:
+            _require(env is not None, "The app's .env cannot be read to undo the switch: it is missing")
+            try:
+                envfile.values(env, switch_keys(self.config))
+            except envfile.Refused as error:
+                raise UnsafeCutover(f"The .env cannot be checked against the switch record: {error}") from None
+        if record is None or record["run_id"] != self.pinned.run_id:
+            self._require_no_switch(env)
+            return
+        try:
+            restored = envfile.assign(env, record["values"])
+        except envfile.Refused as error:
             raise UnsafeCutover(f"The .env cannot be checked against the switch record: {error}") from None
-        _require(current == record["values"], "The .env holds the MySQL switch of the switch record, which this "
-                                              "seal_sqlite cannot undo before D12: the rollback stops before it "
-                                              "unseals SQLite, and the site stays held")
+        _require(envfile.digest(restored, self.config["mysql"]["night_flags"]) == record["env_sha256"],
+                 "The switch record does not match the .env (its digest differs): nothing is restored, the rollback "
+                 "stops before it unseals SQLite, and the site stays held")
+        if restored != env:
+            try:
+                envfile.replace(path, restored, expected=env)
+            except envfile.Refused as error:
+                raise UnsafeCutover(f"The .env was not restored: {error}") from None
+            run.env_restored = True
+        run.record = record
+
+    def _require_no_switch(self, env: bytes | None) -> None:
+        """No switch of this run to undo: neither the .env (when there is one) nor the live config may name MySQL."""
+        try:
+            named = None if env is None else live_config.env_values(env, ("DB_CONNECTION",)).get("DB_CONNECTION")
+        except live_config.Unmeasurable as error:
+            raise UnsafeCutover(f"The app's .env cannot be read to undo the switch: {error}") from None
+        engine = self._live_config().engine
+        _require(named in (None, "sqlite") and engine == "sqlite",
+                 f"The .env reads DB_CONNECTION={str(named)[:20]} and the live config {engine[:20]}, and there is no "
+                 "switch record of this run: it was switched by hand, and nothing records the SQLite values. The "
+                 "rollback stops before it unseals SQLite, and the site stays held")
+
+    def _sqlite_pin(self) -> str:
+        pin = self.policy.get("sqlite_live_config_sha256")
+        _require(is_sha256(pin), "The policy pins no SQLite live config hash (sqlite_live_config_sha256)")
+        return pin
+
+    def _seal_sqlite_config(self, run: SealRun) -> None:
+        """Step 4: the SQLite config cache built to the SQLite pin (config_build, atomic) when the .env was
+        restored, the live config is the .env fallback (design 4.7), or this run's switch left a cache that is not
+        the SQLite pin. Without a switch of this run a parsed SQLite cache is left as it is: the publication
+        measures it, and the guard admits nobody on a cache other than the pin."""
+        pin, live = self._sqlite_pin(), self._live_config()
+        if run.env_restored:
+            why = "the .env was restored"
+        elif live.source != live_config.CACHE:
+            why = f"the live config is the .env fallback: {live.problem}"
+        elif run.record is not None and live.live_config_sha256 != pin:
+            why = "the live config is not the SQLite pin"
+        else:
+            return
+        try:
+            config_build.build(self.config, expected_engine="sqlite", expected_sha256=pin, deadline=run.deadline)
+        except config_build.BuildFailed as error:
+            raise UnsafeCutover(f"The SQLite config cache was not rebuilt ({why}): {error}. The rollback stops before "
+                                "it unseals SQLite") from None
+        run.config_built = True
+
+    def _seal_sqlite_fpm(self, run: SealRun) -> None:
+        """Step 5: `try-reload-or-restart` (never a plain reload): a running FPM reloads onto the SQLite config, a
+        stopped one (the rollback's drain stopped it) stays stopped until the reopen starts it. Only where a switch
+        of this run may have reached FPM, or this undo changed the .env or the cache."""
+        if run.record is not None or run.env_restored or run.config_built:
+            self._run(self.config["commands"]["fpm_reload"], run.deadline)
+
+    def _seal_sqlite_verify(self, run: SealRun) -> None:
+        """Step 6: the live config is the SQLite engine from a parsed cache (on the SQLite pin wherever this undo
+        built it or this run switched), the .env reads SQLite (this run's record: every switch key its recorded
+        value), and the identity probe's config_sha256 is the pin's."""
+        live = self._live_config()
+        _require(live.engine == "sqlite" and live.source == live_config.CACHE,
+                 f"The live config is {live.engine[:20]} from the {live.source}, not SQLite from the config cache; the "
+                 "rollback stops before it unseals SQLite")
+        if run.record is not None or run.config_built:
+            _require(live.live_config_sha256 == self._sqlite_pin(),
+                     "The live config is not the SQLite pin; the rollback stops before it unseals SQLite")
+        try:
+            env = envfile.read(self._env_path())
+        except FileNotFoundError:
+            env = None
+        except (envfile.Refused, OSError) as error:
+            raise UnsafeCutover(f"The app's .env cannot be read to undo the switch: {error}") from None
+        if run.record is not None:
+            try:
+                current = None if env is None else envfile.values(env, switch_keys(self.config))
+            except envfile.Refused as error:
+                raise UnsafeCutover(f"The .env cannot be checked against the switch record: {error}") from None
+            _require(current == run.record["values"], "The .env does not hold the switch record's SQLite values after "
+                                                      "the restore; the rollback stops before it unseals SQLite")
+        else:
+            self._require_no_switch(env)
+        _require(self.identity().config_sha256 == self.pinned.config_sha256,
+                 "The identity probe's configuration digest is not the pin's; the rollback stops before it unseals "
+                 "SQLite")
+
+    def _sealed_sha256(self) -> tuple[str | None, str | None]:
+        """The sealed hash this run's freeze recorded for this hold and database, or None and why there is none."""
+        try:
+            record = guard.read_json(guard.read_protected(self.paths["sealed_hash"]))
+        except FileNotFoundError:
+            return None, "no sealed hash of this run and hold: the rollback came before a freeze"
+        except (guard.Refused, OSError, ValueError) as error:
+            return None, f"the sealed hash record cannot be read: {str(error)[:PROBLEM_CHARACTERS]}"
+        binding = self._hold_binding()
+        if not (record.keys() == SEALED_HASH_KEYS and is_sha256(record["sha256"])):
+            return None, "the sealed hash record is malformed"
+        if (record["run_id"], record["hold_id"], record["started_at"], record["database"]) != (
+                self.pinned.run_id, binding["hold_id"], binding["started_at"], str(self.database)):
+            return None, "no sealed hash of this run and hold: the record names another run, hold or database"
+        return record["sha256"], None
+
+    def _seal_sqlite_unseal_proof(self, run: SealRun) -> None:
+        """Step 7: the drill's proof, the sealed file's SHA-256 now against the freeze's sealed hash, with the gate
+        close (or its skip, which the SQLite reopen reads, design 3.7) in paths.unseal_proof (root 0600). A
+        mismatch is recorded and reported on stderr; it never stops the rollback, since SQLite is still the only
+        copy with every confirmed write."""
+        sealed, problem = self._sealed_sha256()
+        try:
+            now = sqlite_seal.file_sha256(self.database)
+        except OSError as error:
+            raise UnsafeCutover(f"The SQLite file cannot be hashed for the unseal proof: {os.strerror(error.errno)}") \
+                from None
+        unchanged = None if sealed is None else now == sealed
+        if unchanged is False:
+            problem = "the sealed SQLite file changed after the freeze hashed it"
+        _write_atomic(self.paths["unseal_proof"], {
+            "version": 1, "run_id": self.pinned.run_id, **self._hold_binding(), "database": str(self.database),
+            "sha256": now, "sealed_sha256": sealed, "unchanged": unchanged, "problem": problem, "gate": run.gate,
+            "gate_close_skipped": run.gate_close_skipped, "at": int(self.clock()),
+        }, 0o600)
+        if unchanged is False:
+            print(f"WARNING: the unseal proof found that the sealed SQLite file changed after the freeze hashed it "
+                  f"(sealed {sealed[:12]}, now {now[:12]}); the rollback goes on", file=sys.stderr)
+
+    def _seal_sqlite_unseal(self, run: SealRun) -> None:
+        """Step 8: SQLite's recorded modes restored (sqlite_seal.unseal)."""
+        sqlite_seal.unseal(self.database, self.paths["sqlite_seal_record"])
+
+    def _seal_sqlite_markers(self, run: SealRun) -> None:
+        """Step 9: the ingress marker and the scheduler release removed."""
+        _remove(self.paths["ingress_open"])
+        _remove(self.paths["scheduler_release"])
 
     # Authority and reopening.
 
