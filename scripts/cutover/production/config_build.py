@@ -19,18 +19,26 @@ the file APP_CONFIG_CACHE names, so the live bootstrap/cache/config.php is never
 3. opens the temporary file without following a link and checks it: a regular file with one link, owned
    by `app_owner`, mode 0644 (the command's umask), at most 8 MiB, accepted by the strict var_export
    reader, of the expected engine and, when given, of the expected route hash (the pin);
-4. gives it the live file's owner, group and mode (`app_owner`, `app_group` and 0644 when no regular live
-   file exists), fsyncs it, checks that its name still holds that file, renames it over config.php and
-   fsyncs the folder.
+4. gives it owner `app_owner`, the live file's group and the live file's mode with the group and other
+   write bits and every execute bit cleared (`app_group` and 0644 when no regular live file exists): never
+   group- or world-writable, never another account's, never wider than the live mode. Deploy-App's own
+   config:cache (maverick, group www-data, umask 0022) writes maverick:www-data 0644. Then it fsyncs the
+   file, checks that its name still holds that file, renames it over config.php and fsyncs the folder.
 
 Any failure removes the temporary file and leaves the live file as it was. It returns the LiveConfig of
 the file it renamed. The deploy user owns bootstrap/cache and may replace config.php at any time, so the
 callers measure the live file again against the pin (`prepare` step 8, `seal_sqlite` step 6).
 
-`stage(config, expected_engine=..., environment=...)` (design 1.3, Pins) runs the same command, with
-`environment` added (the switch values: Laravel's immutable dotenv keeps them over .env), into a fresh
-0700 folder the deploy user owns, applies the same checks, renames nothing and removes the folder. It
-returns the staged file's LiveConfig. Standard library only.
+`stage(config, parent=..., expected_engine=..., environment=...)` (design 1.3, Pins) runs the same
+command, with `environment` added (the switch values: Laravel's immutable dotenv keeps them over .env),
+into a fresh 0700 folder the deploy user owns inside `parent`, applies the same checks, renames nothing
+and removes the folder. It returns the staged file's LiveConfig. `parent` has no default (never the system
+temporary folder, where the deploy user could rename its own staged folder): an absolute path to a real
+folder, not a link, owned by root, writable by no group or other account, that the deploy user can pass
+through (search for others, or for app_group), such as a root 0711 folder under /run/repro-cutover-fence.
+A root 0700 parent cannot work: the deploy user's config:cache could not reach its staged folder.
+
+Both check the command before anything else runs or changes. Standard library only.
 """
 
 from __future__ import annotations
@@ -45,7 +53,6 @@ import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -193,14 +200,17 @@ def _checked(folder: int, name: str, owner: int, expected_engine: str,
 
 
 def _live_owner(folder: int, owner: int, group: int) -> tuple[int, int, int]:
-    """The live file's owner, group and permission bits; the deploy user's, its group and 0644 without one."""
+    """Owner, group and mode for the new config.php: always app_owner; the live file's group; the live mode
+    without group or other write or any execute bit, so never wider than the live mode and never more than
+    0644 (what Deploy-App's config:cache, maverick with umask 0022, writes). app_group and 0644 without a
+    regular live file."""
     try:
         info = os.stat(LIVE_NAME, dir_fd=folder, follow_symlinks=False)
     except FileNotFoundError:
         return owner, group, BUILT_MODE
     if not stat.S_ISREG(info.st_mode):
         return owner, group, BUILT_MODE
-    return info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode) & 0o777
+    return owner, info.st_gid, stat.S_IMODE(info.st_mode) & BUILT_MODE
 
 
 def build(config: dict, *, expected_engine: str, expected_sha256: str | None = None,
@@ -242,24 +252,65 @@ def build(config: dict, *, expected_engine: str, expected_sha256: str | None = N
     return measured
 
 
-def stage(config: dict, *, expected_engine: str, environment: dict | None = None,
-          expected_sha256: str | None = None, deadline: float | None = None,
-          parent: str | None = None) -> live_config.LiveConfig:
-    """Build the cache with the controller's exact command into a private folder; rename nothing, keep nothing."""
-    command = check_command(config)
-    owner, _ = _accounts(config)
-    path = Path(tempfile.mkdtemp(prefix="repro-config-stage-", dir=parent))
+def _private_parent(parent, group: int) -> tuple[str, int]:
+    """The staging parent's path and an open descriptor of it, if it is an absolute path to a real folder
+    (never a link) that root owns, that no group or other account can write, and that the deploy user can
+    pass through (search for others, or for app_group); else BuildFailed."""
     try:
-        os.chmod(path, 0o700)
-        os.chown(path, owner, -1)
-        folder = _open_folder(path)
+        parent = os.fspath(parent)
+    except TypeError:
+        parent = None
+    if not isinstance(parent, str) or not os.path.isabs(parent):
+        raise BuildFailed("stage needs the absolute path of a root-owned folder as its parent")
+    try:
+        if stat.S_ISLNK(os.lstat(parent).st_mode):
+            raise BuildFailed("The staging parent is a symbolic link")
+        descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        raise BuildFailed(f"The staging parent is not a folder the build can use: {os.strerror(error.errno)}") \
+            from None
+    try:
+        info = os.fstat(descriptor)
+        mode = stat.S_IMODE(info.st_mode)
+        if info.st_uid != 0:
+            raise BuildFailed("The staging parent must belong to root")
+        if mode & 0o022:
+            raise BuildFailed("The staging parent must not be writable by its group or other accounts")
+        if not (mode & 0o001 or (mode & 0o010 and info.st_gid == group)):
+            raise BuildFailed("The staging parent must let the deploy user pass through (search for others or "
+                              "app_group)")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return parent, descriptor
+
+
+def stage(config: dict, *, parent, expected_engine: str, environment: dict | None = None,
+          expected_sha256: str | None = None, deadline: float | None = None) -> live_config.LiveConfig:
+    """Build the cache with the controller's exact command into a private folder; rename nothing, keep nothing.
+
+    `parent` is required: a root-owned folder no other account can write that the deploy user can pass
+    through (a root 0711 folder under /run/repro-cutover-fence), never the system temporary folder."""
+    command = check_command(config)
+    owner, folder_group = _accounts(config)
+    parent, holder = _private_parent(parent, folder_group)
+    name = "repro-config-stage-" + uuid.uuid4().hex
+    path = Path(parent) / name
+    try:
+        os.mkdir(name, 0o700, dir_fd=holder)
         try:
-            run_command(command + [str(path / LIVE_NAME)], _seconds(config, deadline), environment)
-            descriptor, _, measured = _checked(folder, LIVE_NAME, owner, expected_engine, expected_sha256)
-            os.close(descriptor)
+            folder = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=holder)
+            try:
+                os.fchmod(folder, 0o700)
+                os.fchown(folder, owner, -1)
+                run_command(command + [str(path / LIVE_NAME)], _seconds(config, deadline), environment)
+                descriptor, _, measured = _checked(folder, LIVE_NAME, owner, expected_engine, expected_sha256)
+                os.close(descriptor)
+            finally:
+                os.close(folder)
         finally:
-            os.close(folder)
+            # A staged MySQL config holds the app password: nothing of it may stay behind.
+            shutil.rmtree(path)
     finally:
-        # A staged MySQL config holds the app password: nothing of it may stay behind.
-        shutil.rmtree(path)
+        os.close(holder)
     return measured

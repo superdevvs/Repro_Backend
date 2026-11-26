@@ -167,6 +167,24 @@ class ConfigBuildCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(config_build.BuildFailed, "plain shell word"):
             config_build.check_command(config)
 
+    def test_build_and_stage_check_the_command_before_anything_runs(self):
+        # load_config does not check commands.config_build yet: build() and stage() are the gate (review A2-5).
+        base = design_command("/var/www/backend")
+        variants = {"as root": [RUNUSER, "-u", "root", *base[3:]],
+                    "umask 0002": [*base[:8], base[8].replace("umask 0022", "umask 0002"), base[9]]}
+        for name, command in variants.items():
+            for action in ("build", "stage"):
+                with self.subTest(name, action=action):
+                    config = example_config()
+                    config["commands"]["config_build"] = command
+                    with patch.object(config_build.subprocess, "Popen", side_effect=AssertionError("it ran")) as ran:
+                        with self.assertRaisesRegex(config_build.BuildFailed, "design 1.3's runuser command"):
+                            if action == "build":
+                                config_build.build(config, expected_engine="sqlite")
+                            else:
+                                config_build.stage(config, expected_engine="sqlite", parent="/")
+                    ran.assert_not_called()
+
 
 # The stand-in for /usr/bin/php. It runs as the deploy user after the script's `cd <app_root>` (it opens the
 # app root's artisan), reads fake-php.json there and writes $APP_CONFIG_CACHE in one of several ways.
@@ -252,6 +270,13 @@ class ConfigBuildTests(unittest.TestCase):
     def leftovers(self) -> list[str]:
         return sorted(entry.name for entry in self.cache_dir.iterdir() if entry.name != "config.php")
 
+    def private_parent(self, mode: int = 0o755, name: str = "run") -> Path:
+        """A staging parent as the controller passes one: root's, written by nobody else (A2-7)."""
+        parent = self.root / name
+        parent.mkdir()
+        parent.chmod(mode)
+        return parent
+
     def test_failed_build_leaves_live_file_untouched(self):
         before = state(self.live)
         mysql = cache_text(MYSQL_VECTOR["config"])
@@ -306,6 +331,34 @@ class ConfigBuildTests(unittest.TestCase):
                     config_build.build(self.config, expected_engine="sqlite")
             self.assertEqual((state(self.live), self.leftovers()), (before, []))
 
+    def test_build_and_stage_refuse_another_command_before_anything_runs(self):
+        # The fake php would run (as root, or with umask 0002) if the command were not checked first (A2-5).
+        before = state(self.live)
+        stale = self.cache_dir / (".config.php.repro-" + "cd" * 16)
+        stale.write_text("<?php return array (\n")
+        parent = self.private_parent()
+        record = self.root / "record.json"
+        record.touch()
+        os.chown(record, self.deploy.pw_uid, -1)
+        self.fake("valid", record=str(record))
+        base = self.config["commands"]["config_build"]
+        variants = {"as root": [RUNUSER, "-u", "root", *base[3:]],
+                    "umask 0002": [*base[:8], base[8].replace("umask 0022", "umask 0002"), base[9]]}
+        for name, command in variants.items():
+            for action in ("build", "stage"):
+                with self.subTest(name, action=action):
+                    config = json.loads(json.dumps(self.config))
+                    config["commands"]["config_build"] = command
+                    with self.assertRaisesRegex(config_build.BuildFailed, "design 1.3's runuser command"):
+                        if action == "build":
+                            config_build.build(config, expected_engine="sqlite")
+                        else:
+                            config_build.stage(config, expected_engine="sqlite", parent=str(parent))
+                    self.assertEqual(record.read_bytes(), b"", "the fake php ran")
+                    self.assertEqual(state(self.live), before)
+                    self.assertEqual(self.leftovers(), [stale.name])
+                    self.assertEqual(list(parent.iterdir()), [])
+
     def test_timed_out_build_is_stopped_and_leaves_live_file_untouched(self):
         before = state(self.live)
         self.config["command_seconds"] = 2
@@ -318,8 +371,30 @@ class ConfigBuildTests(unittest.TestCase):
         # runuser does not pass SIGKILL on: the whole group is gone, not only runuser.
         self.assertEqual(running(str(self.php)), [])
 
+    def test_deadline_bounds_build_and_stage(self):
+        # The caller's deadline wins over a longer command_seconds: a hanging php ends near the deadline (A2-8).
+        before = state(self.live)
+        parent = self.private_parent()
+        self.config["command_seconds"] = 120
+        self.fake("half-then-hang")
+        for action in ("build", "stage"):
+            with self.subTest(action):
+                started = time.monotonic()
+                with self.assertRaisesRegex(config_build.BuildFailed, "timed out"):
+                    if action == "build":
+                        config_build.build(self.config, expected_engine="sqlite", deadline=time.time() + 2)
+                    else:
+                        config_build.stage(self.config, expected_engine="sqlite", deadline=time.time() + 2,
+                                           parent=str(parent))
+                elapsed = time.monotonic() - started
+                self.assertGreater(elapsed, 1.5)
+                self.assertLess(elapsed, 10, "the deadline did not bound the build")
+                self.assertEqual((state(self.live), self.leftovers(), list(parent.iterdir())), (before, [], []))
+                self.assertEqual(running(str(self.php)), [])
+
     def test_build_renames_with_owner_and_mode(self):
-        # The live file keeps its owner, group and mode, whoever they are; its inode is replaced in one rename.
+        # The new file is app_owner's, keeps the live file's group and mode (0640 here); one rename replaces
+        # the inode. Another account's live file (uid 1) does not pass its owner on (review A2-6).
         os.chown(self.live, 1, self.web_gid)
         self.live.chmod(0o640)
         before = self.live.stat()
@@ -327,7 +402,8 @@ class ConfigBuildTests(unittest.TestCase):
         built = config_build.build(self.config, expected_engine="sqlite")
         after = self.live.stat()
         self.assertNotEqual(after.st_ino, before.st_ino)
-        self.assertEqual((after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)), (1, self.web_gid, 0o640))
+        self.assertEqual((after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)),
+                         (self.deploy.pw_uid, self.web_gid, 0o640))
         self.assertEqual(self.live.read_bytes(), (self.root / "content.php").read_bytes())
         self.assertEqual(built, live_config.measure(self.app))
         self.assertEqual((built.engine, built.source), ("sqlite", "cache"))
@@ -348,6 +424,35 @@ class ConfigBuildTests(unittest.TestCase):
                                  (self.deploy.pw_uid, self.web_gid, 0o644))
                 self.assertEqual(built.live_config_sha256, SQLITE_VECTOR["route_sha256"])
 
+    def test_build_never_leaves_a_writable_or_foreign_config(self):
+        # Deploy-App runs config:cache as the deploy user with umask 0022: maverick, www-data, 0644. The build
+        # gives app_owner, the live group and the live mode without group or other write or any execute bit,
+        # so www-data can never be handed a config.php it may rewrite (review A2-6).
+        cases = {
+            "0664": (self.deploy.pw_uid, self.web_gid, 0o664, 0o644),
+            "0666": (self.deploy.pw_uid, self.web_gid, 0o666, 0o644),
+            "0777": (self.deploy.pw_uid, self.web_gid, 0o777, 0o644),
+            "root's 0644": (0, 0, 0o644, 0o644),
+            "root's 0600": (0, self.web_gid, 0o600, 0o600),
+            "the web user's 0660": (pwd.getpwnam(WEB).pw_uid, self.web_gid, 0o660, 0o640),
+            "setgid 2775": (self.deploy.pw_uid, self.web_gid, 0o2775, 0o644),
+        }
+        for mode in (0o400, 0o440, 0o444, 0o600, 0o604, 0o606, 0o640, 0o644, 0o646, 0o660, 0o700, 0o750, 0o755):
+            cases[f"{mode:04o}"] = (self.deploy.pw_uid, self.web_gid, mode, mode & 0o644)
+        for name, (uid, gid, mode, expected) in cases.items():
+            with self.subTest(name):
+                self.live.write_bytes(cache_text(SQLITE_VECTOR["config"]))
+                os.chown(self.live, uid, gid)
+                self.live.chmod(mode)
+                self.fake("valid")
+                config_build.build(self.config, expected_engine="sqlite")
+                info = self.live.lstat()
+                result = stat.S_IMODE(info.st_mode)
+                self.assertEqual((info.st_uid, info.st_gid, oct(result)), (self.deploy.pw_uid, gid, oct(expected)))
+                self.assertEqual(result & 0o133, 0, "group or other write, or an execute bit")
+                self.assertEqual(result & ~stat.S_IMODE(mode), 0, "wider than the live mode")
+                self.assertEqual(self.leftovers(), [])
+
     def test_build_removes_temporary_files_an_earlier_build_left(self):
         stale = self.cache_dir / (".config.php.repro-" + "ab" * 16)
         other = self.cache_dir / ".config.php.repro-not-ours"
@@ -365,21 +470,70 @@ class ConfigBuildTests(unittest.TestCase):
         os.chown(record, self.deploy.pw_uid, -1)
         self.fake("valid", cache_text(MYSQL_VECTOR["config"]), record=str(record))
         switch = {"DB_CONNECTION": "mysql", "DB_SOCKET": "/run/repro-mysql84-native/mysql.sock"}
-        staged = config_build.stage(self.config, expected_engine="mysql", environment=switch)
+        parent = self.private_parent()
+        staged = config_build.stage(self.config, expected_engine="mysql", environment=switch, parent=str(parent))
         self.assertEqual((staged.engine, staged.live_config_sha256), ("mysql", MYSQL_VECTOR["route_sha256"]))
         seen = json.loads(record.read_text())
         target = Path(seen["target"])
-        self.assertNotEqual(target.parent, self.cache_dir)
+        self.assertEqual(target.parent.parent, parent)
         self.assertEqual((seen["folder_mode"], seen["folder_uid"]), (0o700, self.deploy.pw_uid))
         self.assertEqual((seen["uid"], seen["gid"], seen["umask"]), (self.deploy.pw_uid, self.web_gid, 0o022))
         self.assertEqual({key: seen["environment"].get(key) for key in switch}, switch)
         self.assertEqual(seen["environment"].get("REPRO_CUTOVER_CHILD"), "1")
-        self.assertFalse(target.parent.exists())
+        self.assertEqual(list(parent.iterdir()), [])
         self.assertEqual((state(self.live), self.leftovers()), (before, []))
         # The same checks as a build: the wrong engine is refused and nothing is kept.
         with self.assertRaisesRegex(config_build.BuildFailed, "engine mysql, not sqlite"):
-            config_build.stage(self.config, expected_engine="sqlite", environment=switch)
+            config_build.stage(self.config, expected_engine="sqlite", environment=switch, parent=str(parent))
         self.assertFalse(Path(json.loads(record.read_text())["target"]).parent.exists())
+        self.assertEqual(list(parent.iterdir()), [])
+
+    def test_stage_needs_a_private_parent_folder(self):
+        # The staged MySQL config holds the app password. Its folder is the deploy user's (php writes there),
+        # so its parent must be root's and closed to other writers: in a sticky /tmp the deploy user could
+        # rename or replace the staged folder (review A2-7). The parent must still let the deploy user pass.
+        record = self.root / "record.json"
+        record.touch()
+        os.chown(record, self.deploy.pw_uid, -1)
+        self.fake("valid", record=str(record))
+        with self.assertRaises(TypeError):
+            config_build.stage(self.config, expected_engine="sqlite")  # No system temporary folder default.
+        good = self.private_parent()
+        link = self.root / "link"
+        link.symlink_to(good)
+        deploys = self.private_parent(name="deploys")
+        os.chown(deploys, self.deploy.pw_uid, self.web_gid)
+        a_file = self.root / "a-file"
+        a_file.touch()
+        other_group = self.private_parent(0o710, "other-group")  # root:root: only root's group may pass.
+        refused = {
+            "searchable by another group only": (str(other_group), "pass through"),
+            "None": (None, "absolute path"),
+            "a relative path": ("run", "absolute path"),
+            "missing": (str(self.root / "missing"), "not a folder"),
+            "a file": (str(a_file), "not a folder"),
+            "a symbolic link": (str(link), "symbolic link"),
+            "the deploy user's": (str(deploys), "belong to root"),
+            "group-writable": (str(self.private_parent(0o775, "group-writable")), "group or other"),
+            "world-writable": (str(self.private_parent(0o757, "world-writable")), "group or other"),
+            "sticky like /tmp": (str(self.private_parent(0o1777, "sticky")), "group or other"),
+            "closed to the deploy user": (str(self.private_parent(0o700, "closed")), "pass through"),
+        }
+        for name, (parent, message) in refused.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(config_build.BuildFailed, message):
+                    config_build.stage(self.config, expected_engine="sqlite", parent=parent)
+                self.assertEqual(record.read_bytes(), b"", "the fake php ran")
+        for name in ("deploys", "group-writable", "world-writable", "sticky", "closed", "other-group", "run"):
+            self.assertEqual(list((self.root / name).iterdir()), [], name)
+        # Root's folders the deploy user can pass through: others may search (0755, 0711), or app_group may.
+        through_group = self.private_parent(0o710, "through-group")
+        os.chown(through_group, 0, self.web_gid)
+        for parent in (good, self.private_parent(0o711, "searchable"), through_group):
+            with self.subTest(str(parent)):
+                staged = config_build.stage(self.config, expected_engine="sqlite", parent=str(parent))
+                self.assertEqual(Path(json.loads(record.read_text())["target"]).parent.parent, parent)
+                self.assertEqual((staged.engine, list(parent.iterdir())), ("sqlite", []))
 
 
 # ------------------------------------------------------------------ the real `php artisan config:cache`
@@ -517,6 +671,10 @@ php_admin_value[opcache.enable] = 0
         php = patch.object(config_build, "PHP", REAL_PHP)
         php.start()
         self.addCleanup(php.stop)
+        # The staging parent the controller passes: root's, 0755, written by nobody else (A2-7).
+        self.parent = str(self.work / "stage")
+        os.makedirs(self.parent, mode=0o755, exist_ok=True)
+        os.chmod(self.parent, 0o755)
 
     def fpm_engine(self) -> dict:
         """What fpm-engine.php prints from inside the pool, reading the live bootstrap/cache/config.php."""
@@ -536,7 +694,7 @@ php_admin_value[opcache.enable] = 0
         live = live_config.measure(self.app)
         self.assertEqual((live.engine, live.source), ("sqlite", "cache"))
         self.assertEqual(live.values["database.connections"]["sqlite"]["database"], str(self.sqlite))
-        staged = config_build.stage(self.config, expected_engine="sqlite")
+        staged = config_build.stage(self.config, expected_engine="sqlite", parent=self.parent)
         self.assertEqual(staged.live_config_sha256, live.live_config_sha256)
         self.assertEqual(staged.values, live.values)
         # No production value exists to compare with: the PHP probe's reading of the same file stands in.
@@ -546,7 +704,8 @@ php_admin_value[opcache.enable] = 0
         self.assertEqual(live_config.canonical(printed["route_values"]), live_config.canonical(live.values))
         self.assertEqual(self.reference_sha256(printed["route_values"]), live.live_config_sha256)
         # The night flags are outside the hash; the rotation of a password too.
-        flagged = config_build.stage(self.config, expected_engine="sqlite", environment=dict(NIGHT_FLAGS))
+        flagged = config_build.stage(self.config, expected_engine="sqlite", environment=dict(NIGHT_FLAGS),
+                                     parent=self.parent)
         self.assertEqual(flagged.live_config_sha256, live.live_config_sha256)
 
     def test_build_replaces_the_live_cache_in_one_rename(self):
@@ -564,17 +723,17 @@ php_admin_value[opcache.enable] = 0
 
     def test_staged_mysql_build_follows_the_switch_and_ignores_night_flags(self):
         sqlite_hash = live_config.measure(self.app).live_config_sha256
-        mysql = config_build.stage(self.config, expected_engine="mysql", environment=self.switch)
+        mysql = config_build.stage(self.config, expected_engine="mysql", environment=self.switch, parent=self.parent)
         self.assertNotEqual(mysql.live_config_sha256, sqlite_hash)
         connection = mysql.values["database.connections"]["mysql"]
         self.assertEqual((connection["unix_socket"], connection["username"], connection["password_set"]),
                          (str(self.socket), "repro_app", True))
         self.assertEqual(set(mysql.values["database.connections"]),
                          {"mysql", "mysql_cache_locks", "mysql_queue_worker", "mysql_scheduling_cache"})
-        rotated = config_build.stage(self.config, expected_engine="mysql",
+        rotated = config_build.stage(self.config, expected_engine="mysql", parent=self.parent,
                                      environment={**self.switch, **NIGHT_FLAGS, "DB_PASSWORD": "another-password"})
         self.assertEqual(rotated.live_config_sha256, mysql.live_config_sha256)
-        moved = config_build.stage(self.config, expected_engine="mysql",
+        moved = config_build.stage(self.config, expected_engine="mysql", parent=self.parent,
                                    environment={**self.switch, "DB_SOCKET": str(self.work / "other.sock")})
         self.assertNotEqual(moved.live_config_sha256, mysql.live_config_sha256)
         # The same MySQL config live: Python's measurement equals the PHP probe's (it cannot connect here).
