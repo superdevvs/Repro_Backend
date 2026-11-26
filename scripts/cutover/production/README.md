@@ -76,9 +76,21 @@ expression. A line that a rule matches is kept or wrapped only when its
 command is exactly the rule's `command`, alone or behind the storage guard
 `/usr/local/sbin/repro-storage-guard --live && ` (that form, byte for
 byte), followed only by output redirections to plain paths (letters,
-digits, `_`, `.`, `/`, `-`) that name nothing of the application (no
-`application_markers` entry: the live database or the app tree would be a
-writer of its own), `2>&1` and a marker comment without `%`.
+digits, `_`, `.`, `/`, `-`) that write nothing into the application,
+`2>&1` and a marker comment without `%`. A redirection there would be a
+writer of its own (review W2V-3). Each target is placed lexically first
+(`//` and `.` collapsed). It is refused when it holds `..`, or is relative
+and not behind a leading `cd <absolute path> &&` that is the command's
+only `cd`. It is also refused under an absolute `application_markers`
+entry (the app root) when it lies in a fingerprinted tree (`app`,
+`bootstrap`, `config`, `resources`, `routes`, `scripts`, `public`,
+`database`) or is one of the fingerprinted root files (`artisan`,
+`composer.json`, `composer.lock`, `package.json`, `package-lock.json`),
+and when its file name is a marker without a slash (`database.sqlite`,
+the live database, with or without `-wal`, `-shm` or `-journal`).
+`>> /var/www/backend/storage/logs/cron.log`, or
+`>> storage/logs/cron.log` after `cd /var/www/backend &&`, stays allowed.
+The check is lexical and cannot see a symbolic link along the path.
 That holds for `allow` rules too: an allowed script with an artisan command
 chained before or after it, or the retention line with `sqlite3` after it,
 is refused like any other line. Words are split at spaces and tabs only, as

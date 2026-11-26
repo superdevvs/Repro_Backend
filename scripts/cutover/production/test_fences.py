@@ -656,12 +656,92 @@ class CronEntryTests(unittest.TestCase):
         scheduler = "cd /var/www/backend && php artisan schedule:run"
         lines = [f"* * * * * {self.RUNTIME}/ensure-supervisor.sh > /var/www/backend/database/database.sqlite",
                  f"* * * * * {scheduler} >> /var/www/backend/database/database.sqlite 2>&1",
-                 f"* * * * * {STORAGE_GUARD}{scheduler} >> /dev/null 2>> /var/www/backend/storage/logs/cron.log",
+                 f"* * * * * {STORAGE_GUARD}{scheduler} >> /dev/null 2>> /var/www/backend/public/cron.log",
                  f"* * * * * {scheduler} >/home/maverick/database.sqlite"]
         text = "\n".join(lines) + "\n"
         wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
         self.assertEqual(lines, unknown)
         self.assertEqual(text, wrapped)
+
+    # Integration review (W2V-3, 26 Nov): the redirection check compared raw text with the markers.
+
+    def redirected(self, target: str) -> list:
+        """One allow-rule line and one rewriting-rule line (with and without the guard) redirected to target."""
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        return [f"* * * * * {self.RUNTIME}/ensure-supervisor.sh > {target} 2>&1 # repro-studio-supervisor",
+                f"* * * * * {scheduler} >> {target} 2>&1",
+                f"* * * * * {STORAGE_GUARD}{scheduler} >> /dev/null 2>> {target}"]
+
+    def test_a_redirection_into_the_application_is_refused_however_it_is_spelled(self):
+        # The target is placed lexically first: '//' and '.' collapsed, '..' refused, a relative target placed in
+        # the directory of a leading 'cd <absolute path> &&' (where the redirected command runs).
+        targets = [
+            # The reviewer's two, which were kept (allow rule) and wrapped (scheduler).
+            "/var//www/backend/public/index.php",
+            "/var/www/./backend/resources/iguide-lab/x.py",
+            "//var/www/backend/app/Models/x.php",
+            "/var/www/backend/routes/./web.php",
+            "/var/www/backend/bootstrap/cache/config.php",
+            "/var/www/backend/config/app.php",
+            "/var/www/backend/scripts/deploy/x.py",
+            "/var/www/backend/database/migrations/x.php",
+            # A fingerprinted file at the app root.
+            "/var/www/backend/composer.json",
+            "/var/www/backend/artisan",
+            # The live database and its journals, wherever a file of that name is.
+            "/var/www/backend/database/database.sqlite-wal",
+            "/var/www/backend/database//database.sqlite-shm",
+            "/tmp/database.sqlite",
+            "/var/tmp/database.sqlite-journal",
+            # '..' is refused even where it would resolve outside the application.
+            "/var/www/backend/../backend/public/y",
+            "/var/www/backend/storage/../public/y",
+            "/var/tmp/../log/x.log",
+        ]
+        for target in targets:
+            with self.subTest(target=target):
+                lines = self.redirected(target)
+                text = "\n".join(lines) + "\n"
+                self.assertEqual((text, lines), crontab.wrap(text, self.RULES, WRAPPER))
+        # Relative targets: after 'cd /var/www/backend &&' they are in the app; with no leading cd (cron starts the
+        # command in the user's home, which the rules do not name) or a second cd they cannot be placed.
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        lines = [f"* * * * * {scheduler} >> public/schedule.log 2>&1",
+                 f"* * * * * {scheduler} >> ./resources/x 2>&1",
+                 f"* * * * * {STORAGE_GUARD}{scheduler} >> database/database.sqlite",
+                 f"* * * * * {self.RUNTIME}/ensure-supervisor.sh >> logs/bootstrap.log 2>&1",
+                 # The cubicasa line's cd is inside sg's quoted script; its own redirection opens in the home.
+                 self.installed_lines()[1].replace(f"{self.STATE}/poll.log", "poll.log")]
+        rules = {**self.RULES, "rules": [*self.RULES["rules"], {
+            "match": "artisan horizon:snapshot", "profile": "snapshot",
+            "command": "cd /var/www/backend && cd storage && php ../artisan horizon:snapshot"}]}
+        lines.append("*/5 * * * * cd /var/www/backend && cd storage && php ../artisan horizon:snapshot >> logs/x.log")
+        text = "\n".join(lines) + "\n"
+        self.assertEqual((text, lines), crontab.wrap(text, rules, WRAPPER))
+        # From the command line: exit 1 and nothing to install.
+        result = self.cli(self.RULES, "\n".join(self.redirected("/var//www/backend/public/index.php")) + "\n")
+        self.assertEqual((1, b""), (result.returncode, result.stdout))
+
+    def test_redirections_outside_the_fingerprinted_trees_stay_allowed(self):
+        # Only the trees the source fingerprint hashes (and its root files) and the live database are refused:
+        # logs under storage/ are written by the app itself and change no identity, so W1 keeps such a line.
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        targets = ["/var/www/backend/storage/logs/cron.log", "/var/www//backend/./storage/logs/schedule.log",
+                   "/var/www/backend/storage/app/private/x", "/var/www/backend/bootstrap-notes.log",
+                   "/var/www/backendx/public/x.log", "/var/www/backend-public/x.log", "/var/www/frontend/public/x.log",
+                   "/home/maverick/database.sqlite.bak", "/dev/null"]
+        for target in targets:
+            with self.subTest(target=target):
+                lines = self.redirected(target)
+                wrapped, unknown = crontab.wrap("\n".join(lines) + "\n", self.RULES, WRAPPER)
+                self.assertEqual([], unknown)
+                self.assertEqual([lines[0], f"* * * * * {WRAPPER} scheduler >> {target} 2>&1",
+                                  f"* * * * * {STORAGE_GUARD}{WRAPPER} scheduler >> /dev/null 2>> {target}"],
+                                 wrapped.splitlines())
+        # A relative target after the leading cd is placed there: storage/logs stays allowed.
+        line = f"* * * * * {scheduler} >> storage/logs/schedule.log 2>&1"
+        self.assertEqual((f"* * * * * {WRAPPER} scheduler >> storage/logs/schedule.log 2>&1\n", []),
+                         crontab.wrap(line + "\n", self.RULES, WRAPPER))
 
 
 if __name__ == "__main__":
