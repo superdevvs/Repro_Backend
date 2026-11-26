@@ -172,13 +172,24 @@ def env_engine(plan: dict) -> str:
     return engine or "unset"
 
 
+def _reader_paths() -> list[Path]:
+    """Where var_export.py may be: beside this file; and only when this file sits in a checkout's
+    scripts/mysql/offsite, that checkout's scripts/cutover/production. Installed flat
+    (/opt/repro-backup-tools), no path outside the tools folder is ever searched."""
+    paths = [TOOLS / "var_export.py"]
+    if TOOLS.parts[-3:] == ("scripts", "mysql", "offsite"):
+        paths.append(TOOLS.parents[2] / "scripts" / "cutover" / "production" / "var_export.py")
+    return paths
+
+
 def _shared_reader():
     """The reader of PHP var_export output shared with the cutover controller (design v2, 1.3).
 
     The alerts job installs var_export.py beside this file (/opt/repro-backup-tools); in the repository it
     is scripts/cutover/production/var_export.py. Loaded by path, so the probe's sys.path stays as it is.
+    A missing copy is an error.
     """
-    for path in (TOOLS / "var_export.py", TOOLS.parent.parent / "cutover" / "production" / "var_export.py"):
+    for path in _reader_paths():
         if path.is_file():
             spec = importlib.util.spec_from_file_location("var_export", path)
             module = importlib.util.module_from_spec(spec)

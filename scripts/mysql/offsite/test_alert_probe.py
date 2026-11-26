@@ -913,28 +913,62 @@ class SharedReaderTests(unittest.TestCase):
         with self.assertRaises(probe.DetectorError):
             probe.cached_engine(b"<?php return array (\n  'database' => '")
 
+    CHECK = ("import sys; sys.path.insert(0, sys.argv[1]); import alert_probe; "
+             "print(alert_probe.var_export.__file__); print(alert_probe.cached_engine(sys.stdin.buffer.read()))")
+
+    @staticmethod
+    def run_isolated(*argv):
+        return subprocess.run([sys.executable, "-I", "-B", *argv], input=CACHED_CONFIG.encode(),
+                              capture_output=True, timeout=60)
+
     @unittest.skipUnless(os.name == "posix", "the tools are installed on Linux")
     def test_installed_layout_reads_the_copy_beside_the_probe(self):
         # The alerts job installs var_export.py beside alert_probe.py in /opt/repro-backup-tools, run with -I.
-        folder = Path(tempfile.mkdtemp(prefix="alert-tools-"))
-        self.addCleanup(shutil.rmtree, folder)
+        # Only that copy counts there: the repository's relative path (<tools>/../../cutover/production, which
+        # is /cutover/production on the host) is never searched, even when a working reader sits there (A2-13).
+        base = Path(tempfile.mkdtemp(prefix="alert-tools-"))
+        self.addCleanup(shutil.rmtree, base)
+        folder = base / "host" / "opt" / "repro-backup-tools"
+        folder.mkdir(parents=True)
         for source in (self.OFFSITE / "alert_probe.py", self.OFFSITE / "alert-conditions.json", self.SHARED):
             shutil.copyfile(source, folder / source.name)
-        check = ("import sys; sys.path.insert(0, sys.argv[1]); import alert_probe; "
-                 "print(alert_probe.var_export.__file__); print(alert_probe.cached_engine(sys.stdin.buffer.read()))")
-
-        def run(*argv):
-            return subprocess.run([sys.executable, "-I", "-B", *argv], input=CACHED_CONFIG.encode(),
-                                  capture_output=True, timeout=60)
-
-        done = run("-c", check, str(folder))
+        # Working readers that leave a marker, where a repository-relative search would look.
+        marker = base / "planted-reader-ran"
+        for planted in (base / "host" / "cutover" / "production" / "var_export.py",
+                        base / "scripts" / "cutover" / "production" / "var_export.py"):
+            planted.parent.mkdir(parents=True)
+            planted.write_text(self.SHARED.read_text(encoding="utf-8") + f"\nopen({str(marker)!r}, 'w').close()\n")
+        run = self.run_isolated
+        done = run("-c", self.CHECK, str(folder))
         self.assertEqual(done.returncode, 0, done.stderr.decode())
         self.assertEqual(done.stdout.decode().split(), [str(folder / "var_export.py"), "mysql"])
         self.assertEqual(run(str(folder / "alert_probe.py"), "--help").returncode, 0)
         (folder / "var_export.py").unlink()
-        done = run(str(folder / "alert_probe.py"), "--help")
+        for argv in ((str(folder / "alert_probe.py"), "--help"), ("-c", self.CHECK, str(folder))):
+            with self.subTest(argv=argv[0]):
+                done = run(*argv)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(f"var_export.py is missing beside {folder / 'alert_probe.py'}", done.stderr.decode())
+                self.assertFalse(marker.exists(), "the reader outside the tools folder was loaded")
+
+    @unittest.skipUnless(os.name == "posix", "the tools are installed on Linux")
+    def test_repository_layout_reads_the_controller_copy(self):
+        # In a checkout (scripts/mysql/offsite) the reader is scripts/cutover/production/var_export.py.
+        repo = Path(tempfile.mkdtemp(prefix="alert-repo-"))
+        self.addCleanup(shutil.rmtree, repo)
+        offsite, production = repo / "scripts" / "mysql" / "offsite", repo / "scripts" / "cutover" / "production"
+        for folder, sources in ((offsite, (self.OFFSITE / "alert_probe.py", self.OFFSITE / "alert-conditions.json")),
+                                (production, (self.SHARED,))):
+            folder.mkdir(parents=True)
+            for source in sources:
+                shutil.copyfile(source, folder / source.name)
+        done = self.run_isolated("-c", self.CHECK, str(offsite))
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        self.assertEqual(done.stdout.decode().split(), [str(production / "var_export.py"), "mysql"])
+        (production / "var_export.py").unlink()
+        done = self.run_isolated(str(offsite / "alert_probe.py"), "--help")
         self.assertNotEqual(done.returncode, 0)
-        self.assertIn("var_export.py", done.stderr.decode())
+        self.assertIn("var_export.py is missing", done.stderr.decode())
 
 
 class ExternalAlertContractTests(unittest.TestCase):
