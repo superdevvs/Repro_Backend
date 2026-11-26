@@ -743,6 +743,17 @@ class CronEntryTests(unittest.TestCase):
         self.assertEqual((f"* * * * * {WRAPPER} scheduler >> storage/logs/schedule.log 2>&1\n", []),
                          crontab.wrap(line + "\n", self.RULES, WRAPPER))
 
+    def test_an_absolute_marker_naming_a_file_refuses_that_file_and_its_journals(self):
+        # A live database outside the app root is named by its absolute path: the file itself (however spelled)
+        # and its journals are refused, a copy beside it is not.
+        rules = {**self.RULES, "application_markers": [*self.RULES["application_markers"], "/srv/repro/live.db"]}
+        for target, refused in (("/srv/repro/live.db", True), ("/srv//repro/./live.db-wal", True),
+                                ("/srv/repro/live.db-journal", True), ("/srv/repro/live.db.bak", False),
+                                ("/srv/repro/logs/x.log", False)):
+            with self.subTest(target=target):
+                lines = self.redirected(target)
+                self.assertEqual(lines if refused else [], crontab.wrap("\n".join(lines) + "\n", rules, WRAPPER)[1])
+
 
 if __name__ == "__main__":
     unittest.main()
