@@ -285,6 +285,55 @@ placeholder (`app`, `maint`, `migrator`, `reader`, `check`, `probe`, `gate`,
 filled. The probe account reads only the columns it needs (never
 `authentication_string`).
 
+## Live config and the config cache build (design 1.3)
+
+`var_export.py`, `live_config.py` and `config_build.py` are installed with the
+controller in `/opt/repro-cutover-fence/production/` (W1). `var_export.py`
+is also the alert probe's reader: the alerts job of
+`scripts/mysql/offsite/install_backup_host.py` installs a copy beside
+`alert_probe.py` in `/opt/repro-backup-tools/`, which loads it by path.
+
+- **Reader** (`var_export.parse`): `<?php return <array>;` exactly as PHP 8.3's
+  `var_export` writes it: arrays, single-quoted UTF-8 strings, integers,
+  floats, `true`, `false`, `NULL`. An object, enum, NUL concatenation, `INF`
+  or `NAN`, `PHP_INT_MIN`'s expression, a literal PHP would read differently,
+  a duplicate key, nesting over 32 levels or any text around it is refused.
+  It never executes the file. The alert probe's lenient reader
+  (`tokens`, `value`) moved here unchanged.
+- **`live_config.measure(app_root)`** returns `LiveConfig(engine, source,
+  live_config_sha256, values, problem)` from `bootstrap/cache/config.php`
+  (a regular file, never through a link, at most 8 MiB). The engine is the
+  default connection's driver; a non-empty `url` wins with its scheme. The
+  route values and hash follow `testdata/route-hash-vectors.json`.
+  Passwords become `password_set`, and a `url` carrying a password is refused.
+  A missing or refused cache gives source `fallback`, no hash, the engine from
+  `.env` `DB_CONNECTION` (read as phpdotenv reads it) and the reason in
+  `problem`. Anything other than a plain `sqlite` or `mysql`, or a `DB_URL`,
+  raises `Unmeasurable`. CLI: `/usr/bin/python3 -I -S live_config.py
+  --app-root /var/www/backend` prints the same as JSON (exit 1 when
+  unmeasurable).
+- **`config_build.build(config, expected_engine=..., expected_sha256=None)`**
+  runs `commands.config_build`, which must be exactly design 1.3's command
+  (`config_build.check_command`), for `bootstrap/cache/.config.php.repro-<hex>`.
+  It then checks the file: regular, one link, owned by `app_owner`, mode 0644,
+  strictly readable, the expected engine and, if given, the pin. It gives the
+  file the live file's owner, group and mode (`app_owner`, `app_group`, 0644
+  when there is none) and fsyncs it. It renames it over `config.php` and
+  fsyncs the folder. A failure or timeout (the whole process group is
+  killed) removes the temporary file and leaves the live file untouched. An
+  interrupted build's temporary files are removed by the next one.
+  **`config_build.stage(config, expected_engine=..., environment=...)`** is the
+  same build into a fresh 0700 folder owned by the deploy user, with the
+  given variables added (the pins: the switch values for MySQL). It renames
+  nothing and keeps nothing.
+
+`test_live_config.py` runs anywhere. `test_config_build.py` needs Linux root,
+`runuser`, `nobody` and `www-data` for its fake-php tests. Its
+`RealConfigCacheTests` also need `php`, `php-fpm` and `vendor/` (the QA
+image; its docstring has the command). They show that a staged SQLite build
+equals the measured live cache, and that both equal what `fpm-engine.php`
+prints inside a PHP-FPM pool, for SQLite and for MySQL.
+
 ## Telnyx while held (design 5.2)
 
 While the hold is in force, nginx answers 503 before Laravel and the freeze
