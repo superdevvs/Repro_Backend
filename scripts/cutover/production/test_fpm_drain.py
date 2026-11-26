@@ -532,6 +532,43 @@ class CliTests(unittest.TestCase):
         self.assertIn("drain_seconds", stderr)
 
 
+@unittest.skipUnless(os.name == "posix", "host config paths are POSIX paths")
+class DrainSettingsTests(unittest.TestCase):
+    """fpm_drain's own checks of a loaded host config, kept as defence in depth (review W2I-4).
+
+    Since load_config refuses both conditions first, main() never reaches them, so they are tested here by
+    calling drain_settings, the function that holds them, with configs load_config would refuse.
+    """
+
+    def config(self, **fpm) -> dict:
+        from test_adapter import example_config
+
+        config = example_config()
+        config["fpm"].update(fpm)
+        return config
+
+    def test_the_settings_of_a_config_load_config_accepts(self):
+        config = self.config()
+        self.assertEqual((Path(config["fpm"]["status_socket"]), Path(config["fpm"]["socket"]),
+                          config["fpm"]["drain_seconds"]), fpm_drain.drain_settings(config))
+
+    def test_the_pool_socket_as_the_status_socket_is_refused(self):
+        socket_path = self.config()["fpm"]["socket"]
+        for status_socket in (socket_path, socket_path.replace("/run/php/", "/run/php/./"),
+                              socket_path.replace("/run/php/", "/run//php/")):
+            with self.subTest(status_socket=status_socket), \
+                    self.assertRaisesRegex(fpm_drain.Refused, "pm.status_listen, not fpm.socket"):
+                fpm_drain.drain_settings(self.config(status_socket=status_socket))
+
+    def test_a_limit_without_its_margin_inside_command_seconds_is_refused(self):
+        config = self.config()
+        longest = config["command_seconds"] - fpm_drain.REQUEST_SECONDS - fpm_drain.MARGIN_SECONDS
+        self.assertEqual(longest, fpm_drain.drain_settings(self.config(drain_seconds=longest))[2])
+        for limit in (longest + 0.5, longest + 1, config["command_seconds"]):
+            with self.subTest(limit=limit), self.assertRaisesRegex(fpm_drain.Refused, "inside command_seconds"):
+                fpm_drain.drain_settings(self.config(drain_seconds=limit))
+
+
 def slow_script(pool: FpmPool) -> Path:
     return pool.script("slow.php", "<?php usleep((int) ($_GET['ms'] ?? 1000) * 1000); echo 'slow-done';\n")
 

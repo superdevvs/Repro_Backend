@@ -1027,7 +1027,10 @@ USR2 reload whose config fails the test stops FPM, so the test comes first.
   active process), `fpm.drain_seconds` plus 12 s not fitting in
   `command_seconds` (the adapter would kill the drain first), and an
   `fpm.socket` whose connect fails for another reason than no socket, nothing
-  listening or a full backlog (a path through a file, say).
+  listening or a full backlog (a path through a file, say). `load_config`
+  refuses the two `fpm` conditions first; `fpm_drain.drain_settings` keeps
+  its own copy of each as defence in depth, and `DrainSettingsTests` call it
+  directly, since the command line no longer reaches them (review W2I-4).
 - **The report** always has the keys `version`, `outcome`, `limit_seconds`,
   `waited_seconds`, `polls`, `pool`, `accepted_conn`, `active_processes`,
   `idle_processes`, `total_processes`, `listen_queue` and `problem`. `pool`

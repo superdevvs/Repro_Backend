@@ -37,7 +37,8 @@ root, a protected file or a host config that load_config refuses, `fpm.status_so
 `fpm.socket` (there every status request is an active process), `fpm.drain_seconds` leaving no room
 inside `command_seconds` (the adapter would kill the drain and never run the stop), and a `fpm.socket`
 whose connect fails other than by no socket, nothing listening or a full backlog (a path through a
-file, say), so that the drain cannot tell stopped from unmonitored.
+file, say), so that the drain cannot tell stopped from unmonitored. load_config refuses the two
+`fpm` conditions first; drain_settings keeps its own copy of each as defence in depth (review W2I-4).
 
 Standard library only.
 """
@@ -182,6 +183,24 @@ def drain(status_socket, limit_seconds, *, main_socket, read=read_status, listen
         sleep(min(interval, left))
 
 
+def drain_settings(config: dict) -> tuple[Path, Path, float]:
+    """(status socket, pool socket, limit) from a loaded host config; Refused when the drain cannot run as set.
+
+    load_config refuses both conditions first (since 4b214f5e), so main() never reaches these; they stay as
+    defence in depth beside the code that depends on them, and are tested by calling this function (W2I-4).
+    """
+    fpm = config["fpm"]
+    if os.path.normpath(fpm["status_socket"]) == os.path.normpath(fpm["socket"]):
+        raise Refused("fpm.status_socket must be the pool's pm.status_listen, not fpm.socket: on the pool's "
+                      "own socket every status request is an active process, and the pool never reads idle")
+    if fpm["drain_seconds"] + REQUEST_SECONDS + MARGIN_SECONDS > config["command_seconds"]:
+        raise Refused(f"fpm.drain_seconds ({fpm['drain_seconds']}) must leave "
+                      f"{REQUEST_SECONDS + MARGIN_SECONDS:g} s inside command_seconds "
+                      f"({config['command_seconds']}): the adapter stops a host command after "
+                      "command_seconds, and the FPM stop after the drain would never run")
+    return Path(fpm["status_socket"]), Path(fpm["socket"]), fpm["drain_seconds"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True)
@@ -190,24 +209,15 @@ def main(argv: list[str] | None = None) -> int:
         if sys.platform != "linux" or os.geteuid() != 0:
             raise Refused("the FPM drain runs as root on the Linux host")
         config = host.load_config(guard.read_protected(args.config), read=guard.read_protected)
-        fpm = config["fpm"]
-        if os.path.normpath(fpm["status_socket"]) == os.path.normpath(fpm["socket"]):
-            raise Refused("fpm.status_socket must be the pool's pm.status_listen, not fpm.socket: on the pool's "
-                          "own socket every status request is an active process, and the pool never reads idle")
-        if fpm["drain_seconds"] + REQUEST_SECONDS + MARGIN_SECONDS > config["command_seconds"]:
-            raise Refused(f"fpm.drain_seconds ({fpm['drain_seconds']}) must leave "
-                          f"{REQUEST_SECONDS + MARGIN_SECONDS:g} s inside command_seconds "
-                          f"({config['command_seconds']}): the adapter stops a host command after "
-                          "command_seconds, and the FPM stop after the drain would never run")
-        result = drain(Path(fpm["status_socket"]), fpm["drain_seconds"], main_socket=Path(fpm["socket"]))
+        status_socket, main_socket, limit = drain_settings(config)
+        result = drain(status_socket, limit, main_socket=main_socket)
     except (Refused, guard.Refused, fastcgi.FastCgiError, OSError, ValueError, TypeError, KeyError) as error:
         print(f"FPM drain refused: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result.report(), sort_keys=True))
     if result.outcome == TIMED_OUT:
         active = "an unknown number of" if result.status is None else result.status.active
-        print(f"FPM drain: {active} request(s) still active after {fpm['drain_seconds']} s; the stop ends them",
-              file=sys.stderr)
+        print(f"FPM drain: {active} request(s) still active after {limit} s; the stop ends them", file=sys.stderr)
     elif result.outcome == UNMONITORED:
         hint = f"install {SNIPPET} and reload FPM" if result.problem == NO_STATUS_SOCKET else \
             f"pm.status_path must be {STATUS_PATH}"
