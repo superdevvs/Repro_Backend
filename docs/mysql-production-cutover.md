@@ -3,6 +3,12 @@
 Status: implementation and isolated rehearsal. Production cutover has a separate
 approval gate. The previous Docker-based rehearsal is historical evidence.
 
+Every repository Python on the host, at the drill and at cutover, runs with
+`python3 -B`: a bytecode cache under the app tree changes the identity the
+controller checks before every action, so if it refuses on the artifact field
+after no deploy, look for `__pycache__` under the app tree's `scripts/` (and
+`resources/iguide-lab/`) and remove it.
+
 > **What this candidate can do on the night.** It can hold, freeze, abort
 > and reopen production on SQLite. It cannot reach MySQL:
 >
@@ -118,7 +124,7 @@ set -euo pipefail
 snapshot=/protected/frozen.sqlite
 EXPECTED_SNAPSHOT_SHA256='<sha256 from frozen.sha256 on the production host>'
 printf '%s  %s\n' "$EXPECTED_SNAPSHOT_SHA256" "$snapshot" | sha256sum --check --strict
-python3 scripts/mysql/migrate.py plan --snapshot "$snapshot" \
+python3 -B scripts/mysql/migrate.py plan --snapshot "$snapshot" \
   --snapshot-sha256 "$EXPECTED_SNAPSHOT_SHA256" --output /protected/new-crm-plan
 ```
 
@@ -2159,7 +2165,7 @@ and `password`; credentials never belong in command arguments or source control.
 First generate a fresh plan with a new private output directory:
 
 ```bash
-python3 scripts/mysql/schema-drift.py \
+python3 -B scripts/mysql/schema-drift.py \
   --release /protected/release-schema.sqlite \
   --release-sha256 <verified-release-schema-file-sha256> \
   --release-commit <reviewed-backend-commit> \
@@ -2174,7 +2180,7 @@ data unless a separate reviewed change makes a different disposition explicit.
 The report reads metadata only and leaves both files intact.
 
 ```bash
-python3 scripts/mysql/migrate.py plan \
+python3 -B scripts/mysql/migrate.py plan \
   --snapshot /protected/frozen.sqlite \
   --snapshot-sha256 <verified-snapshot-sha256> \
   --output /protected/new-plan
@@ -2187,7 +2193,7 @@ binds the conversion layout, while the census checks the actual values fit.
 Only after confirming writer freeze, the empty target and independent UUID:
 
 ```bash
-python3 scripts/mysql/migrate.py import-empty \
+python3 -B scripts/mysql/migrate.py import-empty \
   --snapshot /protected/frozen.sqlite \
   --snapshot-sha256 <verified-snapshot-sha256> \
   --credentials /protected/maintenance.json \
@@ -2484,7 +2490,7 @@ After stopping writers and reconciling external effects, run the reviewed
 reverse tool.
 
 ```bash
-python3 scripts/mysql/export-sqlite.py \
+python3 -B scripts/mysql/export-sqlite.py \
   --credentials /protected/maintenance.json \
   --database repro_dashboard \
   --expected-server-uuid <independently-observed-source-uuid> \

@@ -173,7 +173,7 @@ code without the replay command, run the replay by hand. Texts wait in
 php vendor/bin/phpunit tests/Feature/TelnyxMaintenanceCaptureTest.php \
   tests/Feature/TelnyxSpoolReplayTest.php tests/Feature/TelnyxWebhookArrivalTimeTest.php \
   tests/Feature/SchedulerHoldTest.php
-python3 scripts/deploy/test_deploy_maintenance_window.py   # Linux only
+python3 -B scripts/deploy/test_deploy_maintenance_window.py   # Linux only
 ```
 
 Two tests fork a second PHP process (pcntl and posix) to play PHP-FPM or the
