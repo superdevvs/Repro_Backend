@@ -7,10 +7,19 @@ Every effect is idempotent and re-observable, as the runner requires:
   every queue;
 - drain stops the worker groups, drains PHP-FPM and waits until no writer
   process remains;
-- freeze seals the SQLite file; seal_sqlite restores its modes for rollback;
-- publish_authority writes the boot-bound SQLite authority proof;
+- freeze seals the SQLite file and records its SHA-256 for this run (design
+  3.2 step 3); seal_sqlite restores its modes for rollback;
+- publish_authority writes the boot-bound authority proof, measured: the live
+  config's route hash, the identity probe's release, artifact and source, and
+  for MySQL the server UUID the probe read (design 3.4);
 - reopen verifies that proof through the guard, then resumes queues, starts
   workers, recreates the open marker and lifts the deployment fence.
+
+observe() takes the engine from the live config (live_config.measure, design
+1.3), accepting its .env fallback so that a rollback can run; both
+publications and host_authority refuse the fallback. A MySQL probe that finds
+no server listening (exit 3) reads as not writable and without business
+activity only while the journal says no MySQL write is possible (design 1.2).
 
 It never makes MySQL writable: prepare, evidence and seal_mysql refuse.
 Host commands are fixed argument lists from the root-owned host config, each
@@ -38,6 +47,7 @@ try:
 except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
     import guard
 import deploy_marker  # noqa: E402
+import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
 from runner import (  # noqa: E402
     Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
@@ -46,6 +56,9 @@ from runner import (  # noqa: E402
 NOT_SUPPORTED = "This adapter supports the SQLite hold, freeze and rollback only"
 CHILD_TAG = "REPRO_CUTOVER_CHILD"
 POLL_SECONDS = 0.25
+# The MySQL probe's exit status when nothing listens at the socket, and all it prints then (design 1.2).
+MYSQL_UNREACHABLE = 3
+ENGINE_NAMES = {"sqlite": "SQLite", "mysql": "MySQL"}
 PATHS = {"state", "policy", "evidence", "activation", "machine_id", "boot_id", "ingress_open", "deploy_marker",
          "scheduler_hold", "sqlite_seal_record", "identity_config", "switch_record", "sealed_hash", "receipt",
          "activity", "activated", "smoke_window", "evidence_inputs", "evidence_report", "unseal_proof",
@@ -368,8 +381,8 @@ class ProductionAdapter:
 
     # Host commands and process observation.
 
-    def _run(self, argv: list[str], deadline: float | None = None) -> str:
-        """Run one host command and return its standard output.
+    def _execute(self, argv: list[str], deadline: float | None = None) -> tuple[int, str]:
+        """Run one host command and return its exit status and standard output.
 
         The command runs in its own session and process group. runuser does not pass SIGKILL on to the
         command it started, so a timeout, or anything else that ends the wait (an interrupt), kills the
@@ -392,8 +405,13 @@ class ProductionAdapter:
                 if isinstance(stopped, subprocess.TimeoutExpired):
                     raise UnsafeCutover(f"Host command timed out: {Path(argv[0]).name}") from None
                 raise
-        if child.returncode != 0:
-            raise UnsafeCutover(f"Host command failed: {Path(argv[0]).name} exited {child.returncode}")
+        return child.returncode, output
+
+    def _run(self, argv: list[str], deadline: float | None = None) -> str:
+        """Run one host command (as _execute) and return its standard output; any exit but 0 raises."""
+        code, output = self._execute(argv, deadline)
+        if code != 0:
+            raise UnsafeCutover(f"Host command failed: {Path(argv[0]).name} exited {code}")
         return output
 
     def _pids(self, predicate) -> list[int]:
@@ -429,20 +447,55 @@ class ProductionAdapter:
         except (TypeError, ValueError) as error:
             raise UnsafeCutover("The host identity probe returned an invalid identity") from error
 
-    def _mysql(self) -> dict:
+    def _writes_impossible(self) -> bool:
+        """No journal, or one whose writes_possible is exactly false: MySQL has never been opened for writes."""
         try:
-            observed = json.loads(self._run(self.config["commands"]["mysql"]))
+            state = self.journal.read()
+        except (OSError, ValueError) as error:
+            raise UnsafeCutover("The cutover journal cannot be read") from error
+        return state is None or (isinstance(state, dict) and state.get("writes_possible") is False)
+
+    def _mysql(self) -> dict:
+        """One MySQL probe reading (design 1.2).
+
+        Exit 0 is the reading as printed. Exit 3 means nothing listens at the socket and prints exactly
+        {"version": 2, "reachable": false}. The gate lives in the grant tables, so a server that is down
+        cannot be written: that reads as not writable and no business activity, but only while there is no
+        journal or its writes_possible is false; otherwise it raises, as every other exit does.
+        """
+        code, output = self._execute(self.config["commands"]["mysql"])
+        if code not in (0, MYSQL_UNREACHABLE):
+            raise UnsafeCutover(f"The MySQL target probe refused the reading (exit {code})")
+        try:
+            observed = json.loads(output)
         except ValueError as error:
             raise UnsafeCutover("The MySQL target probe returned invalid JSON") from error
+        if code == MYSQL_UNREACHABLE:
+            if not (isinstance(observed, dict) and observed.keys() == {"version", "reachable"}
+                    and type(observed["version"]) is int and observed["version"] == 2
+                    and observed["reachable"] is False):
+                raise UnsafeCutover("The MySQL target probe exited 3 without reporting an unreachable server")
+            if not self._writes_impossible():
+                raise UnsafeCutover("The MySQL target is unreachable while MySQL writes may be possible")
+            return {**observed, "writable": False, "business_activity": False}
         if not (isinstance(observed, dict) and type(observed.get("writable")) is bool
                 and type(observed.get("business_activity")) is bool):
             raise UnsafeCutover("The MySQL target probe must report writable and business_activity")
         return observed
 
-    def observe(self) -> Observation:
+    def _live_config(self) -> live_config.LiveConfig:
+        """The app's live config (design 1.3): the cache, or the .env fallback; unmeasurable raises."""
+        try:
+            return live_config.measure(self.config["app_root"])
+        except (live_config.Unmeasurable, OSError) as error:
+            raise UnsafeCutover(f"The live config cannot be measured: {error}") from None
+
+    def _observed(self) -> tuple[Observation, dict, live_config.LiveConfig]:
+        """The observation with the MySQL reading and the live config it was made from."""
         mysql = self._mysql()
-        return Observation(
-            engine="sqlite",
+        live = self._live_config()
+        observation = Observation(
+            engine=live.engine,
             admissions_open=self.paths["ingress_open"].exists(),
             workers_stopped=not self.processes(self.config["writer_processes"]),
             sqlite_writable=sqlite_seal.writable(self.database),
@@ -450,6 +503,32 @@ class ProductionAdapter:
             mysql_business_activity=mysql["business_activity"],
             deployment_fenced=deploy_marker.published(self.paths["deploy_marker"], self.pinned.run_id),
         )
+        return observation, mysql, live
+
+    def observe(self) -> Observation:
+        return self._observed()[0]
+
+    def _measured_authority(self, observed: Observation, mysql: dict, live: live_config.LiveConfig) -> dict:
+        """What an authority proof says about the observed engine, every value measured now (design 3.4).
+
+        The guard compares these with the pins: the route hash with `<engine>_live_config_sha256`, the
+        database identity with the source identity (SQLite) or the target UUID (MySQL), release and
+        artifact with the pinned identity. A fallback config has no route hash, so nothing is published.
+        """
+        if live.source != live_config.CACHE or live.live_config_sha256 is None:
+            raise UnsafeCutover(f"The live config is the .env fallback ({live.problem}), not a parsed config "
+                                "cache; no authority is published from it")
+        identity = self.identity()
+        if observed.engine == "sqlite":
+            database_identity = identity.source_sha256
+        elif observed.engine == "mysql":
+            database_identity = mysql.get("server_uuid")
+            if database_identity != self.config["mysql"]["target_uuid"]:
+                raise UnsafeCutover("The MySQL probe did not read the target's server UUID")
+        else:
+            raise UnsafeCutover("The live engine is neither sqlite nor mysql")
+        return {"database_identity": database_identity, "live_config_sha256": live.live_config_sha256,
+                "release_sha": identity.release_sha, "artifact_sha256": identity.artifact_sha256}
 
     def require_quiescent(self) -> None:
         def tagged(entry: Path) -> bool:
@@ -512,6 +591,29 @@ class ProductionAdapter:
     def freeze(self, lease: Lease, deadline: int) -> None:
         lease.require_writers_drained()
         sqlite_seal.seal(self.database, self.paths["sqlite_seal_record"], proc=self.proc)
+        self._record_sealed_hash()
+
+    def _record_sealed_hash(self) -> None:
+        """The sealed file's SHA-256 for this run, right after the seal (design 3.2 step 3).
+
+        `prepare` (the file still frozen), the rollback's unseal proof and the short way back compare the
+        file with it; retire keeps it for the way back. A record for this run is never re-pinned: a repeated
+        freeze of a file that changed since refuses. Another run's record is replaced.
+        """
+        path = self.paths["sealed_hash"]
+        record = {"version": 1, "run_id": self.pinned.run_id, "database": str(self.database),
+                  "sha256": sqlite_seal.file_sha256(self.database)}
+        try:
+            earlier = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            earlier = None
+        except (OSError, ValueError) as error:
+            raise UnsafeCutover("The sealed SQLite hash record cannot be read") from error
+        if isinstance(earlier, dict) and earlier.get("run_id") == record["run_id"]:
+            if earlier != record:
+                raise UnsafeCutover("The sealed SQLite file changed after the freeze hashed it")
+            return
+        _write_atomic(path, record, 0o600)
 
     def prepare(self, lease: Lease, deadline: int) -> None:
         raise UnsafeCutover(NOT_SUPPORTED)
@@ -533,17 +635,21 @@ class ProductionAdapter:
         return guard.sha256(self.paths["machine_id"].read_bytes())
 
     def publish_authority(self, lease: Lease, engine: str, candidate: bytes, deadline: int) -> None:
+        """The boot-bound proof for the candidate journal bytes, for either engine (design 3.4).
+
+        The route must be sealed for `engine` and the live config a parsed cache; the route hash, the
+        database identity, release and artifact are measured now, so guard.verify compares measurements
+        with the pins. Only seal_mysql (which this adapter refuses) leads the runner to a MySQL publication.
+        """
         lease.require_writers_drained()
-        if engine != "sqlite" or not self.observe().sealed("sqlite") or self.clock() >= deadline:
-            raise UnsafeCutover("SQLite authority is not sealed for publication")
-        observed = self.identity()
+        observed, mysql, live = self._observed()
+        if engine not in ENGINE_NAMES or not observed.sealed(engine) or self.clock() >= deadline:
+            raise UnsafeCutover(f"{ENGINE_NAMES.get(engine, 'The')} authority is not sealed for publication")
+        measured = self._measured_authority(observed, mysql, live)
         writers = self.processes(self.config["writer_processes"] + self.config["scheduler_processes"])
         _write_atomic(self.paths["evidence"], {
             "version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
-            "journal_sha256": guard.sha256(candidate), "engine": "sqlite",
-            "database_identity": observed.source_sha256,
-            "live_config_sha256": self.policy["sqlite_live_config_sha256"],
-            "release_sha": observed.release_sha, "artifact_sha256": observed.artifact_sha256,
+            "journal_sha256": guard.sha256(candidate), "engine": engine, **measured,
             "competing_writer_detected": bool(writers),
         }, 0o600)
 
@@ -562,13 +668,14 @@ class ProductionAdapter:
 
         Deploys count as fenced only when the marker that Deploy-App checks exists;
         the journal's own deploy refusal is not enforced by any deploy script.
+        Every value is measured, as in publish_authority: the observed engine, its
+        database identity (the source file, or the MySQL server UUID the probe
+        read), the live route hash (a fallback config refuses), release and artifact.
         """
-        observed = self.observe()
-        identity = self.identity()
+        observed, mysql, live = self._observed()
+        measured = self._measured_authority(observed, mysql, live)
         return guard.HostAuthority(
-            engine=observed.engine, database_identity=identity.source_sha256,
-            live_config_sha256=self.policy[f"{observed.engine}_live_config_sha256"],
-            release_sha=identity.release_sha, artifact_sha256=identity.artifact_sha256,
+            engine=observed.engine, **measured,
             competing_writer_detected=bool(self.processes(self.config["writer_processes"]
                                                          + self.config["scheduler_processes"])),
             admissions_open=observed.admissions_open, workers_stopped=observed.workers_stopped,

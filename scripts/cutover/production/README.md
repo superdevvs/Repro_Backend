@@ -389,6 +389,55 @@ image; its docstring has the command). They show that a staged SQLite build
 equals the measured live cache, and that both equal what `fpm-engine.php`
 prints inside a PHP-FPM pool, for SQLite and for MySQL.
 
+## Observation and authority (design 1.2, 1.3, 3.2, 3.4)
+
+`observe()` runs the MySQL probe and the live config module on every call.
+
+- **Engine**: `live_config.measure(app_root)`, the cached config's default
+  driver. A missing or refused cache gives `.env` `DB_CONNECTION` with source
+  `fallback`, which `observe()` accepts so that a rollback can run. A config
+  whose engine only PHP could tell (`Unmeasurable`) raises `UnsafeCutover`.
+- **MySQL probe exits**: 0 is the reading as printed (`writable` and
+  `business_activity` must be booleans). 3 with exactly `{"version": 2,
+  "reachable": false}` (nothing listens at the socket) reads as not writable
+  and no business activity, but only while there is no journal or its
+  `writes_possible` is exactly `false`. The grants persist in the grant
+  tables, so a stopped server cannot be written, and `init`, the hold, the
+  freeze, the rollback and `refresh` keep working while MySQL is down or not
+  installed yet. With `writes_possible` true or missing, exit 3 raises. Every
+  other exit (1, 4, 5, 6) raises.
+- **SQLite writable**: `sqlite_seal.writable()` counts only a regular file at
+  the path (`lstat`) with a write bit. A link, a directory (what `retire`
+  leaves at a MySQL run's path), a FIFO or nothing there is not writable.
+- **Freeze**: right after the seal, `freeze` writes `paths.sealed_hash` (root
+  0600), `{"version": 1, "run_id", "database", "sha256"}`, the SHA-256 of the
+  sealed file read without following a link (`sqlite_seal.file_sha256`).
+  `prepare`, the rollback's unseal proof and the short way back compare the
+  file with it. A repeated freeze in the same run refuses if the file changed
+  since; another run's record is replaced.
+- **Publication** (`publish_authority`, both engines) and **`host_authority`**
+  (what `refresh` publishes) measure every value. The route must be sealed for
+  the engine asked for, and the live config must be a parsed cache: a
+  `fallback` refuses and nothing is published. `live_config_sha256` is the
+  measured route hash; `database_identity` is the identity probe's
+  `source_sha256` (SQLite) or the probe's `server_uuid`, which must equal
+  `mysql.target_uuid` (MySQL); release and artifact come from the identity
+  probe. The guard compares them with the pins, so a cache other than the
+  pinned one publishes a proof that admits nobody (the reopen refuses) until
+  the pinned cache is back and `refresh` measures again. Only `seal_mysql`,
+  which this adapter still refuses, leads the runner to a MySQL publication.
+
+Not yet here: the reopens and `prepare` do not refuse a fallback config
+themselves (slices D10, D13), and `load_config` does not check
+`commands.config_build` with `config_build.check_command`.
+
+Tests: `test_adapter.py` (root) with fake probes, plus the real
+`mysql_probe.py` twice: with nothing installed (exit 3), and against D04's
+fixture (`test_real_probe_reading_gives_mysql_authority_the_server_uuid`). That
+one skips without `REPRO_MYSQL_PROBE_FIXTURE` and fails when
+`REPRO_REQUIRE_PROBE_FIXTURE=1`, as under `run-probe-fixture-tests.sh
+--linux-suite`; the probe's `--fixture-check` warning does not list it.
+
 ## Telnyx while held (design 5.2)
 
 While the hold is in force, nginx answers 503 before Laravel and the freeze
@@ -471,8 +520,9 @@ revokes the current proof before it measures the host. `refresh` publishes
 the deploy fence before it measures and counts deploys as fenced only when
 that marker exists. In `planned`, deploys stay held (the policy pins the
 release) and reopen writes no activation receipt. After a reopened
-rollback, `reopen` lifts the fence once activation is verified. `refresh` copies the SQLite live-configuration pin from the policy;
-an independent configuration probe is still to be added before W1.
+rollback, `reopen` lifts the fence once activation is verified. `refresh` measures the live
+configuration's route hash, and the guard compares it with the policy's pin (see "Observation and
+authority" above).
 
 **Live check on `reopen`.** The authority proof was measured earlier, and
 the guard does not look at the host again. `reopen` therefore observes the

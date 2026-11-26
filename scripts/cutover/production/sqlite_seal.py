@@ -7,10 +7,16 @@ for writers again. sqlite3, tinker and stray scripts running as the deploy
 or web user then get SQLITE_READONLY; a session opened before the seal
 would keep writable descriptors, which is why the seal refuses it. Root ignores file modes, so root-run tools are fenced only
 by the runbook. unseal restores the recorded modes exactly.
+
+writable() counts only a regular file at the path (design 0.1): a link, a directory (retiring a MySQL run
+leaves one at the path, design 4.5), a FIFO or nothing there is never a writable SQLite database.
+file_sha256() is the freeze's sealed hash of the database file (design 3.2 step 3).
 """
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
 import sqlite3
@@ -29,7 +35,31 @@ def companions(database: Path) -> list[Path]:
 
 
 def writable(database: Path) -> bool:
-    return any(path.exists() and path.stat().st_mode & WRITE_BITS for path in companions(database)[:1])
+    """A regular file at the path (lstat, never through a link) with a write bit."""
+    try:
+        info = database.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return stat.S_ISREG(info.st_mode) and bool(info.st_mode & WRITE_BITS)
+
+
+def file_sha256(database: Path) -> str:
+    """SHA-256 of the database file's bytes, opened without following a link; it must be a regular file."""
+    try:
+        descriptor = os.open(database, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise UnsafeCutover(f"The SQLite path {database} is a symbolic link, not the database file") from None
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise UnsafeCutover(f"The SQLite path {database} is not a regular file")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 4 << 20):
+            digest.update(chunk)
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest()
 
 
 def _access_mode(fdinfo: Path) -> int:

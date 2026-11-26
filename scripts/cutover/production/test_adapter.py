@@ -1,5 +1,6 @@
 """Linux tests for the production host adapter and CLI with fake host commands and real processes."""
 
+import hashlib
 import io
 import json
 import os
@@ -13,7 +14,7 @@ import tempfile
 import time
 import unittest
 import uuid
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,9 +22,12 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).res
 import adapter as production
 import cli
 import deploy_marker
+import live_config
 import sqlite_seal
 from fence import guard
 from runner import Identity, Journal, Runner, UnsafeCutover
+# PHP 8.3's var_export layout of a config, as `php artisan config:cache` writes bootstrap/cache/config.php.
+from test_live_config import cache_text
 
 IDENTITY = Identity("host-fixture", "a" * 40, "b" * 64, "c" * 64, "d" * 64, "ec219d68-61fd-4a9e-ba98-43ddb4008383")
 # The lab-tour connection and queue are both `iguide-lab-tour` (config/queue.php).
@@ -48,6 +52,30 @@ APP = Path(__file__).resolve().parents[3]
 # The app has no clients table; the marked test client is a users row.
 SMOKE_TABLES = ["users", "shoots", "aryeo_changes", "jobs"]
 SMOKE_FIXTURE = APP / "app" / "Support" / "Cutover" / "CutoverSmokeFixture.php"
+# The route-hash contract's vectors (D09, design 1.3): a cached config and the hash live_config gives it.
+VECTORS = {vector["name"]: vector for vector in json.loads(
+    (Path(__file__).resolve().parent / "testdata" / "route-hash-vectors.json").read_text(encoding="utf-8"))["vectors"]}
+SQLITE_CONFIG = VECTORS["sqlite-production-shape"]
+MYSQL_CONFIG = VECTORS["mysql-socket-with-extras"]
+MYSQL_PROBE = Path(__file__).resolve().parent / "mysql_probe.py"
+OTHER_UUID = "0b9f5f1e-0000-4000-8000-000000000001"
+# D04's socket-only MySQL 8.4.13 fixture (mysql/fixture.sh serve); run-probe-fixture-tests.sh sets both.
+PROBE_FIXTURE = os.environ.get("REPRO_MYSQL_PROBE_FIXTURE")
+REQUIRE_PROBE_FIXTURE = os.environ.get("REPRO_REQUIRE_PROBE_FIXTURE") == "1"
+MYSQL_CLIENT = "/usr/local/bin/mysql"
+# Design 2.3: what seal_mysql grants to open the gate, and the revoke that closes it again.
+OPEN_GATE = ("GRANT INSERT, UPDATE, DELETE ON `repro\\_dashboard`.* TO 'repro_app'@'localhost';"
+             "GRANT UPDATE (`id`) ON `repro_mysql_control`.`writer_token` TO 'repro_app'@'localhost'")
+CLOSE_GATE = ("REVOKE INSERT, UPDATE, DELETE ON `repro\\_dashboard`.* FROM 'repro_app'@'localhost';"
+              "REVOKE UPDATE (`id`) ON `repro_mysql_control`.`writer_token` FROM 'repro_app'@'localhost'")
+
+
+def probe_reading(gate="closed", **changes):
+    """The MySQL probe's exit-0 output (design 1.2) for the target, in measured mode."""
+    return {"version": 2, "reachable": True, "server_uuid": TARGET_UUID, "database": "repro_dashboard",
+            "gate": gate, "writable": gate == "open", "business_activity": False, "foreign_activity": False,
+            "boundary": None, "receipt": None, "gated_sessions": 0, "scanned_events": 0, "mode": "measured",
+            **changes}
 # The root fixture's stand-in for /usr/bin/php (adapter.QUEUE_PHP) in design 5.1's exact queue command. It runs
 # as www-data after the script's `cd <app_root>`, reads the app root's fake-php.json, waits `seconds`, touches a
 # flag in `flags` if one is named, and records [verb, queue] in `log`.
@@ -595,6 +623,55 @@ class HostConfigContractTests(unittest.TestCase):
         self.assertEqual(sorted(NIGHT_FLAGS + SWITCH_KEYS), sorted(identity["env_denylist"]))
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX file modes, links and FIFOs")
+class SqliteWritableTests(unittest.TestCase):
+    """sqlite_seal.writable (design 0.1): only a regular file at the path, with a write bit, is writable."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="repro-sqlite-writable-")
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        self.path = self.folder / "database.sqlite"
+
+    def test_directory_at_sqlite_path_is_not_writable(self):
+        # Retiring a MySQL run moves the frozen file away and leaves a root-owned directory at its path
+        # (design 4.5 step 6): a 0755 directory must not read as a writable SQLite database.
+        self.path.mkdir(mode=0o755)
+        self.path.chmod(0o755)
+        self.assertFalse(sqlite_seal.writable(self.path))
+
+    def test_only_a_regular_file_with_a_write_bit_is_writable(self):
+        self.assertFalse(sqlite_seal.writable(self.path), "a missing file")
+        self.path.write_bytes(b"SQLite format 3\0")
+        self.path.chmod(0o644)
+        self.assertTrue(sqlite_seal.writable(self.path))
+        self.path.chmod(0o444)
+        self.assertFalse(sqlite_seal.writable(self.path), "a sealed file")
+        target = self.folder / "elsewhere.sqlite"
+        target.write_bytes(b"SQLite format 3\0")
+        target.chmod(0o644)
+        self.path.unlink()
+        self.path.symlink_to(target)
+        self.assertFalse(sqlite_seal.writable(self.path), "a link to a writable file is not a file at the path")
+        self.path.unlink()
+        os.mkfifo(self.path, 0o666)
+        self.assertFalse(sqlite_seal.writable(self.path), "a FIFO")
+
+    def test_sealed_hash_reads_only_the_regular_file_at_the_path(self):
+        content = b"SQLite format 3\0" + bytes(range(256)) * 64
+        self.path.write_bytes(content)
+        self.assertEqual(hashlib.sha256(content).hexdigest(), sqlite_seal.file_sha256(self.path))
+        target = self.folder / "elsewhere.sqlite"
+        self.path.rename(target)
+        self.path.symlink_to(target)
+        with self.assertRaisesRegex(UnsafeCutover, "symbolic link"):
+            sqlite_seal.file_sha256(self.path)
+        self.path.unlink()
+        self.path.mkdir()
+        with self.assertRaisesRegex(UnsafeCutover, "not a regular file"):
+            sqlite_seal.file_sha256(self.path)
+
+
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires Linux root, /proc and flock")
 class ProductionAdapterTests(unittest.TestCase):
     def setUp(self):
@@ -625,6 +702,10 @@ class ProductionAdapterTests(unittest.TestCase):
         self.app = self.root / "app"
         self.app.mkdir(mode=0o755)
         (self.app / "artisan").write_text("<?php // The fixture php reads fake-php.json instead.\n", encoding="ascii")
+        # The live config (design 1.3): bootstrap/cache/config.php as config:cache writes it, on SQLite.
+        self.cache = self.app / "bootstrap" / "cache" / "config.php"
+        self.cache.parent.mkdir(parents=True)
+        self.write_cache(SQLITE_CONFIG)
         self.php_settings()
         self.php = self.root / "bin" / "php"
         self.php.parent.mkdir(mode=0o755)
@@ -636,9 +717,11 @@ class ProductionAdapterTests(unittest.TestCase):
         self.config_path = self.root / "etc" / "host.json"
         self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
         (self.root / "etc" / "identity.json").write_text(json.dumps(example_identity(self.config())), encoding="utf-8")
+        # The pins (design 1.3, pin-config) are the route hashes of the two cached configs.
         policy = {
             "version": 1, "machine_id_sha256": guard.sha256((self.root / "machine-id").read_bytes()),
-            "identity": {**IDENTITY.__dict__}, "sqlite_live_config_sha256": "1" * 64, "mysql_live_config_sha256": "2" * 64,
+            "identity": {**IDENTITY.__dict__}, "sqlite_live_config_sha256": SQLITE_CONFIG["route_sha256"],
+            "mysql_live_config_sha256": MYSQL_CONFIG["route_sha256"],
         }
         (self.root / "etc" / "policy.json").write_text(json.dumps(policy, sort_keys=True), encoding="utf-8")
         (self.root / "ingress" / "open").write_text("{}", encoding="ascii")
@@ -647,6 +730,73 @@ class ProductionAdapterTests(unittest.TestCase):
     def record(self, name):
         return [sys.executable, "-c",
                 "import json, sys; open(sys.argv[1], 'a').write(json.dumps(sys.argv[2:]) + '\\n')", str(self.log), name]
+
+    def write_cache(self, vector, **changes):
+        """bootstrap/cache/config.php for a route-hash vector's config, with top-level sections replaced."""
+        self.cache.write_bytes(cache_text({**vector["config"], **changes}))
+        self.cache.chmod(0o644)
+
+    def write_env(self, text):
+        """The app root's .env, which live_config reads only when the cache is missing or refused."""
+        (self.app / ".env").write_text(text, encoding="utf-8")
+
+    def mysql_probe_answer(self, config):
+        """The MySQL probe answers from a file: set(output, code) changes its next readings."""
+        answer = self.root / "etc" / "mysql-answer.json"
+
+        def set_answer(output, code=0):
+            answer.write_text(json.dumps({"code": code, "stdout": output}), encoding="utf-8")
+
+        set_answer({"writable": False, "business_activity": False})
+        config["commands"]["mysql"] = [
+            sys.executable, "-c",
+            "import json, sys; answer = json.load(open(sys.argv[1])); print(json.dumps(answer['stdout'])); "
+            "sys.exit(answer['code'])", str(answer)]
+        return set_answer
+
+    def use_real_probe(self, config):
+        """commands.mysql runs mysql_probe.py itself, as on the host, and the host config is written.
+
+        The probe runs load_config, outside this process's QUEUE_PHP patch: its copy of the host config has
+        design 5.1's /usr/bin/php queue commands, which it never runs.
+        """
+        probe_config = self.root / "etc" / "probe-host.json"
+        probe_config.write_text(json.dumps({**config, "commands": {**config["commands"], **{
+            f"queue_{verb}": queue_command(verb, script=f'cd {self.app} && umask 0022 && exec /usr/bin/php artisan '
+                                                        f'queue:{verb} "$1"') for verb in ("pause", "resume")}}}),
+                                encoding="utf-8")
+        config["commands"]["mysql"] = PYTHON + [str(MYSQL_PROBE), "--config", str(probe_config)]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    def probe_fixture(self):
+        """D04's MySQL fixture directory; skipped without it, failed when run-probe-fixture-tests.sh requires it."""
+        if not PROBE_FIXTURE:
+            if REQUIRE_PROBE_FIXTURE:
+                self.fail("REPRO_REQUIRE_PROBE_FIXTURE=1, but REPRO_MYSQL_PROBE_FIXTURE is unset")
+            self.skipTest("Needs the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
+        fixture = Path(PROBE_FIXTURE)
+        self.assertTrue((fixture / "ready").is_file(), f"The MySQL fixture {fixture} is not ready")
+        return fixture
+
+    @contextmanager
+    def drained(self, journal):
+        """The controller lease with admitted writers drained, as the runner holds it around an adapter step."""
+        with journal.acquire() as (state, lease):
+            state["generation"] = lease.generation
+            journal.write(state)
+            journal.drain_writers(lease, 5)
+            yield lease
+
+    def sealed_on_mysql(self, adapter):
+        """The host as seal_mysql leaves it: held, fenced, a MySQL config cache, SQLite not writable."""
+        (self.root / "ingress" / "open").unlink(missing_ok=True)
+        adapter.hold_deploys()
+        self.write_cache(MYSQL_CONFIG)
+        # As retire leaves a MySQL run's SQLite path (design 4.5): a root-owned directory, not a file.
+        self.database.unlink()
+        for companion in sqlite_seal.companions(self.database)[1:]:
+            companion.unlink(missing_ok=True)
+        self.database.mkdir(mode=0o755)
 
     def php_settings(self, **settings):
         """What the fixture php does on its next runs; it always records [verb, queue] in the command log."""
@@ -1281,6 +1431,299 @@ class ProductionAdapterTests(unittest.TestCase):
         approval.chmod(0o666)
         self.assertEqual(1, self.cli("hold", "--approval", str(approval))[0])
         self.assertEqual("planned", journal.read()["phase"])
+
+    # Observation and authority (design 1.2, 1.3, 3.2, 3.4; build plan D07).
+
+    def test_observe_engine_from_live_config(self):
+        journal, adapter, _ = self.host()
+        self.assertEqual("sqlite", adapter.observe().engine)
+        self.write_cache(MYSQL_CONFIG)
+        self.assertEqual("mysql", adapter.observe().engine, "the engine is the cached config's default driver")
+        # A missing or refused cache falls back to .env DB_CONNECTION, which observe() accepts so that a
+        # rollback can run (design 1.3); publication refuses it (test_publication_refuses_fallback_config).
+        self.cache.unlink()
+        self.write_env("APP_ENV=production\nDB_CONNECTION=mysql\n")
+        self.assertEqual("mysql", adapter.observe().engine)
+        self.cache.write_bytes(cache_text(SQLITE_CONFIG["config"])[:400])
+        self.write_env("DB_CONNECTION=sqlite\n")
+        self.assertEqual("sqlite", adapter.observe().engine, "a truncated cache falls back to .env")
+        # Neither the cache nor .env tells the engine: no guess, the observation fails.
+        for env in (None, "DB_CONNECTION=pgsql\n", "DB_CONNECTION=sqlite\nDB_URL=mysql://repro@localhost/x\n"):
+            with self.subTest(env=env):
+                (self.app / ".env").unlink(missing_ok=True)
+                if env is not None:
+                    self.write_env(env)
+                with self.assertRaisesRegex(UnsafeCutover, "live config cannot be measured"):
+                    adapter.observe()
+
+    def test_unreachable_mysql_is_false_only_while_writes_impossible(self):
+        config = self.config()
+        answer = self.mysql_probe_answer(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        # Exit 3 (design 1.2): nothing listens at the socket, for example before MySQL is installed.
+        answer({"version": 2, "reachable": False}, code=3)
+        journal, adapter, runner = self.host()
+        observed = adapter.observe()
+        self.assertEqual((False, False), (observed.mysql_writable, observed.mysql_business_activity), "no journal")
+        # The grants persist in the grant tables, so a stopped server cannot be written: init, the hold, the
+        # freeze and the rollback keep working while MySQL is down.
+        runner.initialize()
+        runner.perform("hold", runner.approval_request("hold"))
+        self.assertEqual("frozen", runner.perform("freeze")["phase"])
+        self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
+        # Once the journal says writes may be possible, an unreachable server is no reading at all.
+        state = journal.read()
+        journal.write({**state, "phase": "writes_possible", "writes_possible": True})
+        with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+            adapter.observe()
+        # Only an explicit false counts; a journal without the marker proves nothing.
+        journal.write({key: value for key, value in state.items() if key != "writes_possible"})
+        with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+            adapter.observe()
+        journal.write(state)
+        self.assertFalse(adapter.observe().mysql_writable)
+        # Exit 3 means exactly "not listening"; any other exit or output is a refused reading.
+        for code, output in ((3, {"version": 2, "reachable": False, "writable": False, "business_activity": False}),
+                             (3, {"version": 2, "reachable": True}), (3, {}),
+                             (4, {"version": 2, "reachable": True, "gate": "partial"}),
+                             (5, {"version": 2, "reachable": True}), (6, {"version": 2, "reachable": True}),
+                             (1, {"writable": False, "business_activity": False})):
+            with self.subTest(code=code, output=output):
+                answer(output, code=code)
+                with self.assertRaises(UnsafeCutover):
+                    adapter.observe()
+
+    def test_real_probe_unreachable_is_false_only_while_writes_impossible(self):
+        # The probe itself (mysql_probe.py as commands.mysql runs it), with no MySQL client, defaults file or
+        # server installed: it exits 3 with {"version": 2, "reachable": false}.
+        config = self.config()
+        missing = self.root / "mysql-not-installed"
+        config["mysql"]["client"] = str(missing / "bin" / "mysql")
+        config["mysql"]["probe_defaults"] = str(missing / "mysql-probe.cnf")
+        config["mysql"]["socket"] = config["mysql"]["switch"]["DB_SOCKET"] = str(missing / "mysql.sock")
+        self.use_real_probe(config)
+        journal, adapter, runner = self.started()
+        self.assertTrue(adapter.observe().sqlite_live())
+        state = journal.read()
+        journal.write({**state, "phase": "writes_possible", "writes_possible": True})
+        with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+            adapter.observe()
+
+    def test_publication_refuses_fallback_config(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        # The cache is gone; .env says sqlite, which observe() accepts so the rollback can run.
+        self.cache.unlink()
+        self.write_env("DB_CONNECTION=sqlite\n")
+        with self.assertRaisesRegex(UnsafeCutover, "fallback"):
+            runner.perform("abort")
+        state = journal.read()
+        self.assertEqual(("frozen", "abort"), (state["phase"], state["pending"]["action"]))
+        self.assertFalse((self.root / "run" / "verified-engine.json").exists(), "authority from a fallback config")
+        self.assertFalse((self.root / "ingress" / "open").exists())
+        # Once the cache is back (seal_sqlite rebuilds it, design 3.5 step 4) the retried rollback publishes.
+        self.write_cache(SQLITE_CONFIG)
+        self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
+        # The refresh after a reboot measures the same way and refuses the fallback too.
+        self.cache.unlink()
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            self.assertEqual(1, self.cli("refresh")[0])
+        self.assertIn("fallback", errors.getvalue())
+        self.assertFalse((self.root / "run" / "verified-engine.json").exists())
+        self.write_cache(SQLITE_CONFIG)
+        self.assertEqual(0, self.cli("refresh")[0])
+
+    def test_publication_records_measured_hash_and_identity(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        # The live cache now routes the default cache store elsewhere: its hash is no longer the pin.
+        self.write_cache(SQLITE_CONFIG, cache={**SQLITE_CONFIG["config"]["cache"], "default": "database"})
+        measured = live_config.measure(self.app).live_config_sha256
+        self.assertNotEqual(SQLITE_CONFIG["route_sha256"], measured)
+        runner.perform("abort")
+        evidence_path = self.root / "run" / "verified-engine.json"
+        evidence = json.loads(evidence_path.read_text())
+        self.assertEqual(
+            {"engine": "sqlite", "live_config_sha256": measured, "database_identity": IDENTITY.source_sha256,
+             "release_sha": IDENTITY.release_sha, "artifact_sha256": IDENTITY.artifact_sha256,
+             "competing_writer_detected": False},
+            {key: evidence[key] for key in ("engine", "live_config_sha256", "database_identity", "release_sha",
+                                            "artifact_sha256", "competing_writer_detected")})
+        # The guard compares that measurement with the pin, so this proof admits nobody.
+        policy = (self.root / "etc" / "policy.json").read_bytes()
+        host = {"machine_sha": guard.sha256((self.root / "machine-id").read_bytes()),
+                "boot_id": self.boot.read_text().strip()}
+        with self.assertRaisesRegex(guard.Refused, "configuration"):
+            guard.verify(policy, journal.path.read_bytes(), evidence_path.read_bytes(), **host,
+                         action="queue-worker", expected_engine="sqlite")
+        with self.assertRaises(UnsafeCutover):
+            adapter.reopen()
+        self.assertFalse((self.root / "ingress" / "open").exists())
+        # With the pinned config back, the refresh measures the pin and the guard admits.
+        self.write_cache(SQLITE_CONFIG)
+        self.assertEqual(0, self.cli("refresh")[0])
+        guard.verify(policy, journal.path.read_bytes(), evidence_path.read_bytes(), **host,
+                     action="queue-worker", expected_engine="sqlite")
+
+    def test_mysql_publication_records_server_uuid_and_measured_hash(self):
+        config = self.config()
+        answer = self.mysql_probe_answer(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        self.sealed_on_mysql(adapter)
+        answer(probe_reading("open"))
+        self.assertTrue(adapter.observe().sealed("mysql"))
+        evidence = self.root / "run" / "verified-engine.json"
+        with self.drained(journal) as lease:
+            adapter.publish_authority(lease, "mysql", b"candidate journal\n", time.time() + 60)
+        record = json.loads(evidence.read_text())
+        self.assertEqual(
+            {"engine": "mysql", "database_identity": TARGET_UUID, "live_config_sha256": MYSQL_CONFIG["route_sha256"],
+             "release_sha": IDENTITY.release_sha, "artifact_sha256": IDENTITY.artifact_sha256,
+             "journal_sha256": guard.sha256(b"candidate journal\n"), "competing_writer_detected": False},
+            {key: record[key] for key in ("engine", "database_identity", "live_config_sha256", "release_sha",
+                                          "artifact_sha256", "journal_sha256", "competing_writer_detected")})
+        # A route that is not sealed for the engine asked for is never published.
+        evidence.unlink()
+        for engine, output in (("sqlite", probe_reading("open")), ("mysql", probe_reading("closed")),
+                               ("mysql", probe_reading("open", business_activity=True)), ("pgsql", probe_reading("open"))):
+            with self.subTest(engine=engine, gate=output["gate"], activity=output["business_activity"]):
+                answer(output)
+                with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "not sealed"):
+                    adapter.publish_authority(lease, engine, b"candidate journal\n", time.time() + 60)
+                self.assertFalse(evidence.exists())
+        # Another server, a reading without its UUID, or a fallback config is never published as MySQL authority.
+        for name, output in (("another server", probe_reading("open", server_uuid=OTHER_UUID)),
+                             ("no server UUID", {key: value for key, value in probe_reading("open").items()
+                                                 if key != "server_uuid"})):
+            with self.subTest(name):
+                answer(output)
+                with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "server UUID"):
+                    adapter.publish_authority(lease, "mysql", b"candidate journal\n", time.time() + 60)
+                self.assertFalse(evidence.exists())
+        answer(probe_reading("open"))
+        self.cache.unlink()
+        self.write_env("DB_CONNECTION=mysql\n")
+        with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "fallback"):
+            adapter.publish_authority(lease, "mysql", b"candidate journal\n", time.time() + 60)
+        self.assertFalse(evidence.exists())
+
+    def test_mysql_host_authority_uses_server_uuid(self):
+        config = self.config()
+        answer = self.mysql_probe_answer(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        # SQLite: the source file's identity and the measured SQLite hash.
+        authority = adapter.host_authority("sqlite")
+        self.assertEqual(("sqlite", IDENTITY.source_sha256, SQLITE_CONFIG["route_sha256"]),
+                         (authority.engine, authority.database_identity, authority.live_config_sha256))
+        # MySQL (refresh after a reboot on MySQL, design 3.9): the server UUID the probe read.
+        self.sealed_on_mysql(adapter)
+        answer(probe_reading("open"))
+        authority = adapter.host_authority("mysql")
+        self.assertEqual(("mysql", TARGET_UUID, MYSQL_CONFIG["route_sha256"], True, False),
+                         (authority.engine, authority.database_identity, authority.live_config_sha256,
+                          authority.mysql_writable, authority.sqlite_writable))
+        for name, output, code in (
+                ("another server", probe_reading("open", server_uuid=OTHER_UUID), 0),
+                ("no server UUID", {"writable": True, "business_activity": False}, 0),
+                ("unreachable", {"version": 2, "reachable": False}, 3)):
+            with self.subTest(name):
+                answer(output, code=code)
+                with self.assertRaisesRegex(UnsafeCutover, "server UUID"):
+                    adapter.host_authority("mysql")
+        answer(probe_reading("open"))
+        self.cache.unlink()
+        self.write_env("DB_CONNECTION=mysql\n")
+        with self.assertRaisesRegex(UnsafeCutover, "fallback"):
+            adapter.host_authority("mysql")
+
+    def test_real_probe_reading_gives_mysql_authority_the_server_uuid(self):
+        # mysql_probe.py against D04's fixture (built from accounts.sql), as commands.mysql runs it on the host.
+        fixture = self.probe_fixture()
+        socket_path = str(fixture / "run" / "mysql.sock")
+        server_uuid = (fixture / "server_uuid").read_text(encoding="ascii").strip()
+
+        def root_sql(statements):
+            subprocess.run([MYSQL_CLIENT, f"--defaults-file={fixture / 'root.cnf'}", "--no-login-paths",
+                            "--protocol=SOCKET", f"--socket={socket_path}", "--batch", "-e", statements],
+                           check=True, capture_output=True, timeout=60)
+
+        config = self.config()
+        mysql = config["mysql"]
+        mysql["client"] = MYSQL_CLIENT
+        mysql["probe_defaults"] = str(self.root / "etc" / "mysql-probe.cnf")
+        mysql["socket"] = mysql["switch"]["DB_SOCKET"] = socket_path
+        mysql["target_uuid"] = mysql["switch"]["REPRO_MYSQL_EXPECTED_SERVER_UUID"] = server_uuid
+        shutil.copyfile(fixture / "repro_cutover_probe.cnf", mysql["probe_defaults"])
+        os.chmod(mysql["probe_defaults"], 0o600)
+        self.use_real_probe(config)
+        # Planned journal, strict mode: the gate reads closed.
+        journal, adapter, runner = self.started()
+        observed = adapter.observe()
+        self.assertEqual((False, False), (observed.mysql_writable, observed.mysql_business_activity))
+        self.assertEqual(IDENTITY.source_sha256, adapter.host_authority("sqlite").database_identity)
+        # On MySQL with the gate open (measured mode), as refresh measures it after a reboot (design 3.9).
+        self.addCleanup(root_sql, CLOSE_GATE)
+        root_sql(OPEN_GATE)
+        journal.write({**journal.read(), "phase": "mysql_authoritative", "writes_possible": True})
+        self.sealed_on_mysql(adapter)
+        self.assertTrue(adapter.observe().sealed("mysql"))
+        authority = adapter.host_authority("mysql")
+        self.assertEqual(("mysql", server_uuid, MYSQL_CONFIG["route_sha256"], True),
+                         (authority.engine, authority.database_identity, authority.live_config_sha256,
+                          authority.mysql_writable))
+        # Another target in the host config: the probe itself refuses the server (exit 6).
+        self.use_real_probe({**config, "mysql": {**mysql, "target_uuid": OTHER_UUID,
+                                                 "switch": {**mysql["switch"],
+                                                            "REPRO_MYSQL_EXPECTED_SERVER_UUID": OTHER_UUID}}})
+        _, adapter, _ = self.host()
+        with self.assertRaisesRegex(UnsafeCutover, r"refused the reading \(exit 6\)"):
+            adapter.host_authority("mysql")
+
+    def test_freeze_records_sealed_file_hash(self):
+        journal, adapter, runner = self.started()
+        subprocess.run(["/usr/bin/setpriv", "--reuid=33", "--regid=33", "--clear-groups", sys.executable, "-c",
+                        "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]);"
+                        "c.executemany('INSERT INTO t VALUES (?)', [(n,) for n in range(1000)]); c.commit()",
+                        str(self.database)], check=True)
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        path = self.root / "state" / "sealed-hash.json"
+        info = path.lstat()
+        self.assertEqual((0, 0o600), (info.st_uid, stat.S_IMODE(info.st_mode)))
+        sealed = hashlib.sha256(self.database.read_bytes()).hexdigest()
+        record = {"version": 1, "run_id": IDENTITY.run_id, "database": str(self.database), "sha256": sealed}
+        self.assertEqual(record, json.loads(path.read_text()))
+        self.assertFalse(sqlite_seal.writable(self.database))
+        # A repeated freeze of the unchanged sealed file keeps the record.
+        with self.drained(journal) as lease:
+            adapter.freeze(lease, time.time() + 60)
+        self.assertEqual(record, json.loads(path.read_text()))
+        # The file changed after it was hashed (root ignores the modes): never hashed again as sealed.
+        with open(self.database, "ab") as stream:
+            stream.write(b"\0" * 512)
+        with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "changed after the freeze"):
+            adapter.freeze(lease, time.time() + 60)
+        self.assertEqual(record, json.loads(path.read_text()))
+        # Another run's record is replaced by this run's.
+        path.write_text(json.dumps({**record, "run_id": "earlier-run", "sha256": "0" * 64}), encoding="utf-8")
+        with self.drained(journal) as lease:
+            adapter.freeze(lease, time.time() + 60)
+        self.assertEqual({**record, "sha256": hashlib.sha256(self.database.read_bytes()).hexdigest()},
+                         json.loads(path.read_text()))
+
+    def test_directory_at_sqlite_path_is_never_observed_writable(self):
+        journal, adapter, _ = self.host()
+        self.assertTrue(adapter.observe().sqlite_writable)
+        self.database.unlink()
+        for companion in sqlite_seal.companions(self.database)[1:]:
+            companion.unlink(missing_ok=True)
+        self.database.mkdir(mode=0o755)
+        self.assertFalse(adapter.observe().sqlite_writable)
 
 
 @unittest.skipUnless(os.name == "posix", "Host config paths are POSIX absolute paths")
