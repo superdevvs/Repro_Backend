@@ -291,7 +291,10 @@ filled. The probe account reads only the columns it needs (never
 controller in `/opt/repro-cutover-fence/production/` (W1). `var_export.py`
 is also the alert probe's reader: the alerts job of
 `scripts/mysql/offsite/install_backup_host.py` installs a copy beside
-`alert_probe.py` in `/opt/repro-backup-tools/`, which loads it by path.
+`alert_probe.py` in `/opt/repro-backup-tools/`, which loads it by path. Only
+in a checkout (the probe in `scripts/mysql/offsite`) does the probe also look
+in that checkout's `scripts/cutover/production`; installed, it reads only the
+copy beside it, and a missing copy is an error.
 
 - **Reader** (`var_export.parse`): `<?php return <array>;` exactly as PHP 8.3's
   `var_export` writes it: arrays, single-quoted UTF-8 strings, integers,
@@ -307,32 +310,74 @@ is also the alert probe's reader: the alerts job of
   route values and hash follow `testdata/route-hash-vectors.json`.
   Passwords become `password_set`, and a `url` carrying a password is refused.
   A missing or refused cache gives source `fallback`, no hash, the engine from
-  `.env` `DB_CONNECTION` (read as phpdotenv reads it) and the reason in
-  `problem`. Anything other than a plain `sqlite` or `mysql`, or a `DB_URL`,
-  raises `Unmeasurable`. CLI: `/usr/bin/python3 -I -S live_config.py
-  --app-root /var/www/backend` prints the same as JSON (exit 1 when
-  unmeasurable).
-- **`config_build.build(config, expected_engine=..., expected_sha256=None)`**
-  runs `commands.config_build`, which must be exactly design 1.3's command
-  (`config_build.check_command`), for `bootstrap/cache/.config.php.repro-<hex>`.
-  It then checks the file: regular, one link, owned by `app_owner`, mode 0644,
-  strictly readable, the expected engine and, if given, the pin. It gives the
-  file the live file's owner, group and mode (`app_owner`, `app_group`, 0644
-  when there is none) and fsyncs it. It renames it over `config.php` and
-  fsyncs the folder. A failure or timeout (the whole process group is
-  killed) removes the temporary file and leaves the live file untouched. An
-  interrupted build's temporary files are removed by the next one.
-  **`config_build.stage(config, expected_engine=..., environment=...)`** is the
-  same build into a fresh 0700 folder owned by the deploy user, with the
-  given variables added (the pins: the switch values for MySQL). It renames
-  nothing and keeps nothing.
+  `.env` `DB_CONNECTION` (read as phpdotenv reads it, through a link) and the
+  reason in `problem`. Refused means a link, not a regular file, over 8 MiB,
+  empty, truncated, not var_export, an object, enum or expression inside, or a
+  shape the contract cannot hash (no default connection or driver, a
+  `password` beside `password_set`, a `url` carrying a password; the module
+  docstring has the full list). PHP still loads several of these (a link, an
+  enum, a large file), so **the fallback engine is advisory**: it may let a
+  rollback proceed, but it never proves which engine is live, and `prepare`,
+  both publications and both reopens refuse it. Anything other than a plain
+  `sqlite` or `mysql`, or a `DB_URL`, raises `Unmeasurable`. CLI:
+  `/usr/bin/python3 -I -S live_config.py --app-root /var/www/backend` prints
+  the same as JSON (exit 1 when unmeasurable).
+- **`config_build.build(config, expected_engine=..., expected_sha256=None,
+  deadline=None)`** first checks that `commands.config_build` is exactly
+  design 1.3's command (`config_build.check_command`); another command (as
+  root, umask 0002, another php) is refused before anything runs or changes.
+  It runs it for `bootstrap/cache/.config.php.repro-<hex>`, for at most
+  `command_seconds` or until the caller's deadline, whichever is first (at
+  least 1 s). It then checks the file: regular, one link, owned by
+  `app_owner`, mode 0644, strictly readable, the expected engine and, if
+  given, the pin. **Owner and mode:** the new `config.php` is always
+  `app_owner`'s, keeps the live file's group, and gets the live file's mode
+  with the group and other write bits and every execute bit cleared
+  (`app_group` and 0644 when there is no regular live file). Deploy-App runs
+  `config:cache` as maverick in group www-data with umask 0022, which writes
+  maverick:www-data 0644; a live 0664 or 0666 file becomes 0644, a root-owned
+  one becomes maverick's, and the result is never wider than the live mode,
+  so www-data is never handed a config it may rewrite. The build fsyncs the
+  file, renames it over `config.php` and fsyncs the folder. A failure or
+  timeout (the whole process group is killed) removes the temporary file and
+  leaves the live file untouched. An interrupted build's temporary files are
+  removed by the next one.
+  **`config_build.stage(config, parent=..., expected_engine=...,
+  environment=...)`** is the same build into a fresh 0700 folder owned by the
+  deploy user inside `parent`, with the given variables added (the pins: the
+  switch values for MySQL). It renames nothing and keeps nothing. `parent` is
+  required (never the system temporary folder, where the deploy user could
+  rename its own staged folder): an absolute path to a real folder, not a
+  link, owned by root, writable by no group or other account. **The
+  controller passes a root-owned runtime folder under
+  `/run/repro-cutover-fence`** (itself root 0755 from tmpfiles.d), for
+  example `/run/repro-cutover-fence/config-stage` created root 0711: a tmpfs,
+  so a staged MySQL config left by a SIGKILL is gone at the next boot. A root
+  0700 folder does not work: the deploy user's `config:cache` must pass
+  through the parent to reach its staged folder, so `stage` refuses a parent
+  that neither others nor `app_group` can search.
 
 `test_live_config.py` runs anywhere. `test_config_build.py` needs Linux root,
-`runuser`, `nobody` and `www-data` for its fake-php tests. Its
+`runuser`, `nobody` and `www-data` for its fake-php tests (its command-check
+tests run anywhere). Its
 `RealConfigCacheTests` also need `php`, `php-fpm` and `vendor/` (the QA
 image; its docstring has the command). They show that a staged SQLite build
 equals the measured live cache, and that both equal what `fpm-engine.php`
-prints inside a PHP-FPM pool, for SQLite and for MySQL.
+prints inside a PHP-FPM pool, for SQLite and for MySQL. The two fsyncs (the
+temporary file before the rename, the folder after it) are not verified by
+a crash test; no test here can tell a missing fsync apart.
+
+Not yet here (later slices):
+- Integrator, after the merge: `adapter.load_config` calls
+  `config_build.check_command`, together with the sandbox's `config_build`
+  command form (`sandbox/make_config.py` writes another form today). Until
+  then `build` and `stage` are the only gate, and they check first.
+- D13: the SQLite reopen refuses a `fallback` live config (review A2-9); so
+  do `prepare`, both publications and the MySQL reopen.
+- D10, D12, D14: `build(config, expected_engine=..., expected_sha256=<pin>,
+  deadline=...)` then `live_config.measure` again (the deploy user can
+  replace `config.php` at any time); `pin-config` creates the root 0711
+  staging folder under `/run/repro-cutover-fence` and passes it to `stage`.
 
 ## Telnyx while held (design 5.2)
 
