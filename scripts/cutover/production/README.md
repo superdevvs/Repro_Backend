@@ -973,7 +973,7 @@ the lease must still be current and the deadline not passed.
 | 2 | `inputs` | The evidence inputs manifest (below), every input re-read and bound by `adapter.check_inputs`; the policy pins `mysql_live_config_sha256`; free bytes on `/` above `mysql.free_disk_floor_bytes` |
 | 3 | `sqlite_frozen` | `sqlite_seal.writable()` false, the WAL empty, `paths.sealed_hash` of this run, the journal's hold (`hold_id`, `started_at`) and this `database`, and `sqlite_seal.file_sha256` equal to its `sha256` |
 | 4 | `mysql_history` | One probe reading: the target's server UUID and database, `gate` closed, `writable` and `business_activity` false. App sessions (`gated_sessions` above 0) are ended by `gate.close_gate`, which on a closed gate only sends the KILLs (no grant change); a gate it found not closed is refused after the close. Then the history scan (below) |
-| 5 | `switch_record` | The switch record (below), written, or verified on a retry |
+| 5 | `switch_record` | First `envfile.require_switchable` (the `.env` checks of `assign` and `replace`, steps 6 and 7); then the switch record (below), written, or verified on a retry |
 | 6 | `mysql_env` | The MySQL `.env` in memory (`envfile.assign`): `mysql.switch` plus the secret from `mysql-app.env`; refused unless `identity_probe.config_sha256` of the current and the switched file, with the denylist read again from `paths.identity_config`, are equal (the v1 bug, critic RC-H1) |
 | 7 | `env_replaced` | `envfile.replace` (owner, group, mode and every extended attribute kept, the ACL included); skipped when the file already holds the switch; read back |
 | 8 | `config` | `config_build.build(config, expected_engine="mysql", expected_sha256=<MySQL pin>, deadline=...)`, then `live_config.measure` again: engine `mysql`, source `cache`, the pin (the deploy user can replace `config.php` at any time). Then `switch_at` in the switch record |
@@ -982,8 +982,9 @@ the lease must still be current and the deadline not passed.
 
 Steps 1 to 4 change nothing (step 4 may end app sessions, which hold no
 grant), and the run stays `frozen` with its pending `prepare` until `abort`.
-From step 5 on a failure leaves the switch partly done, for `seal_sqlite`
-to undo (D12).
+Step 5 refuses a `.env` that steps 6 and 7 would refuse before it writes
+the record. From the record on a failure leaves the switch partly done, for
+`seal_sqlite` to undo (D12; until then see "Not yet here" below).
 
 **The history scan** (steps 4 and 10, the `--since` contract above):
 `commands.mysql` with `--since <backup file>:<position> --since-gtid
@@ -1059,8 +1060,17 @@ exactly as the identity probe reads them (its `ENV_LINE`) and every switch
 key is denylisted, so the switched file has the same `config_sha256` and is
 never refused by the probe (review A2-11), and restoring the recorded values
 gives back the original bytes. A line the probe refuses, a switch key on two
-lines, a value that is not UTF-8 or holds NUL, and a file that does not end
-with a newline when a line must be appended are refused before any write.
+lines, a value that is not UTF-8 or holds NUL, a file that does not end with
+a newline when a line must be appended, a `.env` with a second name (a hard
+link: the rename would leave the SQLite bytes under the other name) and an
+app root reached through a symbolic link (`replace` opens the folder without
+following one, while the identity probe, `live_config` and the build follow
+it) are refused at step 5 (`envfile.require_switchable`, and `envfile.values`
+for a new record), before the switch record is written (review D10R-6). The secret file and the denylist checks
+(step 6) come after the record and before `.env` changes; the record then
+still verifies against the unchanged `.env`, so a rerun after the fix
+proceeds. P2 confirms read-only that `/var/www/backend` is a directory and
+its `.env` has one link and ends with a newline.
 `replace` writes a temporary `.env.repro-<32 hex>` in the app root, gives it
 the old owner, group, extended attributes (the backup account's
 `system.posix_acl_access`) and mode, fsyncs it, renames it over `.env` only
@@ -1089,18 +1099,34 @@ activity and refuses before step 10 runs.
 | 9 | FPM restarted on the MySQL config (no file: `try-reload-or-restart` covers a running and a stopped FPM) |
 | 10 | This run's receipt; the latch removed |
 
-An interrupted step may also leave `.env.repro-<32 hex>` (removed by the next
-`envfile.replace`) or `.config.php.repro-<32 hex>` (removed by the next
-build). From any of these states a new `prepare` finishes the switch
-(`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step`).
+A controller killed inside a step (`PrepareHost.kill_inside`) can also leave:
+
+| Killed | On disk |
+| --- | --- |
+| In step 7, before the rename | As after step 6, plus `.env.repro-<32 hex>` in the app root: the whole switched `.env`, the app password included, with `.env`'s owner, group, mode and ACL. The next `envfile.replace` removes it, and so does `seal_sqlite` (below) |
+| In step 8, after the rename | As after step 7, but `config.php` measures the MySQL pin from the cache; `switch_at` still null |
+| In step 8, during the build | As after step 7, plus `.config.php.repro-<32 hex>` (removed by the next build) |
+
+From any of these states a new `prepare` finishes the switch
+(`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step`,
+`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes`).
 
 Not yet here:
 - D11: steps 11 and 12, `evidence()`, `check-evidence --write` (which writes
   the manifest above through `check_inputs`).
-- D12: `seal_sqlite`'s full undo. Until D12 lands, a rollback after step 7
-  leaves `.env` and `config.php` on MySQL: today's `seal_sqlite` only unseals
-  SQLite, so the SQLite publication refuses (the engine reads `mysql`) and
-  the watchdog retries. Do not run `prepare` on a host before D12.
+- D12: `seal_sqlite`'s full undo (design 3.5 steps 2 to 7). Until then
+  `seal_sqlite` only unseals SQLite and lifts the ingress marker, and with a
+  switch record it first removes `.env.repro-<32 hex>` leftovers and then
+  refuses, before it unseals anything, while `.env` no longer holds the
+  record's SQLite values (review D10R-1). So from step 7's rename on, an
+  `abort` or the watchdog stops with "The .env holds the MySQL switch" and
+  the site stays held (SQLite sealed, the run `frozen` with a pending
+  `abort` that every retry refuses the same way) instead of reopening
+  SQLite under a MySQL `.env`, whatever `config.php` reads. Before the rename (a crash
+  after step 5 or 6, or a kill inside step 7) the rollback reopens SQLite.
+  `test_abort_never_reopens_sqlite_under_the_switched_env` covers both;
+  D12 replaces that test's refusal with the undo, from every state in the
+  two tables above. Do not run `prepare` on a host before D12.
 - Step 9 does not wait for the FPM socket; D11's FastCGI probe (step 11) is
   its first reader and owns that bounded wait.
 - D14: `cli.py prepare`.
@@ -1373,8 +1399,11 @@ fake `php`'s `config:cache` runs as the deploy user and writes the config
 from `.env`), a stand-in identity probe that measures `config_sha256` from
 the live `.env`, and either a scripted MySQL probe (`PrepareTests`, any root
 container) or the real `mysql_probe.py` and `gate.py` against D04's 8.4.13
-fixture on its shared socket volume (`PrepareFixtureTests`). The file's
-docstring has the parts table and how a later slice extends it.
+fixture on its shared socket volume (`PrepareFixtureTests`). A prepare can
+be stopped between two steps (`crash_after(n)`) or killed with SIGKILL
+inside step 7 or 8 (`kill_inside(point)`, a forked controller), for D12's
+abort tests. The file's docstring has the parts table and how a later slice
+extends it.
 `../run-linux-tests.sh` runs both files after its production loop; without
 the fixture the prepare fixture tests skip and `test_adapter_mysql.py
 --fixture-check` names them in its own WARNING line before any suite (or

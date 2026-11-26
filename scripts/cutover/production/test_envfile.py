@@ -300,6 +300,76 @@ class ReplaceTests(unittest.TestCase):
             self.assertEqual(before, (metadata(self.env), self.env.read_bytes(), self.env.lstat().st_ino))
             self.assertEqual([], self.others())
 
+    def test_a_file_replaced_between_the_read_and_the_rename_is_left_alone(self):
+        # The names must still hold the very file that was read (review D10R-3, E15): a .env renamed over or written
+        # in place while the copy was made is never overwritten by the switch.
+        fsync = os.fsync
+
+        def renamed_over():
+            (self.folder / "other").write_bytes(PRODUCTION)
+            os.rename(self.folder / "other", self.env)
+
+        def appended():
+            with open(self.env, "ab") as stream:
+                stream.write(b"X=1\n")
+
+        for name, change in (("another file renamed over it", renamed_over), ("appended in place", appended)):
+            with self.subTest(name):
+                self.env.write_bytes(PRODUCTION)
+                calls = []
+
+                def first_fsync_changes_the_file(descriptor):
+                    if not calls:
+                        change()
+                    calls.append(descriptor)
+                    return fsync(descriptor)
+
+                with patch.object(envfile.os, "fsync", side_effect=first_fsync_changes_the_file):
+                    with self.assertRaisesRegex(envfile.Refused, "replaced while the switch ran"):
+                        envfile.replace(self.env, envfile.assign(PRODUCTION, SWITCH), expected=PRODUCTION)
+                left = self.env.read_bytes()
+                self.assertEqual(PRODUCTION + (b"X=1\n" if name == "appended in place" else b""), left)
+                self.assertEqual([], self.others())
+
+    def test_a_hard_linked_env_is_refused(self):
+        # Review D10R-6: the rename would leave the SQLite bytes under the other name, unnoticed.
+        other = self.folder / "backup.env"
+        os.link(self.env, other)
+        with self.assertRaisesRegex(envfile.Refused, "hard link"):
+            envfile.replace(self.env, envfile.assign(PRODUCTION, SWITCH), expected=PRODUCTION)
+        self.assertEqual((PRODUCTION, 2), (self.env.read_bytes(), self.env.lstat().st_nlink))
+        self.assertEqual(["backup.env"], self.others())
+
+    def test_what_the_switch_would_refuse_is_checked_before_anything_is_written(self):
+        # Review D10R-6: prepare calls require_switchable at step 5, before it writes the switch record, so a .env
+        # the switch (assign at step 6, replace at step 7) would refuse leaves no record behind.
+        keys = sorted(SWITCH)
+        envfile.require_switchable(self.env, keys)
+        other = self.folder / "backup.env"
+        os.link(self.env, other)
+        with self.assertRaisesRegex(envfile.Refused, "hard link"):
+            envfile.require_switchable(self.env, keys)
+        other.unlink()
+        base = Path(tempfile.mkdtemp(prefix="repro-envfile-link-", dir="/var/lib"))
+        self.addCleanup(shutil.rmtree, base)
+        (base / "app").symlink_to(self.folder)
+        with self.subTest("an app root reached through a symbolic link"):
+            self.assertEqual(PRODUCTION, envfile.read(base / "app" / ".env"))
+            with self.assertRaisesRegex(envfile.Refused, "folder of the .env cannot be used"):
+                envfile.require_switchable(base / "app" / ".env", keys)
+        for name, data, pattern in (
+            ("a key to append and no final newline", PRODUCTION.rstrip(b"\n"), "must end with a newline"),
+            ("a switch key on two lines", PRODUCTION + b"DB_CONNECTION=sqlite\n", "repeats DB_CONNECTION"),
+            ("a line the identity probe refuses", PRODUCTION + b"not an assignment\n", "is not KEY=VALUE"),
+        ):
+            with self.subTest(name):
+                self.env.write_bytes(data)
+                with self.assertRaisesRegex(envfile.Refused, pattern):
+                    envfile.require_switchable(self.env, keys)
+        self.env.write_bytes(PRODUCTION)
+        self.assertEqual([], self.others())
+        self.assertEqual(PRODUCTION, self.env.read_bytes())
+
     def test_temporaries_an_interrupted_replace_left_are_removed(self):
         leftover = self.folder / f".env.repro-{uuid.uuid4().hex}"
         leftover.write_bytes(b"DB_PASSWORD=left-behind\n")
@@ -307,6 +377,20 @@ class ReplaceTests(unittest.TestCase):
         unrelated.write_bytes(b"x")
         envfile.replace(self.env, envfile.assign(PRODUCTION, SWITCH), expected=PRODUCTION)
         self.assertEqual([".env.backup"], self.others())
+
+    def test_remove_leftovers_removes_only_the_temporaries(self):
+        # Review D10R-5: seal_sqlite removes what a killed replace left (the whole switched .env, password included)
+        # even when it has no .env to replace.
+        leftovers = [self.folder / f".env.repro-{uuid.uuid4().hex}" for _ in range(2)]
+        for leftover in leftovers:
+            leftover.write_bytes(b"DB_PASSWORD=left-behind\n")
+        kept = [self.folder / ".env.backup", self.folder / ".env.repro-short", self.folder / f"x.env.repro-{'a' * 32}"]
+        for path in kept:
+            path.write_bytes(b"x")
+        self.assertEqual(sorted(path.name for path in leftovers), envfile.remove_leftovers(self.env))
+        self.assertEqual(sorted(path.name for path in kept), self.others())
+        self.assertEqual([], envfile.remove_leftovers(self.env))
+        self.assertEqual(PRODUCTION, self.env.read_bytes())
 
     def test_only_a_regular_file_is_read_or_replaced(self):
         link = self.folder / "link"

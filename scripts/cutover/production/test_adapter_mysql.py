@@ -41,9 +41,15 @@ runs `runner.perform("prepare")` and returns the refusal; `assert_prepared(error
 passed and the runner's observation after them was frozen on MySQL (only `evidence()`, D11's, refused);
 `adapter_prepare()` calls `adapter.prepare` again under a drained lease (a retry); `changes()` is everything
 prepare may change, for "refused without change" checks; `assert_markers(after=n)` checks the durable state a
-crash after step n leaves (the markers D12's abort reads, README "prepare"). D11 adds steps 11 and 12 by
-extending `prepare()`'s expectation and the fake php's answers; D12 drives `abort` from each crash point that
-`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step` builds.
+crash after step n leaves (the markers D12's abort reads, README "prepare"). `crash_after(n)` stops a runner
+prepare between step n and the next; `kill_inside(point)` SIGKILLs a forked controller inside step 7
+(`before-env-rename`) or step 8 (`after-config-rename`), the in-step states of README "What a crash leaves";
+`leftovers()` lists the temporary files such a kill leaves. `PrepareHost(..., app_link=True)` reaches the app
+root through a symbolic link. D11 adds steps 11 and 12 by extending `prepare()`'s expectation and the fake php's
+answers; D12 drives `abort` from each crash point that
+`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step` and
+`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes` build, and replaces the interim refusal
+`test_abort_never_reopens_sqlite_under_the_switched_env` checks with the undo.
 
     python3 -B -m unittest discover -s scripts/cutover/production -p test_adapter_mysql.py -v
 """
@@ -56,6 +62,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -253,10 +260,15 @@ class Crash(Exception):
     """A controller that stopped between two prepare steps (killed, or the host rebooted)."""
 
 
+# Where kill_inside stops a prepare inside a step: the temporary file whose rename it precedes or follows.
+KILL_POINTS = {"before-env-rename": ".env.repro-", "after-config-rename": ".config.php.repro-"}
+
+
 class PrepareHost:
     """One root-owned host for prepare and the actions around it (module docstring)."""
 
-    def __init__(self, test: unittest.TestCase, *, fixture=None, mode: str = "drill", waiver: bool = False):
+    def __init__(self, test: unittest.TestCase, *, fixture=None, mode: str = "drill", waiver: bool = False,
+                 app_link: bool = False):
         self.test, self.fixture, self.mode, self.waiver = test, fixture, mode, waiver
         self.root = Path(tempfile.mkdtemp(prefix="repro-adapter-mysql-", dir="/var/lib"))
         test.addCleanup(shutil.rmtree, self.root, True)
@@ -281,6 +293,12 @@ class PrepareHost:
         self.deploy = pwd.getpwnam(DEPLOY_USER).pw_uid
         self._database()
         self._app()
+        if app_link:
+            # host.json's app_root reached through a symbolic link: the identity probe, live_config and the build
+            # follow it, the .env switch does not (review D10R-6).
+            link = self.root / "app-link"
+            link.symlink_to(self.app)
+            self.app, self.env, self.cache = link, link / ".env", link / "bootstrap" / "cache" / "config.php"
         self._programs()
         for target, value in ((production, "QUEUE_PHP"), (config_build, "PHP")):
             patcher = patch.object(target, value, str(self.php_path))
@@ -521,6 +539,47 @@ class PrepareHost:
             return error
         return None
 
+    def crash_after(self, number: int) -> None:
+        """runner.perform("prepare") stopped between step `number` and the next one (Crash raised in its place)."""
+        steps = dict(production.PREPARE_STEPS)
+        with patch.object(production.ProductionAdapter, f"_prepare_{steps[number + 1]}",
+                          side_effect=Crash(f"stopped after step {number}")):
+            with self.test.assertRaises(Crash):
+                self.runner().perform("prepare")
+
+    def kill_inside(self, point: str) -> None:
+        """runner.perform("prepare") in a child process that SIGKILLs itself inside a step, as a crash or a reboot
+        stops the controller (README "What a crash leaves"): "before-env-rename" in step 7, the switched temporary
+        .env written with the old owner, mode and ACL and not yet renamed; "after-config-rename" in step 8,
+        config.php renamed to the MySQL build and switch_at not yet recorded."""
+        prefix = KILL_POINTS[point]
+        pid = os.fork()
+        if pid == 0:  # The child never returns into the test runner.
+            try:
+                rename = os.replace
+
+                def replace(source, destination, *arguments, **keywords):
+                    named = os.path.basename(os.fspath(source)).startswith(prefix)
+                    if named and point.startswith("before-"):
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    result = rename(source, destination, *arguments, **keywords)
+                    if named:
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return result
+
+                os.replace = replace
+                self.runner().perform("prepare")
+            finally:
+                os._exit(1)
+        _, status = os.waitpid(pid, 0)
+        self.test.assertEqual(signal.SIGKILL, os.WTERMSIG(status) if os.WIFSIGNALED(status) else None,
+                              f"prepare was not killed at {point}")
+
+    def leftovers(self) -> list[str]:
+        """The temporary files an interrupted .env switch or config build left."""
+        return sorted([entry.name for entry in self.app.iterdir() if entry.name.startswith(".env.repro-")]
+                      + [entry.name for entry in self.cache.parent.iterdir() if entry.name != "config.php"])
+
     def assert_prepared(self, error) -> None:
         """Steps 1 to 10 passed and the runner then observed a frozen route on MySQL: only evidence() (D11) refused."""
         self.test.assertEqual(production.NOT_SUPPORTED, str(error))
@@ -710,6 +769,8 @@ class PrepareTests(unittest.TestCase):
                                              "import result names another database"),
             "import not verified": (lambda d, m: d["import"].update(import_verified=False),
                                     "import result is not a verified import-empty run"),
+            "an import whose source changed": (lambda d, m: d["import"].update(source_changed=True),
+                                               "import result is not a verified import-empty run"),
             "a plan, not an import": (lambda d, m: d["import"].update(mode="plan"),
                                       "import result is not a verified import-empty run"),
             "verify-fields refused": (lambda d, m: d["verify_fields"][-1].update(result="REFUSED"),
@@ -737,6 +798,9 @@ class PrepareTests(unittest.TestCase):
                                                    "final backup check is for another release"),
             "a backup check from before this hold": (lambda d, m: d["backup_check"].update(frozen_at=utc(started - 60)),
                                                      "before this run's hold"),
+            # Digits in the right places, but no such day (review D10R-4): a refusal, never a ValueError.
+            "a freeze on a day that does not exist": (lambda d, m: d["backup_check"].update(
+                frozen_at="2026-02-30T10:00:00Z"), "final backup check is malformed"),
             "a SQLite publication of another snapshot": (lambda d, m: d["backup_check"]["sqlite"].update(
                 snapshot_sha256="9" * 64), "SQLite publication is not the frozen snapshot"),
             "a MySQL base of another server": (lambda d, m: d["backup_check"]["mysql"].update(
@@ -747,6 +811,9 @@ class PrepareTests(unittest.TestCase):
                 binlog_position=host.backup["position"] + 1), "not the recorded backup coordinate"),
             "a snapshot record that is not sha256sum's": (lambda d, m: d.update(snapshot="not a digest\n"),
                                                           "frozen snapshot record"),
+            "a snapshot record of two files": (lambda d, m: d.update(
+                snapshot=f"{FROZEN_SNAPSHOT}  /protected/frozen.sqlite\n{COPY_SNAPSHOT}  /protected/copy.sqlite\n"),
+                                               "frozen snapshot record is not one sha256sum line"),
             "no backup check without the waiver": (lambda d, m: d.update(backup_check=None),
                                                    "Without the off-site waiver the final backup check is required"),
         }
@@ -771,6 +838,36 @@ class PrepareTests(unittest.TestCase):
                 path = host.root / "night" / name
                 path.write_bytes(path.read_bytes() + b"\n")
                 host.refused("changed after check-evidence recorded it")
+        # An input that is a symbolic link, a FIFO or larger than 1 MiB, each with the digest check-evidence would
+        # have recorded for its content (review D10R-3): each refused for what it is.
+        night = host.root / "night"
+
+        def linked(path: Path) -> None:
+            path.rename(night / "import.real")
+            path.symlink_to(night / "import.real")
+
+        def fifo(path: Path) -> None:
+            path.unlink()
+            os.mkfifo(path, 0o600)
+
+        def plain_inputs() -> None:
+            # Before each case, even after a failed one: writing into a FIFO left behind would block.
+            for leftover in (night / "import", night / "import.real"):
+                leftover.unlink(missing_ok=True)
+
+        for name, change, made, pattern in (
+            ("a symbolic link", None, linked, "import result cannot be read"),
+            ("a FIFO", None, fifo, "import result is not a regular file"),
+            ("larger than 1 MiB", lambda d, m: d["import"].update(padding="x" * production.MAX_INPUT_BYTES), None,
+             f"import result is larger than {production.MAX_INPUT_BYTES} bytes"),
+        ):
+            with self.subTest(input=name):
+                plain_inputs()
+                host.write_inputs(change)
+                if made is not None:
+                    made(night / "import")
+                host.refused(pattern)
+        plain_inputs()
         # The policy must pin the MySQL route hash prepare builds to.
         with self.subTest("no MySQL pin"):
             host.write_inputs()
@@ -1045,6 +1142,23 @@ class PrepareTests(unittest.TestCase):
             self.assertRegex(str(replaced.prepare()), "live config after the build is not the MySQL pin")
         self.assertEqual([], [entry for entry in replaced.effects() if entry[0] == "systemctl"])
         self.assertIsNone(replaced.record("switch_record")["switch_at"])
+        # ... and a MySQL config with another route hash (another collation, say) is refused as well: the measure
+        # compares the pin, not only the engine and the source (review D10R-3).
+        other = self.frozen()
+
+        def build_another_route(*arguments, **keywords):
+            result = build_and_replace(*arguments, **keywords)
+            switch = {**other.config["mysql"]["switch"], "DB_PASSWORD": other.password}
+            other.cache.write_bytes(cache_text(config_for({**switch, "DB_COLLATION": "utf8mb4_general_ci"})))
+            return result
+
+        with patch.object(config_build, "build", side_effect=build_another_route):
+            self.assertRegex(str(other.prepare()), "live config after the build is not the MySQL pin")
+        measured = live_config.measure(other.app)
+        self.assertEqual(("mysql", live_config.CACHE), (measured.engine, measured.source))
+        self.assertNotEqual(other.mysql_pin, measured.live_config_sha256)
+        self.assertEqual([], [entry for entry in other.effects() if entry[0] == "systemctl"])
+        self.assertIsNone(other.record("switch_record")["switch_at"])
         # A cache the reader refuses before prepare (a fallback) is simply rebuilt.
         truncated = self.frozen()
         truncated.cache.write_bytes(truncated.cache.read_bytes()[:40])
@@ -1074,10 +1188,7 @@ class PrepareTests(unittest.TestCase):
             with self.subTest(crash_after=steps[number]):
                 host = self.frozen()
                 if number < 10:
-                    with patch.object(production.ProductionAdapter, f"_prepare_{steps[number + 1]}",
-                                      side_effect=Crash(f"stopped after step {number}")):
-                        with self.assertRaises(Crash):
-                            host.runner().perform("prepare")
+                    host.crash_after(number)
                 else:
                     host.assert_prepared(host.prepare())
                 host.assert_markers(after=number)
@@ -1117,11 +1228,132 @@ class PrepareTests(unittest.TestCase):
              "no app session count"),
             ("a partial gate (exit 4)", ({"gate": "partial", "problems": ["The gate state is partial"]}, 4),
              r"exit 4\): The gate state is partial"),
+            # Exit 0 is not enough: the reading must say it reached the server (review D10R-3).
+            ("an exit-0 reading of no server", ({**reading, "reachable": False}, 0),
+             "no reading of a reachable server"),
         ):
             with self.subTest(name):
                 host.answer(*answer)
                 host.refused(pattern)
         host.answer(reading)
+        host.adapter_prepare()
+        host.assert_markers(after=10)
+
+    def test_app_sessions_are_ended_only_on_a_gate_that_was_closed(self):
+        # Step 4 ends app sessions with gate.close_gate. If that close found the gate open or partial (a GRANT
+        # raced the reading), it closed it, and prepare stops rather than trust a reading from before (review
+        # D10R-3: the fixture test only covers the closed gate).
+        import gate
+
+        host = self.frozen()
+        host.answer({**probe_reading(server_uuid=host.target), "gated_sessions": 2})
+        for before in ("open", "partial"):
+            with self.subTest(before=before), patch.object(gate, "close_gate", return_value={
+                    "before": before, "revoked": {"repro_app@localhost": ["INSERT"]}, "killed": [41, 42]}) as close:
+                host.refused("was not closed when its app sessions were ended")
+                close.assert_called_once()
+        with patch.object(gate, "close_gate", return_value={"before": "closed", "revoked": {}, "killed": [41, 42]}) \
+                as close:
+            host.adapter_prepare()
+        close.assert_called_once()
+        host.assert_markers(after=10)
+
+    def test_prepare_needs_its_lease_current_and_the_writers_drained_before_each_step(self):
+        host = self.frozen()
+        journal, adapter, _ = host.host()
+        before = host.changes()
+        # A lease that never drained the admitted writers: step 1 refuses (review D10R-3).
+        with journal.acquire() as (state, lease):
+            journal.write({**state, "generation": lease.generation})
+            with self.assertRaisesRegex(UnsafeCutover, "Admitted writers have not been drained"):
+                adapter.prepare(lease, time.time() + 600)
+        self.assertEqual(before, host.changes())
+        # Another controller took the journal while step 2 ran: the lease is checked again before step 3, and
+        # nothing from step 3 on runs.
+        inputs = production.ProductionAdapter._prepare_inputs
+
+        def inputs_then_taken_over(adapter_self, run):
+            inputs(adapter_self, run)
+            current = journal.read()
+            journal.write({**current, "generation": current["generation"] + 1})
+
+        with patch.object(production.ProductionAdapter, "_prepare_inputs", inputs_then_taken_over):
+            with self.assertRaisesRegex(UnsafeCutover, "no longer owns the journal generation"):
+                host.adapter_prepare()
+        self.assertEqual(before, host.changes())
+        host.adapter_prepare()
+        host.assert_markers(after=10)
+
+    def test_the_env_is_checked_before_the_switch_record_is_written(self):
+        # Review D10R-6: what the .env switch (steps 6 and 7) would refuse is refused at step 5, before the switch
+        # record is written, so "refused before any write" holds for the .env's own shape.
+        with self.subTest("an app root reached through a symbolic link"):
+            linked = PrepareHost(self, app_link=True)
+            linked.freeze()
+            linked.refused("folder of the .env cannot be used", scans=True)
+        for name, change, pattern in (
+            ("a hard-linked .env", lambda host: os.link(host.env, host.app / "env-hard-link"), "hard link"),
+            ("a key to append and no final newline",
+             lambda host: host.env.write_bytes(host.env.read_bytes().rstrip(b"\n")), "must end with a newline"),
+        ):
+            with self.subTest(name):
+                host = self.frozen()
+                change(host)
+                host.refused(pattern, scans=True)
+
+    def test_abort_never_reopens_sqlite_under_the_switched_env(self):
+        # Review D10R-1, until D12's full undo (design 3.5 step 3). Before the .env changed (a crash after step 6, a
+        # kill inside step 7 before its rename) the rollback reopens SQLite, and removes the switched temporary .env
+        # a kill left beside it (review D10R-5: the whole MySQL .env, the app password included).
+        for name, stop in (("crash after step 6", lambda host: host.crash_after(6)),
+                           ("kill inside step 7", lambda host: host.kill_inside("before-env-rename"))):
+            with self.subTest(name):
+                host = self.frozen()
+                original = host.env.read_bytes()
+                stop(host)
+                self.assertEqual("sqlite_authoritative", host.runner().perform("abort")["phase"])
+                self.assertEqual(original, host.env.read_bytes())
+                self.assertEqual([], host.leftovers())
+                self.assertTrue(sqlite_seal.writable(host.database))
+        # From the rename on (a crash after step 7, a kill inside step 8 after config.php's rename) the rollback
+        # refuses before it unseals SQLite: the site stays held, the watchdog retries, D12 undoes the switch.
+        for name, stop in (("crash after step 7", lambda host: host.crash_after(7)),
+                           ("kill inside step 8", lambda host: host.kill_inside("after-config-rename"))):
+            with self.subTest(name):
+                host = self.frozen()
+                stop(host)
+                with self.assertRaisesRegex(UnsafeCutover, "holds the MySQL switch"):
+                    host.runner().perform("abort")
+                state = host.host()[0].read()
+                self.assertEqual(("frozen", "abort"), (state["phase"], state["pending"]["action"]))
+                self.assertFalse(sqlite_seal.writable(host.database))
+                self.assertTrue(host.switched())
+                self.assertFalse(host.path("evidence").exists())
+
+    def test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes(self):
+        # Review D10R-5: the two in-step states README "What a crash leaves" lists (D12's abort tests start from
+        # them too). Inside step 7, before the rename: the switched temporary .env, with .env's owner, mode and ACL.
+        host = self.frozen()
+        original, before = host.env.read_bytes(), metadata(host.env)
+        host.kill_inside("before-env-rename")
+        [leftover] = [name for name in host.leftovers() if name.startswith(".env.repro-")]
+        switch = {**host.config["mysql"]["switch"], "DB_PASSWORD": host.password}
+        self.assertEqual(envfile.assign(original, switch), (host.app / leftover).read_bytes())
+        self.assertEqual(before[1:], metadata(host.app / leftover)[1:])
+        self.assertEqual((original, before), (host.env.read_bytes(), metadata(host.env)))
+        host.assert_markers(after=6)
+        host.adapter_prepare()
+        host.assert_markers(after=10)
+        self.assertEqual([], host.leftovers())
+        # Inside step 8, after config.php's rename: the MySQL pin is live, switch_at not yet recorded.
+        host = self.frozen()
+        host.kill_inside("after-config-rename")
+        measured = live_config.measure(host.app)
+        self.assertEqual(("mysql", live_config.CACHE, host.mysql_pin),
+                         (measured.engine, measured.source, measured.live_config_sha256))
+        self.assertTrue(host.switched())
+        self.assertIsNone(host.record("switch_record")["switch_at"])
+        self.assertEqual([], [entry for entry in host.effects() if entry[0] == "systemctl"])
         host.adapter_prepare()
         host.assert_markers(after=10)
 

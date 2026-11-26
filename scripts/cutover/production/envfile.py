@@ -23,7 +23,13 @@ probe's own pattern). Every switch key is on the identity's env_denylist, so a s
   `system.posix_acl_access`), is fsynced, renamed over the file only while the name still holds the file
   that was read with exactly `expected`, the folder is fsynced, and the result is read back. Any failure
   before the rename removes the temporary file and leaves the old one. Temporary files an interrupted
-  replacement left (`.env.repro-<32 hex>`) are removed first.
+  replacement left (`.env.repro-<32 hex>`) are removed first. The folder is opened without following a
+  final link, and a `.env` with a second name (a hard link) is refused: the rename would leave the old
+  bytes under the other name.
+- `require_switchable(path, keys)`: everything `replace` and `assign` would refuse for a switch of `keys`,
+  checked before anything is written (prepare step 5, before its switch record; review D10R-6).
+- `remove_leftovers(path)`: removes what an interrupted replacement left beside `path` (each one a whole
+  switched `.env`, the app password included) and returns the names; `seal_sqlite` calls it (review D10R-5).
 
 Standard library only; it runs as root under /usr/bin/python3 -I -S beside adapter.py.
 """
@@ -168,13 +174,56 @@ def _metadata(descriptor: int) -> tuple:
     return info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), _attributes(descriptor)
 
 
-def _remove_leftovers(folder: int) -> None:
-    for name in os.listdir(folder):
+def _remove_leftovers(folder: int) -> list[str]:
+    removed = []
+    for name in sorted(os.listdir(folder)):
         if TEMPORARY.fullmatch(name):
             try:
                 os.unlink(name, dir_fd=folder)
             except (FileNotFoundError, IsADirectoryError):
                 continue
+            removed.append(name)
+    return removed
+
+
+def _open_folder(path: Path) -> int:
+    """The `.env`'s folder, never reached through a final link (the rename happens inside it)."""
+    try:
+        return os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        raise Refused(f"The folder of the .env cannot be used: {os.strerror(error.errno)}") from None
+
+
+def _single_name(descriptor: int) -> None:
+    if os.fstat(descriptor).st_nlink != 1:
+        raise Refused("The .env has a second name (a hard link): the switch would leave the old file under it")
+
+
+def require_switchable(path, keys: Iterable[str]) -> None:
+    """Refuse what a switch of `keys` would refuse (replace, then assign), before anything is written: the folder
+    reached through a final link, a `.env` that is not one regular file with one name, a line the identity probe
+    refuses, a key on two lines, a key to append to a file without a final newline."""
+    path = Path(path)
+    folder = _open_folder(path)
+    try:
+        descriptor = _open_regular(path.name, folder)
+        try:
+            _single_name(descriptor)
+            data = _read_all(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(folder)
+    assign(data, dict.fromkeys(keys, "switch"))
+
+
+def remove_leftovers(path) -> list[str]:
+    """Remove the temporary files an interrupted replacement of `path` left (`.env.repro-<32 hex>`); their names."""
+    folder = _open_folder(Path(path))
+    try:
+        return _remove_leftovers(folder)
+    finally:
+        os.close(folder)
 
 
 def replace(path, data: bytes, *, expected: bytes) -> None:
@@ -182,14 +231,12 @@ def replace(path, data: bytes, *, expected: bytes) -> None:
     mode and extended attributes (ACL included). Atomic: a temporary file in the same folder is renamed over it.
     """
     path = Path(path)
-    try:
-        folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError as error:
-        raise Refused(f"The folder of the .env cannot be used: {os.strerror(error.errno)}") from None
+    folder = _open_folder(path)
     try:
         _remove_leftovers(folder)
         old = _open_regular(path.name, folder)
         try:
+            _single_name(old)
             if _read_all(old) != expected:
                 raise Refused("The .env changed since it was read; nothing was replaced")
             kept = _metadata(old)

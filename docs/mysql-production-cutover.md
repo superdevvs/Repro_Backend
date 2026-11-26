@@ -16,9 +16,12 @@ after no deploy, look for `__pycache__` under the app tree's `scripts/` (and
 >   `scripts/cutover/production/cli.py`).
 > - `cli.py approval-template` accepts only `--phase hold` or
 >   `--phase freeze`, so no "reopen on MySQL" approval can be issued.
-> - The host adapter refuses `prepare`, `evidence` and `seal_mysql`
->   (`NOT_SUPPORTED` in `scripts/cutover/production/adapter.py`), and
->   `cli.py reopen` reopens SQLite only.
+> - The host adapter's `prepare` (D10) switches `.env`, `config.php` and
+>   FPM to MySQL read-only behind the closed gate, but no `cli.py` action
+>   runs it, and `evidence` and `seal_mysql` still refuse (`NOT_SUPPORTED`
+>   in `scripts/cutover/production/adapter.py`), so nothing opens the
+>   gate. Its rollback does not undo a `prepare` yet (D12). `cli.py reopen`
+>   reopens SQLite only.
 > - Every writer profile in `scripts/cutover/production/wrappers.example.json`
 >   is pinned to `"engine": "sqlite"`. The guard admits MySQL writers only in
 >   `mysql_authoritative`, which only `promote` reaches.
@@ -1587,10 +1590,11 @@ undo list no longer needs it.
    of received/retried provider events. Keep this protected evidence outside
    the release archive. Preserve the original environment file separately.
 9. Data steps as in [Import into the empty target](#import-into-the-empty-target).
-   Not a path to MySQL at this candidate: the adapter refuses `prepare` and
-   `promote` and covers the hold, the freeze and the pre-write rollback
-   only. A SQLite dress rehearsal goes from step 8 to `cli.py abort` and the
-   undo list.
+   Not a path to MySQL at this candidate: `cli.py` has no `prepare` or
+   `promote` action, the adapter's `evidence` and `seal_mysql` refuse, and
+   its rollback does not undo a `prepare` yet (D12), so a run covers the
+   hold, the freeze and the pre-write rollback only. A SQLite dress
+   rehearsal goes from step 8 to `cli.py abort` and the undo list.
 
    In the SQLite phases (`planned`, `holding`, `frozen`, `ready` and
    `sqlite_authoritative`), that is from `cli.py init` until `promote`

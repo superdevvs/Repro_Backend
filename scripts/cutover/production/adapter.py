@@ -9,7 +9,8 @@ Every effect is idempotent and re-observable, as the runner requires:
   process remains, and returns the drain report's record for the journal; a
   freeze refuses a pool the drain could not watch, a rollback always stops it;
 - freeze seals the SQLite file and records its SHA-256 for this run and hold
-  (design 3.2 step 3); seal_sqlite restores its modes for rollback;
+  (design 3.2 step 3); seal_sqlite restores its modes for rollback, but never
+  while the .env holds a prepare's switch (D12 brings the full undo);
 - prepare (steps 1 to 10, design 3.2) switches the frozen host to MySQL behind the
   closed gate: bound inputs, the sealed file unchanged, no app-schema event since
   the verified backup, the switch record, the `.env` switch (envfile.py), the MySQL
@@ -623,8 +624,12 @@ def check_inputs(config: dict, pinned: Identity, policy: dict, started_at: int, 
         frozen_at, sqlite_base, mysql_base = check.get("frozen_at"), check.get("sqlite"), check.get("mysql")
         _require(guard.matches(UTC_SECONDS, frozen_at) and isinstance(sqlite_base, dict)
                  and isinstance(mysql_base, dict), "The final backup check is malformed")
-        _require(calendar.timegm(time.strptime(frozen_at, "%Y-%m-%dT%H:%M:%SZ")) >= started_at,
-                 "The final backup check names a freeze before this run's hold")
+        try:
+            # The pattern admits digits that name no time (2026-02-30): a refusal, never a ValueError (D10R-4).
+            frozen_seconds = calendar.timegm(time.strptime(frozen_at, "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            raise UnsafeCutover("The final backup check is malformed: frozen_at is no UTC time") from None
+        _require(frozen_seconds >= started_at, "The final backup check names a freeze before this run's hold")
         _require(sqlite_base.get("snapshot_sha256") == frozen, "The SQLite publication is not the frozen snapshot")
         _require(mysql_base.get("identity") == target, "The MySQL base names another server than the target")
         _require(mysql_base.get("database") == database, "The MySQL base names another database")
@@ -1031,9 +1036,14 @@ class ProductionAdapter:
         self._history(run)
 
     def _prepare_switch_record(self, run: PrepareRun) -> None:
-        """Step 5: the switch keys' SQLite values for this run (verified on a retry), never a copy of .env."""
+        """Step 5: the switch keys' SQLite values for this run (verified on a retry), never a copy of .env. What
+        steps 6 and 7 would refuse in the .env itself is refused first, so it leaves no record (review D10R-6)."""
         run.env = self._read_env()
         keys = switch_keys(self.config)
+        try:
+            envfile.require_switchable(self._env_path(), keys)
+        except (envfile.Refused, OSError) as error:
+            raise UnsafeCutover(f"The .env cannot be switched: {error}") from None
         night_flags = self.config["mysql"]["night_flags"]
         record = self._switch_record()
         if record is None:
@@ -1216,9 +1226,31 @@ class ProductionAdapter:
         raise UnsafeCutover(NOT_SUPPORTED)
 
     def seal_sqlite(self, lease: Lease, deadline: int) -> None:
+        """The rollback's seal: SQLite unsealed, the ingress marker lifted (design 3.5 steps 8 and 9).
+
+        D12 adds the full undo of a prepare (design 3.5 steps 2 to 7). Until then a prepare that wrote its switch
+        record is only checked here: what an interrupted .env replacement left is removed (review D10R-5), and
+        while the .env no longer holds the record's SQLite values the rollback refuses before it unseals SQLite
+        (review D10R-1), so the site stays held and the watchdog retries.
+        """
         lease.require_writers_drained()
+        self._refuse_a_switched_env()
         sqlite_seal.unseal(self.database, self.paths["sqlite_seal_record"])
         _remove(self.paths["ingress_open"])
+
+    def _refuse_a_switched_env(self) -> None:
+        record = self._switch_record()
+        if record is None:
+            return
+        path = self._env_path()
+        try:
+            envfile.remove_leftovers(path)
+            current = envfile.values(envfile.read(path), record["values"])
+        except (envfile.Refused, OSError) as error:
+            raise UnsafeCutover(f"The .env cannot be checked against the switch record: {error}") from None
+        _require(current == record["values"], "The .env holds the MySQL switch of the switch record, which this "
+                                              "seal_sqlite cannot undo before D12: the rollback stops before it "
+                                              "unseals SQLite, and the site stays held")
 
     # Authority and reopening.
 
