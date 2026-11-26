@@ -915,10 +915,14 @@ class MakeConfigTests(unittest.TestCase):
         (self.datadir / "auto.cnf").write_text(f"[auto]\nserver-uuid={self.server_uuid}\n", encoding="ascii")
         self.out = self.root / "binds" / "etc" / "repro-cutover-fence"
 
+    # As on the fake production: the deploy user is not the web user, so a command run as the wrong one shows
+    # (review W2I-5). make_config only writes the names; nothing here needs the account to exist.
+    DEPLOY_OWNER, WEB_USER = "maverick", "www-data"
+
     def make(self, *extra: str, controller: Path = CUTOVER, check: bool = True) -> subprocess.CompletedProcess:
         argv = [sys.executable, "-I", "-S", str(HERE / "make_config.py"), "--root", str(self.root),
                 "--controller", str(controller), "--app-root", str(self.app), "--run-id", "sandbox-drill-1",
-                "--mysql-datadir", str(self.datadir), "--deploy-owner", "www-data",
+                "--mysql-datadir", str(self.datadir), "--deploy-owner", self.DEPLOY_OWNER, "--web-user", self.WEB_USER,
                 "--smoke-client-id", "41", "--smoke-shoot-id", "42", *extra]
         result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
         if check:
@@ -961,14 +965,19 @@ class MakeConfigTests(unittest.TestCase):
             self.assertTrue(lock.startswith(str(self.root) + "/"), lock)
         self.assertEqual(self.server_uuid, config["mysql"]["target_uuid"])
         self.assertEqual("drill", config["mysql"]["mode"])
+        self.assertEqual((self.DEPLOY_OWNER, self.DEPLOY_OWNER, self.WEB_USER),
+                         (config["deploy_owner"], config["app_owner"], config["web_user"]))
         for name in ("queue_pause", "queue_resume"):
-            self.assertEqual(["/usr/sbin/runuser", "-u", "www-data", "--"], config["commands"][name][:4])
+            self.assertEqual(["/usr/sbin/runuser", "-u", self.WEB_USER, "--"], config["commands"][name][:4])
             self.assertIn(f"cd {self.app} && umask 0022 && exec", config["commands"][name][6])
-        # Design 1.3's config build, which load_config requires exactly: the deploy user and the app group,
-        # umask 0022, in the sandbox app copy (reviews A2-5, C2-7).
-        self.assertEqual(["/usr/sbin/runuser", "-u", "www-data", "-g", "www-data", "--", "/bin/sh", "-c",
+        # Design 1.3's config build, which load_config requires exactly: the deploy user (never the web user)
+        # and the app group, umask 0022, in the sandbox app copy (reviews A2-5, C2-7, W2I-5).
+        self.assertEqual(["/usr/sbin/runuser", "-u", self.DEPLOY_OWNER, "-g", "www-data", "--", "/bin/sh", "-c",
                           f'umask 0022 && cd {self.app} && exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan '
                           'config:cache', "repro-config"], config["commands"]["config_build"])
+        # The read-only smoke runs as both: the web user's, then the deploy user's.
+        self.assertEqual([self.WEB_USER, self.DEPLOY_OWNER],
+                         [argv[2] for argv in config["commands"]["smoke_readonly"]])
         mode = stat.S_IMODE(os.stat(self.out / "host.json").st_mode)
         self.assertEqual(0o644, mode)
 
