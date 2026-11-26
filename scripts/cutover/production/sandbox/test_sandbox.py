@@ -76,6 +76,7 @@ TREES = ("/etc/repro-cutover-fence", "/var/lib/repro-cutover-fence", "/run/repro
 SHALLOW = ("/", "/etc", "/var", "/var/lib", "/var/www", "/run", "/opt", "/home", "/usr/bin", "/usr/sbin", "/usr/lib",
            "/tmp", "/srv")
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+IDENTITY_CONFIG = "/etc/repro-cutover-fence/identity.json"
 FAKE_BINARY = f"#!/bin/sh\necho \"$0 $*\" >> {HOST_CALLS}\nexit 0\n"
 
 
@@ -121,6 +122,16 @@ def cmdlines() -> dict[int, str]:
             except (FileNotFoundError, ProcessLookupError):
                 continue
     return found
+
+
+def controller_example_config() -> dict:
+    """D01's production example host.json (production/test_adapter.py's example_config)."""
+    sys.path[:0] = [str(CUTOVER / "production"), str(CUTOVER)]
+    try:
+        import test_adapter
+    finally:
+        del sys.path[:2]
+    return test_adapter.example_config()
 
 
 def privileged_container() -> bool:
@@ -764,7 +775,9 @@ class MakeConfigTests(unittest.TestCase):
             from fence import guard
         finally:
             del sys.path[:2]
-        config = adapter.load_config(raw)
+        # D01's contract: load_config reads identity.json through `read`; here, the file make_config wrote.
+        identity = (self.out / "identity.json").read_bytes()
+        config = adapter.load_config(raw, read=lambda path: identity if str(path) == IDENTITY_CONFIG else None)
         installed = (guard.STATE, guard.POLICY, guard.EVIDENCE, guard.ACTIVATION, guard.MACHINE_ID, guard.BOOT_ID)
         for name, path in zip(cli.GUARD_PATHS, installed):
             self.assertEqual(str(path), config["paths"][name])
@@ -795,30 +808,68 @@ class MakeConfigTests(unittest.TestCase):
                          {key: identity[key] for key in ("run_id", "app_root", "sqlite_path", "mysql_datadir")})
 
     def test_contract_name_without_a_sandbox_value_is_refused(self):
-        known = self.controller_copy(lambda text: text.replace('"drain_fpm"}', '"drain_fpm", "fpm_start"}', 1))
+        # The command names come from the controller (D01's SINGLE_COMMANDS): one it drops is not written,
+        # one this file has no sandbox value for is refused.
+        single = 'SINGLE_COMMANDS = {"identity", '
+
+        def edit(text, replacement):
+            self.assertEqual(1, text.count(single), "adapter.SINGLE_COMMANDS changed shape")
+            return text.replace(single, replacement, 1)
+
+        def without_timer(text):
+            self.assertEqual(1, text.count('"telnyx_replay", "timer"}'), "adapter.SINGLE_COMMANDS changed shape")
+            return edit(text.replace('"telnyx_replay", "timer"}', '"telnyx_replay"}', 1), single)
+
+        known = self.controller_copy(without_timer)
         self.make(controller=known)
-        config =json.loads((self.out / "host.json").read_text(encoding="utf-8"))
-        self.assertIn("fpm_start", config["commands"])
-        unknown = self.controller_copy(lambda text: text.replace('"drain_fpm"}', '"drain_fpm", "unheard_of"}', 1))
+        config = json.loads((self.out / "host.json").read_text(encoding="utf-8"))
+        self.assertNotIn("timer", config["commands"])
+        self.assertIn("telnyx_replay", config["commands"])
+        unknown = self.controller_copy(lambda text: edit(text, 'SINGLE_COMMANDS = {"unheard_of", "identity", '))
         result = self.make(controller=unknown, check=False)
         self.assertEqual(2, result.returncode)
         self.assertIn("unheard_of", result.stderr)
 
     def test_controller_reading_identity_json_gets_the_sandbox_copy(self):
-        # The D01 contract: load_config(raw, *, read) reads paths.identity_config through `read`.
-        def d01_shape(text):
-            text = text.replace('"sqlite_seal_record"}', '"sqlite_seal_record", "identity_config"}', 1)
-            return text.replace(
-                "def load_config(raw: bytes) -> dict:\n    config = guard.read_json(raw)\n",
-                "def load_config(raw: bytes, *, read) -> dict:\n    config = guard.read_json(raw)\n"
-                "    identity = json.loads(read(Path(config['paths']['identity_config'])))\n"
-                "    guard.require(identity['app_root'] == config['app_root'], 'identity.json differs')\n", 1)
-        controller = self.controller_copy(d01_shape)
-        self.assertIn("*, read", (controller / "production" / "adapter.py").read_text(encoding="utf-8"))
-        self.make(controller=controller)
+        # The D01 contract: load_config(raw, *, read) reads paths.identity_config through `read`, and
+        # make_config hands it the identity.json it writes.
+        self.make()
         config = json.loads((self.out / "host.json").read_text(encoding="utf-8"))
-        self.assertEqual("/etc/repro-cutover-fence/identity.json", config["paths"]["identity_config"])
-        self.assertEqual(["--config", "/etc/repro-cutover-fence/identity.json"], config["commands"]["identity"][-2:])
+        self.assertEqual(IDENTITY_CONFIG, config["paths"]["identity_config"])
+        self.assertEqual(["--config", IDENTITY_CONFIG], config["commands"]["identity"][-2:])
+        bad_app_root = self.controller_copy(lambda text: text.replace(
+            'identity = load_identity_config(read(Path(paths["identity_config"])))',
+            'identity = {**load_identity_config(read(Path(paths["identity_config"]))), "app_root": "/elsewhere"}', 1))
+        self.assertIn('"/elsewhere"', (bad_app_root / "production" / "adapter.py").read_text(encoding="utf-8"))
+        result = self.make(controller=bad_app_root, check=False)
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("identity.json must describe this host's app root", result.stderr)
+
+    def test_controller_without_the_read_argument_is_refused(self):
+        # No fallback to the contract before D01 (host.json alone): a controller whose load_config takes no
+        # `read` would check nothing of identity.json, so make_config refuses it.
+        def before_d01(text):
+            signature = "def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:\n"
+            self.assertEqual(1, text.count(signature), "adapter.load_config changed its signature")
+            return text.replace(signature, "def load_config(raw: bytes) -> dict:\n    return guard.read_json(raw)\n\n\n"
+                                           "def _d01_load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:\n",
+                                1)
+
+        result = self.make(controller=self.controller_copy(before_d01), check=False)
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("read", result.stderr)
+        self.assertFalse((self.out / "host.json").exists())
+
+    def test_smoke_tables_and_switch_keys_follow_the_controller_example(self):
+        # D01's example host config (test_adapter.example_config) is the contract's one production example:
+        # the sandbox writes the same smoke tables (review B1: users, not clients) and the same switch keys.
+        self.make()
+        config = json.loads((self.out / "host.json").read_text(encoding="utf-8"))
+        example = controller_example_config()
+        self.assertEqual(["users", "shoots", "aryeo_changes", "jobs"], example["mysql"]["smoke_tables"])
+        self.assertEqual(example["mysql"]["smoke_tables"], config["mysql"]["smoke_tables"])
+        self.assertEqual(sorted(example["mysql"]["switch"]), sorted(config["mysql"]["switch"]))
+        self.assertEqual(sorted(example["mysql"]["switch_secrets"]), sorted(config["mysql"]["switch_secrets"]))
 
     def test_state_outside_the_sandbox_root_is_refused(self):
         for option, value in (("--app-root", "/var/www/backend"), ("--mysql-datadir", "/var/lib/mysql")):

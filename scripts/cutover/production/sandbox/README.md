@@ -219,15 +219,17 @@ sandbox identity probe's six fields plus both live-config hashes) gives
 
 Alignment with the contract slices:
 
-- D01 (`claude/adp-d01-20261126` at `47affbcd`, not yet merged): its
-  `load_config(raw, read=...)` and the `cli.py` fixed-path checks accept the
-  generated `host.json` and `identity.json` (checked in a container against
-  that tree). D01 checks the new paths only for being absolute; the values
-  here (`switch_record` ... `keep` under the bound directories) are this
-  file's choice and must match whatever the code that writes them expects.
-  After D01 merges, drop the `load_config` call without `read=` and add
-  `DB_EXPECTED_ENGINE` and `SCHEMA_CACHE_RELEASE` to the switch once those
-  branches merge.
+- D01 (merged into the lane): `make_config.py` calls only
+  `load_config(raw, read=...)`, handing it the `identity.json` it writes; a
+  controller whose `load_config` takes no `read` is refused (exit 2). Its
+  `cli.py` fixed-path checks accept the generated files. `smoke_tables`
+  (`users`, `shoots`, `aryeo_changes`, `jobs`) and the switch keys equal
+  D01's example host config (`MakeConfigTests` checks both). D01 checks the
+  new paths only for being absolute; the values here (`switch_record` ...
+  `keep` under the bound directories) are this file's choice and must match
+  whatever the code that writes them expects. Add `DB_EXPECTED_ENGINE` and
+  `SCHEMA_CACHE_RELEASE` to the switch only once those branches merge (the
+  lane's app config reads neither key yet).
 - D02: the identity probe command line (`identity_probe.py --config
   /etc/repro-cutover-fence/identity.json`, the shape D01 requires). D04: the
   MySQL probe command line. D08: `fpm_drain.py`'s command line.

@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
-import inspect
 import json
 import os
 import re
@@ -49,8 +48,8 @@ REFUSED = 2
 PYTHON = "/usr/bin/python3"
 INSTALLED = "/opt/repro-cutover-fence/production"
 ETC = "/etc/repro-cutover-fence"
-# Fixed paths: the production values, which the sandbox binds. The first ten are today's
-# contract; the rest are the design 3.1 names as D01 (47affbcd) defines them.
+# Fixed paths: the production values, which the sandbox binds. The first ten are the SQLite
+# controller's; the rest are the design 3.1 names as D01 defines them.
 PATHS = {
     "state": "/var/lib/repro-cutover-fence",
     "policy": f"{ETC}/policy.json",
@@ -147,7 +146,7 @@ def _commands(args, app: Path, root: Path) -> dict:
         "start_workers": [[script("start-workers")]],
         "drain_fpm": [[PYTHON, "-I", "-S", f"{INSTALLED}/fpm_drain.py", "--config", f"{ETC}/host.json"],
                       [script("fpm-stop")]],
-        # Design 3.1 names (D01 47affbcd: single argument lists, smoke_readonly a list of them).
+        # Design 3.1 names (D01: single argument lists, smoke_readonly a list of them).
         "config_build": [PYTHON, "-I", "-S", f"{INSTALLED}/config_build.py", "--config", f"{ETC}/host.json"],
         "fpm_start": [script("fpm-start")],
         "fpm_reload": [script("fpm-reload")],
@@ -186,7 +185,7 @@ def host_config(args, root: Path, app: Path, datadir: Path, server_uuid: str, ad
         "long_job_processes": ["--queue=media-archives"],
         "scheduler_processes": [f"{app}/artisan schedule:run"],
         "command_seconds": 300,
-        # Design 3.1 blocks (D01 47affbcd).
+        # Design 3.1 blocks (D01).
         "app_root": str(app), "app_owner": args.deploy_owner, "app_group": "www-data", "web_user": args.web_user,
         "mysql": {
             "mode": args.mode, "database": "repro_dashboard", "control_database": "repro_mysql_control",
@@ -198,7 +197,9 @@ def host_config(args, root: Path, app: Path, datadir: Path, server_uuid: str, ad
             "gated_accounts": ["repro_app@localhost"],
             "lockable_accounts": ["repro_maint@localhost", "repro_migrator@localhost"],
             "activity_excluded_tables": ["repro_recovery_heartbeat"],
-            "smoke_tables": ["clients", "shoots", "aryeo_changes", "jobs", "cache", "cache_locks"],
+            # The tables the write smoke changes (CutoverSmokeFixture::SMOKE_TABLES); the app has no clients
+            # table, the test client is a users row (review B1).
+            "smoke_tables": ["users", "shoots", "aryeo_changes", "jobs"],
             "switch": switch,
             "switch_secrets": {"DB_PASSWORD": f"{ETC}/mysql-app.env"},
             "night_flags": NIGHT_FLAGS,
@@ -328,10 +329,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"The controller asked to read {path}, which make_config.py does not write")
             return identity
 
-        if "read" in inspect.signature(adapter.load_config).parameters:
-            loaded = adapter.load_config(_encode(config), read=read)
-        else:  # the contract before D01: host.json alone
-            loaded = adapter.load_config(_encode(config))
+        # D01's contract only: a controller whose load_config takes no `read` would check nothing of
+        # identity.json, and the TypeError below refuses it.
+        loaded = adapter.load_config(_encode(config), read=read)
         guard = adapter.guard
         installed = (guard.STATE, guard.POLICY, guard.EVIDENCE, guard.ACTIVATION, guard.MACHINE_ID, guard.BOOT_ID)
         require(all(Path(loaded["paths"][name]) == path for name, path in zip(cli.GUARD_PATHS, installed))
