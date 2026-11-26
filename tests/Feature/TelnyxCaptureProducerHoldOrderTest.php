@@ -7,8 +7,10 @@ use App\Http\Middleware\HoldProducerIngress;
 use App\Models\Message;
 use App\Support\TelnyxMaintenanceSpool;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -95,10 +97,18 @@ class TelnyxCaptureProducerHoldOrderTest extends TestCase
     {
         config(['producer_replay.ingress_hold' => true]);
         $this->down();
+        // The order rests on the hold reading only config and the path (review C7): with the hold on and
+        // the app down, neither a held producer request nor a text on its way to the capture may reach the
+        // database before the capture has answered.
+        $queries = [];
+        DB::listen(function (QueryExecuted $query) use (&$queries) {
+            $queries[] = $query->sql;
+        });
         $this->assertProducerHeld();
 
         $this->postText('evt_c', 'msg_c')->assertOk()->assertExactJson(['status' => 'captured']);
 
+        $this->assertSame([], $queries, 'A query ran before the capture answered');
         $this->assertCount(1, $this->spoolEntries());
         $this->assertSame(0, Message::count());
         $this->upAndReplay();
