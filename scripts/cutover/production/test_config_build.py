@@ -168,7 +168,8 @@ class ConfigBuildCommandTests(unittest.TestCase):
             config_build.check_command(config)
 
     def test_build_and_stage_check_the_command_before_anything_runs(self):
-        # load_config does not check commands.config_build yet: build() and stage() are the gate (review A2-5).
+        # load_config refuses such a command too (test_adapter), but build() and stage() take any config dict,
+        # so they stay a gate of their own (review A2-5).
         base = design_command("/var/www/backend")
         variants = {"as root": [RUNUSER, "-u", "root", *base[3:]],
                     "umask 0002": [*base[:8], base[8].replace("umask 0022", "umask 0002"), base[9]]}

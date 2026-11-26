@@ -82,6 +82,8 @@ PATHS = {
 }
 # Read inside the sandbox but not bound: the host's machine ID (read only) and the bound boot ID file.
 UNBOUND = {"/etc/machine-id", "/proc/sys/kernel/random/boot_id"}
+# The app's group, as on production (host.json app_group).
+APP_GROUP = "www-data"
 OPTIONS = {"max_drain_seconds": 600, "separate_freeze_approval": False, "adopt_external_hold": False,
            "require_long_job_predrain": True, "unattended_reopen": False}
 QUEUES = ["database:mail", "database:integrations", "database:default", "database:watermarks",
@@ -146,8 +148,11 @@ def _commands(args, app: Path, root: Path) -> dict:
         "start_workers": [[script("start-workers")]],
         "drain_fpm": [[PYTHON, "-I", "-S", f"{INSTALLED}/fpm_drain.py", "--config", f"{ETC}/host.json"],
                       [script("fpm-stop")]],
-        # Design 3.1 names (D01: single argument lists, smoke_readonly a list of them).
-        "config_build": [PYTHON, "-I", "-S", f"{INSTALLED}/config_build.py", "--config", f"{ETC}/host.json"],
+        # Design 3.1 names (D01: single argument lists, smoke_readonly a list of them). The config build is
+        # design 1.3's runuser command in the sandbox app copy, which load_config requires exactly.
+        "config_build": ["/usr/sbin/runuser", "-u", args.deploy_owner, "-g", APP_GROUP, "--", "/bin/sh", "-c",
+                         f'umask 0022 && cd {app} && exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan config:cache',
+                         "repro-config"],
         "fpm_start": [script("fpm-start")],
         "fpm_reload": [script("fpm-reload")],
         "fpm_stop": [script("fpm-stop")],
@@ -186,7 +191,7 @@ def host_config(args, root: Path, app: Path, datadir: Path, server_uuid: str, ad
         "scheduler_processes": [f"{app}/artisan schedule:run"],
         "command_seconds": 300,
         # Design 3.1 blocks (D01).
-        "app_root": str(app), "app_owner": args.deploy_owner, "app_group": "www-data", "web_user": args.web_user,
+        "app_root": str(app), "app_owner": args.deploy_owner, "app_group": APP_GROUP, "web_user": args.web_user,
         "mysql": {
             "mode": args.mode, "database": "repro_dashboard", "control_database": "repro_mysql_control",
             "target_uuid": server_uuid, "datadir": str(datadir), "client": args.mysql_client,

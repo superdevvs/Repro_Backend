@@ -39,7 +39,7 @@ from unittest.mock import patch
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE)]
 import adapter  # noqa: E402
-from test_adapter import example_config, example_identity, queue_command  # noqa: E402
+from test_adapter import config_build_command, example_config, example_identity, queue_command  # noqa: E402
 
 HELPER = HERE / "sbin" / "repro-queue-flag"
 SUDOERS = HERE / "sudoers" / "repro-queue-flag"
@@ -248,6 +248,7 @@ class QueueFlagHelperTests(HelperFixture):
     def recording_config(self):
         config = example_config()
         config["app_root"] = str(self.app)
+        config["commands"]["config_build"] = config_build_command(self.app)
         for verb in ("pause", "resume"):
             config["commands"][f"queue_{verb}"] = queue_command(verb, script=self.script(verb))
         return config
@@ -412,6 +413,7 @@ class LaravelQueueFlagTests(HelperFixture):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         config = example_config()
         config["app_root"] = str(self.app)
+        config["commands"]["config_build"] = config_build_command(self.app)
         config["queues"].append(SMOKE_QUEUE)
         # The real php stands in for /usr/bin/php (this image has it elsewhere); the rule is otherwise unchanged.
         php = patch.object(adapter, "QUEUE_PHP", PHP)

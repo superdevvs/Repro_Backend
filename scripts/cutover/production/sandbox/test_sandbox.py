@@ -964,6 +964,11 @@ class MakeConfigTests(unittest.TestCase):
         for name in ("queue_pause", "queue_resume"):
             self.assertEqual(["/usr/sbin/runuser", "-u", "www-data", "--"], config["commands"][name][:4])
             self.assertIn(f"cd {self.app} && umask 0022 && exec", config["commands"][name][6])
+        # Design 1.3's config build, which load_config requires exactly: the deploy user and the app group,
+        # umask 0022, in the sandbox app copy (reviews A2-5, C2-7).
+        self.assertEqual(["/usr/sbin/runuser", "-u", "www-data", "-g", "www-data", "--", "/bin/sh", "-c",
+                          f'umask 0022 && cd {self.app} && exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan '
+                          'config:cache', "repro-config"], config["commands"]["config_build"])
         mode = stat.S_IMODE(os.stat(self.out / "host.json").st_mode)
         self.assertEqual(0o644, mode)
 

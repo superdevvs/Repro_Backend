@@ -38,7 +38,8 @@ folder, not a link, owned by root, writable by no group or other account, that t
 through (search for others, or for app_group), such as a root 0711 folder under /run/repro-cutover-fence.
 A root 0700 parent cannot work: the deploy user's config:cache could not reach its staged folder.
 
-Both check the command before anything else runs or changes. Standard library only.
+Both check the command before anything else runs or changes; adapter.load_config refuses a host.json whose
+command check_command refuses, so a wrong command is caught when the config loads. Standard library only.
 """
 
 from __future__ import annotations

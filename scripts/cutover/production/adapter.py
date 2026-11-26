@@ -48,6 +48,7 @@ try:
     from fence import guard  # Repository layout.
 except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
     import guard
+import config_build  # noqa: E402
 import deploy_marker  # noqa: E402
 import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
@@ -354,6 +355,11 @@ def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
     guard.require(_absolute(config["app_root"]) and all(_account(config[name])
                                                         for name in ("app_owner", "app_group", "web_user")),
                   "Host config app root or accounts are invalid")
+    # Design 1.3's runuser command, checked here as config_build checks it before every build (reviews A2-5, C2-7).
+    try:
+        config_build.check_command(config)
+    except config_build.BuildFailed as refusal:
+        raise guard.Refused(f"Host config {refusal}") from None
     _check_mysql(config["mysql"])
     fpm, smoke = config["fpm"], config["smoke"]
     guard.require(isinstance(fpm, dict) and fpm.keys() == FPM_KEYS and guard.matches(SERVICE_UNIT, fpm["unit"])

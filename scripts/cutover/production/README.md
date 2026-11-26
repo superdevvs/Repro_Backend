@@ -194,6 +194,7 @@ check as `host.json`. `test_adapter.py` (`example_config`,
 | `smoke` | `client_id`, `shoot_id`: the marked test records, positive integers |
 | `studio_pause_files` | Distinct absolute paths (may be empty) |
 | `options.unattended_reopen` | `true` or `false`, like every other option |
+| `commands.config_build` | Exactly design 1.3's command for this host config (`config_build.check_command`: `runuser -u <app_owner> -g <app_group>`, `umask 0022`, `cd <app_root>`, `exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan config:cache`); `build` and `stage` check it again before anything runs |
 
 **Switch keys and the one denylist.** The switch keys are the keys of
 `mysql.switch` plus `mysql.switch_secrets` (so `DB_PASSWORD` is one);
@@ -770,11 +771,11 @@ prints inside a PHP-FPM pool, for SQLite and for MySQL. The two fsyncs (the
 temporary file before the rename, the folder after it) are not verified by
 a crash test; no test here can tell a missing fsync apart.
 
+`adapter.load_config` also calls `config_build.check_command`, so a wrong
+command is refused when the host config loads; the sandbox's `make_config.py`
+writes design 1.3's form for the sandbox app copy.
+
 Not yet here (later slices):
-- Integrator, after the merge: `adapter.load_config` calls
-  `config_build.check_command`, together with the sandbox's `config_build`
-  command form (`sandbox/make_config.py` writes another form today). Until
-  then `build` and `stage` are the only gate, and they check first.
 - D13: the SQLite reopen refuses a `fallback` live config (review A2-9); so
   do `prepare`, both publications and the MySQL reopen.
 - D10, D12, D14: `build(config, expected_engine=..., expected_sha256=<pin>,
@@ -858,12 +859,11 @@ Not yet here (later slices):
   which this adapter still refuses, leads the runner to a MySQL publication.
 
 Not yet here:
-- `load_config` does not check the commands: `config_build.check_command`
-  (the sandbox's `make_config.py` writes a `config_build` command it refuses,
-  so one of the two must change), `fpm.status_socket` equal to `fpm.socket`,
-  and `fpm.drain_seconds` too large for `command_seconds` (integrator, after
-  the merges; `fpm_drain.py` refuses the last two at run time). `drain` does
-  not check that the deadline leaves `fpm.drain_seconds` for `fpm_drain.py`.
+- `load_config` does not check `fpm.status_socket` equal to `fpm.socket`, or
+  `fpm.drain_seconds` too large for `command_seconds` (integrator, after the
+  merges; `fpm_drain.py` refuses both at run time); it does check the
+  `config_build` command. `drain` does not check that the deadline leaves
+  `fpm.drain_seconds` for `fpm_drain.py`.
 - The end-to-end test of the real `fpm_drain.py` through `drain` (the
   integrator's, once D08 is merged); here `drain_fpm` is a fake that prints a
   canned report.
@@ -873,7 +873,7 @@ Not yet here:
   measures the source cache with the hash equal to policy
   `sqlite_live_config_sha256` (read-only), and D18 must exercise that order.
   `pin-config` is D14.
-- Review C2-7: (1) `config_build.check_command` in `load_config` (above);
+- Review C2-7: (1) `config_build.check_command` in `load_config`: done;
   (2) `reopen()` (SQLite) still accepts a fallback live config (D13), and
   `prepare` step 3, the unseal proof (3.5 step 7) and `seal_sqlite` must read
   `paths.sealed_hash`, check `run_id`, `hold_id`, `started_at` and `database`,

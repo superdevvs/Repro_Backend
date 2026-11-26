@@ -107,6 +107,13 @@ def queue_command(verb, user="www-data", script=None):
     return ["/usr/sbin/runuser", "-u", user, "--", "/bin/sh", "-c", script, "repro-queue"]
 
 
+def config_build_command(app_root, owner="maverick", group="www-data"):
+    """Design 1.3's config_build command for an app root; config_build appends the temporary path as `$1`."""
+    return ["/usr/sbin/runuser", "-u", owner, "-g", group, "--", "/bin/sh", "-c",
+            f'umask 0022 && cd {app_root} && exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan config:cache',
+            "repro-config"]
+
+
 def example_config():
     """The complete host.json for the production host (design 3.1). IDs and the UUID are placeholders."""
     state, run, etc = "/var/lib/repro-cutover-fence", "/run/repro-cutover-fence", "/etc/repro-cutover-fence"
@@ -547,9 +554,10 @@ class HostConfigContractTests(unittest.TestCase):
                         load(config)
 
         def rooted(root):
-            """The example host config with app_root and both queue commands' cd set to `root`."""
+            """The example host config with app_root and both queue commands' and the config build's cd set to `root`."""
             config = example_config()
             config["app_root"] = root
+            config["commands"]["config_build"] = config_build_command(root)
             for verb in ("pause", "resume"):
                 config["commands"][f"queue_{verb}"] = queue_command(
                     verb, script=f'cd {root} && umask 0022 && exec /usr/bin/php artisan queue:{verb} "$1"')
@@ -629,6 +637,42 @@ class HostConfigContractTests(unittest.TestCase):
         config = example_config()
         self.assertEqual(config, load(config, identity))
         self.assertEqual(sorted(NIGHT_FLAGS + SWITCH_KEYS), sorted(identity["env_denylist"]))
+
+    def test_config_build_command_is_checked_at_load(self):
+        # Design 1.3's runuser command (config_build.check_command) is refused at load, not first when prepare
+        # or seal_sqlite builds the cache (reviews A2-5, C2-7). The refusal is the guard's, as for every other
+        # host.json fault, so cli.py, fpm_drain.py, mysql_probe.py and repro-queue-flag report it the same way.
+        base = example_config()["commands"]["config_build"]
+        self.assertEqual(config_build_command("/var/www/backend"), base)
+        script = base[8]
+        variants = {
+            "as root": [base[0], "-u", "root", *base[3:]],
+            "as the web user": [base[0], "-u", "www-data", *base[3:]],
+            "without the group": [*base[:3], *base[5:]],
+            "umask 0002": [*base[:8], script.replace("umask 0022", "umask 0002"), base[9]],
+            "another app root": [*base[:8], script.replace("cd /var/www/backend", "cd /srv/repro/backend"), base[9]],
+            "a second command": [*base[:8], script + "; /usr/bin/id", base[9]],
+            "an extra argument": [*base, "/tmp/x"],
+            # What the sandbox's make_config.py wrote before this check: the controller's own copy, as root.
+            "a python wrapper": PYTHON + [f"{FENCE}/config_build.py", "--config", "/etc/repro-cutover-fence/host.json"],
+        }
+        for name, command in variants.items():
+            with self.subTest(name):
+                config = example_config()
+                config["commands"]["config_build"] = command
+                with self.assertRaisesRegex(guard.Refused, r"commands\.config_build must be design 1\.3's runuser"):
+                    load(config)
+        # The command follows the host config's own deploy user, group and app root.
+        config = example_config()
+        config.update(app_root="/srv/repro/backend", app_owner="deploy", app_group="web")
+        config["commands"]["config_build"] = config_build_command("/srv/repro/backend", "deploy", "web")
+        for verb in ("pause", "resume"):
+            config["commands"][f"queue_{verb}"] = queue_command(
+                verb, script=f'cd /srv/repro/backend && umask 0022 && exec /usr/bin/php artisan queue:{verb} "$1"')
+        self.assertEqual(config, load(config, {**example_identity(config), "app_root": "/srv/repro/backend"}))
+        config["app_owner"] = "maverick"
+        with self.assertRaisesRegex(guard.Refused, r"commands\.config_build must be design 1\.3's runuser"):
+            load(config, {**example_identity(config), "app_root": "/srv/repro/backend"})
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX file modes, links and FIFOs")
@@ -868,6 +912,8 @@ class ProductionAdapterTests(unittest.TestCase):
                         "require_long_job_predrain": True, "unattended_reopen": False},
         })
         config["commands"].update({
+            # Design 1.3's config build for this fixture's app root (load_config checks it).
+            "config_build": config_build_command(self.app),
             # The probe reads the identity config the host config names (python -c ignores the extra arguments).
             "identity": identity_probe + ["--config", config["paths"]["identity_config"]],
             "mysql": [sys.executable, "-c", "print('{\"writable\": false, \"business_activity\": false}')"],
