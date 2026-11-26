@@ -319,17 +319,31 @@ last listed file, every later file from its start, paged by offset (the
 events inside a compressed transaction all show the payload's end, and
 `FROM` that position starts after them). Exit 5 when the `armed_from` file is
 no longer listed, or when `gtid_executed` no longer holds the receipt's
-`backup.gtid_executed` (a reset reuses the file names). Output: `receipt` is
+`backup.gtid_executed` (a reset reuses the file names). Exit 6 when
+`SHOW BINARY LOG STATUS` reports a non-empty `Binlog_Do_DB` or
+`Binlog_Ignore_DB` (review B2-7): with `binlog-do-db` or `binlog-ignore-db`
+the server leaves app writes out of the log (measured on 8.4.13: the `INSERT`
+left no event), so no scan could see them; the message names the column
+only. Production's `scripts/mysql/native/mysql.cnf` sets no filter. Every mode
+that scans refuses this way (`--audit` and `--since` too); a reading without
+this run's receipt reads no binary log. Output: `receipt` is
 the receipt's SHA-256, `boundary` is `{file, position, gtid}` of the first
 account statement, `scanned_events` counts the events read. In strict mode
 business activity is exit 4 (never `true`); foreign activity is reported and
 never blocks.
 
+**Command-line contract** (D07's `adapter._mysql` relies on it): exit 0
+prints the 13 keys above, with boolean `writable` and `business_activity`
+and the measured `server_uuid` (MySQL authority); exit 3 prints exactly
+`{"version": 2, "reachable": false}`. The server is read before any record,
+so an unreachable server is exit 3 in every phase and mode even while this
+run's receipt, latch, activation record and smoke window are present, and
+nothing is written.
+
 **Classification** (one transaction per Gtid event): a boundary is an account
 statement (`GRANT`, `REVOKE`, `CREATE`/`ALTER`/`DROP`/`RENAME USER`,
 `CREATE`/`DROP ROLE`, `SET DEFAULT ROLE`, `SET PASSWORD`, after any leading
-comments) except the server's exact `ALTER USER '<a>'@'localhost' ACCOUNT
-LOCK|UNLOCK` for a `lockable_accounts` entry, and also, beyond the design's
+comments) except an exempt lock (below), and also, beyond the design's
 list, a row event on one of the nine grant tables or a `FLUSH PRIVILEGES`.
 An app-schema event is a `Table_map` on the app schema outside
 `activity_excluded_tables`, a `Query` with the app schema as default database
@@ -342,25 +356,96 @@ own transaction and every later one are business. `sql_log_bin=0` sessions
 (`repro_maint` may set it) leave nothing to scan, so a foreign write made that
 way is not seen; the app account cannot set it.
 
+**Exempt locks** (review B2-6). Exactly these two forms, typed as one
+statement each, lock or unlock only `lockable_accounts` and are not a
+boundary:
+
+    ALTER USER '<a>'@'localhost'[, '<b>'@'localhost' ...] ACCOUNT LOCK|UNLOCK
+    ALTER USER IF EXISTS '<a>'@'localhost'[, '<b>'@'localhost' ...] ACCOUNT LOCK|UNLOCK
+
+The server rewrites `ALTER USER` before logging it (measured on 8.4.13: quotes
+added to unquoted or backquoted names, keywords upper case, comments dropped,
+the list joined with `,` and no space), so the scan matches the logged text
+exactly: `ALTER USER [IF EXISTS ]'<a>'@'localhost'[,'<b>'@'localhost'...]
+ACCOUNT LOCK|UNLOCK`, then only the server's `/* xid=N */`. Every listed
+account must be in `lockable_accounts`. Anything else is a boundary: another
+clause (`PASSWORD EXPIRE`, `IDENTIFIED BY`, a second `ACCOUNT` option), an
+account outside the list (the app account, another host, an `IF EXISTS` name
+that does not exist), a comment the server kept, a second statement, or any
+other spelling. One account per statement in the first form is the safest
+runbook text.
+
 **Modes.** `--audit` (way back, 4.3) needs this run's receipt (else exit 4),
 scans from `armed_from` even after activation, and lists every app-schema
 transaction with `class` `foreign`, `smoke` (business, its GTID in
 `gtid_after` and not in `gtid_before` of this receipt's smoke window, only
 `smoke_tables`, no DDL) or `business`, plus `counts`, `boundary`,
-`smoke_window` and `scanned_events`. `--since <file>:<position>` (for
-`prepare`, 3.2 steps 4 and 10) needs no receipt: it reads the coordinate
+`smoke_window` and `scanned_events`. It reads the receipt and the smoke
+window, never the latch or the activation record. `--since <file>:<position>`
+(for `prepare`, 3.2 steps 4 and 10) needs no receipt: it reads the coordinate
 first (`until`, with `gtid_executed`), scans from the given one to the end and
 lists every app-schema transaction; `prepare` writes `armed_from = until` only
-when the list is empty. Both only read and print the gate as well.
+when the list is empty. `--since-gtid <set>` (only with `--since`) adds the
+receipt's history check: exit 5 before any event is read unless
+`gtid_executed` still holds the set. Both only read and print the gate as well.
+
+**The `--since` contract for D10** (review B2-9):
+
+- Without `--since-gtid`, `--since` checks no history: after `RESET BINARY
+  LOGS AND GTIDS` a reused file name and position would scan as if it were
+  the backup coordinate. D10 passes `--since-gtid <backup.gtid_executed>`, or
+  itself requires the receipt's `backup.gtid_executed` to be a subset of the
+  output's `until.gtid_executed`. Neither detects a reset followed by enough
+  new transactions to cover the backup's set again (a GTID set cannot); the
+  file and position must also still name an event (else exit 4).
+- Every app-schema event after the coordinate counts, whoever made it: DDL,
+  `complete-schema`, the smoke fixtures' creation, even `ANALYZE TABLE
+  repro_dashboard.<t>` (logged as its own transaction naming the schema).
+  So the drill's recorded coordinate (`offsite_waiver`) must be read after
+  `complete-schema` and `cutover:smoke-fixtures --create`, or `prepare`
+  refuses (D19/C12 runbook).
+
+**For gate.py** (D06 open item). `mysql_probe.read_gate(config, mode)` is
+`read()` that also returns the rows it classified: a `Reading(server, state,
+gate)`, where `state` is the probe's state document (`STATE_KEYS`: each grant
+table's rows for the gated accounts, `None` for none, `sessions`,
+`probe_privileges`, `mandatory_roles`). A `Refusal` raised after the
+classification (unrecognised, partial, not closed in strict mode) carries the
+same `Reading` as `refusal.reading`; earlier refusals (exit 3, 6, an
+unreadable answer) carry `None`. The rows are never printed. A consumer that
+builds SQL from them must still require `server["current_user"] ==
+PROBE_ACCOUNT`.
 
 **Tests.** `test_binlog_scan.py` runs anywhere: the E6 and E1 event text
-recorded on 8.4.13 through the client's batch format. `test_mysql_probe.py`'s
-`FakeServerTests` need Linux root only (a root-owned stand-in client serves the
-recorded text: version pin, paging calls, exit 5, records, latch, modes);
-`ActivityTests` need the socket fixture and replay E6 on it (the recorded text
-must equal what the server prints), plus compressed transactions, more than one
-page, several files, a purge, the activation record, the audit with a real
-smoke window, `--since` and a multi-line DDL.
+recorded on 8.4.13 through the client's batch format, the lock forms as 8.4.13
+logs them, and `SHOW BINARY LOG STATUS` recorded with each binary log filter.
+`test_mysql_probe.py`'s `FakeServerTests` need Linux root only (a root-owned
+stand-in client serves the recorded text: version pin, filters, paging calls,
+exit 5, records and their protected-file refusals in each reading that reads
+them, latch, modes, `--since-gtid`, exit 3 with this run's records,
+`read_gate`); `ActivityTests` need the socket fixture and replay E6 on it (the
+recorded text must equal what the server prints), plus compressed
+transactions, more than one page, several files, a purge, the activation
+record, the typed lock forms, the audit with a real smoke window, `--since`,
+`--since-gtid` and a multi-line DDL. The filter refusal has no fixture test:
+`mysql/fixture.sh serve` cannot start a server with `binlog-ignore-db`
+without a change to that script.
+
+**Open items.**
+
+- Owner/runbook choice (review B2-10), to record in the A1/D19 manifest:
+  writes the binary log never records cannot be seen. `repro_maint` holds
+  `SESSION_VARIABLES_ADMIN` (accounts.sql) and can `SET sql_log_bin=0` and
+  write the app schema invisibly; `SET GLOBAL` or `SET PERSIST` of
+  `mandatory_roles` is not logged either (the gate read catches that at each
+  read, not between reads). Either revoke `SESSION_VARIABLES_ADMIN` from
+  `repro_maint` after the import, or lock `repro_maint` with an exempt lock
+  (above) before `prepare`'s `armed_from`.
+- D10: run `--since` with `--since-gtid` (or compare the sets itself), and
+  record the drill coordinate after `complete-schema` and
+  `cutover:smoke-fixtures --create` (the contract above).
+- D06/integrator: `gate.py` can replace its `_probe_state` adapter with
+  `refusal.reading.state` from `read_gate` (keeping its `CURRENT_USER()` check).
 
 ## Telnyx while held (design 5.2)
 

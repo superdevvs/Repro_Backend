@@ -83,6 +83,73 @@ E6_G6 = [
 ]
 E6_SMOKE_WINDOW = (f"{E6_UUID}:1-54", f"{E6_UUID}:1-56")
 
+# SHOW BINARY LOG STATUS (File, Position, Binlog_Do_DB, Binlog_Ignore_DB, Executed_Gtid_Set) as 8.4.13
+# prints it in batch mode on one server restarted with --binlog-ignore-db=repro_dashboard, then with it
+# and --binlog-ignore-db=repro_other, then with --binlog-do-db=other_db, then with no filter (D05 fix-up
+# experiment x-filters.sh). With either filter the INSERT into repro_dashboard.shoots left no event.
+FILTER_UUID = "d6836cf9-e94e-11f1-803c-f8e48c0fa921"
+FILTERED_STATUS = (
+    (b"binlog.000001\t158\t\trepro_dashboard\t\n", {"Binlog_Ignore_DB"}),
+    (b"binlog.000002\t198\t\trepro_dashboard,repro_other\t" + FILTER_UUID.encode() + b":1\n", {"Binlog_Ignore_DB"}),
+    (b"binlog.000003\t198\tother_db\t\t" + FILTER_UUID.encode() + b":1-2\n", {"Binlog_Do_DB"}),
+    # Both at once is not something one server printed here; the probe names both columns.
+    (b"binlog.000003\t198\tother_db\trepro_dashboard\t" + FILTER_UUID.encode() + b":1-2\n",
+     {"Binlog_Do_DB", "Binlog_Ignore_DB"}),
+)
+UNFILTERED_STATUS = b"binlog.000004\t198\t\t\t" + FILTER_UUID.encode() + b":1-3\n"
+
+# Review B2-6: the lock forms accepted as exempt, as 8.4.13 logs them (D05 fix-up experiment x-locks.sh).
+# The server rewrites ALTER USER: `ALTER USER 'repro_maint'@'localhost', 'repro_migrator'@'localhost'
+# ACCOUNT LOCK`, `ALTER USER repro_maint@localhost , repro_migrator@localhost ACCOUNT LOCK` and backquoted
+# names all reach the log as the forms below (no space after the comma, keywords upper case, comments gone).
+ACCEPTED_LOCKS = (
+    "ALTER USER 'repro_maint'@'localhost' ACCOUNT LOCK /* xid=78 */",
+    "ALTER USER 'repro_maint'@'localhost','repro_migrator'@'localhost' ACCOUNT LOCK /* xid=94 */",
+    "ALTER USER 'repro_maint'@'localhost','repro_migrator'@'localhost' ACCOUNT UNLOCK /* xid=110 */",
+    "ALTER USER IF EXISTS 'repro_maint'@'localhost' ACCOUNT UNLOCK /* xid=142 */",
+    "ALTER USER IF EXISTS 'repro_maint'@'localhost','repro_migrator'@'localhost' ACCOUNT LOCK /* xid=158 */",
+    "ALTER USER 'repro_migrator'@'localhost','repro_maint'@'localhost' ACCOUNT UNLOCK",
+    "use `repro_dashboard`; ALTER USER IF EXISTS 'repro_migrator'@'localhost' ACCOUNT LOCK /* xid=4 */",
+)
+# Near misses: each stays a boundary. The first three and the IF EXISTS ones with repro_nobody are logged text.
+NEAR_MISS_LOCKS = {
+    "an extra clause": (
+        "ALTER USER 'repro_maint'@'localhost' PASSWORD EXPIRE NEVER ACCOUNT UNLOCK /* xid=254 */",
+        "ALTER USER IF EXISTS 'repro_maint'@'localhost','repro_migrator'@'localhost' ACCOUNT LOCK PASSWORD EXPIRE",
+        "ALTER USER 'repro_maint'@'localhost','repro_migrator'@'localhost' IDENTIFIED BY 'x' ACCOUNT LOCK",
+        "ALTER USER 'repro_maint'@'localhost' ACCOUNT LOCK ACCOUNT UNLOCK",
+    ),
+    "an account outside lockable_accounts": (
+        "ALTER USER IF EXISTS 'repro_maint'@'localhost','repro_nobody'@'localhost' ACCOUNT UNLOCK /* xid=190 */",
+        "ALTER USER IF EXISTS 'repro_nobody'@'localhost' ACCOUNT LOCK /* xid=174 */",
+        "ALTER USER 'repro_maint'@'localhost','repro_app'@'localhost' ACCOUNT LOCK",
+        "ALTER USER 'repro_app'@'localhost','repro_maint'@'localhost' ACCOUNT LOCK",
+        "ALTER USER 'repro_maint'@'localhost','repro_migrator'@'%' ACCOUNT LOCK",
+        "ALTER USER IF EXISTS 'REPRO_MAINT'@'localhost' ACCOUNT LOCK",
+    ),
+    "a comment": (
+        "ALTER USER 'repro_maint'@'localhost',/* x */'repro_migrator'@'localhost' ACCOUNT LOCK",
+        "ALTER USER IF EXISTS 'repro_maint'@'localhost' ACCOUNT LOCK /* x */",
+        "/* x */ ALTER USER IF EXISTS 'repro_maint'@'localhost' ACCOUNT LOCK",
+        "ALTER USER IF EXISTS 'repro_maint'@'localhost' ACCOUNT LOCK -- x",
+    ),
+    "a second statement": (
+        "ALTER USER IF EXISTS 'repro_maint'@'localhost' ACCOUNT LOCK; GRANT ALL ON *.* TO 'repro_app'@'localhost'",
+        "ALTER USER 'repro_maint'@'localhost','repro_migrator'@'localhost' ACCOUNT LOCK;",
+    ),
+    "not the server's spelling": (
+        "ALTER USER 'repro_maint'@'localhost', 'repro_migrator'@'localhost' ACCOUNT LOCK",
+        "ALTER USER 'repro_maint'@'localhost',,'repro_migrator'@'localhost' ACCOUNT LOCK",
+        "ALTER USER 'repro_maint'@'localhost', ACCOUNT LOCK",
+        "ALTER USER IF NOT EXISTS 'repro_maint'@'localhost' ACCOUNT LOCK",
+        "ALTER USER IF EXISTS IF EXISTS 'repro_maint'@'localhost' ACCOUNT LOCK",
+        "alter user if exists 'repro_maint'@'localhost' account lock",
+        "ALTER USER  'repro_maint'@'localhost' ACCOUNT LOCK",
+        "ALTER USER IF EXISTS ACCOUNT LOCK",
+        "ALTER USER IF EXISTS 'repro_maint'@'localhost' ACCOUNT LOCKED",
+    ),
+}
+
 # E1 T7, T7b, T7c: the binary log after binlog.000001 9000. GRANT and REVOKE as the gate account typed
 # them (GRANT rewritten by the server, REVOKE as typed), app writes (37, 39, 44, 52), the app account
 # locked (43, not a lockable account), a control-schema table (47, 48), the heartbeat (51), a
@@ -280,6 +347,25 @@ class BatchFormatTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 with self.assertRaises(Unreadable):
                     binlog_scan.parse_listing(raw)
+
+    def test_binary_log_filters_are_a_wrong_server(self):
+        # Review B2-7: with binlog-do-db or binlog-ignore-db the server leaves app-schema writes out of the
+        # binary log, so a scan would find nothing (fail-open). The probe exits 6, naming the column only.
+        listed = b"binlog.000001\t440\tNo\nbinlog.000002\t469\tNo\nbinlog.000003\t469\tNo\nbinlog.000004\t198\tNo\n"
+        for status, columns in FILTERED_STATUS:
+            with self.subTest(status=status):
+                with self.assertRaises(binlog_scan.WrongServer) as caught:
+                    binlog_scan.parse_listing(status + listed)
+                self.assertNotIsInstance(caught.exception, Unreadable)
+                message = str(caught.exception)
+                for column in ("Binlog_Do_DB", "Binlog_Ignore_DB"):
+                    (self.assertIn if column in columns else self.assertNotIn)(column, message)
+                for value in ("repro_dashboard", "repro_other", "other_db"):
+                    self.assertNotIn(value, message)
+        # The same server with no filter: the listing reads.
+        (coordinate, executed), logs = binlog_scan.parse_listing(UNFILTERED_STATUS + listed)
+        self.assertEqual((Coordinate("binlog.000004", 198), f"{FILTER_UUID}:1-3", 4),
+                         (coordinate, executed, len(logs)))
 
 
 class E6RecordingTests(unittest.TestCase):
@@ -558,6 +644,29 @@ class ClassificationTests(unittest.TestCase):
                      "alter user 'repro_maint'@'localhost' account lock"):
             with self.subTest(text=text):
                 self.assert_boundary(("Query", text))
+
+    def test_lock_exemption_accepts_account_lists_and_if_exists(self):
+        # Review B2-6: one statement for several lockable accounts, and IF EXISTS, are exempt too.
+        for text in ACCEPTED_LOCKS:
+            with self.subTest(text=text):
+                self.assert_neither(("Query", text))
+        # A write after such locks is still foreign: they are not a boundary.
+        result = scan(synthetic(*transaction(70, ("Query", ACCEPTED_LOCKS[4])), *transaction(71, *write("shoots"))))
+        self.assertEqual((None, ["foreign"]),
+                         (result.boundary, [item.record()["class"] for item in result.transactions]))
+
+    def test_lock_exemption_near_misses_are_boundaries(self):
+        for reason, texts in NEAR_MISS_LOCKS.items():
+            for text in texts:
+                with self.subTest(reason=reason, text=text):
+                    self.assert_boundary(("Query", text))
+        # Every listed account must be lockable: with fewer lockable accounts the same lists are boundaries.
+        for lockable, exempt in ((frozenset(), ()), (frozenset({"repro_maint@localhost"}), (0, 3))):
+            rules = Rules(RULES.database, RULES.excluded_tables, lockable)
+            for index, text in enumerate(ACCEPTED_LOCKS):
+                with self.subTest(lockable=sorted(lockable), text=text):
+                    result = scan(synthetic(*transaction(70, ("Query", text))), rules)
+                    self.assertEqual(index not in exempt, result.boundary is not None)
 
     def test_unknown_event_type_and_incident_count(self):
         for kind, info, statement in (("Incident", "#1 (LOST_EVENTS)", "incident"),

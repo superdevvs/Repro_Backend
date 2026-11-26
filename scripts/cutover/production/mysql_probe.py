@@ -1,7 +1,7 @@
 """MySQL target probe for the cutover controller: the write gate and business activity (design v2, 1.2, 2.2, 4.3).
 
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/mysql_probe.py --config /etc/repro-cutover-fence/host.json
-        [--audit | --since <file>:<position>]
+        [--audit | --since <file>:<position> [--since-gtid <gtid set>]]
 
 Runs as root, reads files and MySQL, writes only the activity latch, and prints one JSON object. It runs
 the native 8.4.13 client by absolute path as the probe account (`mysql.probe_defaults`), over the socket
@@ -24,14 +24,16 @@ business activity from that record without scanning, so a later purge cannot fai
 `--audit` lists every app-schema transaction after `armed_from` as foreign, smoke (inside the smoke
 window of `paths.smoke_window`, only `smoke_tables`) or business (design 4.3). `--since f:p` lists them
 from any coordinate and reports the coordinate read before the scan (`until`), for `prepare` (3.2
-steps 4 and 10). Both only read.
+steps 4 and 10); `--since-gtid` adds the receipt's history check (exit 5 when gtid_executed no longer
+holds the given set). Both only read.
 
 Exit codes: 0 observed; 3 the server is not listening (stdout {"version": 2, "reachable": false});
 4 gate state not recognised or not readable, a binary log this probe cannot read, a receipt or
 activation record of this run for another server or database, or a non-closed reading or business
 activity outside the frozen window; 5 the binary log at the receipt's `armed_from` (or `--since`)
 coordinate is gone, or its history was reset; 6 wrong server (UUID differs from `target_uuid`,
-version not 8.4.13, or networking on); anything else is a probe failure (1). Strict mode (no journal,
+version not 8.4.13, networking on, or, when a scan runs, a binary log filter: `SHOW BINARY LOG STATUS`
+names a Binlog_Do_DB or Binlog_Ignore_DB); anything else is a probe failure (1). Strict mode (no journal,
 `planned`, `sqlite_authoritative`) exits 0 only for "closed" with no business activity, so it can
 never report a writable target or business writes while SQLite is live.
 """
@@ -125,12 +127,16 @@ LISTING = "SHOW BINARY LOG STATUS; SHOW BINARY LOGS"
 
 
 class Refusal(Exception):
-    """A reading the controller must not act on: printed, then the probe exits with `code`."""
+    """A reading the controller must not act on: `output` is printed, then the probe exits with `code`.
 
-    def __init__(self, code: int, message: str, output: dict | None = None):
+    `reading` (a Reading, never printed) is set when the refusal came after the gate was classified.
+    """
+
+    def __init__(self, code: int, message: str, output: dict | None = None, reading: Reading | None = None):
         super().__init__(message)
         self.code = code
         self.output = output
+        self.reading = reading
 
 
 class Purged(Exception):
@@ -342,8 +348,34 @@ def _json_line(line: str, keys: set[str]) -> dict:
     return value
 
 
+@dataclass(frozen=True)
+class Reading:
+    """One gate read: the server identity, the state document the gate was classified from, the gate.
+
+    `state` holds exactly STATE_KEYS: each grant table's rows for the gated accounts (None for no rows),
+    `sessions`, `probe_privileges` and `mandatory_roles`, as the probe account read them. A consumer
+    that builds SQL from it must itself require `server["current_user"] == PROBE_ACCOUNT` (a mismatch
+    only makes the gate unrecognised); the UUID and version are already checked (exit 6 otherwise).
+    """
+
+    server: dict
+    state: dict
+    gate: Gate
+
+
 def read(config: dict, mode: str) -> tuple[dict, Gate]:
     """Read the server identity and the gate; raise Refusal for exits 3, 4 and 6."""
+    reading = read_gate(config, mode)
+    return reading.server, reading.gate
+
+
+def read_gate(config: dict, mode: str) -> Reading:
+    """read(), also handing out the classified rows (for gate.py's root SQL; never printed).
+
+    A Refusal raised after the classification (unrecognised, partial, or not closed in strict mode)
+    carries the same Reading as `refusal.reading`; one raised before it (exit 3, 6, an unreadable
+    answer) carries None.
+    """
     mysql = config["mysql"]
     client, defaults = Path(mysql["client"]), Path(mysql["probe_defaults"])
     refused = {"version": VERSION, "reachable": True, "server_uuid": None, "database": mysql["database"],
@@ -386,17 +418,19 @@ def read(config: dict, mode: str) -> tuple[dict, Gate]:
         raise Refusal(EXIT_UNRECOGNISED, f"The gate state is not readable: {message}",
                       {**refused, "problems": [message]})
     try:
-        gate = classify(config, server, _json_line(lines[1], STATE_KEYS))
+        state = _json_line(lines[1], STATE_KEYS)
+        gate = classify(config, server, state)
     except guard.Refused as refusal:
         raise Refusal(EXIT_UNRECOGNISED, str(refusal), {**refused, "problems": [str(refusal)]}) from None
+    reading = Reading(server, state, gate)
     refused.update(gate=gate.name, problems=gate.problems, open_privileges=gate.open_privileges)
     if gate.name in ("unrecognised", "partial"):
-        raise Refusal(EXIT_UNRECOGNISED, f"The gate state is {gate.name}", refused)
+        raise Refusal(EXIT_UNRECOGNISED, f"The gate state is {gate.name}", refused, reading)
     if mode == "strict" and gate.name != "closed":
         message = f"The gate is {gate.name} outside the frozen window, where only a closed gate is accepted"
         refused["problems"] = [message]
-        raise Refusal(EXIT_UNRECOGNISED, message, refused)
-    return server, gate
+        raise Refusal(EXIT_UNRECOGNISED, message, refused, reading)
+    return reading
 
 
 # The binary log (design 1.2): SHOW BINARY LOGS and SHOW BINLOG EVENTS as the probe account, which has
@@ -429,7 +463,8 @@ def scan_from(config: dict, start: Coordinate,
         raise Purged(f"The binary log {start.file} is no longer listed (purged); the scan from "
                      f"{start.file}:{start.position} cannot run")
     if history is not None and not history.issubset(GtidSet.parse(executed)):
-        raise Purged("gtid_executed no longer holds the receipt's backup GTIDs: the binary log history was reset")
+        raise Purged("gtid_executed no longer holds the backup's GTIDs (the receipt's or --since-gtid): the binary "
+                     "log history was reset")
     if start.position > sizes[start.file]:
         raise Unreadable(f"{start.file} is shorter than the scan's start position {start.position}")
 
@@ -452,6 +487,8 @@ def _scan(config: dict, start: Coordinate, base: dict, history: GtidSet | None =
         return scan_from(config, start, history)
     except Purged as error:
         raise _refused(EXIT_PURGED, str(error), base) from None
+    except binlog_scan.WrongServer as error:
+        raise _refused(EXIT_WRONG_SERVER, str(error), base) from None
     except Unreadable as error:
         raise _refused(EXIT_UNRECOGNISED, str(error), base) from None
 
@@ -652,13 +689,18 @@ def audit(config: dict) -> dict:
             "scanned_events": result.events}
 
 
-def since(config: dict, start: Coordinate) -> dict:
-    """Every app-schema transaction from `start`, and the coordinate read before the scan (prepare 3.2)."""
+def since(config: dict, start: Coordinate, history: GtidSet | None = None) -> dict:
+    """Every app-schema transaction from `start`, and the coordinate read before the scan (prepare 3.2).
+
+    With `history` (`--since-gtid`, the backup's gtid_executed) the scan refuses as Purged (exit 5) when
+    gtid_executed no longer holds it, as for the receipt. Without it nothing checks that `start` is still
+    the same history: the caller must (README, --since contract).
+    """
     journal = read_journal(config)
     mode = mode_of(journal)
     server, gate = read(config, mode)
     base = _base(config, server, gate, mode)
-    result, until, executed = _scan(config, start, base)
+    result, until, executed = _scan(config, start, base, history)
     return {**_listing(base), "since": start.record(), "until": {**until.record(), "gtid_executed": executed},
             "boundary": result.boundary, "transactions": [item.record() for item in result.transactions],
             "scanned_events": result.events}
@@ -671,6 +713,13 @@ def _since_argument(value: str) -> Coordinate:
     return Coordinate(match.group(1), int(match.group(2)))
 
 
+def _gtid_argument(value: str) -> GtidSet:
+    try:
+        return GtidSet.parse(value)
+    except Unreadable:
+        raise argparse.ArgumentTypeError("expected a GTID set as the server prints gtid_executed") from None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True)
@@ -679,7 +728,11 @@ def main(argv: list[str] | None = None) -> int:
                        help="list every app-schema transaction after the receipt's armed_from (design 4.3)")
     modes.add_argument("--since", type=_since_argument, metavar="FILE:POSITION",
                        help="list every app-schema transaction from a coordinate (prepare, design 3.2)")
+    parser.add_argument("--since-gtid", type=_gtid_argument, metavar="GTID_SET",
+                        help="with --since: exit 5 unless gtid_executed still holds this set (the backup's)")
     args = parser.parse_args(argv)
+    if args.since_gtid is not None and args.since is None:
+        parser.error("--since-gtid needs --since")
     try:
         if sys.platform != "linux" or os.geteuid() != 0:
             raise guard.Refused("The MySQL probe runs as root on the Linux host")
@@ -687,7 +740,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.audit:
             output = audit(config)
         elif args.since is not None:
-            output = since(config, args.since)
+            output = since(config, args.since, args.since_gtid)
         else:
             output = observe(config)
     except Refusal as refusal:

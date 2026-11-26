@@ -11,8 +11,9 @@ A carriage return or any other control byte passes through, so rows are split on
 Events are grouped into transactions by their Gtid event. From the receipt's `armed_from`:
 
 - A **boundary** is an account statement (GRANT, REVOKE, CREATE/ALTER/DROP/RENAME USER, CREATE/DROP
-  ROLE, SET DEFAULT ROLE, SET PASSWORD), except `ALTER USER '<a>'@'localhost' ACCOUNT LOCK|UNLOCK` for
-  an account in `lockable_accounts`. Beyond the design's list, a row event on one of the nine grant
+  ROLE, SET DEFAULT ROLE, SET PASSWORD), except exactly `ALTER USER [IF EXISTS] '<a>'@'localhost'[,'<b>'@
+  'localhost' ...] ACCOUNT LOCK|UNLOCK` as the server logs it, with every account in `lockable_accounts`
+  and nothing else in the statement. Beyond the design's list, a row event on one of the nine grant
   tables and FLUSH PRIVILEGES are boundaries too: a direct edit of `mysql.db` reaches the app account
   without an account statement. A statement this module cannot read (an executable `/*!` comment, an
   unclosed comment) is a boundary and an app-schema event at once.
@@ -62,12 +63,21 @@ _CONTROL = re.compile(r"(?:BEGIN|COMMIT|ROLLBACK|XA\s+(?:START|BEGIN|END|PREPARE
 _ACCOUNT = re.compile(r"(?:GRANT|REVOKE|(?:CREATE|ALTER|DROP|RENAME)\s+USER|(?:CREATE|DROP)\s+ROLE"
                       r"|SET\s+DEFAULT\s+ROLE|SET\s+PASSWORD)\b", re.IGNORECASE)
 _FLUSH_PRIVILEGES = re.compile(r"FLUSH\b.*\bPRIVILEGES\b", re.IGNORECASE | re.DOTALL)
-# The one lock form the server writes for `ALTER USER ... ACCOUNT LOCK|UNLOCK` (it rewrites the quoting).
-_LOCK = re.compile(r"ALTER USER '([a-z][a-z0-9_]{0,31})'@'localhost' ACCOUNT (?:LOCK|UNLOCK)")
+# The lock forms the server writes for `ALTER USER [IF EXISTS] <account>[, <account> ...] ACCOUNT
+# LOCK|UNLOCK` (review B2-6): it rewrites the quoting, the keywords, the comments and the list separator,
+# so only this exact text is exempt, and only when every account in it is lockable.
+_LOCK = re.compile(r"ALTER USER (?:IF EXISTS )?"
+                   r"('[a-z][a-z0-9_]{0,31}'@'localhost'(?:,'[a-z][a-z0-9_]{0,31}'@'localhost')*)"
+                   r" ACCOUNT (?:LOCK|UNLOCK)")
+_LOCKED_ACCOUNT = re.compile(r"'([a-z][a-z0-9_]{0,31})'@'localhost'")
 
 
 class Unreadable(ValueError):
     """Binary log text this module cannot read with certainty: the probe exits 4."""
+
+
+class WrongServer(ValueError):
+    """A server whose binary log this scan cannot rely on (it filters what it logs): the probe exits 6."""
 
 
 @dataclass(frozen=True)
@@ -156,11 +166,20 @@ def parse_events(raw: bytes, file: str) -> list[Event]:
 
 def parse_listing(raw: bytes) -> tuple[tuple[Coordinate, str], list[tuple[str, int]]]:
     """`SHOW BINARY LOG STATUS; SHOW BINARY LOGS` in one batch: the current coordinate with
-    gtid_executed, then every listed file with its size, oldest first."""
+    gtid_executed, then every listed file with its size, oldest first.
+
+    Raises WrongServer when the status names a binary log filter (`binlog-do-db` or
+    `binlog-ignore-db`): such a server leaves app-schema writes out of the log, so no scan could see
+    them (review B2-7). The message names the column only.
+    """
     lines = raw.split(b"\n")
     if len(lines) < 2 or lines[-1] != b"":
         raise Unreadable("No binary log status (is binary logging on?)")
     status = _rows(lines[0] + b"\n", 5)[0]
+    filters = [column for column, value in (("Binlog_Do_DB", status[2]), ("Binlog_Ignore_DB", status[3])) if value]
+    if filters:
+        raise WrongServer(f"SHOW BINARY LOG STATUS reports a non-empty {' and '.join(filters)}: the server "
+                          "filters its binary log, so the activity scan cannot see every app-schema write")
     logs = [(name, _number(size)) for name, size, _ in _rows(b"\n".join(lines[1:]), 3)]
     names = [status[0], *(name for name, _ in logs)]
     if not all(re.fullmatch(LOG_NAME, name) for name in names) or len({name for name, _ in logs}) != len(logs):
@@ -341,7 +360,8 @@ class Scan:
             pass
         elif _ACCOUNT.match(head):
             lock = _LOCK.fullmatch(statement)
-            if lock is None or f"{lock.group(1)}@localhost" not in self.rules.lockable_accounts:
+            if lock is None or not all(f"{user}@localhost" in self.rules.lockable_accounts
+                                       for user in _LOCKED_ACCOUNT.findall(lock.group(1))):
                 self._boundary(event)
         elif _FLUSH_PRIVILEGES.match(head):
             self._boundary(event)

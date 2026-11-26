@@ -517,6 +517,23 @@ class GateStateTests(unittest.TestCase):
         self.fixture.sql("CREATE ROLE 'repro_test_role'; GRANT 'repro_test_role' TO 'repro_app'@'localhost'")
         self.assert_refused("writes_possible", 4, gate="unrecognised")
 
+    def test_read_gate_hands_out_the_rows_it_classified(self):
+        # For gate.py's root SQL (D06 open item): the probe account's own rows, as this server returned them.
+        import mysql_probe
+
+        self.fixture.sql(self.UNRECOGNISED["role granted to the app"])
+        with self.assertRaises(mysql_probe.Refusal) as caught:
+            mysql_probe.read_gate(self.host.config, "measured")
+        reading = caught.exception.reading
+        self.assertEqual(("unrecognised", mysql_probe.PROBE_ACCOUNT, self.fixture.uuid),
+                         (reading.gate.name, reading.server["current_user"], reading.server["server_uuid"]))
+        edge = {"user": "repro_app", "host": "localhost", "other_user": "repro_test_role", "other_host": "%"}
+        self.assertEqual([edge], reading.state["role_edges"])
+        self.fixture.restore()
+        reading = mysql_probe.read_gate(self.host.config, "measured")
+        self.assertEqual(("closed", None, ["repro_app"]), (reading.gate.name, reading.state["role_edges"],
+                                                           [row["user"] for row in reading.state["user"]]))
+
     def test_strict_mode_never_reports_open_gate(self):
         self.fixture.sql(OPEN_GATE, account="repro_cutover_gate")
         for phase in STRICT_JOURNALS:
@@ -810,6 +827,11 @@ with open(here / "calls.log", "a", encoding="utf-8") as log:
     log.write(json.dumps(statement) + "\\n")
 data = json.loads((here / "server.json").read_text(encoding="utf-8"))
 out = sys.stdout.buffer
+if data["down"]:
+    # What the 8.4.13 client prints when nothing listens at the socket.
+    socket = next(argument.split("=", 1)[1] for argument in sys.argv if argument.startswith("--socket="))
+    sys.stderr.write("ERROR 2002 (HY000): Can't connect to local MySQL server through socket '%s' (2)\\n" % socket)
+    sys.exit(1)
 if statement.startswith("SELECT JSON_OBJECT('server_uuid'"):
     out.write((json.dumps(data["server"]) + "\\n" + json.dumps(data["state"]) + "\\n").encode())
     sys.exit(0)
@@ -818,7 +840,8 @@ if "--raw" in sys.argv:
     sys.exit(1)
 if statement == "SHOW BINARY LOG STATUS; SHOW BINARY LOGS":
     names = list(data["files"])
-    out.write(("%s\\t%d\\t\\t\\t%s\\n" % (names[-1], data["sizes"][names[-1]], data["executed"])).encode())
+    out.write(("%s\\t%d\\t%s\\t%s\\t%s\\n" % (names[-1], data["sizes"][names[-1]], *data["filters"],
+                                          data["executed"])).encode())
     for name in names:
         out.write(("%s\\t%d\\tNo\\n" % (name, data["sizes"][name])).encode())
     sys.exit(0)
@@ -856,6 +879,10 @@ class FakeServer:
         self.files: dict[str, str] = {}
         self.sizes: dict[str, int] = {}
         self.executed = f"{self.uuid}:1-59"
+        # SHOW BINARY LOG STATUS's Binlog_Do_DB and Binlog_Ignore_DB (no filter on production).
+        self.filters = ["", ""]
+        # True: the client answers as when nothing listens at the socket (error 2002).
+        self.down = False
 
     def log(self, name: str, recording: list, server_id: int = 64086) -> None:
         self.files[name] = self.files.get(name, "") + recorded.rows(recording, name, server_id).decode("utf-8")
@@ -865,7 +892,7 @@ class FakeServer:
         (self.root / "calls.log").unlink(missing_ok=True)
         (self.root / "server.json").write_text(json.dumps({
             "server": self.server, "state": self.state, "files": self.files, "sizes": self.sizes,
-            "executed": self.executed}), encoding="utf-8")
+            "executed": self.executed, "filters": self.filters, "down": self.down}), encoding="utf-8")
 
     def calls(self) -> list[str]:
         path = self.root / "calls.log"
@@ -930,6 +957,11 @@ class FakeServerTests(unittest.TestCase):
             self.assertNotIn("business_activity", output)
         return output, stderr
 
+    def records(self) -> dict:
+        """The files under the journal directory other than the journal itself (which run_probe rewrites)."""
+        return {item.name: (item.lstat().st_ino, item.lstat().st_mtime_ns) for item in self.host.state.iterdir()
+                if item.name != "state.json"}
+
     def e6_activity(self, sha: str, **changes) -> dict:
         return {**measured_output(self.fake.uuid, business_activity=True, foreign_activity=True, receipt=sha,
                                   boundary={"file": "binlog.000001", "position": 14927,
@@ -945,6 +977,100 @@ class FakeServerTests(unittest.TestCase):
                 self.assertTrue(any("8.4.13" in problem for problem in output["problems"]), output)
         self.fake.server["version"] = "8.4.13"
         self.assertEqual(0, self.run_probe("ready")[0])
+
+    def test_binary_log_filters_exit_6(self):
+        # Review B2-7: binlog-do-db or binlog-ignore-db would keep app writes out of the scan. Every mode
+        # that scans refuses as a wrong server, before any binary log is read and without a latch. (The
+        # fixture cannot start with a filter unless fixture.sh changes; the status text is recorded.)
+        sha = self.arm()
+        self.host.write("smoke_window", window_record(sha, *recorded.E6_SMOKE_WINDOW))
+        for filters, column in ((["", "repro_dashboard"], "Binlog_Ignore_DB"), (["other_db", ""], "Binlog_Do_DB")):
+            self.fake.filters = filters
+            for phase, arguments in (("ready", ()), ("sqlite_authoritative", ()), ("recovery_required", ("--audit",)),
+                                     ("frozen", ("--since", "binlog.000001:13791"))):
+                with self.subTest(filters=filters, phase=phase, arguments=arguments):
+                    output, stderr = self.assert_refused(phase, 6, *arguments)
+                    self.assertEqual((self.fake.uuid, "closed"), (output["server_uuid"], output["gate"]))
+                    self.assertEqual(1, len(output["problems"]), output)
+                    self.assertIn(column, output["problems"][0])
+                    self.assertNotIn("repro_dashboard", output["problems"][0])
+                    self.assertNotIn("other_db", output["problems"][0])
+                    self.assertEqual([], self.fake.scans())
+                    self.assertFalse(self.host.path("activity").exists())
+        self.fake.filters = ["", ""]
+        self.assertEqual((0, self.e6_activity(sha)), self.run_probe("ready")[:2])
+
+    def test_read_gate_hands_out_the_classified_rows(self):
+        # For gate.py (D06 open item): the state document the gate was classified from, with a reading and
+        # with a refusal after the classification, so gate.py's root SQL needs no second read of the rows.
+        import mysql_probe
+
+        config = self.host.config
+        self.fake.save()
+        reading = mysql_probe.read_gate(config, "measured")
+        self.assertEqual((self.fake.server, self.fake.state, "closed"),
+                         (reading.server, reading.state, reading.gate.name))
+        self.assertEqual((reading.server, reading.gate), mysql_probe.read(config, "measured"))
+        edge = {"user": "repro_app", "host": "localhost", "other_user": "repro_test_role", "other_host": "%"}
+        partial = gate_state()
+        partial["db"][0]["Insert_priv"] = "Y"
+        opened = sorted(mysql_probe.OPEN_PRIVILEGES)
+        for name, state, mode, gate, open_privileges in (
+                ("unrecognised", {**gate_state(), "role_edges": [edge]}, "measured", "unrecognised", []),
+                ("partial", partial, "measured", "partial", ["INSERT"]),
+                ("open in strict mode", gate_state(open_gate=True), "strict", "open", opened)):
+            with self.subTest(state=name):
+                self.fake.state = state
+                self.fake.save()
+                with self.assertRaises(mysql_probe.Refusal) as caught:
+                    mysql_probe.read_gate(config, mode)
+                refusal = caught.exception
+                reading = refusal.reading
+                self.assertEqual((4, gate, state, self.fake.server),
+                                 (refusal.code, reading.gate.name, reading.state, reading.server))
+                self.assertEqual({"repro_app@localhost": open_privileges}, reading.gate.open_privileges)
+                # What the probe prints is unchanged: never the rows.
+                self.assertEqual({"version", "reachable", "server_uuid", "database", "gate", "mode", "problems",
+                                  "open_privileges"}, set(refusal.output))
+        # Refusals before the classification carry no rows: a wrong server (6), an unreachable one (3).
+        self.fake.state = gate_state()
+        for name, change, code in (("wrong server", {"server_uuid": OTHER_UUID}, 6), ("unreachable", None, 3)):
+            with self.subTest(refusal=name):
+                if change is None:
+                    self.fake.down = True
+                else:
+                    self.fake.server = {**self.fake.server, **change}
+                self.fake.save()
+                with self.assertRaises(mysql_probe.Refusal) as caught:
+                    mysql_probe.read_gate(config, "measured")
+                self.assertEqual((code, None), (caught.exception.code, caught.exception.reading))
+
+    def test_unreachable_is_exit_3_even_with_this_runs_records(self):
+        # The command-line contract D07's adapter relies on: exit 3 prints exactly {"version": 2,
+        # "reachable": false}, which it maps to false/false while writes_possible is false. The server is
+        # read before any record, so this run's receipt, latch, activation record or smoke window never
+        # turn an unreachable server into another exit, and nothing is written.
+        sha = self.arm()
+        self.host.write("activity", {"version": 1, "run_id": RUN_ID, "receipt_sha256": sha,
+                                     "gtid": f"{self.fake.uuid}:55", "file": "binlog.000001", "position": 15434,
+                                     "tables": ["shoots"], "statements": [], "boundary": None,
+                                     "foreign_activity": False})
+        self.host.write("activated", activated_record(self.fake.uuid, sha))
+        self.host.write("smoke_window", window_record(sha, *recorded.E6_SMOKE_WINDOW))
+        before = self.records()
+        mysql = self.host.config["mysql"]
+        mysql["socket"] = mysql["switch"]["DB_SOCKET"] = str(self.host.root / "no-server" / "mysql.sock")
+        runs = [(phase, ()) for phase in STRICT_JOURNALS + MEASURED_JOURNALS]
+        runs += [("recovery_required", ("--audit",)), ("frozen", ("--since", "binlog.000001:13791"))]
+        for down in ("client answers 2002", "client not installed yet"):
+            self.fake.down = down == "client answers 2002"
+            if down == "client not installed yet":
+                mysql["client"] = str(self.host.root / "no-bundle" / "bin" / "mysql")
+            for phase, arguments in runs:
+                with self.subTest(down=down, journal=phase, arguments=arguments):
+                    code, output, stderr = self.run_probe(phase, *arguments)
+                    self.assertEqual((3, {"version": 2, "reachable": False}), (code, output), stderr)
+                    self.assertEqual(before, self.records())
 
     def test_no_receipt_or_other_run_receipt_is_false(self):
         code, output, stderr = self.run_probe("ready")
@@ -1049,6 +1175,45 @@ class FakeServerTests(unittest.TestCase):
         os.symlink(self.fake.root / "server.json", self.host.path("receipt"))
         self.assertEqual(1, self.run_probe("ready")[0])
 
+    def test_unsafe_records_refused_by_every_reading_that_reads_them(self):
+        # Review B2-8: each record goes through guard.read_protected. The plain reading reads the receipt,
+        # the latch and the activation record; --audit reads the receipt and the smoke window (it never
+        # reads the latch or the activation record). A record that is safe reads; the same record
+        # group-writable, owned by another user or behind a symbolic link is exit 1 with nothing printed.
+        readers = (("receipt", ()), ("activity", ()), ("activated", ()), ("receipt", ("--audit",)),
+                   ("smoke_window", ("--audit",)))
+        for name, arguments in readers:
+            for unsafe in ("group-writable", "another owner", "symbolic link"):
+                with self.subTest(record=name, arguments=arguments, unsafe=unsafe):
+                    for record in RECORDS:
+                        self.host.path(record).unlink(missing_ok=True)
+                    sha = self.arm()
+                    documents = {
+                        "activity": {"version": 1, "run_id": RUN_ID, "receipt_sha256": sha,
+                                     "gtid": f"{self.fake.uuid}:55", "file": "binlog.000001", "position": 15434,
+                                     "tables": ["jobs", "shoots"], "statements": [], "boundary": None,
+                                     "foreign_activity": False},
+                        "activated": activated_record(self.fake.uuid, sha),
+                        "smoke_window": window_record(sha, *recorded.E6_SMOKE_WINDOW),
+                    }
+                    if name != "receipt":
+                        self.host.write(name, documents[name])
+                    self.assertEqual(0, self.run_probe("recovery_required", *arguments)[0])
+                    path = self.host.path(name)
+                    if unsafe == "group-writable":
+                        os.chmod(path, 0o620)
+                    elif unsafe == "another owner":
+                        os.chown(path, 65534, 65534)
+                    else:
+                        target = self.fake.root / f"{name}.json"
+                        path.rename(target)
+                        os.symlink(target, path)
+                    before = self.records()
+                    code, output, stderr = self.run_probe("recovery_required", *arguments)
+                    self.assertEqual((1, None), (code, output), stderr)
+                    self.assertIn("Unsafe file type, owner or permissions", stderr)
+                    self.assertEqual(before, self.records())  # The refused reading wrote nothing.
+
     def test_journal_without_a_run_id_refuses_only_when_a_record_exists(self):
         self.host.run_identity = None
         self.assertEqual(0, self.run_probe("ready")[0])
@@ -1152,6 +1317,30 @@ class FakeServerTests(unittest.TestCase):
             with self.subTest(argument=argument):
                 self.assertEqual(2, self.run_probe("frozen", "--since", argument)[0])
         self.assertEqual(2, self.run_probe("frozen", "--since", "binlog.000001:4", "--audit")[0])
+
+    def test_since_gtid_requires_that_history(self):
+        # Review B2-9: --since alone checks no history. With --since-gtid <the backup's gtid_executed>, a
+        # gtid_executed that no longer holds it (RESET BINARY LOGS AND GTIDS reuses file names) is exit 5,
+        # before any event is read, as for the receipt.
+        since = ("--since", "binlog.000001:13791")
+        backup = f"{self.fake.uuid}:1-48"
+        plain = self.run_probe("frozen", *since)
+        self.assertEqual(0, plain[0], plain[2])
+        for history in (backup, "", self.fake.executed):
+            with self.subTest(history=history):
+                code, output, stderr = self.run_probe("frozen", *since, "--since-gtid", history)
+                self.assertEqual((0, plain[1]), (code, output), stderr)
+        self.fake.executed = f"{recorded.E1_UUID}:1-10"
+        self.assertEqual(0, self.run_probe("frozen", *since)[0])  # Unnoticed without the check.
+        for history in (backup, f"{self.fake.uuid}:60"):
+            with self.subTest(history=history, reset=True):
+                output, _ = self.assert_refused("frozen", 5, *since, "--since-gtid", history)
+                self.assertIn("history was reset", output["problems"][0])
+                self.assertEqual([], self.fake.scans())
+        for arguments in (("--since-gtid", backup), ("--audit", "--since-gtid", backup),
+                          (*since, "--since-gtid", "x:1"), (*since, "--since-gtid", f"{self.fake.uuid}:0")):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(2, self.run_probe("frozen", *arguments)[0])
 
 
 # The app tables these tests write, created before any receipt (DDL on the app schema is an app-schema event).
@@ -1312,6 +1501,21 @@ class ActivityTests(unittest.TestCase):
         output = self.probe("ready")
         self.assertEqual((True, True), (output["foreign_activity"], output["business_activity"]))
 
+    def test_account_list_and_if_exists_locks_are_not_a_boundary(self):
+        # Review B2-6: the forms a runbook may type, which the server rewrites to the accepted forms.
+        self.arm()
+        self.do(("root", "ALTER USER 'repro_maint'@'localhost', 'repro_migrator'@'localhost' ACCOUNT LOCK;"
+                         "ALTER USER IF EXISTS repro_maint@localhost , `repro_migrator`@`localhost` ACCOUNT UNLOCK;"
+                         "alter user if exists 'repro_migrator'@'localhost' account lock"), FOREIGN_WRITE)
+        output = self.probe("ready")
+        self.assertEqual((True, False, None), (output["foreign_activity"], output["business_activity"],
+                                               output["boundary"]))
+        # A list with one account outside lockable_accounts is a boundary, IF EXISTS or not.
+        self.do(("root", "ALTER USER IF EXISTS 'repro_migrator'@'localhost', 'repro_parity_reader'@'localhost' "
+                         "ACCOUNT LOCK"), FOREIGN_WRITE)
+        output = self.probe("ready")
+        self.assertEqual((True, True), (output["foreign_activity"], output["business_activity"]))
+
     def test_heartbeat_table_excluded(self):
         self.arm()
         self.do(("repro_cutover_gate", OPEN_GATE), ("root", "; ".join([HEARTBEAT] * 3)))
@@ -1397,6 +1601,17 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual({"file": now[0], "position": now[1], "gtid_executed": now[2]}, output["until"])
         self.assertEqual([("foreign", ["shoots"])], [(item["class"], item["tables"]) for item in output["transactions"]])
         self.assertEqual([], self.probe("frozen", "--since", f"{now[0]}:{now[1]}")["transactions"])
+
+    def test_since_gtid_holds_on_this_server(self):
+        # Review B2-9: the backup's gtid_executed is held, so the reading equals the plain one; a set this
+        # server never executed reads as a reset history (exit 5).
+        file, position, executed = self.status()
+        self.do(FOREIGN_WRITE)
+        plain = self.probe("frozen", "--since", f"{file}:{position}")
+        self.assertEqual(plain, self.probe("frozen", "--since", f"{file}:{position}", "--since-gtid", executed))
+        output = self.probe("frozen", "--since", f"{file}:{position}", "--since-gtid", f"{self.fixture.uuid}:1-999999",
+                            expected=5)
+        self.assertIn("history was reset", output["problems"][0])
 
     def test_multi_line_ddl_is_read_whole(self):
         # A statement with newlines, a tab and backslashes: one row in batch mode, unescaped (no --raw).
