@@ -10,9 +10,11 @@ WARNING line names them at the end of the file's run.
 The fixture tests judge every procedure from the server side, never from gate.py's own report: the
 probe (as the controller runs it) for the gate state, root's SHOW GRANTS, the binary log for the
 account statements that ran, performance_schema.accounts for gate-account logins, and
-performance_schema.processlist for app sessions.
+performance_schema.processlist for app sessions. Tests that change the gate account itself (its lock,
+its grants) restore it from accounts.sql's own GRANT lines, and every test checks that it was restored.
 
-The SQL builders and the root-SQL quoting are also tested without MySQL, anywhere.
+The SQL builders, the root-SQL quoting and the gate account's expected grants (parsed from accounts.sql
+here, independently of gate.py) are also tested without MySQL, anywhere.
 """
 
 import itertools
@@ -27,6 +29,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE)]
@@ -53,7 +56,43 @@ UNRECOGNISED = {
                              "GRANT 'repro_test_role' TO 'repro_app'@'localhost'",
 }
 TABLE = "repro_dashboard.repro_gate_test"  # Created by each fixture test, dropped after it.
+# A table for one large uncommitted transaction: its rollback after a KILL takes a moment (about 1 s for
+# BULK_ROWS on this fixture), so the killed session stays listed in the processlist meanwhile.
+BULK = "repro_dashboard.repro_gate_bulk"
+BULK_ROWS = 300000
 ACCOUNT_STATEMENT = re.compile(r"^(GRANT|REVOKE) (.+) ON (\S+) (?:TO|FROM) '([a-z_]+)'@'([a-z]+)'$")
+GATE_ACCOUNT = "repro_cutover_gate@localhost"
+GATE_ACCOUNT_SQL = "'repro_cutover_gate'@'localhost'"
+WRONG_PASSWORD = "not-the-gate-password-0123"  # Written into a copy of the gate defaults file only.
+# What SHOW GRANTS prints for the gate account on 8.4.13 when accounts.sql made it (read on the fixture).
+GATE_SHOW_GRANTS = [
+    "GRANT PROCESS ON *.* TO `repro_cutover_gate`@`localhost`",
+    "GRANT CONNECTION_ADMIN ON *.* TO `repro_cutover_gate`@`localhost`",
+    "GRANT INSERT, UPDATE, DELETE ON `repro\\_dashboard`.* TO `repro_cutover_gate`@`localhost` WITH GRANT OPTION",
+    "GRANT UPDATE (`id`) ON `repro_mysql_control`.`writer_token` TO `repro_cutover_gate`@`localhost` WITH GRANT OPTION",
+]
+
+
+def accounts_sql_gate_grants() -> list:
+    """accounts.sql's GRANT statements for the gate account, verbatim and without the final `;`."""
+    lines = probe_tests.ACCOUNTS_SQL.read_text(encoding="utf-8").splitlines()
+    return [line[:-1] for line in lines if f" TO {GATE_ACCOUNT_SQL}" in line and line.startswith("GRANT ")]
+
+
+def accounts_sql_gate_triples() -> set:
+    """The gate account's grants as accounts.sql writes them: (privilege, level, with grant option) triples.
+
+    Parsed here on purpose, not with gate.py's own parser: gate.py's expected set must equal what the
+    administrator's file grants, so a change to either side fails StatementTests.
+    """
+    triples = set()
+    for statement in accounts_sql_gate_grants():
+        match = re.fullmatch(rf"GRANT ([A-Z_, ()`a-z]+) ON (\S+) TO {GATE_ACCOUNT_SQL}( WITH GRANT OPTION)?", statement)
+        assert match, statement
+        names = re.findall(r"[A-Z_]+(?: \(`[a-z_]+`\))?", match.group(1))
+        assert ", ".join(names) == match.group(1), statement  # Every privilege of the statement was read.
+        triples |= {(name, match.group(2), bool(match.group(3))) for name in names}
+    return triples
 
 
 def expected_statements(verb: str, present) -> list:
@@ -225,6 +264,50 @@ class StatementTests(unittest.TestCase):
                           "GRANT SELECT ON `repro_mysql_control`.`writer_token` TO 'repro_app'@'localhost';"],
                          statements)
 
+    # The gate account's self-check (review B2-1).
+
+    def test_gate_account_grants_are_exactly_those_of_accounts_sql(self):
+        # Three statements in accounts.sql today; gate.py's set must follow any change to them.
+        self.assertEqual(3, len(accounts_sql_gate_grants()))
+        self.assertIn(f"CREATE USER {GATE_ACCOUNT_SQL} IDENTIFIED BY :gate;",
+                      probe_tests.ACCOUNTS_SQL.read_text(encoding="utf-8"))
+        self.assertEqual(GATE_ACCOUNT, self.gate.GATE_ACCOUNT)
+        self.assertEqual(accounts_sql_gate_triples(), set(self.gate.gate_account_grants(self.config)))
+
+    def test_show_grants_of_the_accounts_sql_gate_account_has_no_problem(self):
+        self.assertEqual([], self.gate.grant_problems(self.config, GATE_SHOW_GRANTS))
+        # The order of the lines does not matter, and USAGE (no privilege) is no grant.
+        usage = "GRANT USAGE ON *.* TO `repro_cutover_gate`@`localhost`"
+        self.assertEqual([], self.gate.grant_problems(self.config, [usage, *reversed(GATE_SHOW_GRANTS)]))
+
+    def test_show_grants_that_differ_from_accounts_sql_name_the_difference(self):
+        process, connection, schema, token = GATE_SHOW_GRANTS
+        other = "`repro_cutover_gate`@`localhost`"
+        cases = {
+            "missing CONNECTION_ADMIN ON *.*": [process, schema, token],
+            "missing PROCESS ON *.*": [connection, schema, token],
+            "missing UPDATE (`id`) ON `repro_mysql_control`.`writer_token` WITH GRANT OPTION": [
+                process, connection, schema],
+            "INSERT ON `repro\\_dashboard`.* lacks WITH GRANT OPTION": [
+                process, connection, schema.replace(" WITH GRANT OPTION", ""), token],
+            "UPDATE (`id`) ON `repro_mysql_control`.`writer_token` lacks WITH GRANT OPTION": [
+                process, connection, schema, token.replace(" WITH GRANT OPTION", "")],
+            "unexpected SELECT ON `mysql`.`db`": [*GATE_SHOW_GRANTS, f"GRANT SELECT ON `mysql`.`db` TO {other}"],
+            "unexpected SUPER ON *.*": [f"GRANT PROCESS, SUPER ON *.* TO {other}", connection, schema, token],
+            "unexpected PROCESS ON *.* WITH GRANT OPTION": [
+                f"{process} WITH GRANT OPTION", connection, schema, token],
+            "unexpected grant line: GRANT `repro_test_role`@`%` TO": [
+                *GATE_SHOW_GRANTS, f"GRANT `repro_test_role`@`%` TO {other}"],
+            "unexpected grant line: GRANT SELECT ON `repro\\_dashboard`.* TO `repro_app`@`localhost`": [
+                *GATE_SHOW_GRANTS, "GRANT SELECT ON `repro\\_dashboard`.* TO `repro_app`@`localhost`"],
+            "unexpected grant line: REVOKE": [
+                *GATE_SHOW_GRANTS, f"REVOKE INSERT ON `repro_dashboard`.`x` FROM {other}"],
+        }
+        for expected, lines in cases.items():
+            with self.subTest(expected=expected):
+                problems = self.gate.grant_problems(self.config, lines)
+                self.assertTrue(any(problem.startswith(expected) for problem in problems), problems)
+
 
 @unittest.skipUnless(sys.platform == "linux" and hasattr(os, "geteuid"), "The gate CLI runs on the Linux host")
 class CommandLineTests(unittest.TestCase):
@@ -246,6 +329,22 @@ class GateProcedureTests(unittest.TestCase):
         cls.fixture.restore()
         cls.baseline = cls.fixture.snapshot()
         assert cls.baseline["grants"] == sorted(probe_tests.CLOSED_GRANTS), cls.baseline
+        cls.restore_gate_account()
+        cls.gate_baseline = cls.gate_snapshot()
+        assert cls.gate_baseline == (sorted(GATE_SHOW_GRANTS), "N"), cls.gate_baseline
+
+    @classmethod
+    def gate_snapshot(cls) -> tuple:
+        """The gate account as root reads it: its grants and its lock."""
+        return (sorted(cls.fixture.sql(f"SHOW GRANTS FOR {GATE_ACCOUNT_SQL}").splitlines()),
+                cls.fixture.sql("SELECT account_locked FROM mysql.user WHERE User = 'repro_cutover_gate'").strip())
+
+    @classmethod
+    def restore_gate_account(cls) -> None:
+        """Give the gate account back exactly what accounts.sql gives it (its password is never changed)."""
+        cls.fixture.sql(";".join([f"ALTER USER {GATE_ACCOUNT_SQL} ACCOUNT UNLOCK",
+                                  f"REVOKE ALL PRIVILEGES, GRANT OPTION FROM {GATE_ACCOUNT_SQL}",
+                                  *accounts_sql_gate_grants()]))
 
     def setUp(self):
         import gate
@@ -269,11 +368,50 @@ class GateProcedureTests(unittest.TestCase):
     def assert_restored(self):
         self.fixture.restore()
         self.assertEqual(self.baseline, self.fixture.snapshot())
+        if self.gate_snapshot() != self.gate_baseline:
+            self.restore_gate_account()
+            self.assertEqual(self.gate_baseline, self.gate_snapshot())
 
-    def gate_defaults(self, source: Path) -> None:
+    def gate_defaults(self, source: Path, mode: int = 0o600) -> None:
         target = Path(self.host.config["mysql"]["gate_defaults"])
         shutil.copyfile(source, target)
-        os.chmod(target, 0o600)
+        os.chmod(target, mode)
+
+    def cli_check(self) -> subprocess.CompletedProcess:
+        """`gate.py check` as the controller runs it: root, /usr/bin/python3 -I -S, the installed host.json."""
+        return subprocess.run(["/usr/bin/python3", "-I", "-S", str(GATE), "--config", str(self.host.etc / "host.json"),
+                               "check"], capture_output=True, text=True, timeout=120,
+                              env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"})
+
+    def bulk_session(self) -> tuple:
+        """An app session (database selected) inside a large uncommitted transaction; needs INSERT.
+
+        A KILL ends it only after its rollback, so it stays in the processlist for a moment after the KILL.
+        """
+        self.fixture.sql(f"DROP TABLE IF EXISTS {BULK};"
+                         f"CREATE TABLE {BULK} (id INT PRIMARY KEY, pad CHAR(200) NOT NULL)")
+        self.addCleanup(self.fixture.sql, f"DROP TABLE IF EXISTS {BULK}")  # After the session ends (cleanups run LIFO).
+        session = self.session()
+        identity = session.connection_id()
+        answer = session.ask(f"SET SESSION cte_max_recursion_depth = {BULK_ROWS}; BEGIN; INSERT INTO {BULK} (id, pad) "
+                             "WITH RECURSIVE seq (n) AS "
+                             f"(SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {BULK_ROWS}) "
+                             "SELECT n, REPEAT('x', 200) FROM seq", timeout=120)
+        self.assertEqual([], answer)
+        return session, identity
+
+    def wait_gone(self, identity: int) -> None:
+        deadline = time.monotonic() + 60
+        while identity in self.app_sessions():
+            self.assertLess(time.monotonic(), deadline, f"session {identity} did not end")
+            time.sleep(0.05)
+
+    def bulk_rows(self) -> int:
+        return int(self.fixture.sql(f"SELECT COUNT(*) FROM {BULK}"))
+
+    def secrets(self) -> list:
+        """The fixture's passwords: none may appear in any output or message."""
+        return [path.read_text(encoding="ascii").strip() for path in (self.fixture.directory / "passwords").iterdir()]
 
     def write_host_files(self) -> None:
         for name, document in (("host.json", self.host.config), ("identity.json", self.host.identity)):
@@ -531,7 +669,8 @@ class GateProcedureTests(unittest.TestCase):
         self.assertRegex(refused[0], r"^ERROR 1142 ")  # Closed, and it keeps the closed privileges (E1b).
         coordinate = self.coordinate()
         result = self.gate.open_gate(self.config)
-        self.assertEqual({"before": "closed", "granted": True, "killed": [identity]}, result)
+        self.assertEqual({"before": "closed", "granted": True, "killed": [identity], "kill_failed": [],
+                          "stragglers": []}, result)
         self.assertEqual(expected_statements("GRANT", OPEN_SET), self.binlog_statements(coordinate))
         output = self.probe_reads("open")
         self.assertTrue(output["writable"])
@@ -547,7 +686,8 @@ class GateProcedureTests(unittest.TestCase):
         self.open_by_hand()
         coordinate = self.coordinate()
         result = self.gate.open_gate(self.config)
-        self.assertEqual({"before": "open", "granted": False, "killed": []}, result)
+        self.assertEqual({"before": "open", "granted": False, "killed": [], "kill_failed": [], "stragglers": []},
+                         result)
         self.assertEqual([], self.binlog_statements(coordinate))
         self.probe_reads("open")
 
@@ -606,6 +746,219 @@ class GateProcedureTests(unittest.TestCase):
             self.gate.close_gate(self.config)
         self.assertIn("1095", str(caught.exception))
         self.assertIn(identity, self.app_sessions())
+
+    def test_close_refuses_when_the_kill_login_fails(self):
+        # An error that names no KILL (here the login, 1045) leaves every KILL unaccounted for: all failed.
+        text = (self.fixture.directory / "repro_cutover_gate.cnf").read_text(encoding="ascii")
+        wrong = self.host.root / "wrong-password.cnf"
+        wrong.write_text(re.sub(r"(?m)^password=.*$", f"password={WRONG_PASSWORD}", text), encoding="ascii")
+        self.gate_defaults(wrong)
+        old = self.session()
+        identity = old.connection_id()
+        started = time.monotonic()
+        with self.assertRaises(self.gate.GateRefused) as caught:
+            self.gate.close_gate(self.config)
+        self.assertIn("KILL of the app sessions failed: ERROR 1045", str(caught.exception))
+        self.assertLess(time.monotonic() - started, self.gate.KILL_WAIT_SECONDS)  # Refused, not waited for.
+        self.assertNotIn(WRONG_PASSWORD, str(caught.exception))
+        self.assertIn(identity, self.app_sessions())
+
+    def test_close_kills_every_listed_session_after_one_has_already_ended(self):
+        # A listed session may end by itself before its KILL (1094, fine). The KILLs after it must still run:
+        # with -e the client stops at the first error even with --force, so they go on stdin, one per line.
+        self.open_by_hand()
+        first, second = self.session(), self.session()
+        gone, live = first.connection_id(), second.connection_id()
+        self.assertLess(gone, live)  # The order of the KILLs.
+        readings, real_read = [], self.gate.read
+
+        def read(config):
+            reading = real_read(config)
+            readings.append(reading)
+            if len(readings) == 2:  # The reading after the revoke lists both; then the first one leaves.
+                first.close()
+                self.wait_gone(gone)
+            return reading
+
+        with mock.patch.object(self.gate, "read", read):
+            result = self.gate.close_gate(self.config, wait_seconds=3)
+        self.assertEqual((gone, live), readings[1].sessions)
+        self.assertEqual({"before": "open", "revoked": {APP: list(OPEN_SET)}, "killed": [gone, live]}, result)
+        self.assertNotIn(live, self.app_sessions())
+        self.assertTrue(any(line.startswith("ERROR ") for line in second.ask(f"INSERT INTO {TABLE} VALUES (1)")))
+        self.assertEqual([], self.rows())
+
+    # Review B2-2 to B2-4: the close of a partial gate, the wait after the KILL, check's exit for partial.
+
+    def test_close_partial_gate_kills_an_old_session(self):
+        # A partial reading lists no sessions: only the reading after the revoke finds this one.
+        self.open_by_hand(("INSERT",))
+        old = self.session()
+        identity = old.connection_id()  # The database is selected, as Laravel connects.
+        self.assertEqual([], old.ask(f"INSERT INTO {TABLE} VALUES (1)"))
+        result = self.gate.close_gate(self.config)
+        self.assertEqual({"before": "partial", "revoked": {APP: ["INSERT"]}, "killed": [identity]}, result)
+        answer = old.ask(f"INSERT INTO {TABLE} VALUES (2)")
+        self.assertTrue(any(line.startswith("ERROR ") for line in answer), answer)
+        self.assertEqual([1], self.rows(), "the old session wrote after the close of a partial gate")
+        self.assertNotIn(identity, self.app_sessions())
+        self.probe_reads("closed", "planned")
+
+    def test_close_returns_only_once_the_killed_sessions_are_gone(self):
+        # Design 2.3 step 3: wait until none of the KILLed IDs remains. This one rolls back a large
+        # transaction after its KILL, so it stays listed for a moment.
+        self.open_by_hand()
+        _, identity = self.bulk_session()
+        readings, real_read = [], self.gate.read
+
+        def read(config):
+            reading = real_read(config)
+            readings.append(reading)
+            return reading
+
+        with mock.patch.object(self.gate, "read", read):
+            result = self.gate.close_gate(self.config)
+        listed = self.app_sessions()  # At once, the moment the close returned.
+        self.assertIn(identity, result["killed"])
+        self.assertNotIn(identity, listed, "close_gate returned while a session it killed was still connected")
+        # The close did have to wait (it saw the session after its KILL), or this test proves nothing.
+        self.assertTrue(any(identity in (reading.sessions or ()) for reading in readings[2:]), readings)
+        self.assertEqual(0, self.bulk_rows())
+        self.probe_reads("closed", "planned")
+
+    def test_check_exits_4_for_a_partial_gate(self):
+        self.open_by_hand(("INSERT",))
+        result = self.cli_check()
+        self.assertEqual(4, result.returncode, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(("partial", {APP: ["INSERT"]}), (output["gate"], output["open_privileges"]))
+        self.assertIn("gate-normalise", result.stderr)
+        self.assertEqual({APP: ["INSERT"]}, self.probe_reads("partial")["open_privileges"])  # Read-only.
+
+    # Review B2-5: the open records stale sessions it could not end; the close stays strict.
+
+    def test_open_records_a_failed_kill_and_still_opens(self):
+        stale = self.session()
+        identity = stale.connection_id()
+        self.fixture.sql(f"REVOKE CONNECTION_ADMIN ON *.* FROM {GATE_ACCOUNT_SQL}")  # Its KILL then fails with 1095.
+        result = self.gate.open_gate(self.config)
+        self.assertEqual({"before": "closed", "granted": True, "killed": [], "kill_failed": [identity],
+                          "stragglers": []}, result)
+        self.assertTrue(self.probe_reads("open")["writable"])
+        self.assertIn(identity, self.app_sessions())
+        # It keeps the closed privileges it had before the GRANT (E1b), so it still cannot write.
+        self.assertRegex(stale.ask(f"INSERT INTO {TABLE} VALUES (1)")[0], r"^ERROR 1142 ")
+        self.fixture.sql(f"INSERT INTO {TABLE} VALUES (2)", account="repro_app")  # A new session writes.
+        self.assertEqual([2], self.rows())
+
+    def test_open_records_a_straggler_and_still_opens(self):
+        self.open_by_hand()
+        _, identity = self.bulk_session()
+        # Closed again without the kill, as by an interrupted close: the transaction is still open.
+        self.fixture.sql("REVOKE INSERT, UPDATE, DELETE ON `repro\\_dashboard`.* FROM 'repro_app'@'localhost';"
+                         "REVOKE UPDATE (`id`) ON `repro_mysql_control`.`writer_token` FROM 'repro_app'@'localhost'",
+                         account="repro_cutover_gate")
+        self.probe_reads("closed")
+        result = self.gate.open_gate(self.config, wait_seconds=0)
+        self.assertEqual({"before": "closed", "granted": True, "killed": [], "kill_failed": [],
+                          "stragglers": [identity]}, result)
+        self.assertTrue(self.probe_reads("open")["writable"])
+        self.wait_gone(identity)  # Its KILL did end it, after the rollback.
+        self.assertEqual(0, self.bulk_rows())
+
+    def test_close_refuses_when_a_killed_session_outlasts_the_wait(self):
+        self.open_by_hand()
+        _, identity = self.bulk_session()
+        with self.assertRaises(self.gate.GateRefused) as caught:
+            self.gate.close_gate(self.config, wait_seconds=0)
+        self.assertIn(f"App sessions [{identity}] were still connected", str(caught.exception))
+        self.probe_reads("closed", "planned")  # The revoke stands; the next close only ends sessions.
+        self.wait_gone(identity)
+        self.assertEqual(0, self.bulk_rows())
+        self.assertEqual({"before": "closed", "revoked": {}, "killed": []}, self.gate.close_gate(self.config))
+
+    # Review B2-1: check() logs in as the gate account, read-only, so a promote that cannot open the gate
+    # is refused before Approval 2 rather than at seal_mysql's GRANT, after writes_possible.
+
+    def test_check_logs_in_as_the_gate_account_and_changes_nothing(self):
+        logins, gtid, coordinate = self.gate_logins(), self.gtid_executed(), self.coordinate()
+        output, code, message = self.gate.check(self.config)
+        self.assertEqual((0, None), (code, message), output)
+        self.assertEqual("closed", output["gate"])
+        self.assertEqual({"current_user": GATE_ACCOUNT, "problems": []}, output["gate_account"])
+        self.assertEqual(logins + 1, self.gate_logins())  # Through mysql.gate_defaults, as the controller has it.
+        self.assertEqual((gtid, coordinate), (self.gtid_executed(), self.coordinate()))  # Nothing written.
+        self.assertEqual(self.gate_baseline, self.gate_snapshot())
+        result = self.cli_check()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"current_user": GATE_ACCOUNT, "problems": []}, json.loads(result.stdout)["gate_account"])
+
+    def assert_gate_account_refused(self, expected: str) -> None:
+        """check() and the CLI exit 5 naming `expected`, with no password anywhere; the gate itself reads closed."""
+        output, code, message = self.gate.check(self.config)
+        self.assertEqual(self.gate.EXIT_GATE_ACCOUNT, code, (output, message))
+        self.assertEqual("closed", output["gate"])
+        self.assertTrue(any(expected in problem for problem in output["gate_account"]["problems"]), output)
+        self.assertIn(expected, message)
+        result = self.cli_check()
+        self.assertEqual(5, result.returncode, result.stderr)
+        self.assertEqual(output["gate_account"], json.loads(result.stdout)["gate_account"])
+        self.assertIn(expected, result.stderr)
+        for secret in [*self.secrets(), WRONG_PASSWORD]:
+            for text in (json.dumps(output), message, result.stdout, result.stderr):
+                self.assertNotIn(secret, text)
+        self.probe_reads("closed", "planned")
+
+    def test_check_refuses_a_gate_account_that_cannot_log_in(self):
+        text = (self.fixture.directory / "repro_cutover_gate.cnf").read_text(encoding="ascii")
+        wrong = self.host.root / "wrong-password.cnf"
+        wrong.write_text(re.sub(r"(?m)^password=.*$", f"password={WRONG_PASSWORD}", text), encoding="ascii")
+        with self.subTest(problem="wrong password"):
+            self.gate_defaults(wrong)
+            self.assert_gate_account_refused("wrong password")
+            self.assert_gate_account_refused("ERROR 1045")
+        self.gate_defaults(self.fixture.directory / "repro_cutover_gate.cnf")
+        with self.subTest(problem="locked"):
+            self.fixture.sql(f"ALTER USER {GATE_ACCOUNT_SQL} ACCOUNT LOCK")
+            try:
+                self.assert_gate_account_refused("is locked")
+            finally:
+                self.restore_gate_account()
+        self.assertEqual(0, self.gate.check(self.config)[1])
+
+    def test_check_refuses_gate_account_grants_other_than_accounts_sql(self):
+        cases = {
+            "missing CONNECTION_ADMIN ON *.*": f"REVOKE CONNECTION_ADMIN ON *.* FROM {GATE_ACCOUNT_SQL}",
+            "INSERT ON `repro\\_dashboard`.* lacks WITH GRANT OPTION":
+                f"REVOKE GRANT OPTION ON `repro\\_dashboard`.* FROM {GATE_ACCOUNT_SQL}",
+            "UPDATE (`id`) ON `repro_mysql_control`.`writer_token` lacks WITH GRANT OPTION":
+                f"REVOKE GRANT OPTION ON `repro_mysql_control`.`writer_token` FROM {GATE_ACCOUNT_SQL}",
+            "unexpected SELECT ON `mysql`.`db`": f"GRANT SELECT ON mysql.db TO {GATE_ACCOUNT_SQL}",
+        }
+        for expected, statement in cases.items():
+            with self.subTest(expected=expected):
+                try:
+                    self.fixture.sql(statement)
+                    self.assert_gate_account_refused(expected)
+                finally:
+                    self.restore_gate_account()
+        self.assertEqual(0, self.gate.check(self.config)[1])
+
+    def test_check_refuses_another_account_or_an_unsafe_gate_defaults_file(self):
+        path = Path(self.host.config["mysql"]["gate_defaults"])
+        cases = {
+            "CURRENT_USER() is 'repro_monitor@localhost'":
+                lambda: self.gate_defaults(self.fixture.directory / "repro_monitor.cnf"),
+            "must be readable by root only":
+                lambda: self.gate_defaults(self.fixture.directory / "repro_cutover_gate.cnf", 0o640),
+            str(path): path.unlink,
+        }
+        for expected, change in cases.items():
+            with self.subTest(expected=expected):
+                change()
+                self.assert_gate_account_refused(expected)
+        self.gate_defaults(self.fixture.directory / "repro_cutover_gate.cnf")
+        self.assertEqual(0, self.gate.check(self.config)[1])
 
 
 def _fixture_tests():

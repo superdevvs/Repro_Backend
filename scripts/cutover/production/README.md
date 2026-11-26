@@ -306,15 +306,25 @@ approvals); `gate.py` decides how.
   fine) and only those IDs are waited for, 10 s at most, so a reconnecting
   reader cannot hold the close up; the probe must read closed. A closed gate
   with app sessions also gets the kill (a close that crashed between its
-  revoke and its kill leaves sessions that still write).
+  revoke and its kill leaves sessions that still write). Strict: a failed
+  `KILL`, or a killed session still listed after the wait, refuses the close
+  (the rollback retries it).
+- **KILLs.** Sent on the client's stdin, one per line, with `--force`, so
+  every `KILL` runs and each error names its line. With `-e` the 8.4 client
+  stops at the first error even with `--force`, so a session that ended by
+  itself (1094) left every later one unkilled.
 - **Open.** Refused before any MySQL login unless `mysql.mode` is `cutover`
   and the journal reads `writes_possible` (the runner commits it just before
   `seal_mysql`; in drill mode, or any other phase, the gate never opens).
   From closed: the two `GRANT`s, then every app session listed afterwards is
   killed (it holds the closed privileges); from open: no `GRANT`, the kill
-  only; the probe must read open. Partial is refused.
+  only; the probe must read open. Partial is refused. A stale session whose
+  `KILL` fails, or that is still listed after the wait, does not fail the
+  open (it cannot write, and the open runs after `writes_possible`): it is
+  recorded for C02's failure table (review B2-5).
 - **Results.** `close_gate` returns `{"before", "revoked", "killed"}`,
-  `open_gate` `{"before", "granted", "killed"}`, for the caller's records.
+  `open_gate` `{"before", "granted", "killed", "kill_failed", "stragglers"}`
+  (disjoint session ID lists), for the caller's records.
 - **Refusals.** `GateUnreachable` (probe exit 3, nothing changed: the caller
   decides whether a skip is allowed and records it) is a `GateRefused`, which
   is an `UnsafeCutover`. An unrecognised state is refused with no change and
@@ -326,9 +336,26 @@ approvals); `gate.py` decides how.
   `accounts.sql` does, with its password); a reading not made as the probe
   account gets no SQL. Names that would need quoting appear only as JSON in a
   comment.
-- **Lint.** `gate.py --config <host.json> check` (root, read-only, no gate
-  login) prints the reading as JSON, with `root_sql`, and exits 0 for closed
-  or open, 3 unreachable, 4 otherwise, 1 on a failure.
+- **Lint.** `gate.py --config <host.json> check` (root, read-only) prints the
+  reading as JSON, with `root_sql` and `gate_account`, and exits 0 for closed
+  or open, 3 unreachable, 4 for any other gate state, 5 when the gate reads
+  closed or open but the gate account's self-check fails, 1 on a failure.
+- **Gate account self-check** (`check()`, review B2-1). A login as the gate
+  account through `mysql.client` and `mysql.gate_defaults`, exactly as the
+  procedures log in, running `SELECT CURRENT_USER(); SHOW GRANTS` (for the
+  current account: no privilege needed, no change, nothing in the binary
+  log). `CURRENT_USER()` must be `repro_cutover_gate@localhost` and the
+  grants exactly those `accounts.sql` gives it, compared as (privilege, level,
+  grant option); `test_gate.py` parses `accounts.sql` itself, so a change
+  there fails it. A wrong password, a lock, another account, an unsafe or
+  missing defaults file, a missing `CONNECTION_ADMIN`, a missing `WITH GRANT
+  OPTION` or any extra grant is named in `gate_account.problems` (never a
+  password). It is not run when nothing listens (exit 3), and the close of a
+  closed gate still logs in as nobody but the probe. D11 and D14 make this
+  self-check part of `check-evidence` and of the promote preconditions,
+  before Approval 2, so a gate account that could not open the gate refuses
+  the promote instead of failing at `seal_mysql`'s `GRANT` after
+  `writes_possible` (then `recovery_required`).
 
 `test_gate.py` judges each procedure from the server side (the probe as the
 controller runs it, `SHOW GRANTS`, the binary log's account statements,
@@ -337,7 +364,9 @@ controller runs it, `SHOW GRANTS`, the binary log's account statements,
 `REPRO_MYSQL_PROBE_FIXTURE` as for the probe. Without it those tests skip
 and a `WARNING` line names them at the end of the file's run; with
 `REPRO_REQUIRE_PROBE_FIXTURE=1` (`run-probe-fixture-tests.sh --linux-suite`)
-the run fails instead. The statement and quoting tests run anywhere.
+the run fails instead. Tests that change the gate account restore it from
+`accounts.sql`'s own `GRANT` lines and check that they did. The statement,
+quoting and expected-grant tests run anywhere.
 
 ## Telnyx while held (design 5.2)
 

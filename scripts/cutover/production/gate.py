@@ -21,7 +21,13 @@ close_gate (design 2.3, Close):
 
 open_gate (design 2.3, Open): closed, or open (idempotent, no GRANT); grant the open set, KILL every app
 session the probe lists afterwards (they hold the closed privileges from before the GRANT, E1b) and
-require the probe to read open. A partial gate is refused: it is closed first.
+require the probe to read open. A partial gate is refused: it is closed first. Unlike the close, a stale
+session whose KILL fails, or that is still listed after the wait, does not fail the open (it runs after
+the runner committed writes_possible, and such a session cannot write): it is recorded in the result
+(review B2-5).
+
+The KILLs go to the client on stdin, one per line, with --force: with -e the client stops at the first
+error even with --force, so one session that ended by itself (1094) would leave every later one unkilled.
 
 Anything else the probe reads (a role, a routine, a global privilege, a lock, a missing account) is
 refused without any change, with the root SQL that restores the closed state of accounts.sql, for the
@@ -33,9 +39,18 @@ Read-only lint, run as root on the host (cli.py gate-check calls check()):
 
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/gate.py --config /etc/repro-cutover-fence/host.json check
 
-It prints one JSON object (the reading, with `root_sql` for an unrecognised state; the message and the
-SQL also go to stderr) and exits 0 for closed or open, 3 when nothing listens, 4 for any other state
-(partial: gate-normalise closes it; unrecognised or unreadable: the administrator), 1 on a failure.
+Besides the probe's reading it runs the gate account's self-check (review B2-1): a login through
+mysql.client and mysql.gate_defaults, as the procedures log in, running SELECT CURRENT_USER() and
+SHOW GRANTS (no privilege needed, no change, nothing in the binary log). The account must be
+repro_cutover_gate@localhost with exactly the grants accounts.sql gives it, so a wrong password, a lock,
+a missing CONNECTION_ADMIN or a missing WITH GRANT OPTION is found before Approval 2 (check-evidence and
+the promote preconditions), not at seal_mysql's GRANT after writes_possible.
+
+It prints one JSON object (the reading, with `root_sql` for an unrecognised state, and `gate_account`;
+the message and the SQL also go to stderr) and exits 0 for closed or open with the gate account as
+accounts.sql makes it, 3 when nothing listens (no self-check), 4 for any other gate state (partial:
+gate-normalise closes it; unrecognised or unreadable: the administrator), 5 when the gate reads closed or
+open but the gate account's self-check fails (the administrator), 1 on a failure.
 """
 
 from __future__ import annotations
@@ -63,12 +78,17 @@ POLL_SECONDS = 0.2
 # The open set, in the order the statements name it: the probe's schema privileges, then the token's.
 SCHEMA_PRIVILEGES = tuple(probe.OPEN_SCHEMA.values())
 TOKEN_SQL = f"UPDATE (`{probe.TOKEN_COLUMN}`)"
-UNKNOWN_THREAD = re.compile(r"ERROR 1094 \(HY000\) at line [0-9]+: Unknown thread id: ([0-9]+)")
+# One error of a KILL script on stdin: code, input line (the n-th KILL), text. 1094 is "Unknown thread id".
+KILL_ERROR = re.compile(r"ERROR ([0-9]+) \([0-9A-Z]{5}\) at line ([0-9]+): (.*)")
 ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 # A user or host name read from a grant table enters a root statement only if '...' quotes it safely.
 SAFE_NAME = r"[A-Za-z0-9_.%:/-]{0,80}"
 PROBE_ACCOUNT_SQL = "'{}'@'{}'".format(*probe.PROBE_ACCOUNT.split("@"))
-EXIT_OBSERVED, EXIT_FAILURE, EXIT_UNREACHABLE, EXIT_NOT_OPEN_OR_CLOSED = 0, 1, 3, 4
+# The account in mysql.gate_defaults (accounts.sql), and one line of its SHOW GRANTS as 8.4 prints it.
+GATE_ACCOUNT = "repro_cutover_gate@localhost"
+GRANT_LINE = re.compile(r"GRANT (.+?) ON (\S+) TO `([^`]*)`@`([^`]*)`( WITH GRANT OPTION)?")
+PRIVILEGE = re.compile(r"[A-Z][A-Z_ ]*[A-Z](?: \(`[^`]+`(?:, `[^`]+`)*\))?")  # INSERT, UPDATE (`id`), ...
+EXIT_OBSERVED, EXIT_FAILURE, EXIT_UNREACHABLE, EXIT_NOT_OPEN_OR_CLOSED, EXIT_GATE_ACCOUNT = 0, 1, 3, 4, 5
 
 
 class GateRefused(UnsafeCutover):
@@ -252,8 +272,12 @@ def root_sql(config: dict, state: dict) -> str:
 # Readings, always through the probe account.
 
 def _client(config: dict, defaults_key: str, statements: list[str], *,
-            force: bool = False) -> subprocess.CompletedProcess:
-    """Run statements with the native client as the account in `mysql.<defaults_key>`, flags as the probe's."""
+            script: bool = False) -> subprocess.CompletedProcess:
+    """Run statements with the native client as the account in `mysql.<defaults_key>`, flags as the probe's.
+
+    Normally with -e: the client stops at the first error. With `script` they go on stdin, one per line,
+    with --force: every statement runs, and each error names its line (`ERROR n (s) at line i: ...`).
+    """
     mysql = config["mysql"]
     client, defaults = Path(mysql["client"]), Path(mysql[defaults_key])
     try:
@@ -264,11 +288,16 @@ def _client(config: dict, defaults_key: str, statements: list[str], *,
         raise GateRefused(f"Unsafe or missing MySQL client or defaults file: {refusal}") from None
     argv = [str(client), f"--defaults-file={defaults}", "--no-login-paths", "--protocol=SOCKET",
             f"--socket={mysql['socket']}", "--batch", "--raw", "--skip-column-names",
-            f"--connect-timeout={probe.CONNECT_SECONDS}", *(["--force"] if force else []),
-            "-e", "; ".join(statements)]
+            f"--connect-timeout={probe.CONNECT_SECONDS}"]
+    if script:
+        argv.append("--force")
+        feed = {"input": "".join(f"{statement};\n" for statement in statements)}
+    else:
+        argv += ["-e", "; ".join(statements)]
+        feed = {"stdin": subprocess.DEVNULL}
     try:
-        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              timeout=probe.CLIENT_SECONDS, env=ENVIRONMENT)
+        return subprocess.run(argv, **feed, capture_output=True, text=True, timeout=probe.CLIENT_SECONDS,
+                              env=ENVIRONMENT)
     except subprocess.TimeoutExpired:
         raise GateRefused("The MySQL client did not finish; the gate state is unknown until the next reading") from None
 
@@ -340,35 +369,66 @@ def _run_gate(config: dict, statements: list[str]) -> None:
         raise GateRefused(f"The gate account's statements failed: {result.stderr.strip()[:500]}")
 
 
-def _end_sessions(config: dict, sessions: tuple, wait_seconds: float, state: str) -> list[int]:
-    """KILL the listed sessions as the gate account and wait until none of them remains; return them.
+def _kill(config: dict, listed: list[int]) -> dict:
+    """KILL each listed session as the gate account; return {session: error} for each KILL that failed.
+
+    A script on stdin, one KILL per line, so every KILL runs and an error names the KILL it belongs to.
+    1094 (unknown thread) for its own ID means the session had already gone. An error that names no line
+    (a refused login, a client error) or a client failure leaves the other KILLs unaccounted for: failed.
+    """
+    result = _client(config, "gate_defaults", [f"KILL {int(session)}" for session in listed], script=True)
+    failed, gone, unaccounted = {}, set(), []
+    for line in (line for line in result.stderr.splitlines() if line.strip()):
+        match = KILL_ERROR.fullmatch(line)
+        index = int(match.group(2)) - 1 if match else -1
+        if not 0 <= index < len(listed):
+            unaccounted.append(line)
+        elif match.group(1) == "1094" and match.group(3) == f"Unknown thread id: {listed[index]}":
+            gone.add(listed[index])
+        else:
+            failed[listed[index]] = line
+    if unaccounted or result.returncode != 0:
+        reason = "; ".join(unaccounted) or f"the MySQL client exited with status {result.returncode}"
+        failed.update({session: failed.get(session, reason) for session in listed if session not in gone})
+    return failed
+
+
+def _wait_gone(config: dict, sessions: list[int], wait_seconds: float, state: str) -> list[int]:
+    """Poll the probe until none of `sessions` remains, at most `wait_seconds`; return those still listed.
 
     Only these IDs are waited for (connection IDs are never reused while the server runs): sessions that
-    connect after the change carry its privileges and may come and go.
+    connect after the change carry its privileges and may come and go. Every reading must stay `state`.
     """
-    if not sessions:
-        return []
-    listed = sorted(sessions)
-    result = _client(config, "gate_defaults", [f"KILL {int(session)}" for session in listed], force=True)
-    if result.returncode != 0:
-        failures = [line for line in result.stderr.splitlines() if line.strip()
-                    and not ((match := UNKNOWN_THREAD.fullmatch(line)) and int(match.group(1)) in listed)]
-        if failures or not result.stderr.strip():
-            raise GateRefused(f"KILL of the app sessions failed: {'; '.join(failures)[:500] or 'no error text'}")
     deadline = time.monotonic() + wait_seconds
     while True:
         reading = read(config)
         _refuse_unless(reading.gate == state, f"The gate reads {reading.gate} while its app sessions end")
-        remaining = set(listed) & set(reading.sessions)
-        if not remaining:
-            return listed
-        if time.monotonic() >= deadline:
-            raise GateRefused(f"App sessions {sorted(remaining)} were still connected {wait_seconds} s after KILL")
+        remaining = sorted(set(sessions) & set(reading.sessions))
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
         time.sleep(POLL_SECONDS)
 
 
+def _end_sessions(config: dict, sessions: tuple, wait_seconds: float) -> list[int]:
+    """The close's rule: KILL the listed sessions and wait until none remains, or refuse; return them."""
+    if not sessions:
+        return []
+    listed = sorted(sessions)
+    failed = _kill(config, listed)
+    if failed:
+        raise GateRefused(f"KILL of the app sessions failed: {'; '.join(dict.fromkeys(failed.values()))[:500]}")
+    remaining = _wait_gone(config, listed, wait_seconds, "closed")
+    if remaining:
+        raise GateRefused(f"App sessions {remaining} were still connected {wait_seconds} s after KILL")
+    return listed
+
+
 def close_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS) -> dict:
-    """Close the gate (design 2.3, Close). Returns {"before", "revoked", "killed"} for the caller's record."""
+    """Close the gate (design 2.3, Close). Returns {"before", "revoked", "killed"} for the caller's record.
+
+    Strict: a failed KILL, or a killed session still listed after `wait_seconds`, refuses the close (the
+    rollback retries it). A closed gate with no app session needs no gate-account login.
+    """
     reading = read(config)
     before = reading.gate
     if before == "closed" and not reading.sessions:
@@ -381,7 +441,7 @@ def close_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS) -> dict
         _refuse_unless(reading.gate == "closed", f"The gate reads {reading.gate} after the revoke")
     # Also for a gate that already reads closed: a close that crashed between its REVOKE and its KILL
     # leaves sessions that still write.
-    killed = _end_sessions(config, reading.sessions, wait_seconds, "closed")
+    killed = _end_sessions(config, reading.sessions, wait_seconds)
     return {"before": before, "revoked": revoked, "killed": killed}
 
 
@@ -397,7 +457,13 @@ def _journal_phase(config: dict) -> str | None:
 
 
 def open_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS) -> dict:
-    """Open the gate (design 2.3, Open; seal_mysql only). Returns {"before", "granted", "killed"}.
+    """Open the gate (design 2.3, Open; seal_mysql only).
+
+    Returns {"before", "granted", "killed", "kill_failed", "stragglers"}: of the app sessions listed once
+    the gate reads open (they hold the closed privileges from before the GRANT), `killed` ended,
+    `kill_failed` got a KILL error and `stragglers` were still listed `wait_seconds` after their KILL.
+    Neither of the last two fails the open (review B2-5): they cannot write, the open runs after the
+    runner committed writes_possible, and only the probe's open reading is required. C02 records them.
 
     Refused before any MySQL login in drill mode (design 3.4) and unless the runner has committed
     writes_possible, which it does just before it calls seal_mysql: in every other phase SQLite may
@@ -416,26 +482,127 @@ def open_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS) -> dict:
         _run_gate(config, grant_statements(config))
         reading = read(config)
         _refuse_unless(reading.gate == "open", f"The gate reads {reading.gate} after the grant")
-    killed = _end_sessions(config, reading.sessions, wait_seconds, "open")
-    return {"before": before, "granted": granted, "killed": killed}
+    listed = sorted(reading.sessions)
+    failed = _kill(config, listed) if listed else {}
+    ending = [session for session in listed if session not in failed]
+    stragglers = _wait_gone(config, ending, wait_seconds, "open") if ending else []
+    return {"before": before, "granted": granted,
+            "killed": [session for session in ending if session not in stragglers],
+            "kill_failed": sorted(failed), "stragglers": stragglers}
+
+
+# The gate account's self-check (review B2-1).
+
+def gate_account_grants(config: dict) -> frozenset:
+    """What accounts.sql grants the gate account, as (privilege, level, with grant option) in SHOW GRANTS' names."""
+    schema, token = _schema(config), _token(config)
+    return frozenset({*((name, schema, True) for name in SCHEMA_PRIVILEGES), (TOKEN_SQL, token, True),
+                      ("CONNECTION_ADMIN", "*.*", False), ("PROCESS", "*.*", False)})
+
+
+def _privileges(text: str) -> list[str] | None:
+    """`INSERT, UPDATE (`id`, `x`), PROCESS` -> its privileges; None if it is not such a list."""
+    names, position = [], 0
+    while (match := PRIVILEGE.match(text, position)) is not None:
+        names.append(match.group())
+        position = match.end()
+        if position == len(text):
+            return names
+        if not text.startswith(", ", position):
+            return None
+        position += 2
+    return None
+
+
+def _grants(line: str) -> set | None:
+    """One SHOW GRANTS line of the gate account as triples; None for any other line (a role, a REVOKE, ...)."""
+    match = GRANT_LINE.fullmatch(line)
+    names = _privileges(match.group(1)) if match else None
+    if names is None or f"{match.group(3)}@{match.group(4)}" != GATE_ACCOUNT:
+        return None
+    return {(name, match.group(2), bool(match.group(5))) for name in names if name != "USAGE"}
+
+
+def grant_problems(config: dict, lines: list[str]) -> list[str]:
+    """How the gate account's SHOW GRANTS lines differ from what accounts.sql grants it; [] when exactly equal."""
+    expected, found, problems = gate_account_grants(config), set(), []
+    for line in lines:
+        grants = _grants(line)
+        if grants is None:
+            problems.append(f"unexpected grant line: {line[:200]}")
+        else:
+            found |= grants
+
+    def named(name: str, level: str, option: bool = False) -> str:
+        return f"{name} ON {level}{' WITH GRANT OPTION' if option else ''}"
+
+    lacking = {(name, level) for name, level, option in expected - found if option and (name, level, False) in found}
+    problems += [f"{named(name, level)} lacks WITH GRANT OPTION" for name, level in sorted(lacking)]
+    problems += [f"missing {named(*grant)}" for grant in sorted(expected - found) if grant[:2] not in lacking]
+    problems += [f"unexpected {named(*grant)}" for grant in sorted(found - expected) if grant[:2] not in lacking]
+    return problems
+
+
+def _login_problem(config: dict, stderr: str) -> str:
+    # The client's error names the account and whether a password was sent, never the password.
+    error = (stderr.strip().splitlines() or ["no error text"])[0][:300]
+    if error.startswith("ERROR 1045 "):
+        return (f"The gate account's login was refused: a wrong password in {config['mysql']['gate_defaults']}, "
+                f"or no such account ({error})")
+    if error.startswith("ERROR 3118 "):
+        return f"The gate account is locked ({error})"
+    return f"The gate account could not log in ({error})"
+
+
+def gate_account_check(config: dict) -> dict:
+    """Log in as the gate account, as the procedures do, read-only: {"current_user", "problems"}.
+
+    SELECT CURRENT_USER() and SHOW GRANTS (of the current account) need no privilege, change nothing and
+    write nothing to the binary log. The login must be GATE_ACCOUNT, with exactly gate_account_grants.
+    """
+    try:
+        result = _client(config, "gate_defaults", ["SELECT CURRENT_USER()", "SHOW GRANTS"])
+    except GateRefused as refusal:
+        return {"current_user": None, "problems": [str(refusal)]}
+    if result.returncode != 0:
+        return {"current_user": None, "problems": [_login_problem(config, result.stderr)]}
+    lines = result.stdout.splitlines()
+    current = lines[0] if lines else None
+    if current != GATE_ACCOUNT:
+        defaults = config["mysql"]["gate_defaults"]
+        return {"current_user": current,
+                "problems": [f"CURRENT_USER() is {current!r}, not {GATE_ACCOUNT}: {defaults} holds another account"]}
+    return {"current_user": current, "problems": grant_problems(config, lines[1:])}
+
+
+def _with_account(message: str | None, account: dict) -> str | None:
+    if not account["problems"]:
+        return message
+    failed = f"The gate account's self-check failed: {'; '.join(account['problems'])}"
+    return f"{message}\n{failed}" if message else failed
 
 
 def check(config: dict) -> tuple[dict, int, str | None]:
-    """Read-only lint: (output, exit code, message). Never logs in as the gate account."""
+    """Read-only lint: (output, exit code, message), the probe's reading plus the gate account's self-check."""
     try:
         reading = read(config)
     except GateUnreachable as refusal:
-        return {"version": 1, "reachable": False, "gate": None, "root_sql": None}, EXIT_UNREACHABLE, str(refusal)
+        return ({"version": 1, "reachable": False, "gate": None, "root_sql": None, "gate_account": None},
+                EXIT_UNREACHABLE, str(refusal))
     except GateRefused as refusal:
-        output = refusal.reading or {}
+        output, account = refusal.reading or {}, gate_account_check(config)
         return ({"version": 1, "reachable": True, "gate": output.get("gate"),
                  "problems": output.get("problems") or [str(refusal).splitlines()[0]],
-                 "open_privileges": output.get("open_privileges"), "root_sql": refusal.root_sql},
-                EXIT_NOT_OPEN_OR_CLOSED, str(refusal))
+                 "open_privileges": output.get("open_privileges"), "root_sql": refusal.root_sql,
+                 "gate_account": account},
+                EXIT_NOT_OPEN_OR_CLOSED, _with_account(str(refusal), account))
+    account = gate_account_check(config)
     output = {"version": 1, "reachable": True, "gate": reading.gate, "open_privileges": reading.present,
-              "sessions": list(reading.sessions or []), "root_sql": None}
+              "sessions": list(reading.sessions or []), "root_sql": None, "gate_account": account}
     if reading.gate == "partial":
-        return output, EXIT_NOT_OPEN_OR_CLOSED, "The gate is partial: gate-normalise closes it"
+        return output, EXIT_NOT_OPEN_OR_CLOSED, _with_account("The gate is partial: gate-normalise closes it", account)
+    if account["problems"]:
+        return output, EXIT_GATE_ACCOUNT, _with_account(None, account)
     return output, EXIT_OBSERVED, None
 
 
