@@ -286,17 +286,12 @@ class EmailMessagingController extends Controller
         }
         $data['cc'] = $this->mergeShootCcEmails($data);
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
-        $data = $this->applyTemplateIfNeeded(array_merge($data, $this->extractUploadedAttachments($request)));
+        $data = array_merge($data, $this->extractUploadedAttachments($request));
         $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
         if (count($addresses) > 1) {
             return $this->composeMany($user, $data, $addresses);
         }
-        $data['to'] = $addresses[0];
-        $message = $this->messaging->sendEmail(array_merge($data, [
-            'user_id' => $user->id, 'send_source' => 'MANUAL', 'sender_user_id' => $user->id,
-            'sender_account_id' => null, 'sender_role' => $user->role, 'sender_display_name' => $user->name ?: $user->email,
-            'contact_email' => $data['to'],
-        ]));
+        $message = $this->messaging->sendEmail($this->outboundPayloadFor($user, $data, $addresses[0]));
 
         return response()->json($message);
     }
@@ -333,27 +328,13 @@ class EmailMessagingController extends Controller
         $data['cc'] = $this->mergeShootCcEmails($data);
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
         $data = array_merge($data, $this->extractUploadedAttachments($request));
-        $data = $this->applyTemplateIfNeeded($data);
         $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
         if (count($addresses) > 1) {
             return $this->scheduleMany($user, $data, $addresses);
         }
-        if (count($addresses) === 1) {
-            $data['to'] = $addresses[0];
-        }
-
         $scheduledAt = \Carbon\Carbon::parse($data['scheduled_at']);
-
-        $senderDisplayName = $user->name ?: $user->email;
         $message = $this->messaging->scheduleEmail(
-            array_merge($data, [
-                'user_id' => $user->id,
-                'send_source' => 'MANUAL',
-                'sender_user_id' => $user->id,
-                'sender_role' => $user->role,
-                'sender_display_name' => $senderDisplayName,
-                'contact_email' => $data['to'],
-            ]),
+            $this->outboundPayloadFor($user, $data, $addresses[0]),
             $scheduledAt
         );
 
@@ -585,6 +566,7 @@ class EmailMessagingController extends Controller
             'user_id' => $user->id,
             'send_source' => 'MANUAL',
             'sender_user_id' => $user->id,
+            'sender_account_id' => null,
             'sender_role' => $user->role,
             'sender_display_name' => $user->name ?: $user->email,
             'contact_email' => $address,
@@ -599,7 +581,9 @@ class EmailMessagingController extends Controller
             }
         }
 
-        return $payload;
+        // Render from the original draft for every destination. Rendering before
+        // fan-out permanently replaces the tokens with the first/shared name.
+        return $this->applyTemplateIfNeeded($payload, $recipient);
     }
 
     /**
@@ -668,7 +652,7 @@ class EmailMessagingController extends Controller
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function applyTemplateIfNeeded(array $data): array
+    private function applyTemplateIfNeeded(array $data, ?User $recipient): array
     {
         if (empty($data['template_id'])) {
             return $data;
@@ -686,6 +670,25 @@ class EmailMessagingController extends Controller
             'account_id' => $data['related_account_id'] ?? null,
             'invoice_id' => $data['related_invoice_id'] ?? null,
         ], fn ($value) => $value !== null));
+        // Recipient identity belongs to the delivery address, never shared draft
+        // variables or a linked shoot's client. Keep those related contexts intact.
+        foreach (['recipient', 'recipient_id', 'recipient_name', 'recipient_first_name', 'recipient_last_name', 'recipient_email', 'recipient_company', 'recipient_phone', 'recipient_type', 'recipient_role', 'greeting'] as $key) {
+            unset($context[$key]);
+        }
+        $context['recipient'] = [
+            'id' => $recipient?->id,
+            'name' => trim((string) $recipient?->name) ?: 'there',
+            'email' => $data['to'],
+            'company_name' => $recipient?->company_name ?? '',
+            'phone' => $recipient?->phonenumber ?: ($recipient?->phone ?? ''),
+        ];
+        $context['recipient_type'] = match (strtolower((string) $recipient?->role)) {
+            'salesrep', 'sales_rep' => 'rep',
+            '' => 'other',
+            default => strtolower((string) $recipient->role),
+        };
+        $context['recipient_role'] = $recipient?->role ?? 'other';
+        $context['recipient_id'] = $recipient?->id ?? '';
         $variables = $resolver->resolve($context);
         $renderTemplate = clone $template;
 

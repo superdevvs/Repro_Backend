@@ -28,7 +28,7 @@ class TemplateRenderer
         // but never strip its head, tables, comments, or wrap it in another email.
         if (($template->editor_document_json['format'] ?? null) === 'html') {
             $source = app(EmailWorkspaceMediaResolver::class)->html((string) $template->body_html, $template->workspacePreview);
-            $html = $this->replacePlaceholders($source, $variables);
+            $html = $this->replacePlaceholders($source, $this->escapeRecipientHtml($variables));
             $text = $this->replacePlaceholders((string) $template->body_text, $variables);
             $subject = $this->replacePlaceholders((string) $template->subject, $variables);
 
@@ -65,7 +65,7 @@ class TemplateRenderer
         $available = $availableKeys
             ->mapWithKeys(fn ($var) => [$var => Arr::get($variables, $var, '')]);
 
-        $html = $this->replacePlaceholders($templateHtml, $available->all());
+        $html = $this->replacePlaceholders($templateHtml, $this->escapeRecipientHtml($available->all()));
         $html = app(EmailWorkspaceMediaResolver::class)->html($html, $template->workspacePreview);
         $text = $this->replacePlaceholders($templateText, $available->all());
         $subject = $this->replacePlaceholders($templateSubject, $available->all());
@@ -136,7 +136,24 @@ class TemplateRenderer
     }
 
     /**
-     * @param  array<string, string>  $values
+     * @param  array<string, mixed>  $values
+     * @return array<string, mixed>
+     */
+    private function escapeRecipientHtml(array $values): array
+    {
+        // These are plain identity fields, even when account names contain HTML.
+        // Other tokens intentionally contain rendered HTML, so leave them alone.
+        foreach (['recipient_name', 'recipient_first_name', 'recipient_last_name', 'recipient_company', 'recipient_email', 'recipient_phone', 'recipient_role', 'recipient_type', 'greeting'] as $key) {
+            if (array_key_exists($key, $values)) {
+                $values[$key] = e((string) $values[$key]);
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
      */
     protected function replacePlaceholders(string $content, array $values): string
     {
