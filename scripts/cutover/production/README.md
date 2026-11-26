@@ -518,6 +518,91 @@ slices) replay the spool through `admit.py telnyx-replay` (`www-data`, umask
 0002) before the queues resume and again after the marker; the replay waits
 for any capture still saving.
 
+## FastCGI client and FPM drain (design 5.3, 5.4)
+
+`fastcgi.py` and `fpm_drain.py` are installed with the controller in
+`/opt/repro-cutover-fence/production/` (W1). `php-fpm/repro-status.conf`
+goes to `/etc/php/8.3/fpm/pool.d/zz-repro-status.conf` (root 0644); then
+`php-fpm8.3 -t`, then one `systemctl reload php8.3-fpm.service` at a quiet
+hour. It reopens the `[www]` pool (php-fpm merges a repeated section) and adds
+`pm.status_path = /repro-fpm-status` on its own socket,
+`pm.status_listen = /run/php/php8.3-fpm-status.sock` (host.json
+`fpm.status_socket`). A USR2 reload keeps the master and adds the socket; a
+USR2 reload whose config fails the test stops FPM, so the test comes first.
+
+- **`fastcgi.request(socket, params, stdin=b"", timeout=10, max_output=1 MiB)`**
+  sends one request to a PHP-FPM Unix socket and returns `Response(status,
+  headers, body, stdout, stderr, app_status, protocol_status)`. Its record
+  handling is `../probe/test_fpm_engine.py`'s client (experiment E8's), made
+  strict: records of another version or request, of another type, a short or
+  incomplete end record, data after it, a stream that closes first, output
+  over the limit and the deadline (one bound for the whole exchange) refuse.
+  A missing socket, or one nothing listens on, raises `NotListening`.
+- **`fastcgi.engine_probe(socket, app_root)`** sends
+  `<app_root>/scripts/cutover/probe/fpm-engine.php` with a fixed request line
+  and nothing else (Laravel reads `$_SERVER` as environment, so a parameter
+  could stand in for the pool's own) and returns its report. The caller
+  compares `engine` and `live_config.route_sha256(report["route_values"])`
+  with the pin. For P8: `/usr/bin/python3 -I -S fastcgi.py --socket
+  /run/php/php8.3-fpm.sock --app-root /var/www/backend` prints `{"version",
+  "report", "route_sha256"}` (exit 0 ok, 2 not ok, 1 no report).
+- **`fpm_drain.py --config host.json`**, the first command of `drain_fpm`,
+  polls the status page every 0.25 s for at most `fpm.drain_seconds` (90 s).
+  Idle is two readings in a row with no active process, an empty listen queue
+  and the same accepted count: PHP-FPM never counts the listen queue of a Unix
+  socket, so a request taken from the backlog shows only as a moved count.
+  Each status request is bounded by what is left of the limit. It prints one
+  JSON report and exits 0 for every outcome, so its exit status never keeps
+  the stop from running: `drained`; `timed_out` (the stop ends what is still
+  running);
+  `stopped` (nothing listens at the status socket nor at `fpm.socket`); and
+  `unmonitored`, when `fpm.socket` listens (a full backlog counts) and nothing
+  answers at the status socket on the first reading (the snippet is missing),
+  or when the status page answers anything but its JSON document. An
+  unmonitored report's `problem` is one of two fixed texts, with no path and
+  nothing the socket answered, and one summary line goes to stderr. It exits
+  1, with nothing on stdout, when it cannot run as configured: not root, a
+  protected file or host config that `load_config` refuses,
+  `fpm.status_socket` equal to `fpm.socket` (every status request there is an
+  active process), `fpm.drain_seconds` plus 12 s not fitting in
+  `command_seconds` (the adapter would kill the drain first), and an
+  `fpm.socket` whose connect fails for another reason than no socket, nothing
+  listening or a full backlog (a path through a file, say).
+- **The report** always has the keys `version`, `outcome`, `limit_seconds`,
+  `waited_seconds`, `polls`, `pool`, `accepted_conn`, `active_processes`,
+  `idle_processes`, `total_processes`, `listen_queue` and `problem`. `pool`
+  and the counters are the last status reading's, `null` when there was none;
+  `problem` is `null`, the last transient error of a `timed_out` drain, or the
+  fixed text of an `unmonitored` one. `adapter.drain(..., purpose=...)` parses
+  the first `drain_fpm` command's report and records it (review A2-3). The
+  controller refuses the freeze on `unmonitored`, because the drain could not
+  see the requests the stop would end. A rollback records it and stops FPM
+  anyway, because nginx already holds every request then (review A2-2). The
+  drain does not prove the snippet: host proof P8 must still show the status
+  socket answering and an idle `fpm_drain.py` poll printing `drained`.
+
+`test_fastcgi.py` and `test_fpm_drain.py` test the protocol and the drain's
+decisions against scripted servers on any POSIX system: the scripted
+`DrainLogicTests` prove the two-reading rule, and `StatusSocketTests` prove
+that the last status request ends at the limit and that a pool socket with a
+full backlog is not `stopped`. With Linux root, `php-fpm` and `www-data` they
+also run private PHP-FPM masters laid out as Debian's, with the snippet in
+`pool.d`: a request in flight and one queued behind it are waited for, the
+limit is kept and reported, a stopped pool is `stopped`, and a pool without
+the snippet or with another `pm.status_path` is `unmonitored`. The
+queued-request test proves that a queued request is waited for, not the
+accepted-count rule: PHP-FPM takes a queued request as soon as the last one
+ends, so no reading lands in between, and the test passes without the rule
+(review A2-4). `test_drain_waits_while_short_requests_keep_being_accepted`
+sends short requests one after another, so most readings find the pool idle
+and only the moving accepted count shows requests are still being taken; it
+fails without the rule. `test_route_hash_vectors` also needs `php`, `runuser`, `nobody`
+and a `vendor/` that `www-data` can read (the docstring has the command): it
+sends `fpm-engine.php` into the pool for every vector of
+`testdata/route-hash-vectors.json`, with every path moved under a private
+folder, and checks the printed values, their hash against the vector's pin
+and `live_config.measure` of the same live file.
+
 ## Owner options (the safe value for each)
 
 Every option must be written in `host.json`; none is filled in.

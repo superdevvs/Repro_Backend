@@ -43,6 +43,8 @@ for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.p
 done
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_config_build.py
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_identity_probe.py
+python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_fastcgi.py
+python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_fpm_drain.py
 # The MySQL probe's fixture tests skip without their fixtures (see the check at the top).
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_mysql_probe.py
 python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
