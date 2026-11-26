@@ -308,6 +308,53 @@ class StatementTests(unittest.TestCase):
                 problems = self.gate.grant_problems(self.config, lines)
                 self.assertTrue(any(problem.startswith(expected) for problem in problems), problems)
 
+    def test_dynamic_privileges_joined_by_a_bare_comma_are_each_read(self):
+        # 8.4.13 joins dynamic privileges with ',' and static ones with ', ' (read on the fixture, review W2F-4):
+        # each extra privilege is named as itself, never as an unexpected line plus a false "missing".
+        process, connection, schema, token = GATE_SHOW_GRANTS
+        other = "TO `repro_cutover_gate`@`localhost`"
+        cases = {
+            f"GRANT CONNECTION_ADMIN,SYSTEM_VARIABLES_ADMIN ON *.* {other}":
+                ["unexpected SYSTEM_VARIABLES_ADMIN ON *.*"],
+            f"GRANT BACKUP_ADMIN,CONNECTION_ADMIN,SYSTEM_VARIABLES_ADMIN ON *.* {other}":
+                ["unexpected BACKUP_ADMIN ON *.*", "unexpected SYSTEM_VARIABLES_ADMIN ON *.*"],
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(expected, self.gate.grant_problems(self.config, [process, line, schema, token]))
+        self.assertEqual(["unexpected RELOAD ON *.*"], self.gate.grant_problems(
+            self.config, [f"GRANT RELOAD, PROCESS ON *.* {other}", connection, schema, token]))
+        # Anything else between two privileges is still no grant line the check can read.
+        for joined in ("CONNECTION_ADMIN,,SYSTEM_VARIABLES_ADMIN", "CONNECTION_ADMIN ,SYSTEM_VARIABLES_ADMIN",
+                       "CONNECTION_ADMIN,  SYSTEM_VARIABLES_ADMIN", "CONNECTION_ADMIN,", ",CONNECTION_ADMIN",
+                       "CONNECTION_ADMIN;SYSTEM_VARIABLES_ADMIN"):
+            with self.subTest(joined=joined):
+                problems = self.gate.grant_problems(self.config, [process, f"GRANT {joined} ON *.* {other}",
+                                                                  schema, token])
+                self.assertTrue(any(problem.startswith("unexpected grant line: ") for problem in problems), problems)
+
+    def test_an_expired_gate_password_is_named(self):
+        # What the 8.4.13 client does for an expired password in batch mode (recorded on the fixture, review
+        # W2F-4): its text on stdout, exit 1, nothing on stderr.
+        expired = subprocess.CompletedProcess(
+            [], 1, stdout="Please use --connect-expired-password option or invoke mysql in interactive mode.\n",
+            stderr="")
+        with mock.patch.object(self.gate, "_client", return_value=expired):
+            account = self.gate.gate_account_check(self.config)
+        self.assertEqual(None, account["current_user"])
+        self.assertEqual(1, len(account["problems"]), account)
+        self.assertRegex(account["problems"][0], r"^The gate account's password has expired: .*"
+                                                 r"\(Please use --connect-expired-password option ")
+        # Any other failed login with nothing on stderr names the client's first stdout line, not "no error text".
+        other = subprocess.CompletedProcess([], 1, stdout="Some new client text\nsecond line\n", stderr="")
+        with mock.patch.object(self.gate, "_client", return_value=other):
+            self.assertEqual(["The gate account could not log in (Some new client text)"],
+                             self.gate.gate_account_check(self.config)["problems"])
+        silent = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+        with mock.patch.object(self.gate, "_client", return_value=silent):
+            self.assertEqual(["The gate account could not log in (no error text)"],
+                             self.gate.gate_account_check(self.config)["problems"])
+
 
 @unittest.skipUnless(sys.platform == "linux" and hasattr(os, "geteuid"), "The gate CLI runs on the Linux host")
 class CommandLineTests(unittest.TestCase):
@@ -385,18 +432,23 @@ class GateProcedureTests(unittest.TestCase):
         assert cls.baseline["grants"] == sorted(probe_tests.CLOSED_GRANTS), cls.baseline
         cls.restore_gate_account()
         cls.gate_baseline = cls.gate_snapshot()
-        assert cls.gate_baseline == (sorted(GATE_SHOW_GRANTS), "N"), cls.gate_baseline
+        assert cls.gate_baseline == (sorted(GATE_SHOW_GRANTS), "N\tN"), cls.gate_baseline
 
     @classmethod
     def gate_snapshot(cls) -> tuple:
-        """The gate account as root reads it: its grants and its lock."""
+        """The gate account as root reads it: its grants, its lock and whether its password has expired."""
         return (sorted(cls.fixture.sql(f"SHOW GRANTS FOR {GATE_ACCOUNT_SQL}").splitlines()),
-                cls.fixture.sql("SELECT account_locked FROM mysql.user WHERE User = 'repro_cutover_gate'").strip())
+                cls.fixture.sql("SELECT account_locked, password_expired FROM mysql.user "
+                                "WHERE User = 'repro_cutover_gate'").strip())
 
     @classmethod
     def restore_gate_account(cls) -> None:
-        """Give the gate account back exactly what accounts.sql gives it (its password is never changed)."""
+        """Give the gate account back exactly what accounts.sql gives it (its password is never changed; an
+        expiry is lifted in the grant table, so the password never enters a statement)."""
         cls.fixture.sql(";".join([f"ALTER USER {GATE_ACCOUNT_SQL} ACCOUNT UNLOCK",
+                                  "UPDATE mysql.user SET password_expired = 'N' "
+                                  "WHERE User = 'repro_cutover_gate' AND Host = 'localhost'",
+                                  "FLUSH PRIVILEGES",
                                   f"REVOKE ALL PRIVILEGES, GRANT OPTION FROM {GATE_ACCOUNT_SQL}",
                                   *accounts_sql_gate_grants()]))
 
@@ -951,8 +1003,10 @@ class GateProcedureTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual({"current_user": GATE_ACCOUNT, "problems": []}, json.loads(result.stdout)["gate_account"])
 
-    def assert_gate_account_refused(self, expected: str) -> None:
-        """check() and the CLI exit 5 naming `expected`, with no password anywhere; the gate itself reads closed."""
+    def assert_gate_account_refused(self, expected: str) -> dict:
+        """check() and the CLI exit 5 naming `expected`, with no password anywhere and nothing written to the
+        binary log; the gate itself reads closed. Returns check()'s gate_account."""
+        written = (self.gtid_executed(), self.coordinate())
         output, code, message = self.gate.check(self.config)
         self.assertEqual(self.gate.EXIT_GATE_ACCOUNT, code, (output, message))
         self.assertEqual("closed", output["gate"])
@@ -966,6 +1020,8 @@ class GateProcedureTests(unittest.TestCase):
             for text in (json.dumps(output), message, result.stdout, result.stderr):
                 self.assertNotIn(secret, text)
         self.probe_reads("closed", "planned")
+        self.assertEqual(written, (self.gtid_executed(), self.coordinate()))
+        return output["gate_account"]
 
     def test_check_refuses_a_gate_account_that_cannot_log_in(self):
         text = (self.fixture.directory / "repro_cutover_gate.cnf").read_text(encoding="ascii")
@@ -982,6 +1038,15 @@ class GateProcedureTests(unittest.TestCase):
                 self.assert_gate_account_refused("is locked")
             finally:
                 self.restore_gate_account()
+        with self.subTest(problem="expired password"):
+            # The 8.4.13 client prints its text on stdout and exits 1 with nothing on stderr (review W2F-4).
+            self.fixture.sql(f"ALTER USER {GATE_ACCOUNT_SQL} PASSWORD EXPIRE")
+            try:
+                account = self.assert_gate_account_refused("password has expired")
+                self.assertEqual(1, len(account["problems"]), account)
+                self.assertIn("--connect-expired-password", account["problems"][0])
+            finally:
+                self.restore_gate_account()
         self.assertEqual(0, self.gate.check(self.config)[1])
 
     def test_check_refuses_gate_account_grants_other_than_accounts_sql(self):
@@ -992,12 +1057,16 @@ class GateProcedureTests(unittest.TestCase):
             "UPDATE (`id`) ON `repro_mysql_control`.`writer_token` lacks WITH GRANT OPTION":
                 f"REVOKE GRANT OPTION ON `repro_mysql_control`.`writer_token` FROM {GATE_ACCOUNT_SQL}",
             "unexpected SELECT ON `mysql`.`db`": f"GRANT SELECT ON mysql.db TO {GATE_ACCOUNT_SQL}",
+            # SHOW GRANTS then prints `GRANT CONNECTION_ADMIN,SYSTEM_VARIABLES_ADMIN ON *.*` (review W2F-4).
+            "unexpected SYSTEM_VARIABLES_ADMIN ON *.*": f"GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO {GATE_ACCOUNT_SQL}",
         }
         for expected, statement in cases.items():
             with self.subTest(expected=expected):
                 try:
                     self.fixture.sql(statement)
-                    self.assert_gate_account_refused(expected)
+                    account = self.assert_gate_account_refused(expected)
+                    if "SYSTEM_VARIABLES_ADMIN" in expected:
+                        self.assertEqual([expected], account["problems"])
                 finally:
                     self.restore_gate_account()
         self.assertEqual(0, self.gate.check(self.config)[1])

@@ -678,10 +678,15 @@ approvals); `gate.py` decides how.
   log). `CURRENT_USER()` must be `repro_cutover_gate@localhost` and the
   grants exactly those `accounts.sql` gives it, compared as (privilege, level,
   grant option); `test_gate.py` parses `accounts.sql` itself, so a change
-  there fails it. A wrong password, a lock, another account, an unsafe or
-  missing defaults file, a missing `CONNECTION_ADMIN`, a missing `WITH GRANT
-  OPTION` or any extra grant is named in `gate_account.problems` (never a
-  password). It is not run when nothing listens (exit 3), and the close of a
+  there fails it. A wrong password, a lock, an expired password, another
+  account, an unsafe or missing defaults file, a missing `CONNECTION_ADMIN`,
+  a missing `WITH GRANT OPTION` or any extra grant is named in
+  `gate_account.problems` (never a password). The 8.4.13 client prints its
+  expired-password text on stdout with nothing on stderr, so a failed login
+  quotes the first stdout line when stderr is empty; SHOW GRANTS joins
+  dynamic privileges with a bare comma (`CONNECTION_ADMIN,SYSTEM_VARIABLES_ADMIN`),
+  and each is read and named (review W2F-4). Every one of these fails closed
+  (exit 5). It is not run when nothing listens (exit 3), and the close of a
   closed gate still logs in as nobody but the probe. D11 and D14 make this
   self-check part of `check-evidence` and of the promote preconditions,
   before Approval 2, so a gate account that could not open the gate refuses

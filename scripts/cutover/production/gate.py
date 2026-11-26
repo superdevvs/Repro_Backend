@@ -494,16 +494,23 @@ def gate_account_grants(config: dict) -> frozenset:
 
 
 def _privileges(text: str) -> list[str] | None:
-    """`INSERT, UPDATE (`id`, `x`), PROCESS` -> its privileges; None if it is not such a list."""
+    """`INSERT, UPDATE (`id`, `x`), PROCESS` -> its privileges; None if it is not such a list.
+
+    8.4 joins static privileges with ', ' and dynamic ones with ',' (`CONNECTION_ADMIN,SYSTEM_VARIABLES_ADMIN`,
+    review W2F-4); either separator is read, nothing else.
+    """
     names, position = [], 0
     while (match := PRIVILEGE.match(text, position)) is not None:
         names.append(match.group())
         position = match.end()
         if position == len(text):
             return names
-        if not text.startswith(", ", position):
+        if text.startswith(", ", position):
+            position += 2
+        elif text.startswith(",", position):
+            position += 1
+        else:
             return None
-        position += 2
     return None
 
 
@@ -536,14 +543,24 @@ def grant_problems(config: dict, lines: list[str]) -> list[str]:
     return problems
 
 
-def _login_problem(config: dict, stderr: str) -> str:
-    # The client's error names the account and whether a password was sent, never the password.
-    error = (stderr.strip().splitlines() or ["no error text"])[0][:300]
+def _login_problem(config: dict, result: subprocess.CompletedProcess) -> str:
+    """Why the gate account's login failed, from the client's first line of error text.
+
+    The client's error names the account and whether a password was sent, never the password. With nothing on
+    stderr it is the first stdout line: for an expired password the 8.4.13 client prints only
+    "Please use --connect-expired-password option ..." there and exits 1 (review W2F-4); a failed login prints
+    nothing else, and what the two statements print (the account and its grants) holds no secret either.
+    """
+    lines = result.stderr.strip().splitlines() or result.stdout.strip().splitlines() or ["no error text"]
+    error = lines[0][:300]
+    defaults = config["mysql"]["gate_defaults"]
     if error.startswith("ERROR 1045 "):
-        return (f"The gate account's login was refused: a wrong password in {config['mysql']['gate_defaults']}, "
-                f"or no such account ({error})")
+        return f"The gate account's login was refused: a wrong password in {defaults}, or no such account ({error})"
     if error.startswith("ERROR 3118 "):
         return f"The gate account is locked ({error})"
+    if error.startswith("ERROR 1862 ") or "--connect-expired-password" in error:
+        return (f"The gate account's password has expired: as MySQL root, set it again to the password in "
+                f"{defaults} ({error})")
     return f"The gate account could not log in ({error})"
 
 
@@ -558,7 +575,7 @@ def gate_account_check(config: dict) -> dict:
     except GateRefused as refusal:
         return {"current_user": None, "problems": [str(refusal)]}
     if result.returncode != 0:
-        return {"current_user": None, "problems": [_login_problem(config, result.stderr)]}
+        return {"current_user": None, "problems": [_login_problem(config, result)]}
     lines = result.stdout.splitlines()
     current = lines[0] if lines else None
     if current != GATE_ACCOUNT:
