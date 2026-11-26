@@ -767,16 +767,19 @@ class GateProcedureTests(unittest.TestCase):
         # A listed session may end by itself before its KILL (1094, fine). The KILLs after it must still run:
         # with -e the client stops at the first error even with --force, so they go on stdin, one per line.
         self.open_by_hand()
-        first, second = self.session(), self.session()
-        gone, live = first.connection_id(), second.connection_id()
-        self.assertLess(gone, live)  # The order of the KILLs.
+        sessions = {}
+        for _ in range(2):
+            session = self.session()
+            sessions[session.connection_id()] = session
+        # The KILLs run in ID order; the clients connect concurrently, so the lower ID is the one that leaves.
+        gone, live = sorted(sessions)
         readings, real_read = [], self.gate.read
 
         def read(config):
             reading = real_read(config)
             readings.append(reading)
             if len(readings) == 2:  # The reading after the revoke lists both; then the first one leaves.
-                first.close()
+                sessions[gone].close()
                 self.wait_gone(gone)
             return reading
 
@@ -785,7 +788,8 @@ class GateProcedureTests(unittest.TestCase):
         self.assertEqual((gone, live), readings[1].sessions)
         self.assertEqual({"before": "open", "revoked": {APP: list(OPEN_SET)}, "killed": [gone, live]}, result)
         self.assertNotIn(live, self.app_sessions())
-        self.assertTrue(any(line.startswith("ERROR ") for line in second.ask(f"INSERT INTO {TABLE} VALUES (1)")))
+        self.assertTrue(any(line.startswith("ERROR ")
+                            for line in sessions[live].ask(f"INSERT INTO {TABLE} VALUES (1)")))
         self.assertEqual([], self.rows())
 
     # Review B2-2 to B2-4: the close of a partial gate, the wait after the KILL, check's exit for partial.
