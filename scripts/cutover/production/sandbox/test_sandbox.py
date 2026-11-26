@@ -78,6 +78,45 @@ SHALLOW = ("/", "/etc", "/var", "/var/lib", "/var/www", "/run", "/opt", "/home",
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 IDENTITY_CONFIG = "/etc/repro-cutover-fence/identity.json"
 FAKE_BINARY = f"#!/bin/sh\necho \"$0 $*\" >> {HOST_CALLS}\nexit 0\n"
+# Run inside: what every other process inside holds (descriptors, working directory, root), and whether a
+# write through each reaches the host. The write is the reviewer's (C2-1): three levels up from the sandbox
+# root's descriptor is the host's /, then into the host's /etc/repro-cutover-fence.
+HOLDINGS = (
+    "import errno, json, os, stat, sys\n"
+    "name = sys.argv[1]\n"
+    "def attempt(call):\n"
+    "    try:\n"
+    "        call()\n"
+    "        return 'ok'\n"
+    "    except OSError as error:\n"
+    "        return errno.errorcode[error.errno]\n"
+    "def same(link, path):\n"
+    "    try:\n"
+    "        one, two = os.stat(link), os.stat(path)\n"
+    "    except OSError:\n"
+    "        return False\n"
+    "    return (one.st_dev, one.st_ino) == (two.st_dev, two.st_ino)\n"
+    "def write(path):\n"
+    "    with open(path, 'x') as stream:\n"
+    "        stream.write('written inside the sandbox through a descriptor\\n')\n"
+    "found = {}\n"
+    "for pid in sorted(entry for entry in os.listdir('/proc') if entry.isdigit() and int(entry) != os.getpid()):\n"
+    "    base = f'/proc/{pid}'\n"
+    "    held = {'cwd': os.readlink(base + '/cwd'), 'cwd_is_root': same(base + '/cwd', '/'),\n"
+    "            'root': os.readlink(base + '/root'), 'root_is_root': same(base + '/root', '/'),\n"
+    "            'cwd_write': attempt(lambda: write(f'{base}/cwd/{name}')), 'fds': {}}\n"
+    "    for fd in sorted(os.listdir(base + '/fd'), key=int):\n"
+    "        link = f'{base}/fd/{fd}'\n"
+    "        target = os.readlink(link)\n"
+    "        held['fds'][fd] = {\n"
+    "            'target': target, 'directory': stat.S_ISDIR(os.stat(link).st_mode),\n"
+    "            'inside': same(link, target) if target.startswith('/')\n"
+    "                      else target.partition(':')[0] in ('pipe', 'socket', 'anon_inode'),\n"
+    "            'parent': attempt(lambda: os.listdir(link + '/..')),\n"
+    "            'write': attempt(lambda: write(f'{link}/../../../etc/repro-cutover-fence/{name}'))}\n"
+    "    found[pid] = held\n"
+    "print(json.dumps(found))\n"
+)
 
 
 def _describe(path: str):
@@ -223,9 +262,10 @@ class SandboxLauncherTests(unittest.TestCase):
     # Helpers.
 
     def launch(self, *command: str, launcher: Path = LAUNCHER, root: Path | None = None, reboot: bool = False,
-               timeout: float = 120) -> subprocess.CompletedProcess:
+               timeout: float = 120, cwd: Path | None = None, pass_fds: tuple[int, ...] = ()) -> subprocess.CompletedProcess:
         argv = ["/bin/sh", str(launcher)] + (["--reboot"] if reboot else []) + [str(root or self.root), "--", *command]
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, cwd=cwd,
+                              pass_fds=pass_fds)
 
     def inside(self, code: str, *arguments: str, **options) -> dict:
         result = self.launch(PYTHON, "-I", "-S", "-c", code, *arguments, **options)
@@ -263,6 +303,35 @@ class SandboxLauncherTests(unittest.TestCase):
         # The installation is part of this test's fake host.
         self.before = host_snapshot()
         return installed
+
+    def holdings(self, name: str, **options) -> dict:
+        """HOLDINGS run inside; every write it makes through a descriptor or working directory is removed again."""
+        for leak in (Path("/etc/repro-cutover-fence") / name, SANDBOX_MOUNT / name):
+            # Only for the red run: never leave a probe file on the container's host paths.
+            self.addCleanup(lambda leak=leak: os.path.lexists(leak) and os.unlink(leak))
+        found = self.inside(HOLDINGS, name, **options)
+        self.assertIn("1", found, "PID 1 was not listed")
+        return found
+
+    def holding_problems(self, found: dict) -> list[str]:
+        """Every way a process inside could reach the host's file system through what it holds."""
+        problems = []
+        for pid, held in found.items():
+            if not (held["cwd"] == "/" and held["cwd_is_root"] and held["root"] == "/" and held["root_is_root"]):
+                problems.append(f"PID {pid} works in {held['cwd']} with root {held['root']}, not the sandbox's /")
+            if held["cwd_write"] == "ok":
+                problems.append(f"a write through PID {pid}'s working directory succeeded")
+            for fd, seen in held["fds"].items():
+                described = f"PID {pid} descriptor {fd} -> {seen['target']}"
+                if seen["directory"]:
+                    problems.append(f"{described} is a directory")
+                if not seen["inside"]:
+                    problems.append(f"{described} resolves outside the sandbox")
+                if seen["parent"] != "ENOTDIR":
+                    problems.append(f"{described}: its '..' gave {seen['parent']}")
+                if seen["write"] == "ok":
+                    problems.append(f"{described}: the write three levels up into /etc/repro-cutover-fence succeeded")
+        return problems
 
     def assertNoSandboxProcesses(self):
         deadline = time.monotonic() + 5
@@ -796,6 +865,37 @@ class SandboxLauncherTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         shutil.rmtree(shadow)
         self.assertEqual(0, self.launch("/bin/true", launcher=launcher).returncode)
+
+    # Wave-2 review (C2-1, 26 Nov): a descriptor or directory opened in the host namespace resolves '..' in the
+    # host's tree, past every bind, overlay and read-only mount, so nothing inside may hold one.
+
+    def test_no_process_inside_holds_the_launch_lock_or_a_path_onto_the_host(self):
+        # The reviewer's probe: the lock on the ROOT directory, kept by PID 1, let a write through
+        # /proc/1/fd/9/../../.. reach the host's /etc/repro-cutover-fence.
+        name = f"escaped-{self.tag}"
+        found = self.holdings(name, cwd=Path("/"))
+        self.assertEqual([], self.holding_problems(found))
+        self.assertEqual(["0", "1", "2"], list(found["1"]["fds"]), "PID 1 holds more than stdin, stdout and stderr")
+        self.assertFalse(os.path.lexists(Path("/etc/repro-cutover-fence") / name), "A write inside reached the host")
+
+    def test_a_descriptor_the_launcher_inherits_never_reaches_inside(self):
+        # A directory the caller left open (a root shell, a script, the scope that starts the launcher) is a
+        # host-namespace descriptor too: here the host's own /etc/repro-cutover-fence.
+        name = f"inherited-{self.tag}"
+        inherited = os.open("/etc/repro-cutover-fence", os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, inherited)
+        found = self.holdings(name, cwd=Path("/"), pass_fds=(inherited,))
+        self.assertEqual([], self.holding_problems(found))
+        self.assertEqual(["0", "1", "2"], list(found["1"]["fds"]), "PID 1 holds more than stdin, stdout and stderr")
+        self.assertFalse(os.path.lexists(Path("/etc/repro-cutover-fence") / name), "A write inside reached the host")
+
+    def test_pid_one_never_keeps_the_launchers_working_directory(self):
+        # Started from a directory on a host file system that the sandbox hides (here the tests' own tmpfs
+        # below /srv, under ROOT's top-level tmpfs inside), PID 1 must not keep it as its working directory.
+        name = f"cwd-{self.tag}"
+        found = self.holdings(name, cwd=SANDBOX_MOUNT)
+        self.assertEqual([], self.holding_problems(found))
+        self.assertFalse(os.path.lexists(SANDBOX_MOUNT / name), "A write inside reached the host")
 
 
 @unittest.skipUnless(sys.platform == "linux", "Linux paths")

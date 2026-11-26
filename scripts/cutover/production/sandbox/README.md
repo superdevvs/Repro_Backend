@@ -63,7 +63,15 @@ top-level directory (`/srv/repro-cutover-sandbox`, not `/sandbox`), and lie
 outside `/etc`, `/var`, `/opt`, `/home`, `/root`, `/run`, `/tmp` and the
 system trees. One launch per root at a time: `flock` on the ROOT directory
 itself, opened read-only and held until the last sandbox process is gone.
-ROOT is writable inside, so the launcher keeps no lock file there (a
+Only the launcher and `unshare` hold it, both in the host namespace:
+`unshare` waits for PID 1 inside, which exits only after every other
+sandbox process, and `--kill-child` ends the sandbox if `unshare` is
+killed. PID 1 closes every descriptor it inherits, the lock included, and
+the inside half changes to `/` before it mounts anything. A descriptor or
+working directory from the host namespace resolves `..` in the host's
+tree, past every mount the sandbox makes, so through `/proc/1/fd` or
+`/proc/1/cwd` it would lead every root process inside onto the host's file
+system. ROOT is writable inside, so the launcher keeps no lock file there (a
 command could replace one with a link that the next launch, as root, would
 truncate or create); a `launch.lock` left by an older launcher is unused.
 Remove the root with `rm -rf` after the run; no mount outlives the
@@ -164,7 +172,7 @@ under `/var` the sandbox opens for writing) counts against this budget.
    private and copy-on-write trees and of ROOT, hashes of the four
    service-manager binaries) and the checker copy's sha256 in
    `ROOT/sync/launch.json`.
-3. Inside, `run-sandbox.sh` mounts in this order: private `/run`, `/tmp` and
+3. Inside, `run-sandbox.sh` changes to `/`, then mounts in this order: private `/run`, `/tmp` and
    `/dev/shm`; ROOT's top-level directory with only ROOT; the five overlays;
    the ten binds; the boot ID; read-only `/usr` and `/boot`; the shims;
    finally `/` read-only. A missing mount point is created only inside a
@@ -173,7 +181,8 @@ under `/var` the sandbox opens for writing) counts against this budget.
    checks the per-launch checker copy against the sha256 that `arm` printed
    and runs PID 1 from that copy, never from the launcher's directory (which
    the sandbox may see through its `/opt` overlay).
-4. PID 1 (`sandbox_check.py init`) checks: it is PID 1 with its own `/proc`;
+4. PID 1 (`sandbox_check.py init`) closes every descriptor it inherited
+   other than stdin, stdout and stderr, then checks: it is PID 1 with its own `/proc`;
    the PID, network and mount namespaces differ from the host's; `/etc`,
    `/var`, `/opt`, `/home` and `/root` are overlays with their upper layer in
    the root; `/run`, `/tmp` and `/dev/shm` are tmpfs and not the host's; `/`,
@@ -202,7 +211,7 @@ Any failure prints `run-sandbox: refused: ...` and exits 96.
 | `boot/boot_id` | The sandbox boot ID |
 | `shims/refuse` | Copy of the shim, refreshed every launch |
 | `sync/` | `launch.json`, `sandbox_check.py` (PID 1's copy, rewritten every launch), `ready`, `go`, `stop` |
-| ROOT itself | The launch lock (`flock` on the directory; no lock file) |
+| ROOT itself | The launch lock (`flock` on the directory, held only by the launcher and `unshare` in the host namespace; no lock file) |
 | `bin/`, `app/`, `mysql/`, `locks/`, `studio/` | Written by the drill script and `make_config.py` (D18) |
 
 ## Sandbox config (`make_config.py`)

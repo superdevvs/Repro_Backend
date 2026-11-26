@@ -12,8 +12,8 @@ run-sandbox.sh calls this module; nobody else should:
     outside --root ROOT --token T        host namespace, while the sandbox waits: the canary check
                                          from outside; writes go (exit 0) or stop
     init --root ROOT --token T -- CMD    PID 1 inside the new namespaces, run from the checker copy:
-                                         the inside checks, then CMD as a child; reaps orphans;
-                                         stops everything at the end
+                                         closes every inherited descriptor, the inside checks, then
+                                         CMD as a child; reaps orphans; stops everything at the end
 
 The controller's fixed paths (cli.py, the guard, admit.py) and its /proc scans
 mean a "sandbox with private paths" would act on production (critic HO-H2).
@@ -494,7 +494,7 @@ def run_as_init(command: list[str], environment: dict) -> int:
     child = os.fork()
     if child == 0:
         try:
-            # Only stdin, stdout and stderr: the launch lock stays with this init.
+            # Only stdin, stdout and stderr.
             os.closerange(3, os.sysconf("SC_OPEN_MAX"))
             os.chdir("/")
             os.execvpe(command[0], command, environment)
@@ -521,6 +521,10 @@ def run_as_init(command: list[str], environment: dict) -> int:
 
 
 def init(root: Path, token: str, command: list[str]) -> int:
+    # Keep no descriptor inherited from the host namespace, the launch lock included (it stays with the
+    # launcher and unshare). Such a descriptor resolves '..' in the host's tree, past every mount made
+    # here, so through /proc/1/fd it would lead every root process inside onto the host's file system.
+    os.closerange(3, os.sysconf("SC_OPEN_MAX"))
     require(bool(command), "No command to run", USAGE)
     launch = read_launch(root, token)
     failures = inside_checks(root, token, launch)
