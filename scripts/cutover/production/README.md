@@ -685,9 +685,11 @@ controller runs it, `SHOW GRANTS`, the binary log's account statements,
 `performance_schema.accounts` logins and `processlist`) on the fixture that
 `mysql/fixture.sh serve` builds from `accounts.sql`, with
 `REPRO_MYSQL_PROBE_FIXTURE` as for the probe. Without it those tests skip
-and a `WARNING` line names them at the end of the file's run; with
-`REPRO_REQUIRE_PROBE_FIXTURE=1` (`run-probe-fixture-tests.sh --linux-suite`)
-the run fails instead. Tests that change the gate account restore it from
+and a `WARNING` line names them, at the start of `../run-linux-tests.sh`
+(`test_gate.py --fixture-check`, beside the probe's) and at the end of the
+file's run; with `REPRO_REQUIRE_PROBE_FIXTURE=1` (`run-probe-fixture-tests.sh
+--linux-suite`) the Linux suite stops before any suite instead, naming both
+files' tests. Tests that change the gate account restore it from
 `accounts.sql`'s own `GRANT` lines and check that they did. The statement,
 quoting and expected-grant tests run anywhere.
 
@@ -1110,9 +1112,10 @@ in disposable `--network none` containers, runs the file as root with
 `REPRO_REQUIRE_PROBE_FIXTURE=1` (a fixture test that would skip fails the run)
 and removes the containers and volumes again; `--linux-suite` runs
 `../run-linux-tests.sh` that way instead. Without the fixtures
-`../run-linux-tests.sh` prints a `WARNING` line naming the skipped probe tests,
-first and last, and still exits 0; with `REPRO_REQUIRE_PROBE_FIXTURE=1` it
-stops before any suite. The probe file's docstring has the same recipe by
+`../run-linux-tests.sh` prints a `WARNING` line naming the skipped probe tests
+and one naming the skipped gate tests, first and last, and still exits 0;
+with `REPRO_REQUIRE_PROBE_FIXTURE=1` it stops before any suite when either
+file's fixture tests would skip. The probe file's docstring has the same recipe by
 hand. Its accounts and renderer tests run anywhere with bash. `test_queue_flag.py`
 needs Linux root for the helper tests; its Laravel tests also need `php` and
 the vendor tree at the repository root (mount the locked vendor volume at

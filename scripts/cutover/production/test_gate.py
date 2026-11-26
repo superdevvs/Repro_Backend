@@ -1034,6 +1034,79 @@ class FixtureRequirementTests(unittest.TestCase):
                         f"REPRO_REQUIRE_PROBE_FIXTURE=1, but these gate tests would skip: {', '.join(_fixture_tests())}")
 
 
+class FixtureCheckTests(unittest.TestCase):
+    """`test_gate.py --fixture-check`, which run-linux-tests.sh runs before any suite, beside the probe's own."""
+
+    def check(self, environment: dict) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()), "--fixture-check"],
+                              env=environment, capture_output=True, text=True, timeout=60)
+
+    def test_missing_fixture_prints_one_warning_line_naming_the_gate_tests(self):
+        result = self.check(probe_tests.without_fixture_environment())
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        lines = result.stdout.splitlines()
+        self.assertEqual(1, len(lines), result.stdout)
+        self.assertRegex(lines[0], rf"^WARNING: {len(_fixture_tests())} MySQL gate tests SKIPPED ")
+        for name in ("REPRO_MYSQL_PROBE_FIXTURE", "GateProcedureTests.test_close_open_gate",
+                     "GateProcedureTests.test_unrecognised_state_refuses_and_prints_root_sql"):
+            self.assertIn(name, lines[0])
+
+    def test_missing_fixture_fails_when_required(self):
+        result = self.check(probe_tests.without_fixture_environment(REPRO_REQUIRE_PROBE_FIXTURE="1"))
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertRegex(result.stderr, r"^ERROR: REPRO_REQUIRE_PROBE_FIXTURE=1 ")
+        self.assertIn("GateProcedureTests.test_close_open_gate", result.stderr)
+
+    @unittest.skipUnless(LINUX_ROOT, "The gate fixture tests need Linux root as well as the fixture")
+    def test_fixture_named_is_silent(self):
+        result = self.check(probe_tests.without_fixture_environment(REPRO_REQUIRE_PROBE_FIXTURE="1",
+                                                                     REPRO_MYSQL_PROBE_FIXTURE="/fixture/socket"))
+        self.assertEqual((0, "", ""), (result.returncode, result.stdout, result.stderr))
+
+
+@unittest.skipUnless(LINUX_ROOT and Path("/.dockerenv").is_file()
+                     and probe_tests.RUN_LINUX_TESTS == Path("/src/scripts/cutover/run-linux-tests.sh")
+                     and not os.environ.get("REPRO_LINUX_SUITE_NESTED"),
+                     "Needs root in a disposable container with the checkout at /src, as run-linux-tests.sh")
+class LinuxSuiteTests(unittest.TestCase):
+    """run-linux-tests.sh checks both fixture-dependent files before any suite (D06 open item)."""
+
+    def test_required_missing_fixture_names_the_probe_and_gate_tests_before_any_suite(self):
+        # REPRO_LINUX_SUITE_NESTED keeps a broken script from starting this test again inside itself.
+        result = subprocess.run(["/bin/sh", str(probe_tests.RUN_LINUX_TESTS)], capture_output=True, text=True,
+                                timeout=600, env=probe_tests.without_fixture_environment(
+                                    REPRO_REQUIRE_PROBE_FIXTURE="1", REPRO_LINUX_SUITE_NESTED="1"))
+        self.assertNotEqual(0, result.returncode, result.stderr[-2000:])
+        self.assertIn("GateStateTests.test_closed_state", result.stderr)
+        self.assertIn("GateProcedureTests.test_close_open_gate", result.stderr)
+        self.assertNotIn("Ran ", result.stdout + result.stderr)
+
+
+def fixture_skips() -> list[str]:
+    """The gate fixture tests that skip here, as Class.method names: all of them without Linux root or the fixture."""
+    return [] if LINUX_ROOT and FIXTURE else _fixture_tests()
+
+
+def fixture_check() -> int:
+    """`--fixture-check`, run by run-linux-tests.sh first: one WARNING line on stdout naming the gate fixture
+    tests that would skip, or, with REPRO_REQUIRE_PROBE_FIXTURE=1, an error and exit 1."""
+    skipped = fixture_skips()
+    if not skipped:
+        return 0
+    missing = [] if FIXTURE else ["REPRO_MYSQL_PROBE_FIXTURE unset"]
+    if not LINUX_ROOT:
+        missing.append("not Linux root")
+    summary = f"{len(skipped)} MySQL gate tests SKIPPED ({', '.join(missing)}): {', '.join(skipped)}"
+    if REQUIRE_FIXTURE:
+        print(f"ERROR: REPRO_REQUIRE_PROBE_FIXTURE=1 but {summary}", file=sys.stderr)
+        return 1
+    print(f"WARNING: {summary}. This run says nothing about the gate procedures: run "
+          "scripts/cutover/production/run-probe-fixture-tests.sh --linux-suite, or set REPRO_REQUIRE_PROBE_FIXTURE=1 "
+          "to fail.")
+    return 0
+
+
 def tearDownModule():
     if not (LINUX_ROOT and FIXTURE) and not REQUIRE_FIXTURE:
         names = _fixture_tests()
@@ -1043,4 +1116,6 @@ def tearDownModule():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--fixture-check"]:
+        raise SystemExit(fixture_check())
     unittest.main()
