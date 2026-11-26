@@ -1,4 +1,9 @@
-"""Tests for the MySQL probe's gate state (design 1.2, 2.2) and the accounts it reads.
+"""Tests for the MySQL probe (design 1.2, 2.2, 4.3): the gate state, the accounts it reads, and business
+activity from the receipt (the binary log scan of binlog_scan.py, the foreign split, the latches, --audit).
+
+FakeServerTests need Linux root only: a root-owned stand-in for the mysql client answers from the
+recorded 8.4.13 event text in test_binlog_scan.py, so the receipt, paging and exit 5 logic also runs
+where no MySQL exists (the CI checks job as root).
 
 The fixture tests need a disposable MySQL 8.4.13 built by `mysql/fixture.sh serve` from
 `mysql/accounts.sql` itself, its directory mounted here and named by
@@ -29,6 +34,7 @@ The same by hand (Git Bash, MSYS_NO_PATHCONV=1), all containers --network none:
 The static tests (accounts.sql, the renderer) run anywhere with bash.
 """
 
+import dataclasses
 import hashlib
 import itertools
 import json
@@ -36,6 +42,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,6 +52,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE)]
+import test_binlog_scan as recorded  # noqa: E402
 
 ACCOUNTS_SQL = HERE / "mysql" / "accounts.sql"
 FIXTURE_SH = HERE / "mysql" / "fixture.sh"
@@ -61,6 +69,9 @@ REQUIRE_FIXTURE = os.environ.get("REPRO_REQUIRE_PROBE_FIXTURE") == "1"
 RUN_LINUX_TESTS = HERE.parent / "run-linux-tests.sh"
 LINUX_ROOT = sys.platform == "linux" and hasattr(os, "geteuid") and os.geteuid() == 0
 OTHER_UUID = "0b9f5f1e-0000-4000-8000-000000000001"
+# The records the probe reads under the journal directory (design 1.2, 3.6): receipt, latch, activation,
+# smoke window.
+RECORDS = ("receipt", "activity", "activated", "smoke_window")
 STRICT_JOURNALS = (None, "planned", "sqlite_authoritative")
 MEASURED_JOURNALS = ("holding", "frozen", "ready", "writes_possible", "mysql_authoritative", "recovery_required")
 # Design 2.3: what seal_mysql grants to open the gate, and the four privileges it adds.
@@ -183,6 +194,18 @@ class ServerCheckTests(unittest.TestCase):
         self.assertTrue(mysql_probe.server_problems({**server, "skip_networking": 0}, OTHER_UUID))
         self.assertTrue(mysql_probe.server_problems(server, "0b9f5f1e-0000-4000-8000-000000000002"))
 
+    def test_only_8_4_13_is_the_target_server(self):
+        # Review A13: the scan reads SHOW BINLOG EVENTS text as 8.4.13 prints it; another patch is exit 6.
+        import mysql_probe
+
+        server = {"server_uuid": OTHER_UUID, "version": "8.4.13", "skip_networking": 1,
+                  "current_user": "repro_cutover_probe@localhost"}
+        for version in ("8.4.12", "8.4.14", "8.4.0", "8.4.130", "8.4.1"):
+            with self.subTest(version=version):
+                problems = mysql_probe.server_problems({**server, "version": version}, OTHER_UUID)
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("8.4.13", problems[0])
+
 
 class Fixture:
     """A running fixture built by `fixture.sh serve` from accounts.sql."""
@@ -254,18 +277,20 @@ class ProbeHost:
     """A root-owned host.json, identity.json, probe defaults file and journal directory for probe runs."""
 
     def __init__(self, fixture: Fixture):
-        from test_adapter import example_config, example_identity
+        from test_adapter import IDENTITY, example_config, example_identity
 
         self.root = Path(tempfile.mkdtemp(prefix="repro-probe-test-", dir="/var/lib"))
         self.etc = self.root / "etc"
         self.state = self.root / "state"
         self.etc.mkdir(mode=0o755)
         self.state.mkdir(mode=0o700)
+        # The runner's journal names its run (state["identity"]); a receipt is valid only for that run.
+        self.run_identity = dataclasses.asdict(IDENTITY)
         config = example_config()
         paths = config["paths"]
         paths["state"] = str(self.state)
         paths["identity_config"] = str(self.etc / "identity.json")
-        for name in ("receipt", "activity", "activated"):
+        for name in RECORDS:
             paths[name] = str(self.state / Path(paths[name]).name)
         mysql = config["mysql"]
         mysql["client"] = CLIENT
@@ -293,18 +318,30 @@ class ProbeHost:
         path = self.state / "state.json"
         path.unlink(missing_ok=True)
         if phase is not None:
-            path.write_text(json.dumps({"version": 1, "phase": phase, "generation": 1, "pending": None}),
-                            encoding="utf-8")
+            path.write_text(json.dumps({"version": 1, "phase": phase, "generation": 1, "pending": None,
+                                        "identity": self.run_identity}), encoding="utf-8")
             os.chmod(path, 0o600)
 
-    def run(self, phase: str | None = None, *, as_user: int | None = None):
+    def path(self, name: str) -> Path:
+        return Path(self.config["paths"][name])
+
+    def write(self, name: str, record: dict, mode: int = 0o600) -> bytes:
+        """A root-owned record at paths.<name>, as the controller writes it; returns its bytes."""
+        raw = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+        path = self.path(name)
+        path.unlink(missing_ok=True)
+        path.write_bytes(raw)
+        os.chmod(path, mode)
+        return raw
+
+    def run(self, phase: str | None = None, *, as_user: int | None = None, arguments: tuple = ()):
         """Run the probe as the controller does; return (exit code, JSON stdout or None, stderr)."""
         for name, document in (("host.json", self.config), ("identity.json", self.identity)):
             (self.etc / name).write_text(json.dumps(document), encoding="utf-8")
             os.chmod(self.etc / name, 0o644)
         self.journal(phase)
-        result = subprocess.run(self.config["commands"]["mysql"], capture_output=True, text=True, timeout=120,
-                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"},
+        result = subprocess.run([*self.config["commands"]["mysql"], *arguments], capture_output=True, text=True,
+                                timeout=300, env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"},
                                 user=as_user)
         try:
             output = json.loads(result.stdout) if result.stdout.strip() else None
@@ -509,17 +546,26 @@ class GateStateTests(unittest.TestCase):
         finally:
             self.host.journal = journal
 
-    def test_receipt_present_refuses_until_the_scan_exists(self):
-        # Business activity needs the binary log scan (design 1.2, slice D05); without it no false is printed.
-        for name in ("receipt", "activity", "activated"):
-            with self.subTest(record=name):
-                path = Path(self.host.config["paths"][name])
-                path.write_text('{"version": 1}', encoding="utf-8")
-                self.addCleanup(path.unlink, missing_ok=True)
-                code, output, _ = self.host.run("ready")
-                self.assertNotIn(code, (0, 3))
-                self.assertFalse(isinstance(output, dict) and "business_activity" in output)
-                path.unlink()
+    def test_another_runs_records_leave_the_gate_reading_unchanged(self):
+        # Review A11: D04's interim probe exited 1 whenever a receipt, latch or activation record existed,
+        # which would have stopped every runner action, the watchdog rollback included. Records of
+        # another run are ignored: the reading is the plain gate state.
+        other = "another-run"
+        coordinate = {"file": "binlog.000001", "position": 4}
+        self.host.write("receipt", {"version": 1, "run_id": other, "server_uuid": self.fixture.uuid,
+                                    "database": "repro_dashboard", "armed_from": coordinate,
+                                    "backup": {**coordinate, "gtid_executed": ""}})
+        self.host.write("activity", {"version": 1, "run_id": other, "receipt_sha256": "0" * 64,
+                                     "gtid": f"{self.fixture.uuid}:1", "file": "binlog.000001", "position": 4,
+                                     "tables": ["shoots"], "statements": [], "boundary": None,
+                                     "foreign_activity": False})
+        self.host.write("activated", {"version": 1, "run_id": other, "server_uuid": self.fixture.uuid,
+                                      "database": "repro_dashboard", "receipt_sha256": "0" * 64})
+        for phase in STRICT_JOURNALS + MEASURED_JOURNALS:
+            with self.subTest(journal=phase):
+                code, output, stderr = self.host.run(phase)
+                self.assertEqual(0, code, stderr)
+                self.assertEqual(closed_output(self.fixture, journal_mode(phase)), output)
 
     def test_unreachable_exit_3(self):
         missing = str(self.host.root / "no-server" / "mysql.sock")
@@ -703,6 +749,675 @@ class GateStateTests(unittest.TestCase):
         code, output, stderr = self.host.run("planned", as_user=65534)
         self.assertNotIn(code, (0, 3))
         self.assertIn("runs as root", stderr)
+
+
+# The run that ProbeHost's journal names (test_adapter.IDENTITY.run_id).
+RUN_ID = "host-fixture"
+CLOSE_GATE = ("REVOKE INSERT, UPDATE, DELETE ON `repro\\_dashboard`.* FROM 'repro_app'@'localhost';"
+              "REVOKE UPDATE (`id`) ON `repro_mysql_control`.`writer_token` FROM 'repro_app'@'localhost'")
+
+
+def receipt_record(server_uuid: str, file: str, position: int, executed: str, run_id: str = RUN_ID,
+                   database: str = "repro_dashboard") -> dict:
+    """The receipt prepare writes (design 1.2, 3.2 step 10); here backup and armed_from are one coordinate."""
+    coordinate = {"file": file, "position": position}
+    return {"version": 1, "run_id": run_id, "server_uuid": server_uuid, "database": database,
+            "backup": {**coordinate, "gtid_executed": executed}, "armed_from": coordinate}
+
+
+def activated_record(server_uuid: str, receipt_sha256: str, run_id: str = RUN_ID) -> dict:
+    """What a successful MySQL reopen writes (design 3.6 step 16): from then on no scan is needed."""
+    return {"version": 1, "run_id": run_id, "server_uuid": server_uuid, "database": "repro_dashboard",
+            "receipt_sha256": receipt_sha256}
+
+
+def window_record(receipt_sha256: str, before: str, after: str, run_id: str = RUN_ID) -> dict:
+    """The smoke window the MySQL reopen records around the write smoke (design 3.6 step 7)."""
+    return {"version": 1, "run_id": run_id, "receipt_sha256": receipt_sha256, "gtid_before": before,
+            "gtid_after": after, "report": {"ok": True}}
+
+
+def gate_state(open_gate: bool = False) -> dict:
+    """The probe's state document for repro_app as the server prints it: closed, or open."""
+    import mysql_probe
+
+    account = {"user": "repro_app", "host": "localhost"}
+    user = {**account, "account_locked": "N", **{name: "N" for name in mysql_probe.USER_PRIVILEGES}}
+    schema = {**account, "db": "repro\\_dashboard", **{name: "N" for name in mysql_probe.DB_PRIVILEGES},
+              "Select_priv": "Y"}
+    token = {**account, "db": "repro_mysql_control", "table": "writer_token", "table_priv": "Select",
+             "column_priv": ""}
+    columns = None
+    if open_gate:
+        schema.update(Insert_priv="Y", Update_priv="Y", Delete_priv="Y")
+        token["column_priv"] = "Update"
+        columns = [{**account, "db": "repro_mysql_control", "table": "writer_token", "column": "id",
+                    "column_priv": "Update"}]
+    return {"user": [user], "global_grants": None, "role_edges": None, "default_roles": None, "procs_priv": None,
+            "proxies_priv": None, "db": [schema], "tables_priv": [token], "columns_priv": columns, "sessions": None,
+            "probe_privileges": ["PROCESS", "REPLICATION CLIENT", "REPLICATION SLAVE"], "mandatory_roles": ""}
+
+
+# A root-owned stand-in for the mysql client. It answers the probe's three statement forms from
+# server.json next to it, logs every statement, and refuses --raw on SHOW statements (newlines in a
+# statement's text would then split its row).
+FAKE_CLIENT = """#!{python} -I
+import json, re, sys
+from pathlib import Path
+here = Path(__file__).resolve().parent
+statement = sys.argv[sys.argv.index("-e") + 1]
+with open(here / "calls.log", "a", encoding="utf-8") as log:
+    log.write(json.dumps(statement) + "\\n")
+data = json.loads((here / "server.json").read_text(encoding="utf-8"))
+out = sys.stdout.buffer
+if statement.startswith("SELECT JSON_OBJECT('server_uuid'"):
+    out.write((json.dumps(data["server"]) + "\\n" + json.dumps(data["state"]) + "\\n").encode())
+    sys.exit(0)
+if "--raw" in sys.argv:
+    sys.stderr.write("fake client: --raw on a SHOW statement\\n")
+    sys.exit(1)
+if statement == "SHOW BINARY LOG STATUS; SHOW BINARY LOGS":
+    names = list(data["files"])
+    out.write(("%s\\t%d\\t\\t\\t%s\\n" % (names[-1], data["sizes"][names[-1]], data["executed"])).encode())
+    for name in names:
+        out.write(("%s\\t%d\\tNo\\n" % (name, data["sizes"][name])).encode())
+    sys.exit(0)
+match = re.fullmatch(r"SHOW BINLOG EVENTS IN '([^']+)'(?: FROM ([0-9]+))? LIMIT ([0-9]+), ([0-9]+)", statement)
+if match is None or match.group(1) not in data["files"]:
+    sys.stderr.write("ERROR 1220 (HY000) at line 1: Error when executing command SHOW BINLOG EVENTS: "
+                     "Could not find target log\\n")
+    sys.exit(1)
+rows = [row + "\\n" for row in data["files"][match.group(1)].split("\\n")[:-1]]
+start = int(match.group(2) or 0)
+rows = [row for row in rows if int(row.split("\\t")[1]) >= start]
+offset, count = int(match.group(3)), int(match.group(4))
+out.write("".join(rows[offset:offset + count]).encode())
+"""
+
+
+class FakeServer:
+    """ProbeHost's server side without MySQL: the fake client plus the recorded binary logs it serves."""
+
+    def __init__(self):
+        self.root = Path(tempfile.mkdtemp(prefix="repro-probe-fake-", dir="/var/lib"))
+        os.chmod(self.root, 0o755)
+        self.directory = self.root
+        self.socket = str(self.root / "mysql.sock")
+        self.uuid = recorded.E6_UUID
+        defaults = self.root / "repro_cutover_probe.cnf"
+        defaults.write_text("[client]\nuser=repro_cutover_probe\n", encoding="ascii")
+        os.chmod(defaults, 0o600)
+        self.client = self.root / "mysql"
+        self.client.write_text(FAKE_CLIENT.replace("{python}", sys.executable), encoding="utf-8")
+        os.chmod(self.client, 0o755)
+        self.server = {"server_uuid": self.uuid, "version": "8.4.13", "skip_networking": 1,
+                       "current_user": "repro_cutover_probe@localhost"}
+        self.state = gate_state()
+        self.files: dict[str, str] = {}
+        self.sizes: dict[str, int] = {}
+        self.executed = f"{self.uuid}:1-59"
+
+    def log(self, name: str, recording: list, server_id: int = 64086) -> None:
+        self.files[name] = self.files.get(name, "") + recorded.rows(recording, name, server_id).decode("utf-8")
+        self.sizes[name] = max(position for position, _, _ in recording) + 100
+
+    def save(self) -> None:
+        (self.root / "calls.log").unlink(missing_ok=True)
+        (self.root / "server.json").write_text(json.dumps({
+            "server": self.server, "state": self.state, "files": self.files, "sizes": self.sizes,
+            "executed": self.executed}), encoding="utf-8")
+
+    def calls(self) -> list[str]:
+        path = self.root / "calls.log"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def scans(self) -> list[str]:
+        return [call for call in self.calls() if call.startswith("SHOW BINLOG EVENTS")]
+
+
+def renumber(entries: list, start: int) -> list:
+    """(type, info) pairs at increasing positions from `start`, as recorded rows."""
+    return [(start + 100 * index, kind, info) for index, (kind, info) in enumerate(entries)]
+
+
+def heartbeats(first: int, count: int) -> list:
+    """`count` heartbeat transactions (five events each), GTIDs from `first`."""
+    return [entry for number in range(first, first + count)
+            for entry in (("Gtid", recorded.gtid(recorded.E6_UUID, number)), *recorded.write(
+                "repro_recovery_heartbeat", 117))]
+
+
+def measured_output(uuid: str, **activity) -> dict:
+    return {**closed_output_for(uuid, "measured"), **activity}
+
+
+def closed_output_for(uuid: str, mode: str) -> dict:
+    return {"version": 2, "reachable": True, "server_uuid": uuid, "database": "repro_dashboard",
+            "gate": "closed", "writable": False, "business_activity": False, "foreign_activity": False,
+            "boundary": None, "receipt": None, "gated_sessions": 0, "scanned_events": 0, "mode": mode}
+
+
+@unittest.skipUnless(LINUX_ROOT, "Needs Linux root: the probe runs as root")
+class FakeServerTests(unittest.TestCase):
+    """The probe's receipt, scan, latch and audit logic against recorded 8.4.13 text (no MySQL needed)."""
+
+    LISTING = "SHOW BINARY LOG STATUS; SHOW BINARY LOGS"
+
+    def setUp(self):
+        self.fake = FakeServer()
+        self.addCleanup(shutil.rmtree, self.fake.root)
+        self.host = ProbeHost(self.fake)
+        self.addCleanup(shutil.rmtree, self.host.root)
+        self.host.config["mysql"]["client"] = str(self.fake.client)
+        self.fake.log("binlog.000001", recorded.E6_G6)
+        self.fake.save()
+
+    def arm(self, **changes) -> str:
+        record = {**receipt_record(self.fake.uuid, "binlog.000001", 13791, f"{self.fake.uuid}:1-48"), **changes}
+        return hashlib.sha256(self.host.write("receipt", record)).hexdigest()
+
+    def run_probe(self, phase, *arguments):
+        self.fake.save()
+        return self.host.run(phase, arguments=arguments)
+
+    def assert_refused(self, phase, expected_exit, *arguments):
+        code, output, stderr = self.run_probe(phase, *arguments)
+        self.assertEqual(expected_exit, code, (output, stderr))
+        if isinstance(output, dict):
+            self.assertNotIn("writable", output)
+            self.assertNotIn("business_activity", output)
+        return output, stderr
+
+    def e6_activity(self, sha: str, **changes) -> dict:
+        return {**measured_output(self.fake.uuid, business_activity=True, foreign_activity=True, receipt=sha,
+                                  boundary={"file": "binlog.000001", "position": 14927,
+                                            "gtid": f"{self.fake.uuid}:53"},
+                                  scanned_events=len(recorded.E6_G6)), **changes}
+
+    def test_other_patch_version_exit_6(self):
+        for version in ("8.4.12", "8.4.14"):
+            with self.subTest(version=version):
+                self.fake.server["version"] = version
+                output, _ = self.assert_refused("ready", 6)
+                self.assertEqual(self.fake.uuid, output["server_uuid"])
+                self.assertTrue(any("8.4.13" in problem for problem in output["problems"]), output)
+        self.fake.server["version"] = "8.4.13"
+        self.assertEqual(0, self.run_probe("ready")[0])
+
+    def test_no_receipt_or_other_run_receipt_is_false(self):
+        code, output, stderr = self.run_probe("ready")
+        self.assertEqual((0, measured_output(self.fake.uuid)), (code, output), stderr)
+        self.assertEqual([], self.fake.scans())
+        self.arm(run_id="another-run")
+        code, output, stderr = self.run_probe("ready")
+        self.assertEqual((0, measured_output(self.fake.uuid)), (code, output), stderr)
+        self.assertEqual([], self.fake.scans())
+        # Without a journal there is no run, so no receipt is this run's (strict, as D04 printed it).
+        sha = self.arm()
+        code, output, stderr = self.run_probe(None)
+        self.assertEqual((0, closed_output_for(self.fake.uuid, "strict")), (code, output), stderr)
+        self.assertEqual([], self.fake.scans())
+        code, output, stderr = self.run_probe("ready")
+        self.assertEqual((0, self.e6_activity(sha)), (code, output), stderr)
+
+    def test_scan_pages_by_offset_from_the_receipt(self):
+        # 1039 events: E6 up to its GRANT, 200 heartbeats, then E6 from the GRANT (the business writes last).
+        entries = [(kind, info) for _, kind, info in recorded.until(recorded.E6_G6, 53)]
+        entries += heartbeats(100, 200)
+        entries += [(kind, info) for _, kind, info in recorded.between(recorded.E6_G6, 53, 59)]
+        self.fake.files, self.fake.sizes = {}, {}
+        self.fake.log("binlog.000001", renumber(entries, 13791))
+        sha = self.arm()
+        code, output, stderr = self.run_probe("writes_possible")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual((True, True, len(entries), sha),
+                         (output["business_activity"], output["foreign_activity"], output["scanned_events"],
+                          output["receipt"]))
+        self.assertEqual([self.LISTING] + [f"SHOW BINLOG EVENTS IN 'binlog.000001' FROM 13791 LIMIT {offset}, 500"
+                                           for offset in (0, 500, 1000)], self.fake.calls()[1:])
+
+    def test_later_files_are_read_from_their_start(self):
+        self.fake.files, self.fake.sizes = {}, {}
+        self.fake.log("binlog.000001", recorded.until(recorded.E6_G6, 53))
+        self.fake.log("binlog.000002", recorded.between(recorded.E6_G6, 53, 59))
+        sha = self.arm()
+        code, output, stderr = self.run_probe("ready")
+        self.assertEqual((0, self.e6_activity(sha, boundary={"file": "binlog.000002", "position": 14927,
+                                                             "gtid": f"{self.fake.uuid}:53"})), (code, output), stderr)
+        self.assertEqual(["SHOW BINLOG EVENTS IN 'binlog.000001' FROM 13791 LIMIT 0, 500",
+                          "SHOW BINLOG EVENTS IN 'binlog.000002' LIMIT 0, 500"], self.fake.scans())
+
+    def test_purged_armed_from_file_exit_5(self):
+        self.arm(armed_from={"file": "binlog.000000", "position": 4})
+        for phase in ("ready", "sqlite_authoritative"):
+            with self.subTest(journal=phase):
+                output, _ = self.assert_refused(phase, 5)
+                self.assertEqual((True, "closed", self.fake.uuid),
+                                 (output["reachable"], output["gate"], output["server_uuid"]))
+                self.assertTrue(any("binlog.000000" in problem for problem in output["problems"]), output)
+        self.assertEqual([], self.fake.scans())
+
+    def test_reset_binary_log_history_exit_5(self):
+        # After RESET BINARY LOGS AND GTIDS the file names come back, but the receipt's history is gone.
+        self.fake.executed = f"{recorded.E1_UUID}:1-10"
+        self.arm()
+        self.assert_refused("ready", 5)
+        self.assertEqual([], self.fake.scans())
+
+    def test_armed_from_beyond_the_file_or_not_an_event_exit_4(self):
+        self.arm(armed_from={"file": "binlog.000001", "position": 999999})
+        self.assert_refused("ready", 4)
+        self.arm(armed_from={"file": "binlog.000001", "position": 13792})
+        self.assert_refused("ready", 4)
+
+    def test_receipt_of_this_run_for_another_server_or_database_exit_4(self):
+        for changes in ({"server_uuid": OTHER_UUID}, {"database": "repro_other"}):
+            with self.subTest(changes=changes):
+                self.arm(**changes)
+                output, _ = self.assert_refused("ready", 4)
+                self.assertTrue(output["problems"], output)
+
+    def test_malformed_or_unsafe_records_refused(self):
+        sha = self.arm()
+        cases = {
+            "receipt with another key": ("receipt", {**receipt_record(self.fake.uuid, "binlog.000001", 13791, ""),
+                                                     "note": "x"}),
+            "receipt version 2": ("receipt", {**receipt_record(self.fake.uuid, "binlog.000001", 13791, ""),
+                                              "version": 2}),
+            "receipt quoting a file name": ("receipt", receipt_record(self.fake.uuid, "bin'log.1", 13791, "")),
+            "receipt with a bad GTID set": ("receipt", receipt_record(self.fake.uuid, "binlog.000001", 13791, "x:1")),
+            "latch without its tables": ("activity", {"version": 1, "run_id": RUN_ID, "receipt_sha256": sha}),
+            "activation without its server": ("activated", {"version": 1, "run_id": RUN_ID}),
+        }
+        for name, (record, document) in cases.items():
+            with self.subTest(case=name):
+                self.arm()
+                self.host.write(record, document)
+                code, output, stderr = self.run_probe("ready")
+                self.assertEqual(1, code, (output, stderr))
+                self.assertIsNone(output)
+                if record != "receipt":
+                    self.host.path(record).unlink()
+        self.arm()
+        for mode in (0o620, 0o602):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.host.path("receipt"), mode)
+                self.assertEqual(1, self.run_probe("ready")[0])
+        self.host.path("receipt").unlink()
+        os.symlink(self.fake.root / "server.json", self.host.path("receipt"))
+        self.assertEqual(1, self.run_probe("ready")[0])
+
+    def test_journal_without_a_run_id_refuses_only_when_a_record_exists(self):
+        self.host.run_identity = None
+        self.assertEqual(0, self.run_probe("ready")[0])
+        self.arm()
+        code, _, stderr = self.run_probe("ready")
+        self.assertEqual(1, code, stderr)
+        self.assertIn("run", stderr)
+
+    def test_business_activity_is_latched(self):
+        sha = self.arm()
+        code, output, stderr = self.run_probe("writes_possible")
+        self.assertEqual((0, self.e6_activity(sha)), (code, output), stderr)
+        latch = self.host.path("activity")
+        info = latch.lstat()
+        self.assertEqual((0, 0o600), (info.st_uid, stat.S_IMODE(info.st_mode)))
+        self.assertEqual({"version": 1, "run_id": RUN_ID, "receipt_sha256": sha, "gtid": f"{self.fake.uuid}:55",
+                          "file": "binlog.000001", "position": 15434, "tables": ["jobs", "shoots"], "statements": [],
+                          "boundary": {"file": "binlog.000001", "position": 14927, "gtid": f"{self.fake.uuid}:53"},
+                          "foreign_activity": True}, json.loads(latch.read_text(encoding="utf-8")))
+        # Later calls read the latch: no scan, and a purge of the armed_from file no longer matters.
+        self.fake.files, self.fake.sizes = {}, {}
+        self.fake.log("binlog.000009", recorded.between(recorded.E1_T7, 37, 37))
+        code, output, stderr = self.run_probe("mysql_authoritative")
+        self.assertEqual((0, self.e6_activity(sha, scanned_events=0)), (code, output), stderr)
+        self.assertEqual([], self.fake.scans())
+        # A latch bound to another receipt (prepare re-armed) is stale: the scan decides again.
+        self.arm(backup={"file": "binlog.000001", "position": 13791, "gtid_executed": ""})
+        self.assert_refused("mysql_authoritative", 5)
+
+    def test_activated_record_short_circuits_scan(self):
+        sha = self.arm()
+        self.host.write("activated", activated_record(self.fake.uuid, sha))
+        self.fake.files, self.fake.sizes = {}, {}
+        self.fake.log("binlog.000009", recorded.between(recorded.E1_T7, 37, 37))
+        code, output, stderr = self.run_probe("mysql_authoritative")
+        self.assertEqual((0, measured_output(self.fake.uuid, business_activity=True, receipt=sha)), (code, output),
+                         stderr)
+        self.assertEqual(1, len(self.fake.calls()))  # The gate read only.
+        # Bound to this run: another run's activation is ignored (here the scan then finds the file purged).
+        self.host.write("activated", activated_record(self.fake.uuid, sha, run_id="another-run"))
+        self.assert_refused("mysql_authoritative", 5)
+        self.host.write("activated", {**activated_record(self.fake.uuid, sha), "server_uuid": OTHER_UUID})
+        self.assert_refused("mysql_authoritative", 4)
+        # Even without the receipt, this run's activation reports the activity.
+        self.host.write("activated", activated_record(self.fake.uuid, sha))
+        self.host.path("receipt").unlink()
+        code, output, stderr = self.run_probe("mysql_authoritative")
+        self.assertEqual((0, measured_output(self.fake.uuid, business_activity=True)), (code, output), stderr)
+
+    def test_strict_mode_business_activity_exit_4(self):
+        self.arm()
+        for phase in STRICT_JOURNALS[1:]:
+            with self.subTest(journal=phase):
+                output, _ = self.assert_refused(phase, 4)
+                self.assertEqual("strict", output["mode"])
+                self.assertTrue(output["problems"], output)
+        # The first hit latches in strict mode too.
+        self.assertTrue(self.host.path("activity").is_file())
+        # Foreign activity alone does not stop the strict reading (it never blocks the rollback).
+        self.fake.files, self.fake.sizes = {}, {}
+        self.fake.log("binlog.000001", recorded.until(recorded.E6_G6, 53))
+        self.host.path("activity").unlink()
+        code, output, stderr = self.run_probe("sqlite_authoritative")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual((False, True), (output["business_activity"], output["foreign_activity"]))
+
+    def test_audit_classifies_foreign_smoke_and_business(self):
+        sha = self.arm()
+        self.host.write("smoke_window", window_record(sha, *recorded.E6_SMOKE_WINDOW))
+        code, output, stderr = self.run_probe("recovery_required", "--audit")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([(f"{self.fake.uuid}:{number}", kind) for number, kind in
+                          ((49, "foreign"), (55, "smoke"), (56, "smoke"), (57, "business"))],
+                         [(item["gtid"], item["class"]) for item in output["transactions"]])
+        self.assertEqual({"foreign": 1, "smoke": 2, "business": 1}, output["counts"])
+        self.assertEqual((sha, {"file": "binlog.000001", "position": 13791}, len(recorded.E6_G6)),
+                         (output["receipt"], output["armed_from"], output["scanned_events"]))
+        self.assertEqual({"gtid_before": recorded.E6_SMOKE_WINDOW[0], "gtid_after": recorded.E6_SMOKE_WINDOW[1]},
+                         output["smoke_window"])
+        self.assertFalse(self.host.path("activity").exists())  # The audit only reads.
+        # A window recorded for another receipt is not this run's: every business transaction is business.
+        self.host.write("smoke_window", window_record("0" * 64, *recorded.E6_SMOKE_WINDOW))
+        code, output, stderr = self.run_probe("recovery_required", "--audit")
+        self.assertEqual((0, None), (code, output["smoke_window"]), stderr)
+        self.assertEqual({"foreign": 1, "smoke": 0, "business": 3}, output["counts"])
+        self.host.path("receipt").unlink()
+        self.assert_refused("recovery_required", 4, "--audit")
+
+    def test_since_reports_the_coordinate_and_every_app_transaction(self):
+        code, output, stderr = self.run_probe("frozen", "--since", "binlog.000001:13791")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual({"file": "binlog.000001", "position": 13791}, output["since"])
+        self.assertEqual({"file": "binlog.000001", "position": 16962, "gtid_executed": f"{self.fake.uuid}:1-59"},
+                         output["until"])
+        self.assertEqual([49, 55, 56, 57], recorded.gtids_of(output["transactions"]))
+        self.assertEqual("closed", output["gate"])
+        self.assertNotIn("writable", output)
+        self.assertEqual([], [path.name for path in self.host.state.iterdir() if path.name != "state.json"])
+        self.assert_refused("frozen", 5, "--since", "binlog.000000:4")
+        for argument in ("binlog.000001", "bin'log:4", "binlog.000001:-4"):
+            with self.subTest(argument=argument):
+                self.assertEqual(2, self.run_probe("frozen", "--since", argument)[0])
+        self.assertEqual(2, self.run_probe("frozen", "--since", "binlog.000001:4", "--audit")[0])
+
+
+# The app tables these tests write, created before any receipt (DDL on the app schema is an app-schema event).
+APP_TABLES = """
+CREATE TABLE IF NOT EXISTS repro_dashboard.shoots (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64));
+CREATE TABLE IF NOT EXISTS repro_dashboard.jobs (id BIGINT AUTO_INCREMENT PRIMARY KEY, queue VARCHAR(64));
+CREATE TABLE IF NOT EXISTS repro_dashboard.repro_recovery_heartbeat (id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  minute_utc DATETIME);
+"""
+FOREIGN_WRITE = ("repro_maint", "INSERT INTO repro_dashboard.shoots (name) VALUES ('maint after receipt (foreign)')")
+HEARTBEAT = "INSERT INTO repro_dashboard.repro_recovery_heartbeat (minute_utc) VALUES (UTC_TIMESTAMP())"
+APP_WRITE = ("repro_app", "INSERT INTO repro_dashboard.shoots (name) VALUES ('business after smoke')")
+# E6's G5 statements after the receipt (experiments/e6-gate-v2.sh), in order, as the same accounts.
+E6_REPLAY = (
+    FOREIGN_WRITE,
+    ("root", "ALTER USER 'repro_maint'@'localhost' ACCOUNT LOCK; ALTER USER 'repro_migrator'@'localhost' ACCOUNT LOCK"),
+    ("root", HEARTBEAT),
+    ("repro_cutover_gate", OPEN_GATE),
+    ("repro_app", "BEGIN; SELECT id FROM repro_mysql_control.writer_token WHERE id = 1 FOR UPDATE;"
+                  " INSERT INTO repro_dashboard.shoots (name) VALUES ('smoke');"
+                  " INSERT INTO repro_dashboard.jobs (queue) VALUES ('cutover-smoke'); COMMIT;"
+                  " DELETE FROM repro_dashboard.jobs WHERE queue = 'cutover-smoke'"),
+    APP_WRITE,
+    ("repro_cutover_gate", CLOSE_GATE),
+)
+
+
+def normalized(entries, uuid: str) -> list:
+    """(type, Info) with the server UUID, GTID numbers, xids and table ids that differ between servers replaced."""
+    out = []
+    for kind, info in entries:
+        info = re.sub(r"xid=[0-9]+", "xid=N", info.replace(uuid, "<uuid>"))
+        info = re.sub(r"<uuid>:[0-9]+'", "<uuid>:N'", re.sub(r"table_id: [0-9]+", "table_id: N", info))
+        out.append((kind, info))
+    return out
+
+
+@unittest.skipUnless(LINUX_ROOT and FIXTURE, "Needs Linux root and the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
+class ActivityTests(unittest.TestCase):
+    """Business activity from the receipt on a real 8.4.13 binary log (design 1.2, 4.3)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = Fixture(FIXTURE)
+        cls.fixture.restore()
+        cls.fixture.sql(APP_TABLES)
+        cls.baseline = cls.fixture.snapshot()
+
+    def setUp(self):
+        self.host = ProbeHost(self.fixture)
+        self.addCleanup(shutil.rmtree, self.host.root)
+        self.addCleanup(self.assert_restored)
+
+    def assert_restored(self):
+        self.fixture.sql("SET GLOBAL binlog_transaction_compression = OFF;"
+                         "DROP TABLE IF EXISTS repro_dashboard.repro_test_ml;"
+                         "ALTER USER 'repro_maint'@'localhost', 'repro_migrator'@'localhost',"
+                         " 'repro_parity_reader'@'localhost' ACCOUNT UNLOCK")
+        self.fixture.restore()
+        self.assertEqual(self.baseline, self.fixture.snapshot())
+
+    def status(self) -> tuple[str, int, str]:
+        file, position, *rest = self.fixture.sql("SHOW BINARY LOG STATUS").rstrip("\n").split("\t")
+        return file, int(position), rest[-1]
+
+    def arm(self, run_id: str = RUN_ID, at: tuple | None = None) -> str:
+        """prepare's receipt at the current coordinate (or `at`); returns its SHA-256."""
+        file, position, executed = at or self.status()
+        raw = self.host.write("receipt", receipt_record(self.fixture.uuid, file, position, executed, run_id))
+        return hashlib.sha256(raw).hexdigest()
+
+    def do(self, *steps) -> None:
+        for account, statements in steps:
+            self.fixture.sql(statements, account=account)
+
+    def events(self, file: str, position: int) -> list:
+        import binlog_scan
+
+        result = subprocess.run(
+            [CLIENT, f"--defaults-file={self.fixture.directory / 'root.cnf'}", "--no-login-paths",
+             "--protocol=SOCKET", f"--socket={self.fixture.socket}", "--batch", "--skip-column-names", "-e",
+             f"SHOW BINLOG EVENTS IN '{file}' FROM {position}"], capture_output=True, timeout=60)
+        self.assertEqual(0, result.returncode, result.stderr)
+        return binlog_scan.parse_events(result.stdout, file)
+
+    def probe(self, phase, *arguments, expected: int = 0):
+        code, output, stderr = self.host.run(phase, arguments=arguments)
+        self.assertEqual(expected, code, (output, stderr))
+        if expected:
+            self.assertNotIn("writable", output)
+            self.assertNotIn("business_activity", output)
+        return output
+
+    def test_recorded_e6_text_is_what_this_server_prints(self):
+        file, position, _ = self.status()
+        sha = self.arm()
+        self.do(*E6_REPLAY)
+        live = self.events(file, position)
+        self.assertEqual(normalized([(kind, info) for _, kind, info in recorded.E6_G6], recorded.E6_UUID),
+                         normalized([(event.type, event.info) for event in live], self.fixture.uuid))
+        grant = next(event for event in live if event.type == "Query" and event.info.startswith("GRANT"))
+        output = self.probe("recovery_required")
+        self.assertEqual((True, True, sha, len(live), {"file": file, "position": grant.position}),
+                         (output["business_activity"], output["foreign_activity"], output["receipt"],
+                          output["scanned_events"], {key: output["boundary"][key] for key in ("file", "position")}))
+        self.assertTrue(self.host.path("activity").is_file())
+
+    def test_no_receipt_or_other_run_receipt_is_false(self):
+        start = self.status()
+        self.arm(run_id="another-run")
+        self.do(("repro_cutover_gate", OPEN_GATE), APP_WRITE)
+        expected = {**closed_output(self.fixture, "measured"), "gate": "open", "writable": True}
+        self.assertEqual(expected, self.probe("writes_possible"))
+        self.host.path("receipt").unlink()
+        self.assertEqual(expected, self.probe("writes_possible"))
+        sha = self.arm(at=start)
+        output = self.probe("writes_possible")
+        self.assertEqual((True, False, sha), (output["business_activity"], output["foreign_activity"],
+                                              output["receipt"]))
+
+    def test_app_schema_write_before_boundary_is_foreign(self):
+        sha = self.arm()
+        self.do(FOREIGN_WRITE)
+        for phase in ("frozen", "ready", "sqlite_authoritative"):
+            with self.subTest(journal=phase):
+                output = self.probe(phase)
+                self.assertEqual({**closed_output(self.fixture, journal_mode(phase)), "foreign_activity": True,
+                                  "receipt": sha, "scanned_events": 5}, output)
+        self.assertFalse(self.host.path("activity").exists())
+
+    def test_app_write_after_grant_is_business_and_latched(self):
+        sha = self.arm()
+        self.do(("repro_cutover_gate", OPEN_GATE))
+        output = self.probe("writes_possible")
+        # The GRANT is a boundary, but nothing has written yet (design 1.2, writes_possible).
+        self.assertEqual((True, False, False), (output["writable"], output["business_activity"],
+                                                output["foreign_activity"]))
+        self.assertIsNotNone(output["boundary"])
+        self.do(APP_WRITE)
+        output = self.probe("writes_possible")
+        self.assertEqual((True, sha), (output["business_activity"], output["receipt"]))
+        latch = json.loads(self.host.path("activity").read_text(encoding="utf-8"))
+        self.assertEqual((sha, ["shoots"], output["boundary"]), (latch["receipt_sha256"], latch["tables"],
+                                                                 latch["boundary"]))
+        latched = self.probe("mysql_authoritative")
+        self.assertEqual({**output, "scanned_events": 0}, latched)
+
+    def test_account_lock_of_lockable_account_is_not_a_boundary(self):
+        self.arm()
+        self.do(("root", "ALTER USER 'repro_maint'@'localhost' ACCOUNT LOCK;"
+                         "ALTER USER 'repro_migrator'@'localhost' ACCOUNT LOCK;"
+                         "ALTER USER 'repro_maint'@'localhost' ACCOUNT UNLOCK"), FOREIGN_WRITE)
+        output = self.probe("ready")
+        self.assertEqual((True, False, None), (output["foreign_activity"], output["business_activity"],
+                                               output["boundary"]))
+        # The same statement for an account outside lockable_accounts is a boundary.
+        self.do(("root", "ALTER USER 'repro_parity_reader'@'localhost' ACCOUNT LOCK"), FOREIGN_WRITE)
+        output = self.probe("ready")
+        self.assertEqual((True, True), (output["foreign_activity"], output["business_activity"]))
+
+    def test_heartbeat_table_excluded(self):
+        self.arm()
+        self.do(("repro_cutover_gate", OPEN_GATE), ("root", "; ".join([HEARTBEAT] * 3)))
+        output = self.probe("writes_possible")
+        self.assertEqual((False, False, 4 + 15), (output["business_activity"], output["foreign_activity"],
+                                                  output["scanned_events"]))
+        self.assertIsNotNone(output["boundary"])
+
+    def test_compressed_transaction_counts(self):
+        file, position, _ = self.status()
+        self.arm()
+        self.do(("repro_cutover_gate", OPEN_GATE), ("root", "SET GLOBAL binlog_transaction_compression = ON"),
+                APP_WRITE, ("root", "SET GLOBAL binlog_transaction_compression = OFF"), ("root", HEARTBEAT))
+        live = self.events(file, position)
+        payload = [event for event in live if event.type == "Transaction_payload"]
+        self.assertEqual(1, len(payload), live)
+        inner = [event for event in live if event.position == payload[0].end_position]
+        self.assertIn("Table_map", [event.type for event in inner])
+        # Why the scan pages by offset (E1 T7b): FROM the payload's end starts at the next transaction,
+        # so paging by position would skip the app write inside the payload.
+        following = self.events(file, payload[0].end_position)
+        self.assertEqual(["Gtid"], [event.type for event in following if event.position == payload[0].end_position])
+        self.assertTrue(self.probe("writes_possible")["business_activity"])
+
+    def test_paging_by_offset_across_pages(self):
+        file, position, _ = self.status()
+        self.arm()
+        self.do(("repro_cutover_gate", OPEN_GATE), ("root", "; ".join([HEARTBEAT] * 120)), APP_WRITE)
+        total = len(self.events(file, position))
+        self.assertGreater(total, 600)  # The app write is on the second page of 500.
+        output = self.probe("writes_possible")
+        self.assertEqual((True, total), (output["business_activity"], output["scanned_events"]))
+
+    def test_scan_follows_every_binary_log_file(self):
+        self.arm()
+        self.do(("root", "FLUSH BINARY LOGS"))
+        second = self.status()[0]
+        self.do(("repro_cutover_gate", OPEN_GATE), ("root", "FLUSH BINARY LOGS"), APP_WRITE)
+        output = self.probe("writes_possible")
+        self.assertEqual((True, second), (output["business_activity"], output["boundary"]["file"]))
+
+    def test_purged_armed_from_file_exit_5(self):
+        armed = self.status()[0]
+        self.arm()
+        self.do(("root", "FLUSH BINARY LOGS"))
+        self.do(("root", f"PURGE BINARY LOGS TO '{self.status()[0]}'"))
+        for phase in ("ready", "sqlite_authoritative"):
+            with self.subTest(journal=phase):
+                output = self.probe(phase, expected=5)
+                self.assertTrue(any(armed in problem for problem in output["problems"]), output)
+
+    def test_activated_record_short_circuits_scan(self):
+        sha = self.arm()
+        self.do(("repro_cutover_gate", OPEN_GATE), APP_WRITE)
+        self.host.write("activated", activated_record(self.fixture.uuid, sha))
+        self.do(("root", "FLUSH BINARY LOGS"))
+        self.do(("root", f"PURGE BINARY LOGS TO '{self.status()[0]}'"))
+        output = self.probe("mysql_authoritative")
+        self.assertEqual({**closed_output(self.fixture, "measured"), "gate": "open", "writable": True,
+                          "business_activity": True, "receipt": sha}, output)
+        self.host.path("activated").unlink()
+        self.probe("mysql_authoritative", expected=5)
+
+    def test_audit_classifies_foreign_smoke_and_business(self):
+        sha = self.arm()
+        self.do(*E6_REPLAY[:4])
+        before = self.status()[2]
+        self.do(E6_REPLAY[4])
+        after = self.status()[2]
+        self.do(*E6_REPLAY[5:])
+        self.host.write("smoke_window", window_record(sha, before, after))
+        output = self.probe("recovery_required", "--audit")
+        self.assertEqual([("foreign", ["shoots"]), ("smoke", ["jobs", "shoots"]), ("smoke", ["jobs"]),
+                          ("business", ["shoots"])],
+                         [(item["class"], item["tables"]) for item in output["transactions"]])
+        self.assertEqual({"foreign": 1, "smoke": 2, "business": 1}, output["counts"])
+
+    def test_since_reports_the_coordinate_and_app_transactions(self):
+        file, position, _ = self.status()
+        self.do(FOREIGN_WRITE)
+        output = self.probe("frozen", "--since", f"{file}:{position}")
+        now = self.status()
+        self.assertEqual({"file": now[0], "position": now[1], "gtid_executed": now[2]}, output["until"])
+        self.assertEqual([("foreign", ["shoots"])], [(item["class"], item["tables"]) for item in output["transactions"]])
+        self.assertEqual([], self.probe("frozen", "--since", f"{now[0]}:{now[1]}")["transactions"])
+
+    def test_multi_line_ddl_is_read_whole(self):
+        # A statement with newlines, a tab and backslashes: one row in batch mode, unescaped (no --raw).
+        file, position, _ = self.status()
+        self.arm()
+        self.do(("repro_migrator", "USE repro_dashboard; CREATE TABLE repro_test_ml (\n  id INT PRIMARY KEY,"
+                                   "\t-- a tab and a \\\\ backslash\n  note VARCHAR(8) DEFAULT 'a\\\\nb'\n)"))
+        live = self.events(file, position)
+        self.assertIn("\n  id INT PRIMARY KEY,\t-- a tab", live[-1].info)
+        output = self.probe("ready")
+        self.assertEqual((True, False, len(live)), (output["foreign_activity"], output["business_activity"],
+                                                    output["scanned_events"]))
+
+    def test_strict_mode_business_activity_exit_4(self):
+        self.arm()
+        self.do(("repro_cutover_gate", OPEN_GATE), APP_WRITE, ("repro_cutover_gate", CLOSE_GATE))
+        for phase in STRICT_JOURNALS[1:]:
+            with self.subTest(journal=phase):
+                output = self.probe(phase, expected=4)
+                self.assertEqual("strict", output["mode"])
+        self.assertTrue(self.probe("recovery_required")["business_activity"])
 
 
 def _tests(suite):

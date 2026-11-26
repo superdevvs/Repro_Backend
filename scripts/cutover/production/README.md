@@ -249,7 +249,7 @@ Other exits: 3 when nothing listens at the socket (the client's error 2002
 with `ENOENT` or `ECONNREFUSED`, or, while the client or the defaults file is
 not installed yet, a socket connect that finds nothing), stdout
 `{"version": 2, "reachable": false}`; 6 for a wrong server (UUID other than
-`mysql.target_uuid`, version not `8.4.x`, `skip_networking` off); 4 when the
+`mysql.target_uuid`, version not exactly `8.4.13`, `skip_networking` off); 4 when the
 state is not readable (login refused: a wrong password, error 1045, or a
 locked probe account, error 3118; a missing grant-table read, a server
 that accepts but does not answer within the timeouts, or a listening server
@@ -270,10 +270,7 @@ exits 0. In `holding`, `frozen`, `ready`, `writes_possible`,
  "boundary": null, "receipt": null, "gated_sessions": 0, "scanned_events": 0, "mode": "strict"}
 ```
 
-**Not yet built here (slice D05).** The receipt, the binary log scan and the
-activity latches. Until they exist the probe exits 1 whenever
-`paths.receipt`, `paths.activity` or `paths.activated` exists, so it never
-reports `business_activity: false` after `prepare`.
+Business activity, the receipt and `--audit` are in the next section.
 
 **Accounts.** `mysql/accounts.sql` is design 2.2 verbatim with `:name`
 placeholders instead of passwords; it needs `repro_mysql_control.writer_token`
@@ -284,6 +281,86 @@ placeholder (`app`, `maint`, `migrator`, `reader`, `check`, `probe`, `gate`,
 `A-Z a-z 0-9 . _ ~ + / = -`; nothing is printed unless every placeholder is
 filled. The probe account reads only the columns it needs (never
 `authentication_string`).
+
+## MySQL probe: business activity from the receipt (design 1.2, 4.3)
+
+`binlog_scan.py` installs next to `mysql_probe.py` in
+`/opt/repro-cutover-fence/production/` (the probe imports it). There is no
+`mysqlbinlog` on the host: the probe reads `SHOW BINARY LOG STATUS; SHOW BINARY
+LOGS` and `SHOW BINLOG EVENTS IN '<file>' [FROM <position>] LIMIT <offset>, 500`
+as the probe account (it has `REPLICATION CLIENT` and `REPLICATION SLAVE`),
+without `--raw`: the client's batch mode escapes backslash, tab, newline and
+NUL, so a multi-line statement stays one row. The text is MySQL 8.4.13's, so
+any other server version is exit 6 (review A13); retest the scan before an
+upgrade.
+
+**Records** (all under the journal directory, root-owned, read through the
+protected-file check; each is bound to the journal's `identity.run_id`, and
+another run's record is ignored):
+
+| Path | Written by | Keys (exactly) |
+| --- | --- | --- |
+| `paths.receipt` | `prepare` step 10 (D10) | `version` 1, `run_id`, `server_uuid`, `database`, `backup` (`file`, `position`, `gtid_executed`), `armed_from` (`file`, `position`) |
+| `paths.activity` | this probe, at the first business hit (0600) | `version`, `run_id`, `receipt_sha256`, `gtid`, `file`, `position`, `tables`, `statements`, `boundary`, `foreign_activity` |
+| `paths.activated` | the MySQL reopen, step 16 (C03) | `version` 1, `run_id`, `server_uuid`, `database`, `receipt_sha256` |
+| `paths.smoke_window` | the MySQL reopen, step 7 (C03) | `version` 1, `run_id`, `receipt_sha256`, `gtid_before`, `gtid_after`, `report` (the smoke's JSON object) |
+
+A receipt or activation record of this run that names another server or
+database is exit 4; a malformed or unsafe record is exit 1. `prepare` must
+remove the latch before it writes a new receipt (a latch bound to another
+receipt is ignored anyway).
+
+**Reading.** No journal, or none of the three records: no activity, no
+scan. Else, in order: this run's activation record gives
+`business_activity: true` without a scan (a purge can no longer fail it);
+a latch bound to this run's receipt gives the same; without a receipt there
+is no activity; otherwise the scan runs from `armed_from` to the end of the
+last listed file, every later file from its start, paged by offset (the
+events inside a compressed transaction all show the payload's end, and
+`FROM` that position starts after them). Exit 5 when the `armed_from` file is
+no longer listed, or when `gtid_executed` no longer holds the receipt's
+`backup.gtid_executed` (a reset reuses the file names). Output: `receipt` is
+the receipt's SHA-256, `boundary` is `{file, position, gtid}` of the first
+account statement, `scanned_events` counts the events read. In strict mode
+business activity is exit 4 (never `true`); foreign activity is reported and
+never blocks.
+
+**Classification** (one transaction per Gtid event): a boundary is an account
+statement (`GRANT`, `REVOKE`, `CREATE`/`ALTER`/`DROP`/`RENAME USER`,
+`CREATE`/`DROP ROLE`, `SET DEFAULT ROLE`, `SET PASSWORD`, after any leading
+comments) except the server's exact `ALTER USER '<a>'@'localhost' ACCOUNT
+LOCK|UNLOCK` for a `lockable_accounts` entry, and also, beyond the design's
+list, a row event on one of the nine grant tables or a `FLUSH PRIVILEGES`.
+An app-schema event is a `Table_map` on the app schema outside
+`activity_excluded_tables`, a `Query` with the app schema as default database
+or named in its text (also as `repro\_dashboard`; not `BEGIN`, `COMMIT`,
+`ROLLBACK` or `XA` control), an `Incident`, a rows event whose table its own
+transaction did not map, any Info the scan cannot read, and any event type it
+does not know. A statement hidden behind `/*!` or an unclosed comment is both.
+App-schema transactions before the first boundary are foreign; the boundary's
+own transaction and every later one are business. `sql_log_bin=0` sessions
+(`repro_maint` may set it) leave nothing to scan, so a foreign write made that
+way is not seen; the app account cannot set it.
+
+**Modes.** `--audit` (way back, 4.3) needs this run's receipt (else exit 4),
+scans from `armed_from` even after activation, and lists every app-schema
+transaction with `class` `foreign`, `smoke` (business, its GTID in
+`gtid_after` and not in `gtid_before` of this receipt's smoke window, only
+`smoke_tables`, no DDL) or `business`, plus `counts`, `boundary`,
+`smoke_window` and `scanned_events`. `--since <file>:<position>` (for
+`prepare`, 3.2 steps 4 and 10) needs no receipt: it reads the coordinate
+first (`until`, with `gtid_executed`), scans from the given one to the end and
+lists every app-schema transaction; `prepare` writes `armed_from = until` only
+when the list is empty. Both only read and print the gate as well.
+
+**Tests.** `test_binlog_scan.py` runs anywhere: the E6 and E1 event text
+recorded on 8.4.13 through the client's batch format. `test_mysql_probe.py`'s
+`FakeServerTests` need Linux root only (a root-owned stand-in client serves the
+recorded text: version pin, paging calls, exit 5, records, latch, modes);
+`ActivityTests` need the socket fixture and replay E6 on it (the recorded text
+must equal what the server prints), plus compressed transactions, more than one
+page, several files, a purge, the activation record, the audit with a real
+smoke window, `--since` and a multi-line DDL.
 
 ## Telnyx while held (design 5.2)
 

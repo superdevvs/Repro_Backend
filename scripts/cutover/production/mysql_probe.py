@@ -1,10 +1,12 @@
-"""MySQL target probe for the cutover controller: the write gate (design v2, sections 1.2 and 2.2).
+"""MySQL target probe for the cutover controller: the write gate and business activity (design v2, 1.2, 2.2, 4.3).
 
     /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/mysql_probe.py --config /etc/repro-cutover-fence/host.json
+        [--audit | --since <file>:<position>]
 
-Runs as root, reads files and MySQL only, and prints one JSON object. It runs the native 8.4 client
-by absolute path as the probe account (`mysql.probe_defaults`), over the socket in host.json, and reads
-the gated accounts' rows in the nine grant tables, `mandatory_roles` and `CURRENT_USER()`:
+Runs as root, reads files and MySQL, writes only the activity latch, and prints one JSON object. It runs
+the native 8.4.13 client by absolute path as the probe account (`mysql.probe_defaults`), over the socket
+in host.json, and reads the gated accounts' rows in the nine grant tables, `mandatory_roles` and
+`CURRENT_USER()`:
 
 - closed: SELECT on the app schema and on the token, nothing else;
 - open: the same plus INSERT, UPDATE, DELETE on the app schema and UPDATE (`id`) on the token;
@@ -12,15 +14,26 @@ the gated accounts' rows in the nine grant tables, `mandatory_roles` and `CURREN
 - unrecognised: anything else (a role, a default or mandatory role, a routine or proxy grant, a global
   privilege, a lock, another schema or table row, a missing account, `--skip-grant-tables`).
 
-Exit codes: 0 observed; 3 the server is not listening (stdout {"version": 2, "reachable": false});
-4 gate state not recognised or not readable, or a non-closed reading outside the frozen window;
-6 wrong server (UUID differs from `target_uuid`, version not 8.4, or networking on); anything else is
-a probe failure. Strict mode (no journal, `planned`, `sqlite_authoritative`) exits 0 only for "closed",
-so it can never report a writable target while SQLite is live.
+Business activity is measured from the receipt that `prepare` writes (`paths.receipt`), valid only for
+the journal's run: binlog_scan.py reads `SHOW BINLOG EVENTS` from its `armed_from` coordinate (paged by
+offset, every later file from its start) and splits the app-schema transactions at the first account
+statement (the boundary) into foreign (before it) and business (after it). The first business hit is
+latched in `paths.activity`; once the MySQL reopen has written `paths.activated` the probe reports
+business activity from that record without scanning, so a later purge cannot fail it.
 
-This build reads the gate only. Business activity needs the binary log scan from the receipt; until
-that scan exists the probe refuses whenever a receipt, activity or activated record is present, and
-otherwise reports no receipt and no activity.
+`--audit` lists every app-schema transaction after `armed_from` as foreign, smoke (inside the smoke
+window of `paths.smoke_window`, only `smoke_tables`) or business (design 4.3). `--since f:p` lists them
+from any coordinate and reports the coordinate read before the scan (`until`), for `prepare` (3.2
+steps 4 and 10). Both only read.
+
+Exit codes: 0 observed; 3 the server is not listening (stdout {"version": 2, "reachable": false});
+4 gate state not recognised or not readable, a binary log this probe cannot read, a receipt or
+activation record of this run for another server or database, or a non-closed reading or business
+activity outside the frozen window; 5 the binary log at the receipt's `armed_from` (or `--since`)
+coordinate is gone, or its history was reset; 6 wrong server (UUID differs from `target_uuid`,
+version not 8.4.13, or networking on); anything else is a probe failure (1). Strict mode (no journal,
+`planned`, `sqlite_authoritative`) exits 0 only for "closed" with no business activity, so it can
+never report a writable target or business writes while SQLite is live.
 """
 
 from __future__ import annotations
@@ -39,10 +52,12 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parent.parent)]
 import adapter as host  # noqa: E402
+import binlog_scan  # noqa: E402
 from adapter import guard  # noqa: E402
+from binlog_scan import Coordinate, GtidSet, Unreadable  # noqa: E402
 
 VERSION = 2
-EXIT_FAILURE, EXIT_UNREACHABLE, EXIT_UNRECOGNISED, EXIT_WRONG_SERVER = 1, 3, 4, 6
+EXIT_FAILURE, EXIT_UNREACHABLE, EXIT_UNRECOGNISED, EXIT_PURGED, EXIT_WRONG_SERVER = 1, 3, 4, 5, 6
 PROBE_ACCOUNT = "repro_cutover_probe@localhost"
 TOKEN_TABLE, TOKEN_COLUMN = "writer_token", "id"
 # Every privilege column of mysql.user and mysql.db on 8.4.13 (31 and 19); accounts.sql grants the
@@ -96,6 +111,17 @@ TABLES = {
 NO_ROWS = ("global_grants", "role_edges", "default_roles", "procs_priv", "proxies_priv")
 SERVER_KEYS = {"server_uuid", "version", "skip_networking", "current_user"}
 STATE_KEYS = {*TABLES, "mandatory_roles", "probe_privileges", "sessions"}
+CLIENT_ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+# The records written under the journal directory (design 1.2, 3.2, 3.6). The receipt by prepare (D10),
+# the latch by this probe, the activation and the smoke window by the MySQL reopen (C03).
+RECEIPT_KEYS = {"version", "run_id", "server_uuid", "database", "backup", "armed_from"}
+BACKUP_KEYS = {"file", "position", "gtid_executed"}
+COORDINATE_KEYS = {"file", "position"}
+LATCH_KEYS = {"version", "run_id", "receipt_sha256", "gtid", "file", "position", "tables", "statements",
+              "boundary", "foreign_activity"}
+ACTIVATED_KEYS = {"version", "run_id", "server_uuid", "database", "receipt_sha256"}
+WINDOW_KEYS = {"version", "run_id", "receipt_sha256", "gtid_before", "gtid_after", "report"}
+LISTING = "SHOW BINARY LOG STATUS; SHOW BINARY LOGS"
 
 
 class Refusal(Exception):
@@ -105,6 +131,10 @@ class Refusal(Exception):
         super().__init__(message)
         self.code = code
         self.output = output
+
+
+class Purged(Exception):
+    """The binary log history a scan starts from is gone (exit 5)."""
 
 
 @dataclass
@@ -150,12 +180,17 @@ def state_statement(accounts: list[tuple[str, str]]) -> str:
 
 
 def server_problems(server: dict, target_uuid: str) -> list[str]:
-    """Why this is not the pinned target server (exit 6): UUID, version 8.4, socket only."""
+    """Why this is not the pinned target server (exit 6): UUID, version 8.4.13, socket only.
+
+    The version is pinned to the patch release (review A13): the scan reads SHOW BINLOG EVENTS text as
+    8.4.13 prints it, so an upgraded server holds the site until the scan is retested.
+    """
     problems = []
     if server["server_uuid"] != target_uuid:
         problems.append(f"Server UUID {server['server_uuid']} is not the target {target_uuid}")
-    if not guard.matches(r"8\.4\.[0-9]+", server["version"]):
-        problems.append(f"Server version {server['version']} is not 8.4")
+    if server["version"] != binlog_scan.SERVER_VERSION:
+        problems.append(f"Server version {server['version']} is not {binlog_scan.SERVER_VERSION}, "
+                        "whose binary log text the activity scan reads")
     if server["skip_networking"] != 1:
         problems.append("The server accepts network connections (skip_networking is off)")
     return problems
@@ -236,18 +271,35 @@ def classify(config: dict, server: dict, state: dict) -> Gate:
     return gate
 
 
-def journal_mode(config: dict) -> str:
-    """strict with no journal or outside the frozen window, measured inside it (verifier correction 3)."""
+def read_journal(config: dict) -> dict | None:
     path = Path(config["paths"]["state"]) / "state.json"
     try:
-        journal = guard.read_json(guard.read_protected(path))
+        return guard.read_json(guard.read_protected(path))
     except FileNotFoundError:
+        return None
+
+
+def mode_of(journal: dict | None) -> str:
+    """strict with no journal or outside the frozen window, measured inside it (verifier correction 3)."""
+    if journal is None:
         return "strict"
     phase = journal.get("phase")
     if phase in STRICT_PHASES:
         return "strict"
     guard.require(phase in MEASURED_PHASES, "The cutover journal has an unknown phase")
     return "measured"
+
+
+def journal_mode(config: dict) -> str:
+    return mode_of(read_journal(config))
+
+
+def journal_run(journal: dict) -> str:
+    """The run the journal belongs to (the runner writes the pinned identity into it)."""
+    identity = journal.get("identity")
+    guard.require(isinstance(identity, dict) and guard.matches(host.RUN_ID, identity.get("run_id")),
+                  "The cutover journal names no run, so no receipt can be bound to it")
+    return identity["run_id"]
 
 
 def _protected(path: Path, *, secret: bool = False) -> None:
@@ -268,6 +320,17 @@ def _listening(path: str) -> bool:
     finally:
         probe.close()
     return True
+
+
+def _client_argv(mysql: dict, *, raw: bool) -> list[str]:
+    """The native client as the probe account over the socket, ending in `-e` (the statement follows).
+
+    `--raw` only for the gate read, whose JSON the server escapes. SHOW output keeps the client's batch
+    escaping, or a newline inside a statement's text would split its row.
+    """
+    return [mysql["client"], f"--defaults-file={mysql['probe_defaults']}", "--no-login-paths", "--protocol=SOCKET",
+            f"--socket={mysql['socket']}", "--batch", *(["--raw"] if raw else []), "--skip-column-names",
+            f"--connect-timeout={CONNECT_SECONDS}", "-e"]
 
 
 def _json_line(line: str, keys: set[str]) -> dict:
@@ -295,14 +358,10 @@ def read(config: dict, mode: str) -> tuple[dict, Gate]:
         raise Refusal(EXIT_UNRECOGNISED, "; ".join(problems), {**refused, "problems": problems})
     _protected(client)
     _protected(defaults, secret=True)
-    argv = [mysql["client"], f"--defaults-file={defaults}", "--no-login-paths", "--protocol=SOCKET",
-            f"--socket={mysql['socket']}", "--batch", "--raw", "--skip-column-names",
-            f"--connect-timeout={CONNECT_SECONDS}", "-e",
-            f"{server_statement()}; {state_statement(_accounts(config))}"]
+    argv = _client_argv(mysql, raw=True) + [f"{server_statement()}; {state_statement(_accounts(config))}"]
     try:
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                timeout=CLIENT_SECONDS, env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-                                                             "LANG": "C.UTF-8"})
+                                timeout=CLIENT_SECONDS, env=CLIENT_ENVIRONMENT)
     except subprocess.TimeoutExpired:
         raise Refusal(EXIT_UNRECOGNISED, "The MySQL server did not answer the probe",
                       {**refused, "problems": ["The server did not answer"]}) from None
@@ -340,34 +399,297 @@ def read(config: dict, mode: str) -> tuple[dict, Gate]:
     return server, gate
 
 
-def require_no_receipt(config: dict) -> None:
-    """Business activity is measured from the receipt by the binary log scan, which this build lacks."""
-    for name in ("receipt", "activity", "activated"):
-        path = Path(config["paths"][name])
-        guard.require(not (path.exists() or path.is_symlink()),
-                      f"A MySQL {name} record exists and this probe cannot scan the binary log; "
-                      "business activity is not reported")
+# The binary log (design 1.2): SHOW BINARY LOGS and SHOW BINLOG EVENTS as the probe account, which has
+# REPLICATION CLIENT and REPLICATION SLAVE (accounts.sql). There is no mysqlbinlog on the host to rely on.
+
+def _show(config: dict, statement: str) -> bytes:
+    argv = _client_argv(config["mysql"], raw=False) + [statement]
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=CLIENT_SECONDS,
+                                env=CLIENT_ENVIRONMENT)
+    except subprocess.TimeoutExpired:
+        raise Unreadable("The MySQL server did not answer a binary log read") from None
+    if result.returncode != 0:
+        error = result.stderr.decode("utf-8", "replace").strip()
+        raise Unreadable(f"The binary log is not readable: {error[:500] or 'no output'}")
+    return result.stdout
+
+
+def scan_from(config: dict, start: Coordinate,
+              history: GtidSet | None = None) -> tuple[binlog_scan.Result, Coordinate, str]:
+    """Scan from `start` to the end of the last listed file.
+
+    Also returns the coordinate and gtid_executed read before the scan, so every event before that
+    coordinate was scanned. Raises Purged if `start` is no longer listed, or if gtid_executed no longer
+    holds `history` (a RESET BINARY LOGS AND GTIDS reuses the file names).
+    """
+    (until, executed), logs = binlog_scan.parse_listing(_show(config, LISTING))
+    sizes = dict(logs)
+    if start.file not in sizes:
+        raise Purged(f"The binary log {start.file} is no longer listed (purged); the scan from "
+                     f"{start.file}:{start.position} cannot run")
+    if history is not None and not history.issubset(GtidSet.parse(executed)):
+        raise Purged("gtid_executed no longer holds the receipt's backup GTIDs: the binary log history was reset")
+    if start.position > sizes[start.file]:
+        raise Unreadable(f"{start.file} is shorter than the scan's start position {start.position}")
+
+    def fetch(name: str, position: int | None, offset: int, count: int) -> list[binlog_scan.Event]:
+        # Names come from the listing (binlog_scan.LOG_NAME), so they quote safely.
+        start_at = "" if position is None else f" FROM {position}"
+        return binlog_scan.parse_events(
+            _show(config, f"SHOW BINLOG EVENTS IN '{name}'{start_at} LIMIT {offset}, {count}"), name)
+
+    events = binlog_scan.walk(fetch, [name for name, _ in logs], start)
+    return binlog_scan.scan(events, binlog_scan.Rules.from_config(config["mysql"])), until, executed
+
+
+def _refused(code: int, message: str, base: dict) -> Refusal:
+    return Refusal(code, message, {**base, "problems": [message]})
+
+
+def _scan(config: dict, start: Coordinate, base: dict, history: GtidSet | None = None):
+    try:
+        return scan_from(config, start, history)
+    except Purged as error:
+        raise _refused(EXIT_PURGED, str(error), base) from None
+    except Unreadable as error:
+        raise _refused(EXIT_UNRECOGNISED, str(error), base) from None
+
+
+# Records under the journal directory, each root-owned in a root chain (guard.read_protected).
+
+def _present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _record(path: Path) -> tuple[bytes, dict] | None:
+    try:
+        raw = guard.read_protected(path)
+    except FileNotFoundError:
+        return None
+    return raw, guard.read_json(raw)
+
+
+def _coordinate(value: object, keys: set[str], what: str) -> Coordinate:
+    guard.require(isinstance(value, dict) and value.keys() == keys
+                  and guard.matches(binlog_scan.LOG_NAME, value["file"])
+                  and type(value["position"]) is int and value["position"] >= 4, f"The MySQL {what} is malformed")
+    return Coordinate(value["file"], value["position"])
+
+
+def _gtid_set(value: object, what: str) -> GtidSet:
+    guard.require(isinstance(value, str), f"The MySQL {what} is malformed")
+    try:
+        return GtidSet.parse(value)
+    except Unreadable as error:
+        raise guard.Refused(f"The MySQL {what} is malformed: {error}") from None
+
+
+def _sha256(value: object) -> bool:
+    return guard.matches(r"[0-9a-f]{64}", value)
+
+
+@dataclass(frozen=True)
+class Receipt:
+    sha256: str
+    armed_from: Coordinate
+    backup: GtidSet
+
+
+def load_receipt(config: dict, run: str, server: dict, base: dict) -> Receipt | None:
+    """prepare's receipt (design 1.2, 3.2 step 10) if it is this run's; another run's is ignored."""
+    loaded = _record(Path(config["paths"]["receipt"]))
+    if loaded is None:
+        return None
+    raw, record = loaded
+    guard.require(record.keys() == RECEIPT_KEYS and guard.matches(host.RUN_ID, record["run_id"])
+                  and guard.valid_uuid(record["server_uuid"]) and guard.matches(host.SQL_NAME, record["database"]),
+                  "The MySQL receipt is malformed")
+    armed_from = _coordinate(record["armed_from"], COORDINATE_KEYS, "receipt")
+    _coordinate(record["backup"], BACKUP_KEYS, "receipt")
+    backup = _gtid_set(record["backup"]["gtid_executed"], "receipt")
+    if record["run_id"] != run:
+        return None
+    if (record["server_uuid"], record["database"]) != (server["server_uuid"], config["mysql"]["database"]):
+        raise _refused(EXIT_UNRECOGNISED, "The receipt of this run names another server or database", base)
+    return Receipt(guard.sha256(raw), armed_from, backup)
+
+
+def load_latch(config: dict, run: str, receipt: Receipt | None) -> dict | None:
+    """The activity latch, if it belongs to this run's current receipt; a stale one is ignored."""
+    loaded = _record(Path(config["paths"]["activity"]))
+    if loaded is None:
+        return None
+    _, record = loaded
+    boundary = record.get("boundary")
+    guard.require(record.keys() == LATCH_KEYS and guard.matches(host.RUN_ID, record["run_id"])
+                  and _sha256(record["receipt_sha256"]) and isinstance(record["file"], str)
+                  and type(record["position"]) is int and type(record["foreign_activity"]) is bool
+                  and all(isinstance(record[name], list) and all(isinstance(item, str) for item in record[name])
+                          for name in ("tables", "statements"))
+                  and (boundary is None or (isinstance(boundary, dict) and boundary.keys() == {"file", "position",
+                                                                                               "gtid"})),
+                  "The MySQL activity latch is malformed")
+    if receipt is None or (record["run_id"], record["receipt_sha256"]) != (run, receipt.sha256):
+        return None
+    return record
+
+
+def load_activated(config: dict, run: str, server: dict, base: dict) -> dict | None:
+    """The MySQL reopen's activation record (design 3.6 step 16) if it is this run's."""
+    loaded = _record(Path(config["paths"]["activated"]))
+    if loaded is None:
+        return None
+    _, record = loaded
+    guard.require(record.keys() == ACTIVATED_KEYS and guard.matches(host.RUN_ID, record["run_id"])
+                  and guard.valid_uuid(record["server_uuid"]) and isinstance(record["database"], str)
+                  and _sha256(record["receipt_sha256"]), "The MySQL activation record is malformed")
+    if record["run_id"] != run:
+        return None
+    if (record["server_uuid"], record["database"]) != (server["server_uuid"], config["mysql"]["database"]):
+        raise _refused(EXIT_UNRECOGNISED, "The activation record of this run names another server or database", base)
+    return record
+
+
+def load_window(config: dict, run: str, receipt: Receipt) -> tuple[GtidSet, GtidSet, dict] | None:
+    """The smoke window (design 3.6 step 7) if it belongs to this run's receipt; else every business
+    transaction stays business in the audit."""
+    loaded = _record(Path(config["paths"]["smoke_window"]))
+    if loaded is None:
+        return None
+    _, record = loaded
+    guard.require(record.keys() == WINDOW_KEYS and guard.matches(host.RUN_ID, record["run_id"])
+                  and _sha256(record["receipt_sha256"]) and isinstance(record["report"], dict),
+                  "The MySQL smoke window is malformed")
+    before, after = (_gtid_set(record[name], "smoke window") for name in ("gtid_before", "gtid_after"))
+    if (record["run_id"], record["receipt_sha256"]) != (run, receipt.sha256):
+        return None
+    return before, after, record
+
+
+def _latch(config: dict, run: str, receipt: Receipt, result: binlog_scan.Result) -> None:
+    first = result.business[0].record()
+    host._write_atomic(Path(config["paths"]["activity"]), {
+        "version": 1, "run_id": run, "receipt_sha256": receipt.sha256, "gtid": first["gtid"], "file": first["file"],
+        "position": first["position"], "tables": first["tables"], "statements": first["statements"],
+        "boundary": result.boundary, "foreign_activity": result.foreign_activity,
+    }, 0o600)
+
+
+NO_ACTIVITY = {"business_activity": False, "foreign_activity": False, "boundary": None, "receipt": None,
+               "scanned_events": 0}
+
+
+def activity(config: dict, journal: dict | None, server: dict, base: dict) -> dict:
+    """Business and foreign activity for this run (design 1.2): activation record, latch or scan."""
+    paths = config["paths"]
+    if journal is None or not any(_present(Path(paths[name])) for name in ("receipt", "activity", "activated")):
+        return dict(NO_ACTIVITY)
+    run = journal_run(journal)
+    activated = load_activated(config, run, server, base)
+    receipt = load_receipt(config, run, server, base)
+    latch = load_latch(config, run, receipt)
+    sha = None if receipt is None else receipt.sha256
+    if activated is not None or latch is not None:
+        # No scan: after the reopen (or the first hit) business activity stays true, purge or not.
+        return {"business_activity": True, "foreign_activity": bool(latch and latch["foreign_activity"]),
+                "boundary": None if latch is None else latch["boundary"], "receipt": sha, "scanned_events": 0}
+    if receipt is None:
+        return dict(NO_ACTIVITY)
+    result, _, _ = _scan(config, receipt.armed_from, base, receipt.backup)
+    if result.business_activity:
+        _latch(config, run, receipt, result)
+    return {"business_activity": result.business_activity, "foreign_activity": result.foreign_activity,
+            "boundary": result.boundary, "receipt": sha, "scanned_events": result.events}
+
+
+def _base(config: dict, server: dict, gate: Gate, mode: str) -> dict:
+    """What every reading after the gate read carries, refused or not."""
+    return {"version": VERSION, "reachable": True, "server_uuid": server["server_uuid"],
+            "database": config["mysql"]["database"], "gate": gate.name, "mode": mode,
+            "open_privileges": gate.open_privileges}
 
 
 def observe(config: dict) -> dict:
-    mode = journal_mode(config)
+    journal = read_journal(config)
+    mode = mode_of(journal)
     server, gate = read(config, mode)
-    require_no_receipt(config)
+    base = _base(config, server, gate, mode)
+    measured = activity(config, journal, server, base)
+    if mode == "strict" and measured["business_activity"]:
+        raise _refused(EXIT_UNRECOGNISED, "MySQL has business activity outside the frozen window, where only "
+                                          "no activity is accepted", base)
     return {"version": VERSION, "reachable": True, "server_uuid": server["server_uuid"],
             "database": config["mysql"]["database"], "gate": gate.name, "writable": gate.name == "open",
-            "business_activity": False, "foreign_activity": False, "boundary": None, "receipt": None,
-            "gated_sessions": len(gate.sessions), "scanned_events": 0, "mode": mode}
+            **measured, "gated_sessions": len(gate.sessions), "mode": mode}
+
+
+def _listing(base: dict) -> dict:
+    return {name: value for name, value in base.items() if name != "open_privileges"}
+
+
+def audit(config: dict) -> dict:
+    """Every app-schema transaction after armed_from as foreign, smoke or business (design 4.3)."""
+    journal = read_journal(config)
+    mode = mode_of(journal)
+    server, gate = read(config, mode)
+    base = _base(config, server, gate, mode)
+    run = None if journal is None else journal_run(journal)
+    receipt = None if run is None else load_receipt(config, run, server, base)
+    if receipt is None:
+        raise _refused(EXIT_UNRECOGNISED, "No receipt of this run: nothing to audit", base)
+    window = load_window(config, run, receipt)
+    result, _, _ = _scan(config, receipt.armed_from, base, receipt.backup)
+    listed = binlog_scan.audit(result, frozenset(config["mysql"]["smoke_tables"]),
+                               None if window is None else window[:2])
+    return {**_listing(base), "receipt": receipt.sha256, "armed_from": receipt.armed_from.record(),
+            "boundary": result.boundary,
+            "smoke_window": None if window is None else {name: window[2][name] for name in ("gtid_before",
+                                                                                            "gtid_after")},
+            "transactions": listed,
+            "counts": {name: sum(1 for item in listed if item["class"] == name)
+                       for name in ("foreign", "smoke", "business")},
+            "scanned_events": result.events}
+
+
+def since(config: dict, start: Coordinate) -> dict:
+    """Every app-schema transaction from `start`, and the coordinate read before the scan (prepare 3.2)."""
+    journal = read_journal(config)
+    mode = mode_of(journal)
+    server, gate = read(config, mode)
+    base = _base(config, server, gate, mode)
+    result, until, executed = _scan(config, start, base)
+    return {**_listing(base), "since": start.record(), "until": {**until.record(), "gtid_executed": executed},
+            "boundary": result.boundary, "transactions": [item.record() for item in result.transactions],
+            "scanned_events": result.events}
+
+
+def _since_argument(value: str) -> Coordinate:
+    match = re.fullmatch(f"({binlog_scan.LOG_NAME}):([0-9]{{1,19}})", value)
+    if match is None or int(match.group(2)) < 4:
+        raise argparse.ArgumentTypeError("expected <binary log file>:<position>")
+    return Coordinate(match.group(1), int(match.group(2)))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--audit", action="store_true",
+                       help="list every app-schema transaction after the receipt's armed_from (design 4.3)")
+    modes.add_argument("--since", type=_since_argument, metavar="FILE:POSITION",
+                       help="list every app-schema transaction from a coordinate (prepare, design 3.2)")
     args = parser.parse_args(argv)
     try:
         if sys.platform != "linux" or os.geteuid() != 0:
             raise guard.Refused("The MySQL probe runs as root on the Linux host")
         config = host.load_config(guard.read_protected(args.config), read=guard.read_protected)
-        output = observe(config)
+        if args.audit:
+            output = audit(config)
+        elif args.since is not None:
+            output = since(config, args.since)
+        else:
+            output = observe(config)
     except Refusal as refusal:
         print(json.dumps(refusal.output, sort_keys=True))
         print(f"MySQL probe: {refusal}", file=sys.stderr)
