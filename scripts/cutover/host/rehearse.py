@@ -19,7 +19,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 from scripts.cutover.fence import guard
-from scripts.cutover.runner import Evidence, Identity, Journal, Observation, Runner, SchedulerDrain, UnsafeCutover, digest
+from scripts.cutover.runner import (
+    DRAIN_PURPOSES, Evidence, Identity, Journal, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
+)
 
 PRIVATE = Path("/private")
 SOURCE = PRIVATE / "source.sqlite"
@@ -278,11 +280,14 @@ class ContainerRehearsal:
         require(self.queue("work") == {"admission_held": True}, "Fixture queue worker escaped the hold")
         require(time.time() < deadline, "Fixture hold deadline expired")
 
-    def drain(self, lease, deadline):
+    def drain(self, lease, deadline, *, purpose):
         # One-shot fixture workers exit by themselves; admitted requests hold
         # the shared lease, which the runner drains next.
+        require(purpose in DRAIN_PURPOSES, "The drain purpose must be freeze or rollback")
         lease.require_current()
         require(time.time() < deadline, "Fixture drain deadline expired")
+        # This fixture's PHP-FPM has no drain report (design 5.4), so the runner journals none.
+        return None
 
     def before_hold(self):
         # A subclass can start an already-admitted writer here.

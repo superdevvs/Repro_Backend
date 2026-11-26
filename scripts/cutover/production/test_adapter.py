@@ -15,6 +15,7 @@ import time
 import unittest
 import uuid
 from contextlib import contextmanager, redirect_stdout
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,6 +77,13 @@ def probe_reading(gate="closed", **changes):
             "gate": gate, "writable": gate == "open", "business_activity": False, "foreign_activity": False,
             "boundary": None, "receipt": None, "gated_sessions": 0, "scanned_events": 0, "mode": "measured",
             **changes}
+
+
+def drain_report(outcome, **changes):
+    """fpm_drain.py's report (design 5.4), the one JSON object it prints on stdout; here an idle `www` pool."""
+    return {"version": 1, "outcome": outcome, "limit_seconds": 90, "waited_seconds": 0.5, "polls": 2, "pool": "www",
+            "accepted_conn": 7, "active_processes": 0, "idle_processes": 2, "total_processes": 2, "listen_queue": 0,
+            "problem": None, **changes}
 # The root fixture's stand-in for /usr/bin/php (adapter.QUEUE_PHP) in design 5.1's exact queue command. It runs
 # as www-data after the script's `cd <app_root>`, reads the app root's fake-php.json, waits `seconds`, touches a
 # flag in `flags` if one is named, and records [verb, queue] in `log`.
@@ -714,6 +722,9 @@ class ProductionAdapterTests(unittest.TestCase):
         php = patch.object(production, "QUEUE_PHP", str(self.php))
         php.start()
         self.addCleanup(php.stop)
+        # The fixture's fpm_drain.py prints the report in this file: a drained pool unless a test sets another.
+        self.fpm_report = self.root / "etc" / "fpm-report.json"
+        self.set_fpm_report(drain_report("drained"))
         self.config_path = self.root / "etc" / "host.json"
         self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
         (self.root / "etc" / "identity.json").write_text(json.dumps(example_identity(self.config())), encoding="utf-8")
@@ -731,6 +742,20 @@ class ProductionAdapterTests(unittest.TestCase):
         return [sys.executable, "-c",
                 "import json, sys; open(sys.argv[1], 'a').write(json.dumps(sys.argv[2:]) + '\\n')", str(self.log), name]
 
+    def set_fpm_report(self, report):
+        """What the fixture's fpm_drain.py prints next: a report as JSON, or a text as it is."""
+        self.fpm_report.write_text(report if isinstance(report, str) else json.dumps(report), encoding="utf-8")
+
+    def fpm_drain(self):
+        """drain_fpm's first command, fpm_drain.py: records ["drain-fpm"] and prints the report file."""
+        return [sys.executable, "-c",
+                "import json, sys; open(sys.argv[1], 'a').write(json.dumps(['drain-fpm']) + '\\n'); "
+                "sys.stdout.write(open(sys.argv[2], encoding='utf-8').read())", str(self.log), str(self.fpm_report)]
+
+    def drains(self, since=0):
+        """The stop, FPM drain and FPM stop commands run since the given command count, in order."""
+        return [entry for entry in self.commands()[since:] if entry[0] in ("stop", "drain-fpm", "fpm-stop")]
+
     def write_cache(self, vector, **changes):
         """bootstrap/cache/config.php for a route-hash vector's config, with top-level sections replaced."""
         self.cache.write_bytes(cache_text({**vector["config"], **changes}))
@@ -741,16 +766,20 @@ class ProductionAdapterTests(unittest.TestCase):
         (self.app / ".env").write_text(text, encoding="utf-8")
 
     def mysql_probe_answer(self, config):
-        """The MySQL probe answers from a file: set(output, code) changes its next readings."""
+        """The MySQL probe answers from a file: set(output, code) changes its next readings.
+
+        The output is printed as JSON; set(text, code, raw=True) prints the text itself.
+        """
         answer = self.root / "etc" / "mysql-answer.json"
 
-        def set_answer(output, code=0):
-            answer.write_text(json.dumps({"code": code, "stdout": output}), encoding="utf-8")
+        def set_answer(output, code=0, raw=False):
+            answer.write_text(json.dumps({"code": code, "stdout": output, "raw": raw}), encoding="utf-8")
 
         set_answer({"writable": False, "business_activity": False})
         config["commands"]["mysql"] = [
             sys.executable, "-c",
-            "import json, sys; answer = json.load(open(sys.argv[1])); print(json.dumps(answer['stdout'])); "
+            "import json, sys; answer = json.load(open(sys.argv[1])); "
+            "print(answer['stdout'] if answer['raw'] else json.dumps(answer['stdout'])); "
             "sys.exit(answer['code'])", str(answer)]
         return set_answer
 
@@ -847,7 +876,8 @@ class ProductionAdapterTests(unittest.TestCase):
             "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
                              self.record("stop")],
             "start_workers": [self.record("start")],
-            "drain_fpm": [self.record("drain-fpm")],
+            # Design 5.4: fpm_drain.py, which prints its report, then the FPM stop.
+            "drain_fpm": [self.fpm_drain(), self.record("fpm-stop")],
         })
         return {**config, **overrides}
 
@@ -1492,6 +1522,49 @@ class ProductionAdapterTests(unittest.TestCase):
                 answer(output, code=code)
                 with self.assertRaises(UnsafeCutover):
                     adapter.observe()
+        # Exits 4 to 6 are refusals even when their output looks like a closed, quiet reading (design 4.7).
+        for code in (4, 5, 6):
+            with self.subTest(code=code, quiet=True):
+                answer(probe_reading("closed", problems=["The gate is partial"]), code=code)
+                with self.assertRaisesRegex(UnsafeCutover, rf"refused the reading \(exit {code}\)"):
+                    adapter.observe()
+
+    def test_refused_probe_reading_names_the_probe_problems(self):
+        # Exits 4 to 6 hold the site until a person acts (design 4.7). The refusal carries the probe's own
+        # problems list, which never holds a secret, so nobody has to rerun the probe to learn what it found.
+        config = self.config()
+        answer = self.mysql_probe_answer(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, _ = self.host()
+        prefix = "The MySQL target probe refused the reading"
+        problems = ["repro_app@localhost: the account is locked", "mandatory_roles is set: 'repro_role'"]
+        for code in (4, 5, 6):
+            with self.subTest(code=code):
+                answer({"version": 2, "reachable": True, "problems": problems}, code=code)
+                with self.assertRaises(UnsafeCutover) as refused:
+                    adapter.observe()
+                self.assertEqual(f"{prefix} (exit {code}): " + "; ".join(problems), str(refused.exception))
+        # A long list is cut to about 500 characters.
+        answer({"problems": ["x" * 2000, "never shown"]}, code=5)
+        with self.assertRaises(UnsafeCutover) as refused:
+            adapter.observe()
+        message = str(refused.exception)
+        self.assertIn("x" * 400, message)
+        self.assertLessEqual(len(message), len(f"{prefix} (exit 5): ") + 500)
+        self.assertNotIn("never shown", message)
+        # Output that is not a JSON object with a list of strings adds nothing; the exit is still refused.
+        for output, raw in (("not json", True), ("", True), (["a"], False), ({"problems": "partial"}, False),
+                            ({"problems": ["partial", 4]}, False), ({"problems": []}, False), ({}, False)):
+            with self.subTest(output=output):
+                answer(output, code=4, raw=raw)
+                with self.assertRaises(UnsafeCutover) as refused:
+                    adapter.observe()
+                self.assertEqual(f"{prefix} (exit 4)", str(refused.exception))
+        # Exit 1 is the probe's own refusal, not a reading: its output is not quoted.
+        answer({"problems": ["anything"]}, code=1)
+        with self.assertRaises(UnsafeCutover) as refused:
+            adapter.observe()
+        self.assertEqual(f"{prefix} (exit 1)", str(refused.exception))
 
     def test_real_probe_unreachable_is_false_only_while_writes_impossible(self):
         # The probe itself (mysql_probe.py as commands.mysql runs it), with no MySQL client, defaults file or
@@ -1562,6 +1635,14 @@ class ProductionAdapterTests(unittest.TestCase):
         with self.assertRaises(UnsafeCutover):
             adapter.reopen()
         self.assertFalse((self.root / "ingress" / "open").exists())
+        # What refresh publishes after a reboot (design 3.9) is measured the same way, never the pin.
+        self.assertEqual(measured, adapter.host_authority("sqlite").live_config_sha256)
+        # So refresh revokes the proof, measures the non-pinned cache, and guard.verify refuses: no proof is left.
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            self.assertEqual(1, self.cli("refresh")[0])
+        self.assertIn("configuration", errors.getvalue())
+        self.assertFalse(evidence_path.exists(), "refresh left a proof measured from a non-pinned cache")
         # With the pinned config back, the refresh measures the pin and the guard admits.
         self.write_cache(SQLITE_CONFIG)
         self.assertEqual(0, self.cli("refresh")[0])
@@ -1641,6 +1722,80 @@ class ProductionAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(UnsafeCutover, "fallback"):
             adapter.host_authority("mysql")
 
+    def test_mysql_refresh_measures_the_live_route_hash(self):
+        config = self.config()
+        answer = self.mysql_probe_answer(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        self.sealed_on_mysql(adapter)
+        answer(probe_reading("open"))
+        observed = adapter.observe()
+        self.assertTrue(observed.sealed("mysql"))
+        # A committed MySQL authority as promote leaves it (design 3.4), refreshed after a reboot (design 3.9).
+        journal.write({**journal.read(), "phase": "mysql_authoritative", "writes_possible": True,
+                       "started_at": int(time.time()), "pending": None,
+                       "history": [{"action": "promote", "phase": "mysql_authoritative", "after": asdict(observed)}]})
+        # The live MySQL cache routes the default cache store elsewhere: its hash is not the MySQL pin.
+        self.write_cache(MYSQL_CONFIG, cache={**MYSQL_CONFIG["config"]["cache"], "default": "database"})
+        measured = live_config.measure(self.app).live_config_sha256
+        self.assertNotEqual(MYSQL_CONFIG["route_sha256"], measured)
+        self.assertEqual(measured, adapter.host_authority("mysql").live_config_sha256)
+        evidence = self.root / "run" / "verified-engine.json"
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            self.assertEqual(1, self.cli("refresh")[0])
+        self.assertIn("configuration", errors.getvalue())
+        self.assertFalse(evidence.exists(), "refresh left a proof measured from a non-pinned MySQL cache")
+        # The pinned MySQL cache back: refresh measures the pin and the guard admits MySQL writers.
+        self.write_cache(MYSQL_CONFIG)
+        self.assertEqual(0, self.cli("refresh")[0])
+        guard.verify((self.root / "etc" / "policy.json").read_bytes(), journal.path.read_bytes(), evidence.read_bytes(),
+                     machine_sha=guard.sha256((self.root / "machine-id").read_bytes()),
+                     boot_id=self.boot.read_text().strip(), action="web-writer", expected_engine="mysql")
+
+    def identity_probe_answer(self, config):
+        """The identity probe answers from a file: set(identity) changes what its next runs measure."""
+        answer = self.root / "etc" / "identity-answer.json"
+
+        def set_identity(identity):
+            answer.write_text(json.dumps(identity), encoding="utf-8")
+
+        set_identity(IDENTITY.__dict__)
+        config["commands"]["identity"] = [sys.executable, "-c", "import sys; print(open(sys.argv[1]).read())",
+                                          str(answer), "--config", config["paths"]["identity_config"]]
+        return set_identity
+
+    def test_publication_records_the_measured_source_identity(self):
+        config = self.config()
+        set_identity = self.identity_probe_answer(config)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("freeze")
+        runner.perform("abort")
+        evidence = self.root / "run" / "verified-engine.json"
+        policy = (self.root / "etc" / "policy.json").read_bytes()
+        host = {"machine_sha": guard.sha256((self.root / "machine-id").read_bytes()),
+                "boot_id": self.boot.read_text().strip()}
+        # For one publication the identity probe measures another source file. (The runner compares the whole
+        # identity before every action, so only a direct publication gets this far.)
+        other = "e" * 64
+        set_identity({**IDENTITY.__dict__, "source_sha256": other})
+        with self.drained(journal) as lease:
+            candidate = journal.path.read_bytes()
+            adapter.publish_authority(lease, "sqlite", candidate, time.time() + 60)
+        self.assertEqual(other, json.loads(evidence.read_text())["database_identity"])
+        with self.assertRaisesRegex(guard.Refused, "engine, configuration"):
+            guard.verify(policy, candidate, evidence.read_bytes(), **host, action="queue-worker",
+                         expected_engine="sqlite")
+        # The pinned source measured again: the same publication admits.
+        set_identity(IDENTITY.__dict__)
+        with self.drained(journal) as lease:
+            candidate = journal.path.read_bytes()
+            adapter.publish_authority(lease, "sqlite", candidate, time.time() + 60)
+        self.assertEqual(IDENTITY.source_sha256, json.loads(evidence.read_text())["database_identity"])
+        guard.verify(policy, candidate, evidence.read_bytes(), **host, action="queue-worker", expected_engine="sqlite")
+
     def test_real_probe_reading_gives_mysql_authority_the_server_uuid(self):
         # mysql_probe.py against D04's fixture (built from accounts.sql), as commands.mysql runs it on the host.
         fixture = self.probe_fixture()
@@ -1691,12 +1846,14 @@ class ProductionAdapterTests(unittest.TestCase):
                         "c.executemany('INSERT INTO t VALUES (?)', [(n,) for n in range(1000)]); c.commit()",
                         str(self.database)], check=True)
         runner.perform("hold", runner.approval_request("hold"))
-        runner.perform("freeze")
+        state = runner.perform("freeze")
         path = self.root / "state" / "sealed-hash.json"
         info = path.lstat()
         self.assertEqual((0, 0o600), (info.st_uid, stat.S_IMODE(info.st_mode)))
         sealed = hashlib.sha256(self.database.read_bytes()).hexdigest()
-        record = {"version": 1, "run_id": IDENTITY.run_id, "database": str(self.database), "sha256": sealed}
+        # Bound to the run and to the journal's hold.
+        record = {"version": 1, "run_id": IDENTITY.run_id, "hold_id": state["hold"]["hold_id"],
+                  "started_at": state["started_at"], "database": str(self.database), "sha256": sealed}
         self.assertEqual(record, json.loads(path.read_text()))
         self.assertFalse(sqlite_seal.writable(self.database))
         # A repeated freeze of the unchanged sealed file keeps the record.
@@ -1713,8 +1870,56 @@ class ProductionAdapterTests(unittest.TestCase):
         path.write_text(json.dumps({**record, "run_id": "earlier-run", "sha256": "0" * 64}), encoding="utf-8")
         with self.drained(journal) as lease:
             adapter.freeze(lease, time.time() + 60)
-        self.assertEqual({**record, "sha256": hashlib.sha256(self.database.read_bytes()).hexdigest()},
-                         json.loads(path.read_text()))
+        record = {**record, "sha256": hashlib.sha256(self.database.read_bytes()).hexdigest()}
+        self.assertEqual(record, json.loads(path.read_text()))
+
+    def test_sealed_hash_is_bound_to_the_hold(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        state = runner.perform("freeze")
+        path = self.root / "state" / "sealed-hash.json"
+        first = json.loads(path.read_text())
+
+        def grow():
+            with open(self.database, "ab") as stream:
+                stream.write(b"\0" * 512)
+            return hashlib.sha256(self.database.read_bytes()).hexdigest()
+
+        def freeze():
+            with self.drained(journal) as lease:
+                adapter.freeze(lease, time.time() + 60)
+            return json.loads(path.read_text())
+
+        # The journal reset by hand and a new hold under the same run ID (a sandbox or local-drill rerun on the
+        # same root): its freeze hashes the file again instead of refusing it as changed.
+        new_hold = {**state["hold"], "hold_id": str(uuid.uuid4())}
+        journal.write({**journal.read(), "hold": new_hold, "started_at": state["started_at"] + 600})
+        sha256 = grow()
+        self.assertEqual({**first, "hold_id": new_hold["hold_id"], "started_at": state["started_at"] + 600,
+                          "sha256": sha256}, freeze())
+        # Within that hold, a changed file still refuses and keeps the record.
+        kept = json.loads(path.read_text())
+        grow()
+        with self.assertRaisesRegex(UnsafeCutover, "changed after the freeze"):
+            freeze()
+        self.assertEqual(kept, json.loads(path.read_text()))
+        # A journal without a hold ID binds to started_at: the same hold start compares, a new one replaces.
+        journal.write({key: value for key, value in journal.read().items() if key != "hold"})
+        sha256 = hashlib.sha256(self.database.read_bytes()).hexdigest()
+        self.assertEqual({**kept, "hold_id": None, "sha256": sha256}, freeze())
+        grow()
+        with self.assertRaisesRegex(UnsafeCutover, "changed after the freeze"):
+            freeze()
+        journal.write({**journal.read(), "started_at": state["started_at"] + 1200})
+        sha256 = hashlib.sha256(self.database.read_bytes()).hexdigest()
+        self.assertEqual({**kept, "hold_id": None, "started_at": state["started_at"] + 1200, "sha256": sha256},
+                         freeze())
+        # A journal with neither has no hold to bind the hash to: the freeze refuses and keeps the record.
+        kept = json.loads(path.read_text())
+        journal.write({**journal.read(), "started_at": None})
+        with self.assertRaisesRegex(UnsafeCutover, "no hold"):
+            freeze()
+        self.assertEqual(kept, json.loads(path.read_text()))
 
     def test_directory_at_sqlite_path_is_never_observed_writable(self):
         journal, adapter, _ = self.host()
@@ -1724,6 +1929,119 @@ class ProductionAdapterTests(unittest.TestCase):
             companion.unlink(missing_ok=True)
         self.database.mkdir(mode=0o755)
         self.assertFalse(adapter.observe().sqlite_writable)
+
+    # The FPM drain report (design 5.4; the drain contract of review A2-2 and A2-3).
+
+    def test_freeze_refuses_an_unmonitored_pool_before_the_fpm_stop(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        problem = "the pool listens but nothing answers at its status socket"
+        unmonitored = drain_report("unmonitored", waited_seconds=0.0, polls=0, pool=None, accepted_conn=None,
+                                   active_processes=None, idle_processes=None, total_processes=None,
+                                   listen_queue=None, problem=problem)
+        self.set_fpm_report(unmonitored)
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, problem):
+            runner.perform("freeze")
+        self.assertEqual([["stop"], ["drain-fpm"]], self.drains(before), "the FPM stop ran after an unmonitored drain")
+        state = journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+        self.assertTrue(sqlite_seal.writable(self.database), "the freeze went on to seal SQLite")
+        # The rollback drains for the rollback: it records the outcome and always runs the stop.
+        before = len(self.commands())
+        state = runner.perform("abort")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertEqual([["stop"], ["drain-fpm"], ["fpm-stop"]], self.drains(before))
+        self.assertEqual({"purpose": "rollback", "outcome": "unmonitored", "active_processes": None,
+                          "waited_seconds": 0.0, "problem": problem}, state["history"][-1]["fpm_drain"])
+        self.assertEqual(state, journal.read())
+
+    def test_freeze_refuses_a_drain_outcome_it_does_not_know(self):
+        journal, adapter, runner = self.started()
+        for outcome in ("paused", "", "Drained"):
+            with self.subTest(outcome=outcome):
+                self.set_fpm_report(drain_report(outcome))
+                before = len(self.commands())
+                with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "FPM drain"):
+                    adapter.drain(lease, time.time() + 60, purpose="freeze")
+                self.assertEqual([["stop"], ["drain-fpm"]], self.drains(before))
+                # A rollback records it and goes on to the stop.
+                before = len(self.commands())
+                with self.drained(journal) as lease:
+                    record = adapter.drain(lease, time.time() + 60, purpose="rollback")
+                self.assertEqual(outcome, record["outcome"])
+                self.assertEqual([["stop"], ["drain-fpm"], ["fpm-stop"]], self.drains(before))
+
+    def test_drained_and_timed_out_reports_are_journalled_with_their_counts(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        # A request ran past fpm.drain_seconds: the drain timed out, the stop ends it, and the freeze goes on.
+        self.set_fpm_report(drain_report("timed_out", waited_seconds=90.002, active_processes=2, idle_processes=0,
+                                         problem="timed out"))
+        before = len(self.commands())
+        state = runner.perform("freeze")
+        self.assertEqual("frozen", state["phase"])
+        self.assertEqual([["stop"], ["drain-fpm"], ["fpm-stop"]], self.drains(before))
+        self.assertEqual({"purpose": "freeze", "outcome": "timed_out", "active_processes": 2, "waited_seconds": 90.002,
+                          "problem": "timed out"}, state["history"][-1]["fpm_drain"])
+        self.set_fpm_report(drain_report("drained", waited_seconds=1.25))
+        state = runner.perform("abort")
+        self.assertEqual({"purpose": "rollback", "outcome": "drained", "active_processes": 0, "waited_seconds": 1.25,
+                          "problem": None}, state["history"][-1]["fpm_drain"])
+        self.assertEqual(state, journal.read())
+        # Only the outcome, the counts and the problem are kept; a report without them gives outcome and purpose.
+        self.set_fpm_report({"outcome": "stopped", "pool": "www", "secret_looking": "x"})
+        with self.drained(journal) as lease:
+            self.assertEqual({"purpose": "freeze", "outcome": "stopped"},
+                             adapter.drain(lease, time.time() + 60, purpose="freeze"))
+        # A long problem is cut, so the journal stays within what the guard reads.
+        self.set_fpm_report(drain_report("timed_out", problem="p" * 5000))
+        with self.drained(journal) as lease:
+            self.assertEqual(500, len(adapter.drain(lease, time.time() + 60, purpose="rollback")["problem"]))
+
+    def test_drain_report_must_be_one_json_object_with_an_outcome(self):
+        journal, adapter, runner = self.started()
+        for text in ("", "not json", "[]", '"drained"', "null", '{"outcome": 1}', "{}",
+                     '{"outcome": "drained"} {"outcome": "drained"}', '{"outcome": "drained", "waited_seconds": NaN}',
+                     # Not JSON even in a key the record does not keep.
+                     '{"outcome": "drained", "limit_seconds": Infinity}',
+                     '{"outcome": "drained", "outcome": "stopped"}', '{"outcome": "drained", "active_processes": "0"}',
+                     '{"outcome": "drained", "active_processes": true}', '{"outcome": "drained", "active_processes": -1}',
+                     '{"outcome": "drained", "waited_seconds": -1}', '{"outcome": "drained", "waited_seconds": "1"}',
+                     '{"outcome": "drained", "problem": 5}'):
+            for purpose in ("freeze", "rollback"):
+                with self.subTest(text=text, purpose=purpose):
+                    self.set_fpm_report(text)
+                    before = len(self.commands())
+                    with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "FPM drain report"):
+                        adapter.drain(lease, time.time() + 60, purpose=purpose)
+                    self.assertEqual([["stop"], ["drain-fpm"]], self.drains(before))
+
+    def test_drain_purpose_is_required_and_checked(self):
+        journal, adapter, runner = self.started()
+        before = len(self.commands())
+        with self.drained(journal) as lease:
+            with self.assertRaises(TypeError):
+                adapter.drain(lease, time.time() + 60)
+            for purpose in ("", "Freeze", "reopen", None, ["freeze"]):
+                with self.subTest(purpose=purpose), self.assertRaisesRegex(UnsafeCutover, "purpose"):
+                    adapter.drain(lease, time.time() + 60, purpose=purpose)
+        self.assertEqual([], self.commands()[before:], "a drain ran without a known purpose")
+
+    def test_freeze_needs_the_fpm_drain_report(self):
+        # drain_fpm is fpm_drain.py then the stop (design 5.4). Without it a freeze has nothing to record.
+        config = self.config()
+        config["commands"]["drain_fpm"] = []
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        before = len(self.commands())
+        with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "drain_fpm"):
+            adapter.drain(lease, time.time() + 60, purpose="freeze")
+        self.assertEqual([], self.drains(before), "the freeze stopped workers before refusing")
+        # A rollback still stops the workers.
+        with self.drained(journal) as lease:
+            self.assertIsNone(adapter.drain(lease, time.time() + 60, purpose="rollback"))
+        self.assertEqual([["stop"]], self.drains(before))
 
 
 @unittest.skipUnless(os.name == "posix", "Host config paths are POSIX absolute paths")

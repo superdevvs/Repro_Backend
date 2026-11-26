@@ -6,9 +6,10 @@ Every effect is idempotent and re-observable, as the runner requires:
   once), publishes the deployment fence under both deploy locks and pauses
   every queue;
 - drain stops the worker groups, drains PHP-FPM and waits until no writer
-  process remains;
-- freeze seals the SQLite file and records its SHA-256 for this run (design
-  3.2 step 3); seal_sqlite restores its modes for rollback;
+  process remains, and returns the drain report's record for the journal; a
+  freeze refuses a pool the drain could not watch, a rollback always stops it;
+- freeze seals the SQLite file and records its SHA-256 for this run and hold
+  (design 3.2 step 3); seal_sqlite restores its modes for rollback;
 - publish_authority writes the boot-bound authority proof, measured: the live
   config's route hash, the identity probe's release, artifact and source, and
   for MySQL the server UUID the probe read (design 3.4);
@@ -29,6 +30,7 @@ run in its own process group, which a timeout or an interrupt kills whole.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -50,7 +52,7 @@ import deploy_marker  # noqa: E402
 import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
 from runner import (  # noqa: E402
-    Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
+    DRAIN_PURPOSES, Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
 )
 
 NOT_SUPPORTED = "This adapter supports the SQLite hold, freeze and rollback only"
@@ -58,6 +60,13 @@ CHILD_TAG = "REPRO_CUTOVER_CHILD"
 POLL_SECONDS = 0.25
 # The MySQL probe's exit status when nothing listens at the socket, and all it prints then (design 1.2).
 MYSQL_UNREACHABLE = 3
+# Its refusals that hold the site until a person acts (design 4.7): stdout carries a "problems" list of texts
+# that never hold a secret, quoted in the refusal up to this many characters.
+MYSQL_REFUSALS = (4, 5, 6)
+PROBLEM_CHARACTERS = 500
+# fpm_drain.py's outcomes (design 5.4). A freeze goes on after these; any other refuses it, "unmonitored"
+# (the pool listens, but its status page cannot be read) included. A rollback records any outcome and stops FPM.
+FREEZE_DRAIN_OUTCOMES = ("drained", "timed_out", "stopped")
 ENGINE_NAMES = {"sqlite": "SQLite", "mysql": "MySQL"}
 PATHS = {"state", "policy", "evidence", "activation", "machine_id", "boot_id", "ingress_open", "deploy_marker",
          "scheduler_hold", "sqlite_seal_record", "identity_config", "switch_record", "sealed_hash", "receipt",
@@ -175,6 +184,75 @@ def _spares_capture(pattern: str) -> bool:
     """A process pattern that matches neither php-fpm by name nor the Telnyx capture's master or pool."""
     return (CAPTURE_NAME not in pattern and "php-fpm" not in pattern
             and not any(pattern in line for line in CAPTURE_COMMAND_LINES))
+
+
+def _json_object(text: str) -> dict | None:
+    """The one JSON object in a host command's output, or None: no NaN or Infinity, no repeated key."""
+    def unique(pairs: list) -> dict:
+        record = dict(pairs)
+        if len(record) != len(pairs):
+            raise ValueError("repeated key")
+        return record
+
+    def constant(name: str):
+        raise ValueError(f"{name} is not JSON")
+
+    try:
+        value = json.loads(text, object_pairs_hook=unique, parse_constant=constant)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _probe_problems(output: str) -> str:
+    """A refused MySQL probe reading's own "problems" texts, joined and cut to PROBLEM_CHARACTERS, or ""."""
+    document = _json_object(output)
+    problems = None if document is None else document.get("problems")
+    if not (isinstance(problems, list) and problems and all(isinstance(item, str) for item in problems)):
+        return ""
+    text = "; ".join(problems)
+    return text if len(text) <= PROBLEM_CHARACTERS else text[:PROBLEM_CHARACTERS - 3] + "..."
+
+
+def _count(value) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _seconds(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+# The report keys the journal keeps besides the outcome, each when the report has it: a count, seconds or text.
+DRAIN_FIELDS = {"active_processes": _count, "waited_seconds": _seconds, "problem": lambda value: isinstance(value, str)}
+
+
+def _drain_record(output: str, purpose: str) -> dict:
+    """What the journal keeps of fpm_drain.py's report: purpose, outcome, active processes, wait and problem.
+
+    The report is the one JSON object fpm_drain.py prints on stdout. Anything else raises, whatever the purpose;
+    texts are cut to PROBLEM_CHARACTERS so the journal stays within what the guard reads.
+    """
+    report = _json_object(output)
+    if report is None or not isinstance(report.get("outcome"), str):
+        raise UnsafeCutover("The FPM drain report is not one JSON object with an outcome")
+    record = {"purpose": purpose, "outcome": report["outcome"][:PROBLEM_CHARACTERS]}
+    for key, valid in DRAIN_FIELDS.items():
+        if key in report:
+            if not (report[key] is None or valid(report[key])):
+                raise UnsafeCutover(f"The FPM drain report has a malformed {key}")
+            record[key] = report[key]
+    if isinstance(record.get("problem"), str):
+        record["problem"] = record["problem"][:PROBLEM_CHARACTERS]
+    return record
+
+
+def _require_freeze_drain(record: dict) -> None:
+    """A freeze goes on only after an outcome it knows; an FPM pool the drain could not watch keeps the hold."""
+    if record["outcome"] == "unmonitored":
+        raise UnsafeCutover(f"The FPM drain could not watch the pool ({record.get('problem') or 'no problem given'}); "
+                            "the freeze stops before the FPM stop and the hold stays")
+    if record["outcome"] not in FREEZE_DRAIN_OUTCOMES:
+        raise UnsafeCutover(f"The FPM drain report's outcome {record['outcome']!r} is not one the freeze knows")
 
 
 def load_identity_config(raw: bytes) -> dict:
@@ -465,7 +543,9 @@ class ProductionAdapter:
         """
         code, output = self._execute(self.config["commands"]["mysql"])
         if code not in (0, MYSQL_UNREACHABLE):
-            raise UnsafeCutover(f"The MySQL target probe refused the reading (exit {code})")
+            refused = f"The MySQL target probe refused the reading (exit {code})"
+            problems = _probe_problems(output) if code in MYSQL_REFUSALS else ""
+            raise UnsafeCutover(f"{refused}: {problems}" if problems else refused)
         try:
             observed = json.loads(output)
         except ValueError as error:
@@ -556,11 +636,33 @@ class ProductionAdapter:
         for queue in self.config["queues"]:
             self._run(self.config["commands"]["queue_pause"] + [queue], deadline)
 
-    def drain(self, lease: Lease, deadline: int) -> None:
+    def drain(self, lease: Lease, deadline: int, *, purpose: str) -> dict | None:
+        """Stop the worker groups, drain and stop PHP-FPM, then wait until no writer process remains.
+
+        drain_fpm is fpm_drain.py, then the FPM stop (design 5.4). The first command's stdout is fpm_drain's
+        report; its record (_drain_record) is returned for the runner to journal with the action. A freeze goes
+        on after drained, timed_out (the stop ends what still runs) or stopped, and refuses before any further
+        drain_fpm command on any other outcome, "unmonitored" included. A rollback records any outcome and
+        always runs the stop: nginx holds every request by then, so a pool it cannot watch protects nothing
+        (review A2-2). With no drain_fpm command a rollback returns None and a freeze refuses.
+        """
+        if purpose not in DRAIN_PURPOSES:
+            raise UnsafeCutover("The drain purpose must be freeze or rollback")
         lease.require_current()
-        for argv in self.config["commands"]["stop_workers"] + self.config["commands"]["drain_fpm"]:
+        commands = self.config["commands"]
+        if purpose == "freeze" and not commands["drain_fpm"]:
+            raise UnsafeCutover("The freeze needs drain_fpm: fpm_drain.py, then the FPM stop (design 5.4)")
+        for argv in commands["stop_workers"]:
             self._run(argv, deadline)
+        record = None
+        for index, argv in enumerate(commands["drain_fpm"]):
+            output = self._run(argv, deadline)
+            if index == 0:
+                record = _drain_record(output, purpose)
+                if purpose == "freeze":
+                    _require_freeze_drain(record)
         self._wait_absent(self.config["writer_processes"], deadline, "Writers are still running after the stop")
+        return record
 
     def _scheduler_closed(self) -> bool:
         state = self.journal.read()
@@ -590,18 +692,34 @@ class ProductionAdapter:
 
     def freeze(self, lease: Lease, deadline: int) -> None:
         lease.require_writers_drained()
+        hold = self._hold_binding()
         sqlite_seal.seal(self.database, self.paths["sqlite_seal_record"], proc=self.proc)
-        self._record_sealed_hash()
+        self._record_sealed_hash(hold)
 
-    def _record_sealed_hash(self) -> None:
-        """The sealed file's SHA-256 for this run, right after the seal (design 3.2 step 3).
+    def _hold_binding(self) -> dict:
+        """The journal's hold that a sealed hash belongs to: its hold_id, or its started_at, whichever it has."""
+        try:
+            state = self.journal.read()
+        except (OSError, ValueError) as error:
+            raise UnsafeCutover("The cutover journal cannot be read") from error
+        state = state if isinstance(state, dict) else {}
+        hold = state.get("hold")
+        hold_id = hold.get("hold_id") if isinstance(hold, dict) and isinstance(hold.get("hold_id"), str) else None
+        started_at = state.get("started_at") if type(state.get("started_at")) is int else None
+        if hold_id is None and started_at is None:
+            raise UnsafeCutover("The sealed SQLite hash is bound to the journal's hold, and the journal has no hold")
+        return {"hold_id": hold_id, "started_at": started_at}
+
+    def _record_sealed_hash(self, hold: dict) -> None:
+        """The sealed file's SHA-256 for this run and hold, right after the seal (design 3.2 step 3).
 
         `prepare` (the file still frozen), the rollback's unseal proof and the short way back compare the
-        file with it; retire keeps it for the way back. A record for this run is never re-pinned: a repeated
-        freeze of a file that changed since refuses. Another run's record is replaced.
+        file with it; retire keeps it for the way back. A record for this run and hold is never re-pinned: a
+        repeated freeze of a file that changed since refuses. Another run's or another hold's record (a journal
+        reset by hand and held again under the same run ID) is replaced.
         """
         path = self.paths["sealed_hash"]
-        record = {"version": 1, "run_id": self.pinned.run_id, "database": str(self.database),
+        record = {"version": 1, "run_id": self.pinned.run_id, **hold, "database": str(self.database),
                   "sha256": sqlite_seal.file_sha256(self.database)}
         try:
             earlier = json.loads(path.read_text(encoding="utf-8"))
@@ -609,7 +727,8 @@ class ProductionAdapter:
             earlier = None
         except (OSError, ValueError) as error:
             raise UnsafeCutover("The sealed SQLite hash record cannot be read") from error
-        if isinstance(earlier, dict) and earlier.get("run_id") == record["run_id"]:
+        if isinstance(earlier, dict) and all(earlier.get(key) == record[key]
+                                             for key in ("run_id", "hold_id", "started_at")):
             if earlier != record:
                 raise UnsafeCutover("The sealed SQLite file changed after the freeze hashed it")
             return

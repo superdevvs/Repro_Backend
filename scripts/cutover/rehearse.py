@@ -10,7 +10,10 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from fence import guard
-from runner import Approval, Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest
+from runner import (
+    DRAIN_PURPOSES, Approval, Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover,
+    digest,
+)
 
 
 class FixtureAdapter:
@@ -48,8 +51,12 @@ class FixtureAdapter:
     def close_admissions(self, lease: Lease, deadline: int) -> None:
         self._write(lease, replace(self.observe(), admissions_open=False, deployment_fenced=True))
 
-    def drain(self, lease: Lease, deadline: int) -> None:
+    def drain(self, lease: Lease, deadline: int, *, purpose: str) -> None:
+        if purpose not in DRAIN_PURPOSES:
+            raise UnsafeCutover("The drain purpose must be freeze or rollback")
         self._write(lease, replace(self.observe(), workers_stopped=True))
+        # The fixture runs no PHP-FPM, so there is no FPM drain record to journal.
+        return None
 
     def hold_and_drain_scheduler(self, lease: Lease, deadline: int) -> SchedulerDrain:
         lease.require_current()

@@ -405,16 +405,53 @@ prints inside a PHP-FPM pool, for SQLite and for MySQL.
   tables, so a stopped server cannot be written, and `init`, the hold, the
   freeze, the rollback and `refresh` keep working while MySQL is down or not
   installed yet. With `writes_possible` true or missing, exit 3 raises. Every
-  other exit (1, 4, 5, 6) raises.
+  other exit (1, 4, 5, 6) raises, also when its output looks like a closed,
+  quiet reading. For exits 4 to 6 (design 4.7: the site stays held until a
+  person acts) the refusal quotes the probe's own `problems` list, which never
+  holds a secret, joined with `; ` and cut to 500 characters; output that is
+  not a JSON object with a non-empty list of texts adds nothing. Exit 1 is the
+  probe's own refusal and is not quoted.
 - **SQLite writable**: `sqlite_seal.writable()` counts only a regular file at
   the path (`lstat`) with a write bit. A link, a directory (what `retire`
   leaves at a MySQL run's path), a FIFO or nothing there is not writable.
 - **Freeze**: right after the seal, `freeze` writes `paths.sealed_hash` (root
-  0600), `{"version": 1, "run_id", "database", "sha256"}`, the SHA-256 of the
-  sealed file read without following a link (`sqlite_seal.file_sha256`).
-  `prepare`, the rollback's unseal proof and the short way back compare the
-  file with it. A repeated freeze in the same run refuses if the file changed
-  since; another run's record is replaced.
+  0600), `{"version": 1, "run_id", "hold_id", "started_at", "database",
+  "sha256"}`, the SHA-256 of the sealed file read without following a link
+  (`sqlite_seal.file_sha256`). `hold_id` and `started_at` are the journal's
+  `hold.hold_id` and `started_at` (either may be `null`, not both: a journal
+  with no hold refuses before the seal). `prepare`, the rollback's unseal
+  proof and the short way back compare the file with it. A repeated freeze
+  within the same run and hold refuses if the file changed since; another
+  run's or another hold's record (a journal reset by hand and held again under
+  the same run ID, as a sandbox rerun does) is replaced.
+- **Drain** (`drain(lease, deadline, purpose=...)`, design 5.4): `purpose` is
+  `freeze` or `rollback`, keyword-only with no default; anything else refuses
+  before any command. It runs `stop_workers`, then `drain_fpm`
+  (`fpm_drain.py`, then the FPM stop), then waits for the writer processes.
+  The first `drain_fpm` command's stdout must be one JSON object with a text
+  `outcome` (no repeated key, no NaN); anything else refuses, for both
+  purposes. Its record is `{purpose, outcome}` plus `active_processes` (a
+  count or `null`), `waited_seconds` (seconds or `null`) and `problem` (text
+  or `null`, cut to 500 characters) when the report has them; other report
+  keys are dropped and a malformed one refuses. A freeze goes on after
+  `drained`, `timed_out` (the stop ends what still runs) or `stopped`, and on
+  any other outcome, `unmonitored` included, refuses naming the problem
+  before any further `drain_fpm` command, so the FPM stop does not run and
+  the hold stays. A rollback records any outcome and always runs the stop:
+  nginx holds every request by then (review A2-2). A freeze with no
+  `drain_fpm` command refuses; a rollback with none returns no record.
+  `drain` returns the record and the runner journals it: it goes into the
+  pending `freeze` or `abort` action, so that action's **history entry**
+  carries it as `fpm_drain` (the journal's `evidence` key is the target
+  evidence `prepare` writes, and the adapter never writes the journal
+  itself). It becomes durable with the runner's next journal write, before
+  the scheduler drain. A refused freeze journals nothing; its message names
+  the problem, and the rollback's own record follows.
+- **Identity refusal** (`runner._verify_identity`): names the identity fields
+  that differ (`run`, `release`, `artifact`, `source`, `configuration`,
+  `target`), never a value. When `artifact` is among them it adds one sentence
+  pointing at the runbook's bytecode rule: a `__pycache__` folder under the
+  app's `scripts/` changes the artifact (review A2-1).
 - **Publication** (`publish_authority`, both engines) and **`host_authority`**
   (what `refresh` publishes) measure every value. The route must be sealed for
   the engine asked for, and the live config must be a parsed cache: a
@@ -427,16 +464,45 @@ prints inside a PHP-FPM pool, for SQLite and for MySQL.
   the pinned cache is back and `refresh` measures again. Only `seal_mysql`,
   which this adapter still refuses, leads the runner to a MySQL publication.
 
-Not yet here: the reopens and `prepare` do not refuse a fallback config
-themselves (slices D10, D13), and `load_config` does not check
-`commands.config_build` with `config_build.check_command`.
+Not yet here:
+- `load_config` does not check the commands: `config_build.check_command`
+  (the sandbox's `make_config.py` writes a `config_build` command it refuses,
+  so one of the two must change), `fpm.status_socket` equal to `fpm.socket`,
+  and `fpm.drain_seconds` too large for `command_seconds` (integrator, after
+  the merges; `fpm_drain.py` refuses the last two at run time). `drain` does
+  not check that the deadline leaves `fpm.drain_seconds` for `fpm_drain.py`.
+- The end-to-end test of the real `fpm_drain.py` through `drain` (the
+  integrator's, once D08 is merged); here `drain_fpm` is a fake that prints a
+  canned report.
+- Review C2-4: measured publication makes correct pins a precondition of the
+  W1 drill init sequence (marker, `init`, `rehold`, `refresh`, reopen). D14's
+  W1 sequence must refuse before `rehold` unless `live_config.py --app-root`
+  measures the source cache with the hash equal to policy
+  `sqlite_live_config_sha256` (read-only), and D18 must exercise that order.
+  `pin-config` is D14.
+- Review C2-7: (1) `config_build.check_command` in `load_config` (above);
+  (2) `reopen()` (SQLite) still accepts a fallback live config (D13), and
+  `prepare` step 3, the unseal proof (3.5 step 7) and `seal_sqlite` must read
+  `paths.sealed_hash`, check `run_id`, `hold_id`, `started_at` and `database`,
+  and compare `sqlite_seal.file_sha256(database)` with `sha256` (D10, D12);
+  `prepare` and `seal_sqlite` step 6 must refuse a fallback config
+  themselves (D10, D12); (3) with MySQL down, `observe()` reads false/false in
+  `frozen` and `ready` while `writes_possible` is false, so `before.frozen()`
+  holds in `_promote`: `evidence()` must require a reachable, closed target
+  reading before `writes_possible` is written (D11, C02). D11's evidence also
+  carries the freeze's `fpm_drain` record from the journal history.
+- `test_real_probe_reading_gives_mysql_authority_the_server_uuid` is not
+  named in the probe's `--fixture-check` warning (D05's `fixture_skips()`).
 
-Tests: `test_adapter.py` (root) with fake probes, plus the real
-`mysql_probe.py` twice: with nothing installed (exit 3), and against D04's
-fixture (`test_real_probe_reading_gives_mysql_authority_the_server_uuid`). That
-one skips without `REPRO_MYSQL_PROBE_FIXTURE` and fails when
+Tests: `test_adapter.py` (root) with fake probes and a fake `fpm_drain.py`
+that prints the report in a file, plus the real `mysql_probe.py` twice: with
+nothing installed (exit 3), and against D04's fixture
+(`test_real_probe_reading_gives_mysql_authority_the_server_uuid`). That one
+skips without `REPRO_MYSQL_PROBE_FIXTURE` and fails when
 `REPRO_REQUIRE_PROBE_FIXTURE=1`, as under `run-probe-fixture-tests.sh
---linux-suite`; the probe's `--fixture-check` warning does not list it.
+--linux-suite`; the probe's `--fixture-check` warning does not list it. The
+runner's part of the drain contract and the identity refusal are in
+`../test_runner.py` (fake adapters, any platform).
 
 ## Telnyx while held (design 5.2)
 

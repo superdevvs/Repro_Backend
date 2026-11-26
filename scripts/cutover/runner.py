@@ -182,6 +182,15 @@ CONTROLLER_LOCK = "controller.lock"
 # Admitted writers share this lock; the guard and installed wrappers use this name.
 WRITER_LOCK = "operator.lock"
 LOCK_POLL_SECONDS = 0.01
+# What a drain is for: the freeze refuses a pool it cannot watch, the rollback always stops it (design 5.4).
+DRAIN_PURPOSES = ("freeze", "rollback")
+# The names a refusal gives the identity fields; never their values.
+IDENTITY_FIELD_NAMES = {"run_id": "run", "release_sha": "release", "artifact_sha256": "artifact",
+                        "source_sha256": "source", "config_sha256": "configuration", "target_uuid": "target"}
+# The artifact digest covers every file under the app's scripts/, bytecode caches included (review A2-1).
+ARTIFACT_ADVICE = ("A __pycache__ folder under the app's scripts/ changes the artifact: see the runbook's bytecode "
+                   "rule (repository Python runs with python3 -B only, and find <app_root>/scripts -name "
+                   "__pycache__ prints nothing).")
 
 
 def _try_lock(stream) -> bool:
@@ -355,8 +364,10 @@ class Adapter(Protocol):
     # Idempotent and re-observable: both vhosts return 503 at the server level,
     # every queue is paused, the scheduler is held and the deploy marker is set.
     def close_admissions(self, lease: Lease, deadline: int) -> None: ...
-    # Idempotent: workers stopped, scheduler permits zero, in-flight FPM requests finished.
-    def drain(self, lease: Lease, deadline: int) -> None: ...
+    # Idempotent: workers stopped, scheduler permits zero, in-flight FPM requests finished. purpose is one of
+    # DRAIN_PURPOSES: a freeze refuses an FPM pool the drain could not watch, a rollback always runs the stop.
+    # Returns the FPM drain record the runner journals with the action, or None for an adapter without FPM.
+    def drain(self, lease: Lease, deadline: int, *, purpose: str) -> dict | None: ...
     def hold_and_drain_scheduler(self, lease: Lease, deadline: int) -> SchedulerDrain: ...
     def scheduler_drain(self) -> SchedulerDrain: ...
     def freeze(self, lease: Lease, deadline: int) -> None: ...
@@ -442,8 +453,16 @@ class Runner:
             return state
 
     def _verify_identity(self) -> None:
-        if self.adapter.identity() != self.identity:
-            raise UnsafeCutover("Observed source, release, artifact, configuration or target identity differs")
+        """Refuse unless the measured identity is the pinned one, naming the fields that differ, never values."""
+        observed = self.adapter.identity()
+        if observed == self.identity:
+            return
+        if type(observed) is not Identity:
+            raise UnsafeCutover("Observed identity differs from the pin in: every field.")
+        names = [name for field, name in IDENTITY_FIELD_NAMES.items()
+                 if getattr(observed, field) != getattr(self.identity, field)]
+        message = f"Observed identity differs from the pin in: {', '.join(names)}."
+        raise UnsafeCutover(f"{message} {ARTIFACT_ADVICE}" if "artifact" in names else message)
 
     def status(self) -> dict:
         state = self.journal.read()
@@ -515,7 +534,7 @@ class Runner:
 
     def _drain(self, state: dict, lease: Lease, deadline: int) -> None:
         started = time.monotonic()
-        self.adapter.drain(lease, deadline)
+        self._drain_for(state, lease, deadline, "freeze")
         waited = self._exclude_writers(lease, deadline)
         if self.clock() >= deadline:
             raise UnsafeCutover("Admitted writers did not drain before the deadline")
@@ -524,6 +543,16 @@ class Runner:
             "drain_ms": round((time.monotonic() - started) * 1000),
             "at": int(self.clock()),
         }
+
+    def _drain_for(self, state: dict, lease: Lease, deadline: int, purpose: str) -> None:
+        """Run the adapter's drain for the freeze or the rollback and keep its FPM drain record.
+
+        The record goes into the pending action, so the action's history entry carries it ("the drain records
+        that", design 5.4); the next journal write makes it durable.
+        """
+        record = self.adapter.drain(lease, deadline, purpose=purpose)
+        if record is not None:
+            state["pending"]["fpm_drain"] = record
 
     def _close_admissions(self, state: dict, lease: Lease) -> None:
         deadline = state["started_at"] + self.DECISION_SECONDS
@@ -604,7 +633,7 @@ class Runner:
         # From any held phase: keep admissions closed, stop workers and wait for
         # every admitted writer before SQLite authority is published again.
         self.adapter.close_admissions(lease, rollback_deadline)
-        self.adapter.drain(lease, rollback_deadline)
+        self._drain_for(state, lease, rollback_deadline, "rollback")
         self.journal.drain_writers(lease, max(0.0, rollback_deadline - self.clock()))
         self._hold_scheduler(state, lease, rollback_deadline)
         self.adapter.seal_sqlite(lease, rollback_deadline)
