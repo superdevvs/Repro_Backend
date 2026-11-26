@@ -36,6 +36,8 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 DEPLOY = HERE.parents[1] / "deploy"
 UNITS = HERE / "systemd" / "system"
+# Folders the reviewed tool bytes come from; the cutover controller's holds the shared var_export.py.
+SOURCE_FOLDERS = (HERE, DEPLOY, HERE / "systemd" / "binlog-fixture", HERE.parents[1] / "cutover" / "production")
 TOOLS_DIR = "/opt/repro-backup-tools"
 UNIT_DIR = "/etc/systemd/system"
 RECORD_DIR = "/var/lib/repro-backup-installer"
@@ -43,7 +45,8 @@ STATE = "/var/lib/repro-backup"
 ACCOUNT = "repro-backup"
 BASE_TOOLS = ("scheduled_backup.py", "prepare_sqlite_backup.py", "prepare_mysql_backup.py", "publish_backup.py",
               "check_backup_freshness.py", "enter_r2_config.py", "backup-database.php", "backup-sqlite.php")
-ALERT_TOOLS = ("alert_bridge.py", "alert_probe.py", "alert-conditions.json", "cutover_view.py")
+# var_export.py is the cutover controller's reader of the cached config, which alert_probe.py loads beside itself.
+ALERT_TOOLS = ("alert_bridge.py", "alert_probe.py", "alert-conditions.json", "cutover_view.py", "var_export.py")
 KIT_TOOLS = ("produce_recovery_kit.py",)
 MYSQL_TOOLS = ("heartbeat.py", "rotate_closed_binlogs.py", "rotation_attempt.py", "archive_binlogs.py",
                "collect_closed_binlogs.py", "advance_binlog_checkpoint.py", "prepare_closed_binlogs.py",
@@ -221,7 +224,7 @@ def parse_settings(raw: bytes) -> dict:
 
 
 def source_bytes(name: str) -> bytes:
-    for folder in (HERE, DEPLOY, HERE / "systemd" / "binlog-fixture"):
+    for folder in SOURCE_FOLDERS:
         if (folder / name).is_file():
             return (folder / name).read_bytes()
     raise Refusal(f"reviewed source file {name} is missing from this bundle")
@@ -816,12 +819,15 @@ def undo(job_name: str, system) -> int:
     return 0 if failures == 0 else 1
 
 
+def bundle_sources() -> list[Path]:
+    """Every source file a job's tools may be copied from."""
+    names = set(BASE_TOOLS + ALERT_TOOLS + KIT_TOOLS + MYSQL_TOOLS)
+    return [folder / name for folder in SOURCE_FOLDERS for name in sorted(names) if (folder / name).is_file()]
+
+
 def bundle_is_protected() -> bool:
     """Root must not run an installer or tool bytes that another account could have changed."""
-    names = set(BASE_TOOLS + ALERT_TOOLS + KIT_TOOLS + MYSQL_TOOLS)
-    sources = [folder / name for folder in (HERE, DEPLOY, HERE / "systemd" / "binlog-fixture")
-               for name in names if (folder / name).is_file()]
-    files = [Path(__file__), *sources, *UNITS.iterdir()]
+    files = [Path(__file__), *bundle_sources(), *UNITS.iterdir()]
     # Every folder on the way to every file, so no account can swap a file through a writable folder.
     paths = files + sorted({folder for path in files for folder in path.parents})
     return all(os.lstat(path).st_uid == 0 and not os.lstat(path).st_mode & 0o022 for path in paths)
