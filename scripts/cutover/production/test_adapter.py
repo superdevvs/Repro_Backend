@@ -2124,8 +2124,48 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertEqual("sqlite_authoritative", state["phase"])
         self.assertEqual([["stop"], ["drain-fpm"], ["fpm-stop"]], self.drains(before))
         self.assertEqual({"purpose": "rollback", "outcome": "unmonitored", "active_processes": None,
-                          "waited_seconds": 0.0, "problem": problem}, state["history"][-1]["fpm_drain"])
+                          "waited_seconds": 0.0, "polls": 0, "problem": problem}, state["history"][-1]["fpm_drain"])
         self.assertEqual(state, journal.read())
+
+    def test_freeze_refuses_a_timed_out_drain_that_never_got_a_status_reading(self):
+        # Only transient errors (a malformed answer, resets) for the whole limit: the drain saw none of the pool's
+        # requests, so the stop would end requests unseen, as with "unmonitored" (review W2F-6).
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        problem = "the connection closed before the end of the request"
+        unseen = drain_report("timed_out", waited_seconds=90.001, polls=0, pool=None, accepted_conn=None,
+                              active_processes=None, idle_processes=None, total_processes=None, listen_queue=None,
+                              problem=problem)
+        self.set_fpm_report(unseen)
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, f"no status reading.*{problem}"):
+            runner.perform("freeze")
+        self.assertEqual([["stop"], ["drain-fpm"]], self.drains(before), "the FPM stop ran after an unseen drain")
+        state = journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+        self.assertTrue(sqlite_seal.writable(self.database), "the freeze went on to seal SQLite")
+        # The rollback records it, polls included, and stops FPM.
+        before = len(self.commands())
+        state = runner.perform("abort")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertEqual([["stop"], ["drain-fpm"], ["fpm-stop"]], self.drains(before))
+        self.assertEqual({"purpose": "rollback", "outcome": "timed_out", "active_processes": None,
+                          "waited_seconds": 90.001, "polls": 0, "problem": problem}, state["history"][-1]["fpm_drain"])
+        self.assertEqual(state, journal.read())
+        # A timed-out report that does not show a reading (polls null or missing) is refused the same way; one
+        # reading is enough to go on, the stop ending what still runs.
+        missing = {key: value for key, value in unseen.items() if key != "polls"}
+        for report in ({**unseen, "polls": None}, missing):
+            with self.subTest(polls=report.get("polls", "missing")):
+                self.set_fpm_report(report)
+                before = len(self.commands())
+                with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "no status reading"):
+                    adapter.drain(lease, time.time() + 60, purpose="freeze")
+                self.assertEqual([["stop"], ["drain-fpm"]], self.drains(before))
+        self.set_fpm_report(drain_report("timed_out", polls=1, active_processes=1))
+        with self.drained(journal) as lease:
+            record = adapter.drain(lease, time.time() + 60, purpose="freeze")
+        self.assertEqual(("timed_out", 1), (record["outcome"], record["polls"]))
 
     def test_freeze_refuses_a_drain_outcome_it_does_not_know(self):
         journal, adapter, runner = self.started()
@@ -2154,11 +2194,11 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertEqual("frozen", state["phase"])
         self.assertEqual([["stop"], ["drain-fpm"], ["fpm-stop"]], self.drains(before))
         self.assertEqual({"purpose": "freeze", "outcome": "timed_out", "active_processes": 2, "waited_seconds": 90.002,
-                          "problem": "timed out"}, state["history"][-1]["fpm_drain"])
+                          "polls": 2, "problem": "timed out"}, state["history"][-1]["fpm_drain"])
         self.set_fpm_report(drain_report("drained", waited_seconds=1.25))
         state = runner.perform("abort")
         self.assertEqual({"purpose": "rollback", "outcome": "drained", "active_processes": 0, "waited_seconds": 1.25,
-                          "problem": None}, state["history"][-1]["fpm_drain"])
+                          "polls": 2, "problem": None}, state["history"][-1]["fpm_drain"])
         self.assertEqual(state, journal.read())
         # Only the outcome, the counts and the problem are kept; a report without them gives outcome and purpose.
         self.set_fpm_report({"outcome": "stopped", "pool": "www", "secret_looking": "x"})
@@ -2179,7 +2219,9 @@ class ProductionAdapterTests(unittest.TestCase):
                      '{"outcome": "drained", "outcome": "stopped"}', '{"outcome": "drained", "active_processes": "0"}',
                      '{"outcome": "drained", "active_processes": true}', '{"outcome": "drained", "active_processes": -1}',
                      '{"outcome": "drained", "waited_seconds": -1}', '{"outcome": "drained", "waited_seconds": "1"}',
-                     '{"outcome": "drained", "problem": 5}'):
+                     '{"outcome": "drained", "problem": 5}', '{"outcome": "drained", "polls": -1}',
+                     '{"outcome": "drained", "polls": "3"}', '{"outcome": "drained", "polls": true}',
+                     '{"outcome": "timed_out", "polls": 1.5}'):
             for purpose in ("freeze", "rollback"):
                 with self.subTest(text=text, purpose=purpose):
                     self.set_fpm_report(text)
@@ -2245,10 +2287,45 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertEqual("sqlite_authoritative", state["phase"])
         self.assertEqual([["stop"], ["fpm-stop"]], self.drains(before))
         record = state["history"][-1]["fpm_drain"]
-        self.assertEqual({"purpose": "rollback", "outcome": "unmonitored", "active_processes": None,
+        self.assertEqual({"purpose": "rollback", "outcome": "unmonitored", "active_processes": None, "polls": 0,
                           "problem": fpm_drain.NO_STATUS_SOCKET}, {k: v for k, v in record.items() if k != "waited_seconds"})
         self.assertIs(type(record["waited_seconds"]), float)
         self.assertLess(record["waited_seconds"], 5)
+        self.assertNotIn(str(self.root), json.dumps(record), "a path reached the journal")
+        self.assertEqual(state, journal.read())
+
+    def test_real_fpm_drain_without_a_single_reading_refuses_the_freeze_and_lets_the_rollback_stop_fpm(self):
+        # The status socket listens but closes every request unanswered (a malformed FastCGI exchange, a
+        # transient error for fpm_drain): it times out with polls 0, and the freeze refuses as for unmonitored.
+        import fpm_drain
+        from test_fpm_drain import SilentStatusServer
+
+        status = SilentStatusServer(self.root / "run" / "fpm-status.sock")
+        self.addCleanup(status.close)
+        config = self.config()
+        config["fpm"]["drain_seconds"] = 1
+        self.use_real_drain(config, socket=self.listening_pool(), status_socket=status.path)
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, "no status reading"):
+            runner.perform("freeze")
+        self.assertEqual([["stop"]], self.drains(before), "the FPM stop ran after a drain without a reading")
+        self.assertGreaterEqual(status.served, 2)
+        state = journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+        self.assertTrue(sqlite_seal.writable(self.database), "the freeze went on to seal SQLite")
+        # The rollback records fpm_drain's report, polls 0, and the FPM stop runs.
+        before = len(self.commands())
+        state = runner.perform("abort")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertEqual([["stop"], ["fpm-stop"]], self.drains(before))
+        record = state["history"][-1]["fpm_drain"]
+        self.assertEqual({"purpose": "rollback", "outcome": "timed_out", "active_processes": None, "polls": 0},
+                         {k: v for k, v in record.items() if k not in ("waited_seconds", "problem")})
+        self.assertGreaterEqual(record["waited_seconds"], config["fpm"]["drain_seconds"])
+        self.assertLess(record["waited_seconds"], config["fpm"]["drain_seconds"] + fpm_drain.REQUEST_SECONDS)
+        self.assertIn("closed before the end of the request", record["problem"])
         self.assertNotIn(str(self.root), json.dumps(record), "a path reached the journal")
         self.assertEqual(state, journal.read())
 
@@ -2269,7 +2346,9 @@ class ProductionAdapterTests(unittest.TestCase):
         record = state["history"][-1]["fpm_drain"]
         # One busy reading, then two idle ones with the same accepted count (fpm_drain's two-reading rule).
         self.assertEqual({"purpose": "freeze", "outcome": "drained", "active_processes": 0, "problem": None},
-                         {k: v for k, v in record.items() if k != "waited_seconds"})
+                         {k: v for k, v in record.items() if k not in ("waited_seconds", "polls")})
+        self.assertGreaterEqual(record["polls"], 3)
+        self.assertLessEqual(record["polls"], status.served)
         self.assertGreaterEqual(record["waited_seconds"], 2 * fpm_drain.POLL_SECONDS)
         self.assertLess(record["waited_seconds"], config["fpm"]["drain_seconds"])
         self.assertGreaterEqual(status.served, 3)

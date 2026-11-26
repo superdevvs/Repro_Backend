@@ -65,8 +65,9 @@ MYSQL_UNREACHABLE = 3
 # that never hold a secret, quoted in the refusal up to this many characters.
 MYSQL_REFUSALS = (4, 5, 6)
 PROBLEM_CHARACTERS = 500
-# fpm_drain.py's outcomes (design 5.4). A freeze goes on after these; any other refuses it, "unmonitored"
-# (the pool listens, but its status page cannot be read) included. A rollback records any outcome and stops FPM.
+# fpm_drain.py's outcomes (design 5.4). A freeze goes on after these (timed_out only with at least one status
+# reading); any other refuses it, "unmonitored" (the pool listens, but its status page cannot be read) included.
+# A rollback records any outcome and stops FPM.
 FREEZE_DRAIN_OUTCOMES = ("drained", "timed_out", "stopped")
 # What fpm_drain.py needs inside command_seconds beyond fpm.drain_seconds: its last status request (REQUEST_SECONDS)
 # plus start-up and the report (MARGIN_SECONDS). Copied, not imported: fpm_drain imports this module.
@@ -227,11 +228,13 @@ def _seconds(value) -> bool:
 
 
 # The report keys the journal keeps besides the outcome, each when the report has it: a count, seconds or text.
-DRAIN_FIELDS = {"active_processes": _count, "waited_seconds": _seconds, "problem": lambda value: isinstance(value, str)}
+# polls is the number of status readings: 0 means the drain never saw the pool (review W2F-6).
+DRAIN_FIELDS = {"active_processes": _count, "waited_seconds": _seconds, "polls": _count,
+                "problem": lambda value: isinstance(value, str)}
 
 
 def _drain_record(output: str, purpose: str) -> dict:
-    """What the journal keeps of fpm_drain.py's report: purpose, outcome, active processes, wait and problem.
+    """What the journal keeps of fpm_drain.py's report: purpose, outcome, active processes, wait, polls, problem.
 
     The report is the one JSON object fpm_drain.py prints on stdout. Anything else raises, whatever the purpose;
     texts are cut to PROBLEM_CHARACTERS so the journal stays within what the guard reads.
@@ -251,12 +254,20 @@ def _drain_record(output: str, purpose: str) -> dict:
 
 
 def _require_freeze_drain(record: dict) -> None:
-    """A freeze goes on only after an outcome it knows; an FPM pool the drain could not watch keeps the hold."""
+    """A freeze goes on only after an outcome it knows; an FPM pool the drain could not watch keeps the hold.
+
+    That includes a timed_out drain without one status reading (polls 0, null or missing): only transient
+    errors for the whole limit, so the stop would end requests the drain never saw (review W2F-6).
+    """
+    problem = record.get("problem") or "no problem given"
     if record["outcome"] == "unmonitored":
-        raise UnsafeCutover(f"The FPM drain could not watch the pool ({record.get('problem') or 'no problem given'}); "
+        raise UnsafeCutover(f"The FPM drain could not watch the pool ({problem}); "
                             "the freeze stops before the FPM stop and the hold stays")
     if record["outcome"] not in FREEZE_DRAIN_OUTCOMES:
         raise UnsafeCutover(f"The FPM drain report's outcome {record['outcome']!r} is not one the freeze knows")
+    if record["outcome"] == "timed_out" and not record.get("polls"):
+        raise UnsafeCutover(f"The FPM drain timed out with no status reading of the pool ({problem}); "
+                            "the freeze stops before the FPM stop and the hold stays")
 
 
 def load_identity_config(raw: bytes) -> dict:
@@ -657,10 +668,11 @@ class ProductionAdapter:
 
         drain_fpm is fpm_drain.py, then the FPM stop (design 5.4). The first command's stdout is fpm_drain's
         report; its record (_drain_record) is returned for the runner to journal with the action. A freeze goes
-        on after drained, timed_out (the stop ends what still runs) or stopped, and refuses before any further
-        drain_fpm command on any other outcome, "unmonitored" included. A rollback records any outcome and
-        always runs the stop: nginx holds every request by then, so a pool it cannot watch protects nothing
-        (review A2-2). With no drain_fpm command a rollback returns None and a freeze refuses.
+        on after drained, timed_out with at least one status reading (the stop ends what still runs) or stopped,
+        and refuses before any further drain_fpm command on any other outcome, "unmonitored" and a timed_out
+        with polls 0 included (review W2F-6). A rollback records any outcome and always runs the stop: nginx
+        holds every request by then, so a pool it cannot watch protects nothing (review A2-2). With no drain_fpm
+        command a rollback returns None and a freeze refuses.
         """
         if purpose not in DRAIN_PURPOSES:
             raise UnsafeCutover("The drain purpose must be freeze or rollback")

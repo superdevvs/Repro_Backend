@@ -849,14 +849,19 @@ Not yet here (later slices):
   The first `drain_fpm` command's stdout must be one JSON object with a text
   `outcome` (no repeated key, no NaN); anything else refuses, for both
   purposes. Its record is `{purpose, outcome}` plus `active_processes` (a
-  count or `null`), `waited_seconds` (seconds or `null`) and `problem` (text
-  or `null`, cut to 500 characters) when the report has them; other report
-  keys are dropped and a malformed one refuses. A freeze goes on after
-  `drained`, `timed_out` (the stop ends what still runs) or `stopped`, and on
-  any other outcome, `unmonitored` included, refuses naming the problem
-  before any further `drain_fpm` command, so the FPM stop does not run and
-  the hold stays. A rollback records any outcome and always runs the stop:
-  nginx holds every request by then (review A2-2). A freeze with no
+  count or `null`), `waited_seconds` (seconds or `null`), `polls` (the number
+  of status readings, a count or `null`) and `problem` (text or `null`, cut
+  to 500 characters) when the report has them; other report keys are dropped
+  and a malformed one refuses. A freeze goes on after `drained`, `timed_out`
+  with at least one status reading (the stop ends what still runs) or
+  `stopped`. On any other outcome, `unmonitored` included, and on a
+  `timed_out` with `polls` 0, `null` or missing (only transient errors for
+  the whole limit, such as a malformed FastCGI answer: the drain never saw
+  the requests the stop would end; review W2F-6), it refuses naming the
+  problem before any further `drain_fpm` command, so the FPM stop does not
+  run and the hold stays. A rollback records any outcome, `polls` included,
+  and always runs the stop: nginx holds every request by then (review
+  A2-2). A freeze with no
   `drain_fpm` command refuses; a rollback with none returns no record.
   `drain` returns the record and the runner journals it: it goes into the
   pending `freeze` or `abort` action, so that action's **history entry**
@@ -922,8 +927,10 @@ runner's part of the drain contract and the identity refusal are in
 contracts between slices are also tested end to end: the real `fpm_drain.py`
 as `drain_fpm`'s first command against a pool socket that listens without its
 status socket (the freeze refuses before the FPM stop; the rollback records
-`unmonitored` and stops FPM) and against a scripted status socket (a drained
-pool's counts in the journal); and the real `mysql_probe.py` against D05's
+`unmonitored` and stops FPM), against a status socket that closes every
+request unanswered (`timed_out` with `polls` 0: the same refusal and
+rollback) and against a scripted status socket (a drained pool's counts in
+the journal); and the real `mysql_probe.py` against D05's
 fake 8.4.13 client with this run's receipt in place (exit 3 still reads
 false/false while `writes_possible` is false; exits 4 to 6 are refused with
 the probe's own problems).
@@ -1026,11 +1033,13 @@ USR2 reload whose config fails the test stops FPM, so the test comes first.
   `idle_processes`, `total_processes`, `listen_queue` and `problem`. `pool`
   and the counters are the last status reading's, `null` when there was none;
   `problem` is `null`, the last transient error of a `timed_out` drain, or the
-  fixed text of an `unmonitored` one. `adapter.drain(..., purpose=...)` parses
-  the first `drain_fpm` command's report and records it (review A2-3). The
-  controller refuses the freeze on `unmonitored`, because the drain could not
-  see the requests the stop would end. A rollback records it and stops FPM
-  anyway, because nginx already holds every request then (review A2-2). The
+  fixed text of an `unmonitored` one; `polls` counts the status readings, 0
+  when there was none. `adapter.drain(..., purpose=...)` parses the first
+  `drain_fpm` command's report and records it, `polls` included (review
+  A2-3). The controller refuses the freeze on `unmonitored` and on a
+  `timed_out` with `polls` 0, because in both the drain could not see the
+  requests the stop would end (review W2F-6). A rollback records it and stops
+  FPM anyway, because nginx already holds every request then (review A2-2). The
   drain does not prove the snippet: host proof P8 must still show the status
   socket answering and an idle `fpm_drain.py` poll printing `drained`.
 

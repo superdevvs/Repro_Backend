@@ -271,6 +271,10 @@ class DrainLogicTests(unittest.TestCase):
                 self.assertIs(type(report["waited_seconds"]), float)
                 self.assertEqual((report["active_processes"], report["problem"]), (active, problem))
                 read = active is not None
+                # polls counts the status readings: 0 exactly when there was none, which the adapter's freeze
+                # refuses for timed_out as it does unmonitored (review W2F-6).
+                self.assertIs(type(report["polls"]), int)
+                self.assertEqual(read, report["polls"] > 0, report)
                 self.assertEqual(report["pool"], "www" if read else None)
                 for counter in ("accepted_conn", "idle_processes", "total_processes", "listen_queue"):
                     self.assertIs(type(report[counter]), int if read else type(None), counter)
@@ -326,6 +330,22 @@ class StatusServer:
         self.listener.close()
 
 
+class SilentStatusServer(StatusServer):
+    """A status socket that reads each request and closes the connection unanswered: every status request is a
+    transient FastCGI error, so the drain never gets a reading."""
+
+    def __init__(self, path: Path):
+        super().__init__(path, [(0, 0)])
+
+    def answer(self, connection: socket.socket, wait: float, active: int):
+        with connection:
+            try:
+                connection.settimeout(10)
+                read_records(connection)
+            except OSError:
+                return
+
+
 @unittest.skipUnless(UNIX, "FastCGI over Unix sockets")
 class StatusSocketTests(unittest.TestCase):
     """The drain through the real FastCGI client and clock, against scripted sockets (review A2-12)."""
@@ -349,6 +369,19 @@ class StatusSocketTests(unittest.TestCase):
         self.assertGreaterEqual(result.waited_seconds, limit)
         self.assertLess(result.waited_seconds, limit + margin)
         self.assertLess(elapsed, limit + margin)
+
+    def test_a_status_socket_that_never_answers_times_out_with_no_reading(self):
+        # Every status request ends in a transient error (the connection closes unanswered): timed_out at the
+        # limit with polls 0 and no counters, the report the adapter's freeze refuses (review W2F-6).
+        server = SilentStatusServer(self.work / "status.sock")
+        self.addCleanup(server.close)
+        result = fpm_drain.drain(server.path, 1.0, main_socket=self.work / "main.sock")
+        report = result.report()
+        self.assertEqual(("timed_out", 0, None, None), (report["outcome"], report["polls"], report["pool"],
+                                                        report["active_processes"]), report)
+        self.assertIn("closed before the end of the request", report["problem"])
+        self.assertGreaterEqual(server.served, 2)
+        self.assertGreaterEqual(result.waited_seconds, 1.0)
 
     @unittest.skipUnless(sys.platform == "linux", "Linux refuses a connect to a full Unix backlog with EAGAIN")
     def test_a_pool_socket_with_a_full_backlog_is_not_stopped(self):

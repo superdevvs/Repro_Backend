@@ -16,7 +16,9 @@ only as a moved accepted count. A status request on pm.status_listen moves neith
 Outcomes, printed as one JSON object, each with exit 0 so that the stop runs:
 - drained: the pool was idle;
 - timed_out: the limit passed with requests still active (or without a reading). The stop ends them and
-  SQLite rolls back their transactions; the report keeps the last counters;
+  SQLite rolls back their transactions; the report keeps the last counters. Without a reading (polls 0:
+  only transient errors) the drain saw none of the pool's requests, and the adapter refuses a freeze on
+  it as on unmonitored; a rollback records it and stops FPM (review W2F-6);
 - stopped: nothing listens at the status socket nor at the pool's socket (`fpm.socket`): FPM is stopped;
 - unmonitored: the drain cannot see the pool's requests, because the pool's socket listens and nothing
   answers at the status socket on the first reading (the snippet is missing; "stopped" would hide
