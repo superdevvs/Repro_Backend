@@ -159,6 +159,8 @@ def example_config():
             "switch_secrets": {"DB_PASSWORD": f"{etc}/mysql-app.env"},
             "night_flags": list(NIGHT_FLAGS),
             "offsite_waiver": False,
+            # Free bytes on / that prepare requires (design 3.2 step 2, critic HO-M12); P5 sets the host's value.
+            "free_disk_floor_bytes": 20 * 1024 ** 3,
         },
         "fpm": {"unit": "php8.3-fpm.service", "socket": "/run/php/php8.3-fpm.sock",
                 "status_socket": "/run/php/php8.3-fpm-status.sock", "drain_seconds": 90},
@@ -297,6 +299,9 @@ class HostConfigContractTests(unittest.TestCase):
             (("mysql", "night_flags"), "CRM_OUTBOUND_HOLD"), (("mysql", "night_flags"), ["crm_outbound_hold"]),
             (("mysql", "night_flags"), NIGHT_FLAGS + ["CRM_OUTBOUND_HOLD"]),
             (("mysql", "offsite_waiver"), "false"), (("mysql", "offsite_waiver"), 0),
+            (("mysql", "free_disk_floor_bytes"), 0), (("mysql", "free_disk_floor_bytes"), -1),
+            (("mysql", "free_disk_floor_bytes"), True), (("mysql", "free_disk_floor_bytes"), "1"),
+            (("mysql", "free_disk_floor_bytes"), 1.5), (("mysql", "free_disk_floor_bytes"), 2 ** 50 + 1),
             (("fpm", "unit"), "php8.3-fpm"), (("fpm", "socket"), "php8.3-fpm.sock"),
             (("fpm", "status_socket"), ""), (("fpm", "drain_seconds"), 0), (("fpm", "drain_seconds"), True),
             (("fpm", "drain_seconds"), production.MAX_COMMAND_SECONDS + 1), (("fpm", "drain_seconds"), 90.0),
@@ -1232,12 +1237,20 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
         self.assertEqual([["pause", queue] for queue in QUEUES], self.commands()[before:])
 
-    def test_target_steps_are_refused_by_this_adapter(self):
+    def test_prepare_needs_its_inputs_and_the_mysql_steps_stay_refused(self):
+        # prepare (D10, test_adapter_mysql.py) refuses before any change without check-evidence's manifest;
+        # evidence() (D11) and seal_mysql (C02) are not in this adapter yet.
         journal, adapter, runner = self.started()
         runner.perform("hold", runner.approval_request("hold"))
         runner.perform("freeze")
-        with self.assertRaisesRegex(UnsafeCutover, "SQLite hold, freeze and rollback only"):
+        with self.assertRaisesRegex(UnsafeCutover, "evidence inputs manifest is missing"):
             runner.perform("prepare")
+        self.assertEqual(SQLITE_CONFIG["route_sha256"], live_config.measure(self.app).live_config_sha256)
+        self.assertFalse((self.app / ".env").exists())
+        with self.assertRaisesRegex(UnsafeCutover, re.escape(production.NOT_SUPPORTED)):
+            adapter.evidence()
+        with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, re.escape(production.NOT_SUPPORTED)):
+            adapter.seal_mysql(lease, time.time() + 60)
         self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
 
     def guard_paths(self):

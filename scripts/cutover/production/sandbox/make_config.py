@@ -89,6 +89,9 @@ OPTIONS = {"max_drain_seconds": 600, "separate_freeze_approval": False, "adopt_e
 QUEUES = ["database:mail", "database:integrations", "database:default", "database:watermarks",
           "database:media-archives", "database:voice-realtime", "database:voice-notifications",
           "database:voice-transcripts", "studio:studio"]
+# Free bytes on / that prepare requires (design 3.2 step 2). Inside the sandbox / is the host's root file system;
+# this floor only has to leave room for the sandbox run itself (the host's own floor is set at P5).
+FREE_DISK_FLOOR_BYTES = 6 * 1024 ** 3
 NIGHT_FLAGS = ["CRM_OUTBOUND_HOLD", "CRM_DEFER_REPLY_FORWARDING", "CRM_CALENDAR_SYNC_HOLD",
                "PRODUCER_INGRESS_HOLD", "SCHEDULER_HOLD_ENABLED"]
 SERVICE_MANAGERS = ("systemctl", "systemd-run", "supervisorctl", "/usr/sbin/service")
@@ -210,6 +213,7 @@ def host_config(args, root: Path, app: Path, datadir: Path, server_uuid: str, ad
             "night_flags": NIGHT_FLAGS,
             # The sandbox network has only loopback, so off-site uploads cannot run there.
             "offsite_waiver": args.mode == "drill",
+            "free_disk_floor_bytes": FREE_DISK_FLOOR_BYTES,
         },
         "fpm": {"unit": "php8.3-fpm.service", "socket": "/run/php/php8.3-fpm.sock",
                 "status_socket": "/run/php/php8.3-fpm-status.sock", "drain_seconds": 90},

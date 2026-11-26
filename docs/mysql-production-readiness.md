@@ -4,8 +4,9 @@
 
 **Night status at this candidate.** It can hold, freeze, abort and reopen
 production on SQLite. It cannot reach MySQL: no `prepare` or `promote`
-action, `approval-template` accepts only `hold` or `freeze`, the adapter
-refuses `prepare`, `evidence` and `seal_mysql`, every writer profile is
+action, `approval-template` accepts only `hold` or `freeze`, the adapter's
+`evidence` and `seal_mysql` refuse (its `prepare`, which no CLI action runs,
+switches the host read-only behind the closed gate), every writer profile is
 pinned to SQLite, and the watchdog rolls back at 45 minutes. Until the
 [MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built)
 is built, any run is a SQLite dress rehearsal that ends in abort and reopen.

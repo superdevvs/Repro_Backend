@@ -10,7 +10,7 @@ approval for each action (handoff item W1).
 | --- | --- | --- |
 | `../fence/guard.py` | `/opt/repro-cutover-fence/guard.py` | Admission check (fixed path) |
 | `../runner.py` | `/opt/repro-cutover-fence/runner.py` | Journal and state machine |
-| `cli.py`, `adapter.py`, `admit.py`, `deploy_marker.py`, `sqlite_seal.py`, `mysql_probe.py` | `/opt/repro-cutover-fence/production/` | Controller, host adapter, writer wrapper, fences, MySQL probe |
+| `cli.py`, `adapter.py`, `admit.py`, `deploy_marker.py`, `sqlite_seal.py`, `mysql_probe.py`, `envfile.py` | `/opt/repro-cutover-fence/production/` | Controller, host adapter, writer wrapper, fences, MySQL probe, the `.env` switch |
 | `mysql/accounts.sql`, `mysql/fixture.sh` | run once by the administrator (session A1): `fixture.sh render` fills the passwords | The eight MySQL accounts; the probe account's defaults file goes to `/etc/repro-cutover-fence/mysql-probe.cnf` (root 0600) |
 | `testdata/route-hash-vectors.json` | not installed (test data) | The route-hash contract and vectors shared by the PHP probes (`../probe/`), the live config module (D03) and its tests (D08) |
 | `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.json` | Writer profiles: user, command, action, engine |
@@ -214,6 +214,7 @@ check as `host.json`. `test_adapter.py` (`example_config`,
 | `mysql.switch_secrets` | Exactly `{"DB_PASSWORD": "<root-only file>"}`; the password never appears in `host.json` |
 | `mysql.night_flags` | Distinct `.env` key names, none of them a switch key |
 | `mysql.offsite_waiver` | `true` or `false`; `true` only in `drill` mode |
+| `mysql.free_disk_floor_bytes` | A positive integer (at most 2^50): `prepare` refuses unless `/` has more bytes free for the service accounts (`f_bavail`; design 3.2 step 2, critic HO-M12). The example's 20 GiB is a placeholder: P5 sets the host's value from the night's need (snapshot, import, base, binary logs). The sandbox's `make_config.py` writes 6 GiB |
 | `fpm` | `unit` (`*.service`), `socket`, `status_socket` (absolute), `drain_seconds` (1 to 300). `status_socket` is not `socket` (compared normalised), and `drain_seconds` plus 12 s (`adapter.FPM_DRAIN_MARGIN_SECONDS`, `fpm_drain.py`'s last status request and margin) fits inside `command_seconds`: what `fpm_drain.py` refuses at run time, where its exit 1 would also keep a rollback's FPM stop from running |
 | `smoke` | `client_id`, `shoot_id`: the marked test records, positive integers |
 | `studio_pause_files` | Distinct absolute paths (may be empty) |
@@ -398,12 +399,12 @@ as root: `os.walk` skips a folder its user cannot read, so such a folder under
 the fingerprinted trees would make the two differ.
 
 Open items for this probe:
-- D10: test prepare's `.env` writer (step 6) against
-  `identity_probe.config_sha256`: the switched `.env` gives the same digest
-  and is never refused (plain `NAME=VALUE` lines, no repeated name outside
-  the denylist). Each refusal the probe adds is also a state that blocks the
-  rollback, because the runner checks the identity before every action
-  (review A2-11).
+- Done in D10 (review A2-11): prepare's `.env` writer (`envfile.py`, below)
+  is tested against `identity_probe.config_sha256` itself
+  (`test_envfile.py`): the switched file gives the same digest and is never
+  refused, and a restore gives back the original bytes. Each refusal the
+  probe adds is also a state that blocks the rollback, because the runner
+  checks the identity before every action.
 - P2 (read-only, before init): run the probe on production's `.env`,
   `/dev/disk/by-uuid` and `/etc/machine-id` and confirm it exits 0 (review
   A2-11), as well as the comparisons above.
@@ -643,7 +644,8 @@ without a change to that script.
   read, not between reads). Either revoke `SESSION_VARIABLES_ADMIN` from
   `repro_maint` after the import, or lock `repro_maint` with an exempt lock
   (above) before `prepare`'s `armed_from`.
-- D10: run `--since` with `--since-gtid` (or compare the sets itself), and
+- Done in D10: `prepare` runs `--since` with `--since-gtid` and also
+  compares the sets itself (below). Still open for the runbook (D19/C12):
   record the drill coordinate after `complete-schema` and
   `cutover:smoke-fixtures --create` (the contract above).
 - Done at the lane merge: `gate.py` builds its root SQL from
@@ -775,9 +777,9 @@ copy beside it, and a missing copy is an error.
   docstring has the full list). PHP still loads several of these (a link, an
   enum, a large file), so **the fallback engine is advisory**: it may let a
   rollback proceed, but it never proves which engine is live. Both
-  publications (and `host_authority`) refuse it today; `prepare` (D10), the
-  SQLite reopen (D13, which still accepts it) and the MySQL reopen (C03) are
-  to refuse it too (see "Not yet here" below). Anything other than a plain
+  publications (and `host_authority`) and `prepare` (D10) refuse it today;
+  the SQLite reopen (D13, which still accepts it) and the MySQL reopen (C03)
+  are to refuse it too (see "Not yet here" below). Anything other than a plain
   `sqlite` or `mysql`, or a `DB_URL`, raises `Unmeasurable`. CLI (the
   installed copy, run as `/usr/bin/python3 -I -S` like every controller copy
   under `/opt`: it reads the app root and imports nothing from it):
@@ -841,12 +843,13 @@ where those modules do not exist.
 Not yet here (later slices):
 - D13: the SQLite reopen refuses a `fallback` live config (review A2-9); it
   accepts one today (`reopen` checks only the observed engine and
-  writability). `prepare` (D10) and the MySQL reopen (C03) must refuse it
-  too; both publications already do.
-- D10, D12, D14: `build(config, expected_engine=..., expected_sha256=<pin>,
+  writability). The MySQL reopen (C03) must refuse it too; both
+  publications and `prepare` (D10) already do.
+- D12, D14: `build(config, expected_engine=..., expected_sha256=<pin>,
   deadline=...)` then `live_config.measure` again (the deploy user can
-  replace `config.php` at any time); `pin-config` creates the root 0711
-  staging folder under `/run/repro-cutover-fence` and passes it to `stage`.
+  replace `config.php` at any time), as `prepare` step 8 does (D10);
+  `pin-config` creates the root 0711 staging folder under
+  `/run/repro-cutover-fence` and passes it to `stage`.
 
 ## Observation and authority (design 1.2, 1.3, 3.2, 3.4)
 
@@ -946,11 +949,11 @@ Not yet here:
   `pin-config` is D14.
 - Review C2-7: (1) `config_build.check_command` in `load_config`: done;
   (2) `reopen()` (SQLite) still accepts a fallback live config (D13), and
-  `prepare` step 3, the unseal proof (3.5 step 7) and `seal_sqlite` must read
+  the unseal proof (3.5 step 7) and `seal_sqlite` must read
   `paths.sealed_hash`, check `run_id`, `hold_id`, `started_at` and `database`,
-  and compare `sqlite_seal.file_sha256(database)` with `sha256` (D10, D12);
-  `prepare` and `seal_sqlite` step 6 must refuse a fallback config
-  themselves (D10, D12); (3) with MySQL down, `observe()` reads false/false in
+  and compare `sqlite_seal.file_sha256(database)` with `sha256` (D12), as
+  `prepare` step 3 does (D10); `seal_sqlite` step 6 must refuse a fallback
+  config itself (D12), as `prepare` step 8 does (D10); (3) with MySQL down, `observe()` reads false/false in
   `frozen` and `ready` while `writes_possible` is false, so `before.frozen()`
   holds in `_promote`: `evidence()` must require a reachable, closed target
   reading before `writes_possible` is written (D11, C02). D11's evidence also
@@ -979,6 +982,180 @@ the journal); and the real `mysql_probe.py` against D05's
 fake 8.4.13 client with this run's receipt in place (exit 3 still reads
 false/false while `writes_possible` is false; exits 4 to 6 are refused with
 the probe's own problems).
+
+## `prepare`, the switch half (design 3.2 steps 1 to 10, D10)
+
+`adapter.prepare(lease, deadline)` runs inside `runner.perform("prepare")`
+(`Runner._prepare` is unchanged): the runner has drained the writers and
+journalled the pending `prepare`; afterwards it requires a frozen
+observation on MySQL and then calls `evidence()`, which is D11's and still
+refuses, as steps 11 and 12 are D11's. `cli.py prepare` is D14's. The steps
+are `adapter.PREPARE_STEPS`, one method `_prepare_<name>` each; before each,
+the lease must still be current and the deadline not passed.
+
+| Step | Name | What |
+| --- | --- | --- |
+| 1 | `writers_drained` | `lease.require_writers_drained()`; the journal reads `frozen` with `writes_possible` false |
+| 2 | `inputs` | The evidence inputs manifest (below), every input re-read and bound by `adapter.check_inputs`; the policy pins `mysql_live_config_sha256`; free bytes on `/` above `mysql.free_disk_floor_bytes` |
+| 3 | `sqlite_frozen` | `sqlite_seal.writable()` false, the WAL empty, `paths.sealed_hash` of this run, the journal's hold (`hold_id`, `started_at`) and this `database`, and `sqlite_seal.file_sha256` equal to its `sha256` |
+| 4 | `mysql_history` | One probe reading: the target's server UUID and database, `gate` closed, `writable` and `business_activity` false. App sessions (`gated_sessions` above 0) are ended by `gate.close_gate`, which on a closed gate only sends the KILLs (no grant change); a gate it found not closed is refused after the close. Then the history scan (below) |
+| 5 | `switch_record` | First `envfile.require_switchable` (the `.env` checks of `assign` and `replace`, steps 6 and 7); then the switch record (below), written, or verified on a retry |
+| 6 | `mysql_env` | The MySQL `.env` in memory (`envfile.assign`): `mysql.switch` plus the secret from `mysql-app.env`; refused unless `identity_probe.config_sha256` of the current and the switched file, with the denylist read again from `paths.identity_config`, are equal (the v1 bug, critic RC-H1) |
+| 7 | `env_replaced` | `envfile.replace` (owner, group, mode and every extended attribute kept, the ACL included); skipped when the file already holds the switch; read back |
+| 8 | `config` | `config_build.build(config, expected_engine="mysql", expected_sha256=<MySQL pin>, deadline=...)`, then `live_config.measure` again: engine `mysql`, source `cache`, the pin (the deploy user can replace `config.php` at any time). Then `switch_at` in the switch record |
+| 9 | `fpm` | `commands.fpm_start` (fresh FPM workers on the MySQL config; the freeze's drain stopped FPM) |
+| 10 | `receipt` | The history scan once more; `paths.activity` removed; the receipt written (below) |
+
+Steps 1 to 4 change nothing (step 4 may end app sessions, which hold no
+grant), and the run stays `frozen` with its pending `prepare` until `abort`.
+Step 5 refuses a `.env` that steps 6 and 7 would refuse before it writes
+the record. From the record on a failure leaves the switch partly done, for
+`seal_sqlite` to undo (D12; until then see "Not yet here" below).
+
+**The history scan** (steps 4 and 10, the `--since` contract above):
+`commands.mysql` with `--since <backup file>:<position> --since-gtid
+<backup gtid_executed>` appended. Nothing listening (exit 3) is retried, 3
+attempts 1 s apart within the deadline, then refused; exits 4 to 6 are
+refused quoting the probe's `problems`. The output must name the target's
+server and database, read the gate closed, start at the backup coordinate
+and list no app-schema transaction: every one counts, whoever made it ("the
+copy changed after the verified backup", naming the count, the first GTID
+and its tables or statement kinds, never a value). The backup's
+`gtid_executed` must be a subset of the output's `until.gtid_executed`,
+checked here as well as by `--since-gtid` (review B2-9). Step 10's `until`
+(the coordinate the probe read before it scanned) becomes `armed_from`.
+
+**The evidence inputs manifest** (`paths.evidence_inputs`, root 0600, read
+through the protected-file check). `cli.py check-evidence --write` (D11)
+writes it after running `adapter.check_inputs(config, pinned, policy,
+started_at, manifest)` on the same document, so a bad input is caught before
+the one-shot action; `prepare` runs the same function again:
+
+```json
+{"version": 1, "run_id": "<run>", "mode": "drill",
+ "backup": {"file": "binlog.000012", "position": 1157, "gtid_executed": "<server uuid>:1-40"},
+ "inputs": {"snapshot": {"path": "/protected/night/frozen.sha256", "sha256": "<SHA-256 of that file>"},
+            "import": {"path": "...", "sha256": "..."}, "verify_fields": {"path": "...", "sha256": "..."},
+            "migrate_status": {"path": "...", "sha256": "..."}, "complete_schema": {"path": "...", "sha256": "..."},
+            "backup_check": {"path": "...", "sha256": "..."}}}
+```
+
+Exactly these keys, absolute paths. `backup` is the verified MySQL base's
+coordinate with its `gtid_executed` (the receipt's `backup`); with the
+waiver it is the coordinate the operator recorded after the copy load. Each
+input is read again (a regular file, never through a final link, at most
+1 MiB) and must still have the recorded digest. Then, each refused with its
+own message:
+
+| Input | Must hold |
+| --- | --- |
+| `snapshot` | `sha256sum` of the frozen snapshot: one line, the digest, a space and a space or `*`, the path. Its digest is the frozen snapshot (drill: `S_frozen`) |
+| `import` (`migrate.py import-empty`'s `result.json`) | `mode` `import-empty`, `import_verified` true, `source_changed` false, `target_server_uuid` = `mysql.target_uuid`, `target_database` = `mysql.database`. Its `source_sha256` is the forward-parity snapshot (cutover: the frozen one; drill: the copy's `S_copy`) |
+| `verify_fields` (`verify-fields.php`'s stdout, JSON lines) | The last line: `result` `all-fields-verified`, `field_mismatches` 0, `source_sha256` = the import's, the target's server and database |
+| `migrate_status` (`migrate:status --pending`'s stdout) | Laravel 12's `INFO No pending migrations.`, whitespace aside |
+| `complete_schema` (`complete-schema.php`'s stdout) | `verified` and `migration_ledger_unchanged` true, `server_uuid` = the target |
+| `backup_check` (`final_backup_check.py`'s result) | `result` `frozen-base-publications-verified`, `release` = the pinned `release_sha`, `frozen_at` not before the journal's hold, `sqlite.snapshot_sha256` = the snapshot record's digest, `mysql.identity` = the target, `mysql.database`, `mysql.pitr` (`binlog_file`, `binlog_position`) = `backup`. `null` exactly when `mysql.offsite_waiver` (drill only) |
+
+The manifest's `run_id` is the pinned run's and its `mode` is
+`mysql.mode`; cutover mode needs one snapshot (the record, the import and
+verify-fields; with the backup check, the SQLite publication too). Drill
+mode (design 7.1) binds forward parity to `S_copy` and the publication to
+`S_frozen`. `check_inputs` returns `mode`, `offsite_waiver`,
+`snapshot_sha256` (forward parity: what `evidence()` returns),
+`frozen_snapshot_sha256`, `backup` and the input digests, for D11's report.
+
+**The switch record** (`paths.switch_record`, root 0600): `{"version": 1,
+"run_id", "values", "env_sha256", "switch_at"}`. `values` holds each switch
+key's SQLite value, the raw text after the first `=` of its line
+(`envfile.values`), or null when the SQLite `.env` has no line for it: only
+the switch keys, never a copy of `.env` (no `APP_KEY`; critic RC-L4,
+HO-L10). `env_sha256` is `envfile.digest(<SQLite .env>, night_flags)`, the
+SHA-256 of the file with the night-flag lines left out, so a flag the night
+turns does not make the record unverifiable. A new record is taken only from
+a `.env` that reads `DB_CONNECTION=sqlite` (else "switched by hand"). An
+existing record is used only when it is this run's and restoring its values
+into the current `.env` (`envfile.assign`) gives `env_sha256`, whether the
+file is still the SQLite one or already switched; another run's record is
+never used or replaced. `switch_at` is null until step 8, then the Unix time
+of the MySQL config build (the MySQL reopen compares worker start times with
+it, design 3.6 step 11); a rerun moves it to its own build. The record stays
+until `retire`.
+
+**The `.env` switch** (`envfile.py`, beside `adapter.py`). Lines are read
+exactly as the identity probe reads them (its `ENV_LINE`) and every switch
+key is denylisted, so the switched file has the same `config_sha256` and is
+never refused by the probe (review A2-11), and restoring the recorded values
+gives back the original bytes. A line the probe refuses, a switch key on two
+lines, a value that is not UTF-8 or holds NUL, a file that does not end with
+a newline when a line must be appended, a `.env` with a second name (a hard
+link: the rename would leave the SQLite bytes under the other name) and an
+app root reached through a symbolic link (`replace` opens the folder without
+following one, while the identity probe, `live_config` and the build follow
+it) are refused at step 5 (`envfile.require_switchable`, and `envfile.values`
+for a new record), before the switch record is written (review D10R-6). The secret file and the denylist checks
+(step 6) come after the record and before `.env` changes; the record then
+still verifies against the unchanged `.env`, so a rerun after the fix
+proceeds. P2 confirms read-only that `/var/www/backend` is a directory and
+its `.env` has one link and ends with a newline.
+`replace` writes a temporary `.env.repro-<32 hex>` in the app root, gives it
+the old owner, group, extended attributes (the backup account's
+`system.posix_acl_access`) and mode, fsyncs it, renames it over `.env` only
+while the name still holds the very file that was read with the expected
+bytes, fsyncs the folder and reads the result back (E5). The secret file
+`mysql.switch_secrets.DB_PASSWORD` must be root's in a root chain, mode
+0600, and hold exactly `DB_PASSWORD=<16 to 256 characters of A-Z a-z 0-9 .
+_ ~ + / = ->`; the password is never printed.
+
+**The receipt** (step 10): exactly the keys of the records table above,
+root 0600, written after `paths.activity` is removed: `server_uuid` =
+`mysql.target_uuid` (the scan read it), `backup` = the manifest's,
+`armed_from` = the scan's `until` (`file`, `position`). A rerun never erases
+a latch of the current receipt: step 4's reading then reports business
+activity and refuses before step 10 runs.
+
+**What a crash leaves** (the markers `seal_sqlite` reads, D12;
+`assert_markers` in `test_adapter_mysql.py` checks each):
+
+| Stopped after step | On disk |
+| --- | --- |
+| 1 to 4 | Nothing changed (app sessions may have been ended) |
+| 5, 6 | This run's switch record, `switch_at` null; `.env` still SQLite |
+| 7 | `.env` switched (each switch key reads its switch value); `config.php` still SQLite |
+| 8 | `config.php` measures the MySQL pin; `switch_at` set |
+| 9 | FPM restarted on the MySQL config (no file: `try-reload-or-restart` covers a running and a stopped FPM) |
+| 10 | This run's receipt; the latch removed |
+
+A controller killed inside a step (`PrepareHost.kill_inside`) can also leave:
+
+| Killed | On disk |
+| --- | --- |
+| In step 7, before the rename | As after step 6, plus `.env.repro-<32 hex>` in the app root: the whole switched `.env`, the app password included, with `.env`'s owner, group, mode and ACL. The next `envfile.replace` removes it, and so does `seal_sqlite` (below) |
+| In step 8, after the rename | As after step 7, but `config.php` measures the MySQL pin from the cache; `switch_at` still null |
+| In step 8, during the build | As after step 7, plus `.config.php.repro-<32 hex>` (removed by the next build) |
+
+From any of these states a new `prepare` finishes the switch
+(`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step`,
+`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes`).
+
+Not yet here:
+- D11: steps 11 and 12, `evidence()`, `check-evidence --write` (which writes
+  the manifest above through `check_inputs`).
+- D12: `seal_sqlite`'s full undo (design 3.5 steps 2 to 7). Until then
+  `seal_sqlite` only unseals SQLite and lifts the ingress marker, and with a
+  switch record it first removes `.env.repro-<32 hex>` leftovers and then
+  refuses, before it unseals anything, while `.env` no longer holds the
+  record's SQLite values (review D10R-1). So from step 7's rename on, an
+  `abort` or the watchdog stops with "The .env holds the MySQL switch" and
+  the site stays held (SQLite sealed, the run `frozen` with a pending
+  `abort` that every retry refuses the same way) instead of reopening
+  SQLite under a MySQL `.env`, whatever `config.php` reads. Before the rename (a crash
+  after step 5 or 6, or a kill inside step 7) the rollback reopens SQLite.
+  `test_abort_never_reopens_sqlite_under_the_switched_env` covers both;
+  D12 replaces that test's refusal with the undo, from every state in the
+  two tables above. Do not run `prepare` on a host before D12.
+- Step 9 does not wait for the FPM socket; D11's FastCGI probe (step 11) is
+  its first reader and owns that bounded wait.
+- D14: `cli.py prepare`.
 
 ## Telnyx while held (design 5.2)
 
@@ -1140,8 +1317,9 @@ cli.py refresh                                           # after a reboot (plann
 cli.py reopen                                            # after abort, or after refresh
 ```
 
-This adapter covers the SQLite hold, freeze and pre-write rollback only.
-`prepare` and `promote` refuse, so it cannot open MySQL for writes.
+This adapter covers the SQLite hold, freeze, pre-write rollback and
+`prepare`'s switch (steps 1 to 10, above). `evidence()` and `seal_mysql`
+refuse, so `promote` cannot pass and MySQL is never opened for writes.
 
 **After every reboot.** `/run` is a fresh tmpfs, so every writer is held: there is
 no authority proof for the new boot and no open marker. The runtime
@@ -1231,3 +1409,29 @@ need a disposable `--privileged` container and run only when
 (`sandbox/README.md`). Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).
+
+`test_envfile.py` (the `.env` switch) runs anywhere for its byte tests,
+which check the switched and the restored file against
+`identity_probe.config_sha256` itself (review A2-11); its `ReplaceTests` need
+Linux root (another account's owner and a POSIX ACL written as its kernel
+blob). `test_adapter_mysql.py` holds `prepare` (D10) and the harness D11 and
+D12 add their tests to: `PrepareHost` builds a whole root-owned host under
+`/var/lib` (journal, records, `host.json`, a deploy-user-owned app root with
+`.env` carrying an ACL, `config.php`, a WAL SQLite file), runs `init`, `hold`
+and `freeze` through the real runner, writes the night's inputs and their
+manifest, and records every host effect in one log: recorders for
+`systemctl` and `runuser` (the runuser one then runs the real runuser, so the
+fake `php`'s `config:cache` runs as the deploy user and writes the config
+from `.env`), a stand-in identity probe that measures `config_sha256` from
+the live `.env`, and either a scripted MySQL probe (`PrepareTests`, any root
+container) or the real `mysql_probe.py` and `gate.py` against D04's 8.4.13
+fixture on its shared socket volume (`PrepareFixtureTests`). A prepare can
+be stopped between two steps (`crash_after(n)`) or killed with SIGKILL
+inside step 7 or 8 (`kill_inside(point)`, a forked controller), for D12's
+abort tests. The file's docstring has the parts table and how a later slice
+extends it.
+`../run-linux-tests.sh` runs both files after its production loop; without
+the fixture the prepare fixture tests skip and `test_adapter_mysql.py
+--fixture-check` names them in its own WARNING line before any suite (or
+stops the run with `REPRO_REQUIRE_PROBE_FIXTURE=1`, as
+`run-probe-fixture-tests.sh --linux-suite` sets it).

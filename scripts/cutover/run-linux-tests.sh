@@ -16,8 +16,9 @@
 # The MySQL probe's gate-state tests need the three fixtures that
 # production/mysql/fixture.sh serves (REPRO_MYSQL_PROBE_FIXTURE and its
 # _NETWORKING and _SKIP_GRANTS variants). Without them those tests skip and a
-# WARNING line names them, first and last (test_gate.py's fixture tests and
-# test_adapter.py's real-probe test each on a line of their own); with
+# WARNING line names them, first and last (test_gate.py's fixture tests,
+# test_adapter.py's real-probe test and test_adapter_mysql.py's prepare tests
+# each on a line of their own); with
 # REPRO_REQUIRE_PROBE_FIXTURE=1 the run stops before any suite instead.
 # production/run-probe-fixture-tests.sh
 # --linux-suite builds the fixtures and runs this with the requirement set.
@@ -31,13 +32,14 @@ fixture_failed=0
 probe_warning=$(python3 -B "$cutover/production/test_mysql_probe.py" --fixture-check) || fixture_failed=1
 gate_warning=$(python3 -B "$cutover/production/test_gate.py" --fixture-check) || fixture_failed=1
 adapter_warning=$(python3 -B "$cutover/production/test_adapter.py" --fixture-check) || fixture_failed=1
+prepare_warning=$(python3 -B "$cutover/production/test_adapter_mysql.py" --fixture-check) || fixture_failed=1
 test "$fixture_failed" -eq 0 || exit 1
 fixture_warnings() {
-    for warning in "$probe_warning" "$gate_warning" "$adapter_warning"; do
+    for warning in "$probe_warning" "$gate_warning" "$adapter_warning" "$prepare_warning"; do
         [ -z "$warning" ] || printf '%s\n' "$warning" >&2
     done
 }
-if [ -n "$probe_warning$gate_warning$adapter_warning" ]; then
+if [ -n "$probe_warning$gate_warning$adapter_warning$prepare_warning" ]; then
     fixture_warnings
     trap fixture_warnings EXIT
 fi
@@ -53,6 +55,9 @@ for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.p
                   test_cross_slice.py; do
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
+python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_envfile.py
+# prepare's MySQL fixture tests skip without the fixture (see the check at the top).
+python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_adapter_mysql.py
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_config_build.py
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_identity_probe.py
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_fastcgi.py
