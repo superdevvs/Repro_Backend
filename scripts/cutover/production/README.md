@@ -30,7 +30,7 @@ approval for each action (handoff item W1).
 | `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` (root 0644) | Release path and open marker |
 | `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times; makes `/run/repro-telnyx-capture` itself (`ExecStartPre`) if tmpfiles has not yet |
 | `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | `wrappers.example.json` plus `telnyx-replay` and `cutover-smoke` (design 3.8) |
-| `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper |
+| `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper, keeping the storage guard; `--reverse` restores them (below) |
 
 All files and every parent directory must be owned by root and not writable
 by group or others. Python runs as `/usr/bin/python3 -I -S`.
@@ -54,11 +54,52 @@ start again through the wrapper.
 | User Supervisor: studio, lab-tour (when installed), voice-realtime, voice-notifications, voice-transcripts | `sudo -n ... admit.py <profile>` |
 | `repro-media-archives.service` | systemd drop-in `ExecStart=+... admit.py media-archives` |
 | Laravel scheduler (cron `schedule:run`) | `admit.py scheduler`; background commands keep the lease |
-| Other application cron lines | `crontab.py` rewrites known lines; unknown ones are refused |
+| Other application cron lines | `crontab.py` rewrites lines that match a rule exactly, keeping the storage guard in front of the wrapper; any other application line is refused (below) |
 | Deployments | `/etc/repro-database-cutover/active`, published under both deploy locks from `init` (Deploy-App checks only this file, never the guard) until reopening a completed rollback lifts it |
 | Manual `sqlite3` or tinker as the deploy or web user | SQLite seal: no write bits on the database files during the freeze. Write bits stop new opens only, so the seal first refuses while any other process holds the database, `-wal` or `-shm` open for writing (an idle session opened earlier), and checks again after the modes change. It needs root's `/proc` access to every process (`CAP_SYS_PTRACE`); an unreadable process also refuses |
 
 Root bypasses file modes. Root-run tools are fenced by the runbook only.
+
+### Cron lines (`crontab.py`, D20)
+
+A rule in `cron-rules.json` either leaves its lines as they are (`match`
+and `allow`, the reason) or rewrites them (`match`, `profile` and
+`command`, the exact command text the profile replaces); any other shape is
+refused (exit 2). A line that a rewriting rule matches is wrapped only when
+its command is exactly the rule's `command`, alone or behind the storage
+guard `/usr/local/sbin/repro-storage-guard --live && ` (that form, byte for
+byte), followed only by output redirections and a marker comment. The guard
+is carried over in front of the wrapper, so it still runs first:
+
+```text
+* * * * * /usr/local/sbin/repro-storage-guard --live && cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1
+* * * * * /usr/local/sbin/repro-storage-guard --live && /usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py scheduler >> /dev/null 2>&1
+```
+
+Any other prefix (another guard form, `flock`, `nice`, a second `cd`),
+anything chained, piped or substituted after the command, or another option
+is refused, never rewritten with the difference dropped: `crontab.py` exits
+1, names each such line on stderr and prints nothing on stdout. So is a line
+the reverse could not restore exactly (two rules for one profile). The
+schedule, the whitespace after it, the redirections and the marker comment
+are kept. `--reverse` turns each wrapped line back into its rule's command,
+guard and trailer kept, so a rewrite and its reverse give the original
+crontab byte for byte (input and output are bytes, with no newline or
+encoding translation). Lines that are already wrapped are left alone.
+
+The example's commands are the repository installers' forms. At W1, check
+each rule's `command` against the live crontab (only schedules and command
+names were read on 25 November); a live line that differs is refused, and
+the rule is corrected, not the line. Write to a file and install only on
+exit 0:
+
+```sh
+wrapper='/usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py'
+crontab -u maverick -l > before.txt
+python3 -I -S -B crontab.py --rules cron-rules.json --wrapper "$wrapper" < before.txt > after.txt \
+  && python3 -I -S -B crontab.py --rules cron-rules.json --wrapper "$wrapper" --reverse < after.txt | cmp - before.txt \
+  && crontab -u maverick after.txt
+```
 
 ## Host config
 

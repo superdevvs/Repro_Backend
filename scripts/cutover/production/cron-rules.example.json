@@ -2,9 +2,12 @@
   "version": 1,
   "application_markers": ["/var/www/backend", "artisan", "database.sqlite"],
   "rules": [
-    {"match": "artisan schedule:run", "profile": "scheduler"},
-    {"match": "artisan auth:prune-security-limits", "profile": "auth-prune"},
-    {"match": "artisan cubicasa:refresh-deliveries", "profile": "cubicasa-poll"},
+    {"match": "artisan schedule:run", "profile": "scheduler",
+     "command": "cd /var/www/backend && php artisan schedule:run"},
+    {"match": "artisan auth:prune-security-limits", "profile": "auth-prune",
+     "command": "cd /var/www/backend && /usr/bin/php artisan auth:prune-security-limits --limit=1000"},
+    {"match": "artisan cubicasa:refresh-deliveries", "profile": "cubicasa-poll",
+     "command": "/usr/bin/flock -n /home/maverick/.repro-cubicasa-revision-poll/poll.lock /usr/bin/sg www-data -c 'umask 0002; cd /var/www/backend && /usr/bin/php artisan cubicasa:refresh-deliveries --limit=25'"},
     {"match": "/ensure-supervisor\\.sh", "allow": "Starts the user Supervisor, whose writer programs are wrapped"},
     {"match": "scripts/deploy/deployment-storage\\.py", "allow": "Deploy backup retention; never opens the live database"}
   ]
