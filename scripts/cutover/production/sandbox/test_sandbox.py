@@ -724,6 +724,79 @@ class SandboxLauncherTests(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
                 self.assertFalse(marker.exists(), "The command ran")
 
+    # Wave-1 leftovers (L2, 26 Nov).
+
+    def test_a_link_left_at_the_old_launch_lock_never_changes_its_target(self):
+        # The reviewer's attack: a command inside replaces ROOT/launch.lock with a link to a host file.
+        # The next launch, as root in the host namespace, must neither truncate nor create that file.
+        victim = HOST_LOG_DIRECTORY / f"victim-{uuid.uuid4().hex[:8]}"
+        victim.write_bytes(b"a host file the sandbox must never change\n")
+        self.addCleanup(victim.unlink)
+        created = HOST_LOG_DIRECTORY / f"created-{uuid.uuid4().hex[:8]}"
+        self.addCleanup(created.unlink, missing_ok=True)
+        self.before = host_snapshot()
+        lock = self.root / "launch.lock"
+        for target in (victim, created):
+            with self.subTest(target=target.name):
+                planted = self.launch("/bin/sh", "-c", 'rm -f "$1" && ln -s "$2" "$1"', "plant", str(lock),
+                                      str(target))
+                self.assertEqual(0, planted.returncode, planted.stderr)
+                self.assertEqual(str(target), os.readlink(lock))
+                marker = self.root / "command-ran"
+                second = self.launch("/bin/sh", "-c", f"echo ran > {marker}")
+                self.assertEqual(0, second.returncode, second.stderr)
+                self.assertTrue(marker.exists())
+                marker.unlink()
+                self.assertEqual(b"a host file the sandbox must never change\n", victim.read_bytes())
+                self.assertFalse(os.path.lexists(created), "The launch created a file through the link")
+
+    def test_loader_files_left_in_the_etc_layer_stop_the_next_launch(self):
+        # A preload or loader cache written inside persists in ROOT/cow/upper/etc, and the loader would read
+        # it into the inside half's own programs (mount, sha256sum, PID 1's python3) at every later launch.
+        writes = {"ld.so.preload": "printf '%s\\n' /nonexistent/repro-sandbox-preload.so > /etc/ld.so.preload",
+                  "ld.so.cache": "printf 'not a loader cache' > /etc/ld.so.cache"}
+        for name, write in writes.items():
+            with self.subTest(name=name):
+                root = SANDBOX_MOUNT / f"root-{uuid.uuid4().hex[:8]}"
+                root.mkdir(mode=0o700)
+                planted = self.launch("/bin/sh", "-c", write, root=root)
+                self.assertEqual(0, planted.returncode, planted.stderr)
+                entry = root / "cow" / "upper" / "etc" / name
+                self.assertTrue(entry.is_file(), f"{entry} was not written")
+                marker = root / "command-ran"
+                second = self.launch("/bin/sh", "-c", f"echo ran > {marker}", root=root)
+                self.assertEqual(REFUSED, second.returncode, second.stderr)
+                self.assertIn(f"holds {entry}, which the dynamic loader would read", second.stderr)
+                self.assertIn(f"rm -- {entry}", second.stderr)
+                self.assertFalse(marker.exists(), "The command ran with a loader file in the /etc layer")
+                armed = subprocess.run([PYTHON, "-I", "-S", str(HERE / "sandbox_check.py"), "arm", "--root", str(root)],
+                                       capture_output=True, text=True)
+                self.assertEqual(REFUSED, armed.returncode, armed.stderr)
+                entry.unlink()
+                self.assertEqual(0, self.launch("/bin/true", root=root).returncode)
+
+    def test_pycache_written_inside_into_the_launchers_directory_names_the_cleanup(self):
+        # Python inside that imports from the launcher's directory writes __pycache__ into the /opt layer;
+        # every later launch refuses (fail closed) and says what it is and how to remove it.
+        installed = self.install_under_opt()
+        launcher = installed / "run-sandbox.sh"
+        imported = self.launch(PYTHON, "-I", "-S", "-c", f"import sys; sys.path.insert(0, {str(installed)!r}); "
+                               "import sandbox_check", launcher=launcher)
+        self.assertEqual(0, imported.returncode, imported.stderr)
+        shadow = self.root / "cow" / "upper" / "opt" / "repro-cutover-sandbox"
+        self.assertEqual(["__pycache__"], os.listdir(shadow))
+        self.assertFalse((installed / "__pycache__").exists(), "The host's copy got a __pycache__")
+        marker = self.root / "command-ran"
+        second = self.launch("/bin/sh", "-c", f"echo ran > {marker}", launcher=launcher)
+        self.assertEqual(REFUSED, second.returncode, second.stderr)
+        self.assertIn(f"shadows the launcher's own files at {installed}", second.stderr)
+        self.assertIn(f"{shadow}/__pycache__ is Python's bytecode cache", second.stderr)
+        self.assertIn("-B", second.stderr)
+        self.assertIn(f"rm -r -- {shadow}", second.stderr)
+        self.assertFalse(marker.exists())
+        shutil.rmtree(shadow)
+        self.assertEqual(0, self.launch("/bin/true", launcher=launcher).returncode)
+
 
 @unittest.skipUnless(sys.platform == "linux", "Linux paths")
 class MakeConfigTests(unittest.TestCase):

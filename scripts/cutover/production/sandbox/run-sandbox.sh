@@ -184,10 +184,13 @@ root=$1
 shift 2
 
 "$python" -I -S "$check" prepare --root "$root" || exit $?
-# One launch per sandbox root at a time. unshare and the sandbox init inherit the lock and keep it
-# until the last sandbox process is gone, even if this shell dies first; the init closes it for
-# the command.
-exec 9>"$root/launch.lock"
+# One launch per sandbox root at a time: the lock is on the ROOT directory itself, opened read-only.
+# ROOT is writable inside, so a lock file in it could be swapped for a link that this shell, as root
+# in the host namespace, would then create or truncate. prepare checked ROOT and its root-owned
+# parents, which nothing inside can reach. unshare and the sandbox init inherit the lock and keep it
+# until the last sandbox process is gone, even if this shell dies first; the init closes it for the
+# command.
+exec 9<"$root"
 flock -n 9 || { echo "run-sandbox: another launch is using $root" >&2; exit 2; }
 armed=$("$python" -I -S "$check" arm --root "$root" $reboot 9>&-) || exit $?
 token=${armed%% *}

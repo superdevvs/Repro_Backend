@@ -1,6 +1,6 @@
 """Write the sandbox controller config: host.json, identity.json, policy and wrappers (design 7.3).
 
-    /usr/bin/python3 -I -S make_config.py --root ROOT --controller DIR \\
+    /usr/bin/python3 -I -S -B make_config.py --root ROOT --controller DIR \\
         --app-root APP --run-id RUN --mysql-datadir DIR \\
         --smoke-client-id N --smoke-shoot-id N [--deploy-owner maverick] [--web-user www-data] \\
         [--mode drill|cutover] [--mysql-client PATH] [--measured FILE] [--wrappers FILE]

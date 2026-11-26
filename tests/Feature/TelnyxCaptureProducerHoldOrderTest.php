@@ -10,7 +10,9 @@ use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -21,13 +23,14 @@ use Tests\TestCase;
  * paths with a retryable 503; the Telnyx capture saves signed texts while the
  * app is down and telnyx:replay-spool later hands them to the normal handler.
  *
- * The hold runs first. It reads only config and the path, so the capture still
- * runs before the maintenance check and before anything that touches the
- * database. Telnyx is not on the default hold list, so a text is captured (or
- * handled live) whatever the hold says. If an operator does list a Telnyx
- * path, the hold wins in maintenance too: otherwise the capture would answer
- * 200 and the deploy's replay, which runs right after `up` while the hold is
- * still on, would write the text the hold was set to keep out.
+ * The hold runs first. It reads only config and the path (no database, no
+ * cache), so the capture still runs before the maintenance check and before
+ * anything that touches either. Telnyx is not on the default hold list, so a
+ * text is captured (or handled live) whatever the hold says. If an operator
+ * does list a Telnyx path, the hold wins in maintenance too: otherwise the
+ * capture would answer 200 and the deploy's replay, which runs right after
+ * `up` while the hold is still on, would write the text the hold was set to
+ * keep out.
  */
 class TelnyxCaptureProducerHoldOrderTest extends TestCase
 {
@@ -99,16 +102,25 @@ class TelnyxCaptureProducerHoldOrderTest extends TestCase
         $this->down();
         // The order rests on the hold reading only config and the path (review C7): with the hold on and
         // the app down, neither a held producer request nor a text on its way to the capture may reach the
-        // database before the capture has answered.
+        // database, or the cache (L2), before the capture has answered. Every cache event counts: CacheHit,
+        // CacheMissed, KeyWritten, RetrievingKey and their peers in Illuminate\Cache\Events.
         $queries = [];
         DB::listen(function (QueryExecuted $query) use (&$queries) {
             $queries[] = $query->sql;
+        });
+        $cacheEvents = [];
+        Event::listen('Illuminate\Cache\Events\*', function (string $event) use (&$cacheEvents) {
+            $cacheEvents[] = class_basename($event);
         });
         $this->assertProducerHeld();
 
         $this->postText('evt_c', 'msg_c')->assertOk()->assertExactJson(['status' => 'captured']);
 
         $this->assertSame([], $queries, 'A query ran before the capture answered');
+        $this->assertSame([], $cacheEvents, 'The cache was used before the capture answered');
+        // The recorder does see the cache, so the empty list above is not a store that dispatches nothing.
+        Cache::get('telnyx-hold-order-probe');
+        $this->assertSame(['RetrievingKey', 'CacheMissed'], $cacheEvents);
         $this->assertCount(1, $this->spoolEntries());
         $this->assertSame(0, Message::count());
         $this->upAndReplay();

@@ -30,6 +30,7 @@ approval for each action (handoff item W1).
 | `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` (root 0644) | Release path and open marker |
 | `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times; makes `/run/repro-telnyx-capture` itself (`ExecStartPre`) if tmpfiles has not yet |
 | `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | `wrappers.example.json` plus `telnyx-replay` and `cutover-smoke` (design 3.8) |
+| `sandbox/` (`run-sandbox.sh`, `sandbox_check.py`, `make_config.py`, `shims/refuse`) | `/opt/repro-cutover-sandbox/` for a sandbox run only (W2a, W2c; owner approval each time), removed after it; never part of W1 | Namespace sandbox for on-host rehearsals and its host config (`sandbox/README.md`) |
 | `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper, keeping the storage guard; `--reverse` restores them (below) |
 
 All files and every parent directory must be owned by root and not writable
@@ -467,6 +468,18 @@ unit's `ExecStartPre` and needs root);
 its `CaptureTests` run the real `capture.php` behind nginx and replay a
 captured text through `telnyx:replay-spool` into the app's handler, so they
 need root, nginx, PHP-FPM and an application checkout whose `vendor/` the
-web user can read (the command is in the file's docstring). Real systemd, Supervisor, nginx reloads
+web user can read (the command is in the file's docstring).
+`test_cross_slice.py` checks contracts between slices that no single
+slice's tests can see: the smoke tables in the example host config and the
+sandbox `host.json` against the app's `CutoverSmokeFixture::SMOKE_TABLES`,
+and `adapter.CAPTURE_COMMAND_LINES` against the capture's unit and pool.
+It is pure Python, needs a POSIX system and also runs as an ordinary user.
+`../run-linux-tests.sh` runs it in its production loop, and by default also
+runs the sandbox's `MakeConfigTests` (`sandbox/test_sandbox.py -k
+MakeConfigTests`, no privileges needed), which fail when the `host.json`
+contract drifts from `sandbox/make_config.py`. The sandbox launcher tests
+need a disposable `--privileged` container and run only when
+`production/sandbox/test_sandbox.py` is passed as an extra argument
+(`sandbox/README.md`). Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).

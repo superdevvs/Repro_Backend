@@ -11,6 +11,13 @@ use Symfony\Component\HttpFoundation\Response;
  * Producer replay hold (PRODUCER_INGRESS_HOLD). Runs first in the global
  * stack, so a held request reaches no telemetry, maintenance or controller
  * code. A 503 with Retry-After is the one answer every producer retries.
+ *
+ * It must touch neither the database nor the cache, with the hold on or off:
+ * it reads only config and the request path. It runs before the Telnyx
+ * maintenance capture, which must answer while the database is sealed or
+ * moving and before anything that could reach it; a lookup here would run on
+ * every request during a hold plus maintenance
+ * (TelnyxCaptureProducerHoldOrderTest counts queries and cache events).
  */
 class HoldProducerIngress
 {
