@@ -688,6 +688,11 @@ class CronEntryTests(unittest.TestCase):
             # A fingerprinted file at the app root.
             "/var/www/backend/composer.json",
             "/var/www/backend/artisan",
+            # The identity probe's other inputs under the app root (review D10R-8): config_sha256 and release_sha.
+            "/var/www/backend/.env",
+            "/var/www/backend/./.env",
+            "/var/www/backend/storage/app/deploy-meta.json",
+            "/var/www/backend/storage//app/./deploy-meta.json",
             # The live database and its journals, wherever a file of that name is.
             "/var/www/backend/database/database.sqlite-wal",
             "/var/www/backend/database//database.sqlite-shm",
@@ -708,6 +713,8 @@ class CronEntryTests(unittest.TestCase):
         scheduler = "cd /var/www/backend && php artisan schedule:run"
         lines = [f"* * * * * {scheduler} >> public/schedule.log 2>&1",
                  f"* * * * * {scheduler} >> ./resources/x 2>&1",
+                 f"* * * * * {scheduler} >> .env 2>&1",
+                 f"* * * * * {STORAGE_GUARD}{scheduler} 2>> storage/app/deploy-meta.json",
                  f"* * * * * {STORAGE_GUARD}{scheduler} >> database/database.sqlite",
                  f"* * * * * {self.RUNTIME}/ensure-supervisor.sh >> logs/bootstrap.log 2>&1",
                  # The cubicasa line's cd is inside sg's quoted script; its own redirection opens in the home.
@@ -728,6 +735,9 @@ class CronEntryTests(unittest.TestCase):
         scheduler = "cd /var/www/backend && php artisan schedule:run"
         targets = ["/var/www/backend/storage/logs/cron.log", "/var/www//backend/./storage/logs/schedule.log",
                    "/var/www/backend/storage/app/private/x", "/var/www/backend/bootstrap-notes.log",
+                   # Beside the identity inputs, not one of them (review D10R-8).
+                   "/var/www/backend/.env.log", "/var/www/backend/storage/app/deploy-meta.json.log",
+                   "/var/www/backend/storage/logs/.env",
                    "/var/www/backendx/public/x.log", "/var/www/backend-public/x.log", "/var/www/frontend/public/x.log",
                    "/home/maverick/database.sqlite.bak", "/dev/null"]
         for target in targets:

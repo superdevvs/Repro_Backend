@@ -64,6 +64,9 @@ REDIRECTION_TARGET = re.compile(r"(?:>>?|2>>?)[ \t]*([A-Za-z0-9_./-]+)")
 # write changes artifact_sha256 and stalls every runner action. A marker without a slash names the live database.
 FINGERPRINTED_TREES = ("app", "bootstrap", "config", "resources", "routes", "scripts", "public", "database")
 FINGERPRINTED_FILES = ("artisan", "composer.json", "composer.lock", "package.json", "package-lock.json")
+# The identity probe's other inputs under the app root (identity_probe.py: config_sha256, release_sha): a line
+# written into either makes the probe refuse, which stalls every runner action, the rollback included (D10R-8).
+IDENTITY_FILES = (".env", "storage/app/deploy-meta.json")
 JOURNAL_SUFFIXES = ("", "-wal", "-shm", "-journal")
 # A leading `cd <absolute path> && ` places the redirected command (and relative targets); any later cd moves it.
 LEADING_CD = re.compile(r"cd[ \t]+(/[A-Za-z0-9_./-]*)[ \t]+&&[ \t]")
@@ -137,10 +140,10 @@ def _writes_into_the_application(command: str, markers: list[str]) -> bool:
     """Whether a redirection of the command's trailer may write into what the cutover fingerprints or seals.
 
     An absolute marker is the app root (or a file): a target that is the marker itself, or lies in one of
-    its FINGERPRINTED_TREES, or is one of its FINGERPRINTED_FILES, is refused. A marker without a slash is a
-    file name (the live database): a target with that name, or the name with a journal suffix, is refused
-    wherever it is. So is a target that cannot be placed lexically. Anything else, the app's own storage/logs
-    included, is allowed (review W2V-3)."""
+    its FINGERPRINTED_TREES, or is one of its FINGERPRINTED_FILES or IDENTITY_FILES (review D10R-8), is
+    refused. A marker without a slash is a file name (the live database): a target with that name, or the name
+    with a journal suffix, is refused wherever it is. So is a target that cannot be placed lexically. Anything
+    else, the app's own storage/logs included, is allowed (review W2V-3)."""
     directory = _working_directory(command)
     roots = [posixpath.normpath(re.sub(r"/+", "/", marker)) for marker in markers if marker.startswith("/")]
     names = {marker + suffix for marker in markers if "/" not in marker for suffix in JOURNAL_SUFFIXES}
@@ -153,7 +156,8 @@ def _writes_into_the_application(command: str, markers: list[str]) -> bool:
                 return True
             if path.startswith(root.rstrip("/") + "/"):
                 inside = path[len(root.rstrip("/")) + 1:]
-                if inside.split("/")[0] in FINGERPRINTED_TREES or inside in FINGERPRINTED_FILES:
+                if (inside.split("/")[0] in FINGERPRINTED_TREES or inside in FINGERPRINTED_FILES
+                        or inside in IDENTITY_FILES):
                     return True
     return False
 

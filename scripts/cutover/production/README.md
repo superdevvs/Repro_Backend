@@ -87,7 +87,10 @@ only `cd`. It is also refused under an absolute `application_markers`
 entry (the app root) when it lies in a fingerprinted tree (`app`,
 `bootstrap`, `config`, `resources`, `routes`, `scripts`, `public`,
 `database`) or is one of the fingerprinted root files (`artisan`,
-`composer.json`, `composer.lock`, `package.json`, `package-lock.json`),
+`composer.json`, `composer.lock`, `package.json`, `package-lock.json`)
+or one of the identity probe's other inputs (`.env`,
+`storage/app/deploy-meta.json`: a line appended there makes the probe
+refuse every runner action, the rollback included; review D10R-8),
 and when its file name is a marker without a slash (`database.sqlite`,
 the live database, with or without `-wal`, `-shm` or `-journal`).
 `>> /var/www/backend/storage/logs/cron.log`, or
