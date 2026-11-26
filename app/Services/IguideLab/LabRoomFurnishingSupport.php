@@ -69,7 +69,7 @@ class LabRoomFurnishingSupport
             'sourceFloor'=>$maskRecord($floor,'floor','source_floor'),'candidateObjects'=>array_map(fn($id)=>$maskRecord($objects,$id,'candidate_object'),$profile['roles']),
             'pose'=>$b['context']['framing']['result']['view'],'outputDirectory'=>$disk->path($base.'/result')];
         $requestPath=$base.'/request.json';$loader->put($requestPath,json_encode($request,JSON_THROW_ON_ERROR));
-        $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);$env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
+        $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);$env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','PYTHONDONTWRITEBYTECODE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
         $process=new Process([$snapshot['pythonPath'],resource_path('iguide-lab/room_furnishing_support_worker.py'),$disk->path($requestPath),'--allowed-root',$disk->path('iguide-lab/'.$item->project_id)],null,$env,null,110);
         $process->run();$summary=json_decode($process->getOutput(),true);abort_unless($process->isSuccessful()&&in_array($summary['status']??null,['needs_review','ready_for_unreviewed_composition'],true),422,'Room support worker did not complete.');
         $path=$base.'/result/report.json';$file=$disk->path($path);abort_unless(is_file($file)&&!is_link($file)&&filesize($file)<=1024*1024,422);$report=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);

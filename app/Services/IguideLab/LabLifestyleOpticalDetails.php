@@ -89,7 +89,7 @@ class LabLifestyleOpticalDetails
     protected function execute(string $request,string $root): array
     {
         $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
-        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
+        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','PYTHONDONTWRITEBYTECODE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
         $p=new Process([(string)config('iguide-lab.pipeline_python_path'),resource_path('iguide-lab/lifestyle_optical_details_v2.py'),'--request',$request,'--allowed-root',$root],null,$env,null,130);
         $p->run();$report=json_decode($p->getOutput(),true);abort_unless($p->isSuccessful()&&is_array($report),422,'Original native detail extraction failed.');return $report;
     }

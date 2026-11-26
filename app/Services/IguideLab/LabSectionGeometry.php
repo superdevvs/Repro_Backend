@@ -17,7 +17,7 @@ class LabSectionGeometry
     {
         if (! $this->ready()) throw new RuntimeException('Section geometry is unavailable.');
         $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
-        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '2', 'OPENBLAS_NUM_THREADS' => '2']);
+        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'PYTHONDONTWRITEBYTECODE' => '1', 'OMP_NUM_THREADS' => '2', 'OPENBLAS_NUM_THREADS' => '2']);
         $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/section_geometry.py'), '--request', $requestPath], null, $env, null, 240);
         $process->run(); $report = json_decode($process->getOutput(), true);
         if (! $process->isSuccessful() || ! is_array($report) || ($report['status'] ?? null) !== 'completed'
