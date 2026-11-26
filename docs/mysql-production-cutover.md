@@ -3,11 +3,17 @@
 Status: implementation and isolated rehearsal. Production cutover has a separate
 approval gate. The previous Docker-based rehearsal is historical evidence.
 
-Every repository Python on the host, at the drill and at cutover, runs with
-`python3 -B`: a bytecode cache under the app tree changes the identity the
-controller checks before every action, so if it refuses on the artifact field
-after no deploy, look for `__pycache__` under the app tree's `scripts/` (and
-`resources/iguide-lab/`) and remove it.
+Every repository Python run from the app tree on the host, at the drill and at
+cutover, writes no bytecode. A command run by hand uses `python3 -B`. The app's
+iGUIDE lab services set `PYTHONDONTWRITEBYTECODE=1` in their environments
+(W2F-1, branch `claude/python-no-bytecode-20261126`, which must reach production
+with release D before W1). The controller's installed copies under `/opt` are
+outside the app tree and run as `/usr/bin/python3 -I -S`, exactly as `host.json`,
+the sudoers files and the units name them. A bytecode cache under the app tree
+changes the identity the controller checks before every action. So if the
+controller refuses on the artifact field after no deploy, run
+`cd <app_root> && find app bootstrap config resources routes scripts public database -name __pycache__`
+(every tree the fingerprint covers) and remove what it prints.
 
 > **What this candidate can do on the night.** It can hold, freeze, abort
 > and reopen production on SQLite. It cannot reach MySQL:

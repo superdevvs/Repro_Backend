@@ -268,20 +268,30 @@ class CutoverTest(unittest.TestCase):
         self.assertTrue(self.adapter.observe().sqlite_live())
         self.assertEqual(0, self.adapter.close_calls)
 
-    def test_artifact_advice_names_every_folder_the_runbooks_bytecode_rule_names(self):
-        # The runbook's rule (D02, review A2-1) names scripts/ and resources/iguide-lab/ (the lab workers run
-        # Python there): an operator who follows the refusal must look where a cache can appear.
+    def test_artifact_advice_gives_the_runbooks_find_over_every_fingerprinted_tree(self):
+        # The runbook's rule (D02, review A2-1) gives one find over every tree the source fingerprint hashes, and
+        # the refusal repeats it: a cache anywhere in those trees changes the artifact, not only under scripts/
+        # and resources/iguide-lab/ (review W2V-4).
+        import importlib.util
+
         import runner
 
-        runbook = (Path(__file__).resolve().parents[2] / "docs" / "mysql-production-cutover.md").read_text(
-            encoding="utf-8")
-        rule = re.search(r"Every repository Python on the host.*?remove it\.", runbook, re.DOTALL)
+        app = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "fingerprint_trees", app / "scripts" / "cutover" / "production" / "backend_source_fingerprint.py")
+        fingerprint = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fingerprint)
+        trees = sorted({tree.split("/")[0] for tree in fingerprint.TREES})
+        runbook = (app / "docs" / "mysql-production-cutover.md").read_text(encoding="utf-8")
+        rule = re.search(r"Every repository Python run from the app tree.*?remove what it prints\.", runbook, re.DOTALL)
         self.assertIsNotNone(rule, "the runbook's bytecode rule moved")
-        folders = re.findall(r"`((?:scripts|resources)/[a-z/-]*)`", rule.group(0))
-        self.assertEqual(["scripts/", "resources/iguide-lab/"], folders)
-        for folder in folders:
-            self.assertIn(folder, runner.ARTIFACT_ADVICE)
-            self.assertIn(f"find <app_root>/{folder.rstrip('/')} -name __pycache__", runner.ARTIFACT_ADVICE)
+        find = re.search(r"`cd <app_root> && find ([a-z ]+) -name __pycache__`", rule.group(0))
+        self.assertIsNotNone(find, "the runbook's bytecode rule gives no find over the app root")
+        self.assertEqual(trees, sorted(find.group(1).split()))
+        self.assertIn(find.group(0).strip("`"), runner.ARTIFACT_ADVICE)
+        # The lab services rely on the environment variable, not -B (W2F-1); both are named.
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", rule.group(0))
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", runner.ARTIFACT_ADVICE)
 
     def test_approval_binds_run_gate_phase_and_expiry(self):
         approval = self.runner.approval_request("hold")

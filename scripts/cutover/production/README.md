@@ -36,7 +36,9 @@ approval for each action (handoff item W1).
 All files and every parent directory must be owned by root and not writable
 by group or others. Python runs as `/usr/bin/python3 -I -S`: the installed
 copies are outside the app's fingerprinted trees, so they need no `-B`
-(only Python run from the app tree does; see "Bytecode caches" below).
+(only Python run from the app tree must write no bytecode, with `-B` by hand
+and `PYTHONDONTWRITEBYTECODE=1` in the lab services; see "Bytecode caches"
+below).
 
 ## Writers
 
@@ -352,8 +354,13 @@ repository Python run from the app tree without `-B` changes
 `scripts/mysql/__pycache__/` for the `conversion` module it imports), and the
 runner then refuses every action, the watchdog rollback included, until the
 folder is removed (`BytecodeCacheTests`). Rule: every repository Python run
-from the app tree on the host (a script or module under `<app_root>/scripts`
-or `resources/`) runs with `python3 -B`. The controller's installed copies
+from the app tree on the host writes no bytecode. Run by hand (a script or
+module under `<app_root>/scripts`), it runs with `python3 -B`. The app's
+iGUIDE lab services start `resources/iguide-lab/*.py` with
+`PYTHONDONTWRITEBYTECODE=1` in each process environment instead (W2F-1, on
+`claude/python-no-bytecode-20261126`, guarded by
+`tests/Unit/PythonProcessesWriteNoBytecodeTest.php`); it must reach
+production with release D, before W1. The controller's installed copies
 under `/opt/repro-cutover-fence` are outside the fingerprinted trees, so they
 need no `-B`: they run exactly as `host.json`, the sudoers files and the
 units name them, `/usr/bin/python3 -I -S` (sudo matches those command lines
@@ -367,9 +374,10 @@ copy given `--app-root /var/www/backend`) is not app-tree code.
 Pre-init check (P2, then W1, read-only): no `__pycache__` under the
 fingerprinted trees, that is
 `cd <app_root> && find app bootstrap config resources routes scripts public database -name __pycache__`
-prints nothing (`scripts/` holds the repository tools, so
-`find <app_root>/scripts -name __pycache__` is the least to run). If the
-controller refuses on the artifact after no deploy, look there first.
+prints nothing. Run it over every tree, not only `scripts/` and
+`resources/iguide-lab/`: a cache anywhere in them changes the artifact. If
+the controller refuses on the artifact after no deploy, run it first (the
+refusal names this command).
 
 `deploy-meta.json`, `.env` and `auto.cnf` belong to other accounts: each is
 opened without following a final symlink and must be a regular file of at
@@ -399,15 +407,20 @@ Open items for this probe:
 - P2 (read-only, before init): run the probe on production's `.env`,
   `/dev/disk/by-uuid` and `/etc/machine-id` and confirm it exits 0 (review
   A2-11), as well as the comparisons above.
-- The app's iGUIDE lab workers start `resources/iguide-lab/*.py` with neither
-  `-B` nor `PYTHONDONTWRITEBYTECODE=1` (only `LabTourSurveyViews` sets it, and
-  the others clear the inherited environment), and most of those scripts
-  import a sibling module. A lab job whose account can write that folder
-  (the deploy user deploys it) would write `resources/iguide-lab/__pycache__/`
-  and change the identity after init. P2 should look for that folder and
-  check who can write it; the fix is an app change (set
-  `PYTHONDONTWRITEBYTECODE=1` in those environments) or keeping lab jobs
-  from running between init and retire.
+- Fixed in the app by W2F-1, not yet in production: the iGUIDE lab
+  services start `resources/iguide-lab/*.py`, most of which import a sibling
+  module, and without the variable a lab job would write
+  `resources/iguide-lab/__pycache__/` and change the identity after init.
+  On `claude/python-no-bytecode-20261126` (bound for main) all 34 lab
+  Process environments set `PYTHONDONTWRITEBYTECODE=1`, and
+  `tests/Unit/PythonProcessesWriteNoBytecodeTest.php` fails on a missing
+  or overridden variable, on `-E` or `-I` without `-B`, and when it sees
+  fewer than 34 sites. Release D must carry it to production before W1,
+  deployed with no lab or studio job in flight. P2 still runs the full
+  `find` above and checks who can write `resources/iguide-lab/`. It also
+  checks, read-only, that the four interpreter paths `.env` names
+  (`IGUIDE_LAB_*_PYTHON`) are real interpreters or venv links, not
+  wrappers that add `-E` or `-I` (review W2V-1).
 
 ## MySQL probe: the write gate (design 1.2, 2.2)
 
@@ -901,9 +914,10 @@ Not yet here (later slices):
 - **Identity refusal** (`runner._verify_identity`): names the identity fields
   that differ (`run`, `release`, `artifact`, `source`, `configuration`,
   `target`), never a value. When `artifact` is among them it adds one sentence
-  pointing at the runbook's bytecode rule: a `__pycache__` folder under the
-  app's `scripts/` or `resources/iguide-lab/` (the folders the rule names)
-  changes the artifact (review A2-1).
+  pointing at the runbook's bytecode rule: a `__pycache__` folder under any
+  of the app's fingerprinted trees changes the artifact, and the rule's
+  `find` over all of them (which the sentence repeats) shows it (review
+  A2-1, W2V-4).
 - **Publication** (`publish_authority`, both engines) and **`host_authority`**
   (what `refresh` publishes) measure every value. The route must be sealed for
   the engine asked for, and the live config must be a parsed cache: a

@@ -188,9 +188,10 @@ DRAIN_PURPOSES = ("freeze", "rollback")
 IDENTITY_FIELD_NAMES = {"run_id": "run", "release_sha": "release", "artifact_sha256": "artifact",
                         "source_sha256": "source", "config_sha256": "configuration", "target_uuid": "target"}
 # The artifact digest covers every file under the app's scripts/, bytecode caches included (review A2-1).
-ARTIFACT_ADVICE = ("A __pycache__ folder under the app's scripts/ or resources/iguide-lab/ changes the artifact: see "
-                   "the runbook's bytecode rule (repository Python runs with python3 -B only; find <app_root>/scripts "
-                   "-name __pycache__ and find <app_root>/resources/iguide-lab -name __pycache__ print nothing).")
+ARTIFACT_ADVICE = ("A __pycache__ folder under any of the app's fingerprinted trees changes the artifact: see the "
+                   "runbook's bytecode rule (app-tree Python runs with python3 -B by hand and with "
+                   "PYTHONDONTWRITEBYTECODE=1 in the lab services; cd <app_root> && find app bootstrap config resources "
+                   "routes scripts public database -name __pycache__ prints nothing).")
 
 
 def _try_lock(stream) -> bool:
