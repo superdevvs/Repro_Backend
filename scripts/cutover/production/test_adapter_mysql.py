@@ -2433,6 +2433,7 @@ class EvidenceFixtureTests(unittest.TestCase):
 
 # The fixture tests: named before any suite when they would skip (as test_adapter.py's real-probe test).
 
+# The fixture classes; SealSqliteFixtureTests (D12, at the end of this file) is added there.
 FIXTURE_CLASSES = (PrepareFixtureTests, EvidenceFixtureTests)
 
 
@@ -2483,8 +2484,23 @@ class FixtureCheckTests(unittest.TestCase):
                           "PrepareFixtureTests.test_receipt_has_backup_and_armed_from",
                           "EvidenceFixtureTests.test_check_evidence_runs_the_real_gate_check",
                           "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_a_foreign_write",
-                          "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_an_open_gate_and_a_locked_gate_account"],
+                          "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_an_open_gate_and_a_locked_gate_account",
+                          "SealSqliteFixtureTests.test_abort_from_ready_closes_the_gate_and_ends_app_sessions",
+                          "SealSqliteFixtureTests.test_receipt_still_armed_after_publication"],
                          fixture_tests())
+
+    def test_readme_names_every_fixture_check(self):
+        # review D10V-4: the README's Tests paragraph names each file run-linux-tests.sh checks before any suite.
+        script = RUN_LINUX_TESTS.read_text(encoding="utf-8")
+        checked = re.findall(r'production/(test_[a-z_]+\.py)" --fixture-check', script)
+        self.assertEqual(["test_mysql_probe.py", "test_gate.py", "test_adapter.py", "test_adapter_mysql.py"], checked)
+        readme = (HERE / "README.md").read_text(encoding="utf-8")
+        start = readme.index("Without the fixtures\n`../run-linux-tests.sh`")
+        paragraph = " ".join(readme[start:readme.index("The probe file's docstring", start)].split())
+        for name in checked:
+            self.assertIn(f"`{name}`", paragraph)
+        self.assertIn("one `WARNING` line per file", paragraph)
+        self.assertIn("when any of them would skip", paragraph)
 
     def test_missing_fixture_prints_one_warning_line_naming_the_fixture_tests(self):
         result = self.check(without_fixture_environment())
@@ -2599,8 +2615,18 @@ if "--since" in sys.argv[1:]:
 else:
     answer = answers["observe"]
     if answer["code"] == 0 and os.path.exists({business!r}) and os.path.exists({receipt!r}):
-        answer = {{"code": 0, "stdout": {{**answer["stdout"], "business_activity": True}}}}
-print(json.dumps(answer["stdout"]))
+        answer = {{**answer, "stdout": {{**answer["stdout"], "business_activity": True}}}}
+stdout = answer["stdout"]
+# As FAKE_PROBE: a reachable reading names the receipt it armed on once this run's receipt exists (D11's checks
+# and evidence() compare it), unless the answer says it is not armed.
+if answer.get("arm", True) and isinstance(stdout, dict) and stdout.get("reachable") and stdout.get("receipt", 0) is None:
+    import hashlib
+    try:
+        with open({receipt!r}, "rb") as stream:
+            stdout["receipt"] = hashlib.sha256(stream.read()).hexdigest()
+    except FileNotFoundError:
+        pass
+print(json.dumps(stdout))
 sys.exit(answer["code"])
 """
 # Where the rollback's controller is killed inside seal_sqlite: the temporary file whose rename it precedes or follows.
@@ -2613,9 +2639,9 @@ UNREACHABLE = {"version": 2, "reachable": False}
 
 
 class UndoHost(PrepareHost):
-    """PrepareHost for the rollback (D12). PHP-FPM's state is kept by systemctl's stand-in (`fpm()`), and drain_fpm
-    is fpm_drain.py's stand-in (records ["fpm-drain"], prints a drained report) then the FPM stop, so a test sees
-    whether FPM runs after the rollback. Without the fixture gate.close_gate is scripted from the probe's answer
+    """PrepareHost for the rollback (D12). PHP-FPM's state is kept by systemctl's stand-in (`fpm_service()`; `fpm`
+    is D11's FastCGI stand-in), and drain_fpm is fpm_drain.py's stand-in (records ["fpm-drain"], prints a drained
+    report) then the FPM stop, so a test sees whether FPM runs after the rollback. Without the fixture gate.close_gate is scripted from the probe's answer
     (exit 3: not listening; `gate_refusal`: an unrecognised state) and records ["gate-close"], and the probe reports
     business activity once `business` exists while the receipt is armed."""
 
@@ -2653,7 +2679,8 @@ class UndoHost(PrepareHost):
             raise gate.GateRefused(self.gate_refusal)
         return {"before": "closed", "revoked": {}, "killed": []}
 
-    def fpm(self) -> dict:
+    def fpm_service(self) -> dict:
+        """php8.3-fpm.service's state as systemctl's stand-in keeps it (`fpm` is D11's FastCGI stand-in)."""
         return json.loads(self.fpm_state.read_text(encoding="utf-8"))
 
     def hold(self) -> dict:
@@ -2664,16 +2691,9 @@ class UndoHost(PrepareHost):
         return self.state
 
     def ready(self) -> dict:
-        """prepare through the runner to `ready`, with evidence() (D11's) answered by a verified record."""
-        from runner import Evidence
-
-        evidence = Evidence(snapshot_sha256=COPY_SNAPSHOT, report_sha256="7" * 64, binlog_file=self.backup["file"],
-                            binlog_position=self.backup["position"], forward_parity=True, final_schema=True,
-                            readonly_smoke=True, sqlite_backup_offsite=True, mysql_backup_offsite=True)
-        with patch.object(production.ProductionAdapter, "evidence", return_value=evidence):
-            self.test.assertIsNone(self.prepare())
+        """prepare through the runner to `ready`: steps 1 to 12 and D11's evidence() as they run, nothing patched."""
+        self.assert_prepared(self.prepare())
         self.state = self.host()[0].read()
-        self.test.assertEqual("ready", self.state["phase"])
         return self.state
 
     def runner_at(self, seconds: float):
@@ -2778,7 +2798,7 @@ class SealSqliteTests(unittest.TestCase):
         self.assertTrue(sqlite_seal.writable(host.database))
         self.assertFalse(host.path("ingress_open").exists())
         self.assertFalse(host.path("scheduler_release").exists())
-        self.assertFalse(host.fpm()["running"], "PHP-FPM must be stopped after a rollback; the reopen starts it")
+        self.assertFalse(host.fpm_service()["running"], "PHP-FPM must be stopped after a rollback; the reopen starts it")
         proof, sealed = host.record("unseal_proof"), host.record("sealed_hash")
         self.assertEqual((sealed["sha256"], sealed["sha256"], True, gate_close_skipped),
                          (proof["sha256"], proof["sealed_sha256"], proof["unchanged"], proof["gate_close_skipped"]))
@@ -2883,7 +2903,7 @@ class SealSqliteTests(unittest.TestCase):
             self.assertRegex(str(host.prepare()), "Host command failed: systemctl exited 1")
             host.recorders.unlink()
             host.assert_markers(after=8, restarts=1)  # The recorder lists the restart that failed.
-            self.assertFalse(host.fpm()["running"])
+            self.assertFalse(host.fpm_service()["running"])
 
         for name, setup, phase in (("from ready", UndoHost.ready, "ready"),
                                    ("after a prepare that failed at the FPM start", failed_fpm_start, "frozen")):
@@ -3134,12 +3154,12 @@ class SealSqliteTests(unittest.TestCase):
         # nothing, and FPM stays stopped until the reopen starts it.
         host = self.frozen()
         host.ready()
-        self.assertTrue(host.fpm()["running"])
+        self.assertTrue(host.fpm_service()["running"])
         mark = len(host.commands())
         host.abort()
         self.assertEqual([["systemctl", "try-reload-or-restart", UNIT]],
                          [entry for entry in host.commands()[mark:] if entry[0] == "systemctl"])
-        self.assertEqual({"running": False, "reloads": []}, host.fpm())
+        self.assertEqual({"running": False, "reloads": []}, host.fpm_service())
         self.assert_undone(host)
         # Running (seal_sqlite after a drain that did not stop it): reloaded once, after the undo, so its workers
         # read the SQLite config; FPM keeps running.
@@ -3156,7 +3176,7 @@ class SealSqliteTests(unittest.TestCase):
         self.assertEqual([["systemctl", "try-reload-or-restart", UNIT]],
                          [entry for entry in running.commands()[mark:] if entry[0] == "systemctl"])
         self.assertEqual({"running": True, "reloads": [["sqlite", live_config.CACHE, running.sqlite_pin]]},
-                         running.fpm())
+                         running.fpm_service())
         # A reload that fails stops the undo before SQLite is unsealed; the retry finishes.
         failing = self.frozen()
         failing.ready()
@@ -3225,6 +3245,47 @@ class SealSqliteTests(unittest.TestCase):
         self.assertIsNone(unhashable.record("unseal_proof"))
         self.assertEqual("sqlite_authoritative", unhashable.abort()["phase"])
         self.assert_undone(unhashable)
+
+    def test_evidence_before_and_after_the_undo(self):
+        # D11 x D12: a ready reached through D11's real steps 11 and 12 and evidence(), then a rollback stopped
+        # after several seal_sqlite steps and finished. While the abort is pending the runner refuses promote
+        # whatever evidence() says; once the cache is SQLite again evidence() refuses too, so no promote can be
+        # approved on an undone switch. The undo keeps what evidence() and the SQLite reopen (D13) read.
+        host = self.frozen()
+        host.ready()
+        journal = host.host()[0]
+        ready = journal.read()
+        self.assertEqual(ready["evidence"], asdict(host.host()[1].evidence()))
+        kept = {name: host.path(name).read_bytes() for name in ("evidence_report", "receipt", "sealed_hash")}
+        report = json.loads(kept["evidence_report"])
+        self.assertEqual(guard.sha256(kept["receipt"]), report["receipt_sha256"])
+        for number in (1, 3, 4, 7):
+            with self.subTest(f"stopped after seal_sqlite step {number}"):
+                host.crash_rollback_after(number)
+                state = journal.read()
+                self.assertEqual(("ready", "abort"), (state["phase"], state["pending"]["action"]))
+                with self.assertRaisesRegex(UnsafeCutover, "Interrupted action requires a verified pre-write abort"):
+                    host.runner().perform("promote")
+                self.assertEqual(state, journal.read())
+                if number >= 4:  # Step 4 built the SQLite cache.
+                    with self.assertRaisesRegex(UnsafeCutover, "The live config is not the MySQL pin from the cache"):
+                        host.host()[1].evidence()
+                self.assertFalse(sqlite_seal.writable(host.database))
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assert_undone(host)
+        # The report, the receipt (still armed: the report's receipt_sha256 is still its digest) and the sealed hash
+        # are byte for byte as prepare left them; the unseal proof is this run's and this hold's.
+        self.assertEqual(kept, {name: host.path(name).read_bytes() for name in kept})
+        proof = host.record("unseal_proof")
+        self.assertEqual((RUN_ID, ready["hold"]["hold_id"], ready["started_at"], None),
+                         (proof["run_id"], proof["hold_id"], proof["started_at"], proof["problem"]))
+        with self.assertRaisesRegex(UnsafeCutover, "The live config is not the MySQL pin from the cache"):
+            host.host()[1].evidence()
+        with self.assertRaisesRegex(UnsafeCutover, "frozen"):
+            host.host()[1].check_evidence(host.write_night())
+        with self.assertRaises(UnsafeCutover):
+            host.runner().perform("prepare")
+        self.assertEqual("sqlite_authoritative", journal.read()["phase"])
 
     def test_receipt_still_armed_after_publication(self):
         # Design 3.5 (critic RC-L10): the receipt stays armed until the SQLite reopen, so the runner's publication
@@ -3418,7 +3479,7 @@ class SealSqliteTests(unittest.TestCase):
                          {key: record[key] for key in ("purpose", "outcome", "waited_seconds", "polls")})
         self.assertRegex(record["problem"], rf"fewer than fpm.drain_seconds plus {production.FPM_DRAIN_MARGIN_SECONDS} s")
         self.assertEqual([["fpm-stop"]], host.rollback_effects(mark))
-        self.assertFalse(host.fpm()["running"])
+        self.assertFalse(host.fpm_service()["running"])
         # The skip still waits until no writer process remains after the stop (one that exits 1.5 s later here).
         writer = subprocess.Popen([sys.executable, "-I", "-S", "-c", "import time; time.sleep(1.5)",
                                    f"fake-queue-worker-{host.tag}"])
@@ -3464,20 +3525,14 @@ class SealSqliteTests(unittest.TestCase):
         self.assert_undone(late)
 
 
-@unittest.skipUnless(LINUX_ROOT, "Needs Linux root: owners, ACLs, runuser and the guard's protected files")
+@unittest.skipUnless(LINUX_ROOT and PROBE_FIXTURE, "Needs Linux root and the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
 class SealSqliteFixtureTests(unittest.TestCase):
     """seal_sqlite against D04's MySQL 8.4.13 fixture: the real gate close and the real probe's armed receipt.
 
-    Not in fixture_tests(): without the fixture these skip, but fail when REPRO_REQUIRE_PROBE_FIXTURE=1, as
-    test_adapter.py's real-probe test does."""
+    One of the fixture classes (fixture_tests(), --fixture-check), as PrepareFixtureTests and EvidenceFixtureTests."""
 
     @classmethod
     def setUpClass(cls):
-        if not PROBE_FIXTURE:
-            if REQUIRE_PROBE_FIXTURE:
-                raise AssertionError("REPRO_REQUIRE_PROBE_FIXTURE=1, but REPRO_MYSQL_PROBE_FIXTURE is unset: "
-                                     "SealSqliteFixtureTests would skip")
-            raise unittest.SkipTest("Needs the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
         from test_mysql_probe import APP_TABLES, Fixture
 
         cls.fixture = Fixture(PROBE_FIXTURE)
@@ -3553,6 +3608,9 @@ class SealSqliteFixtureTests(unittest.TestCase):
         reading = json.loads(output)
         self.assertEqual((0, "strict", hashlib.sha256(receipt).hexdigest(), False, False),
                          (code, reading["mode"], reading["receipt"], reading["writable"], reading["business_activity"]))
+
+
+FIXTURE_CLASSES = (*FIXTURE_CLASSES, SealSqliteFixtureTests)
 
 
 if __name__ == "__main__":

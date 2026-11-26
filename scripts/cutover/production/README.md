@@ -1490,8 +1490,11 @@ already read SQLite on the pin.
 
 Tests: `SealSqliteTests` in `test_adapter_mysql.py` (the scripted probe)
 and `SealSqliteFixtureTests` (the real gate close and the real probe's
-armed receipt on D04's fixture; they skip without it and fail when
-`REPRO_REQUIRE_PROBE_FIXTURE=1`). `UndoHost` extends `PrepareHost`: a
+armed receipt on D04's fixture; fixture tests as `PrepareFixtureTests`
+are: they skip without it, `--fixture-check` names them, and they fail
+when `REPRO_REQUIRE_PROBE_FIXTURE=1`). `UndoHost` extends `PrepareHost`
+(its `ready()` runs D11's steps 11 and 12 and `evidence()` unpatched; its
+MySQL probe names the receipt it armed on, as `PrepareHost`'s does): a
 `systemctl` stand-in that keeps `php8.3-fpm.service`'s state
 (`try-reload-or-restart` reloads only a running FPM and records the live
 config it read), `drain_fpm` as `fpm_drain.py`'s stand-in then the FPM
@@ -1719,10 +1722,13 @@ in disposable `--network none` containers, runs the file as root with
 `REPRO_REQUIRE_PROBE_FIXTURE=1` (a fixture test that would skip fails the run)
 and removes the containers and volumes again; `--linux-suite` runs
 `../run-linux-tests.sh` that way instead. Without the fixtures
-`../run-linux-tests.sh` prints a `WARNING` line naming the skipped probe tests
-and one naming the skipped gate tests, first and last, and still exits 0;
-with `REPRO_REQUIRE_PROBE_FIXTURE=1` it stops before any suite when either
-file's fixture tests would skip. The probe file's docstring has the same recipe by
+`../run-linux-tests.sh` prints one `WARNING` line per file whose fixture
+tests would skip, naming them, first and last, and still exits 0: the probe
+tests (`test_mysql_probe.py`), the gate tests (`test_gate.py`), the
+real-probe test (`test_adapter.py`) and the prepare, evidence and undo tests
+(`test_adapter_mysql.py`), each from that file's `--fixture-check`; with
+`REPRO_REQUIRE_PROBE_FIXTURE=1` it stops before any suite when any of them
+would skip (review D10V-4). The probe file's docstring has the same recipe by
 hand. Its accounts and renderer tests run anywhere with bash. `test_queue_flag.py`
 needs Linux root for the helper tests; its Laravel tests also need `php` and
 the vendor tree at the repository root (mount the locked vendor volume at
