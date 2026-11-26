@@ -220,6 +220,61 @@ fixed location (as `cli.py` does for the markers).
 `start_workers` and `drain_fpm`). Their shapes beyond that belong to the
 slices that run them.
 
+## Identity probe (design 1.1)
+
+`commands.identity` runs
+`/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/identity_probe.py --config /etc/repro-cutover-fence/identity.json`
+as root and prints exactly the six `Identity` fields; any other exit makes
+`adapter.identity()` raise, so the runner refuses before any journal change.
+`identity_probe.py` and `backend_source_fingerprint.py` are installed beside
+`adapter.py` (root 0644).
+
+| Field | Measured from |
+| --- | --- |
+| `run_id` | `identity.json` (read through `guard.read_protected`, shape by `adapter.load_identity_config`) |
+| `release_sha` | `commit` in `<app_root>/storage/app/deploy-meta.json`, 40 lower-case hex |
+| `artifact_sha256` | `backend_source_fingerprint.fingerprint(app_root)`, a byte-for-byte copy of `scripts/deploy/backend-source-fingerprint.py` (the deploy preflight's fingerprint); `test_fingerprint_copy_matches_deploy_script` fails when they differ, so a deploy-script change needs a new copy |
+| `source_sha256` | SHA-256 of canonical JSON `{"kind": "sqlite-file", "path", "fs_uuid", "st_ino", "machine_id_sha256"}`; `fs_uuid` is the one `/dev/disk/by-uuid` name whose block device's `st_rdev` is the SQLite file's `st_dev` |
+| `config_sha256` | `<app_root>/.env` canonicalised, `env_denylist` removed (below) |
+| `target_uuid` | `server-uuid` in `<mysql_datadir>/auto.cnf` (`[auto]` then `server-uuid=<uuid>`, as 8.4.13 writes it) |
+
+**Source identity** follows the file, not its bytes or device number: a file
+renamed into place (a restore, a copy swapped in) changes it, a write in place
+keeps it, and a new device number under the same filesystem UUID (NVMe minors
+after a reboot) keeps it. Refused: a SQLite path that is missing or not a
+regular file (symlink, directory, FIFO, socket); no `by-uuid` name for its
+device, or several; a `by-uuid` chain not root-owned or open to group or other
+writes. A filesystem whose files' `st_dev` is no block device (btrfs, overlay,
+ZFS) has no name and refuses; P2 shows which the host has.
+
+**Config digest.** Blank lines and lines starting with `#` (after spaces) are
+dropped. Every other line must be `NAME=VALUE` with the name first on the line
+(`[A-Za-z_][A-Za-z0-9_]*`: no `export`, no space before `=`, no multi-line
+value). A denylisted name is dropped whatever its value and however often it
+appears; every other line is kept byte for byte, a repeated name is refused
+(sorting would hide a swap of two definitions), and the lines are sorted and
+joined with `\n`. The night flags, the switch and a `DB_PASSWORD` rotation
+never change the digest; any other edit does, spacing, quoting, an inline
+comment and a carriage return included. Refusals name line numbers, never a
+value.
+
+`deploy-meta.json`, `.env` and `auto.cnf` belong to other accounts: each is
+opened without following a final symlink and must be a regular file of at
+most 1 MiB. The probe uses `identity.json`'s denylist as given; `load_config`,
+which `cli.py`, `mysql_probe.py` and `repro-queue-flag` run first, refuses one
+that is not the night flags plus the switch keys.
+
+`test_identity_probe.py`: the digest, copy and input-shape tests run on any
+POSIX system; the probe tests need Linux root (block device nodes made with
+`mknod` in a fake `by-uuid`) and run in `../run-linux-tests.sh`;
+`RealFilesystemTests` mount a real ext4 image through two loop devices and run
+only with `REPRO_IDENTITY_LOOP_DEVICES=1` in a `--privileged` container
+(command in the file's docstring). Host proof P2 compares the output with
+`findmnt -no UUID -T`, `stat`, the deploy script's own fingerprint and
+`@@server_uuid`. The deploy runs the fingerprint as the deploy user, the probe
+as root: `os.walk` skips a folder its user cannot read, so such a folder under
+the fingerprinted trees would make the two differ.
+
 ## MySQL probe: the write gate (design 1.2, 2.2)
 
 `commands.mysql` runs
