@@ -34,32 +34,28 @@ class ShootEditorDownloadService
 
     public function downloadRaw(Request $request, Shoot $shoot, User $user)
     {
-        $fileIdsParam = $request->query('file_ids', []);
+        // Keep existing GET links working. POST carries even large grid selections without a URL limit.
+        $fileIdsParam = $request->isMethod('POST')
+            ? $request->validate(['file_ids' => 'required|array|min:1', 'file_ids.*' => 'required|integer|min:1'])['file_ids']
+            : $request->query('file_ids', []);
         if (is_string($fileIdsParam)) {
             $fileIdsParam = array_filter(explode(',', $fileIdsParam));
         }
 
-        $isCustomSelection = ! empty($fileIdsParam);
-        // Full-set downloads must use the same file universe as ShootMediaArchiveService
-        // so signature-matched cached ZIPs are reused. Custom selections stay explicit.
-        if ($isCustomSelection) {
-            $allFiles = $shoot->files()
-                ->where('workflow_stage', ShootFile::STAGE_TODO)
-                ->whereIn('id', $fileIdsParam)
-                ->inDeliveryOrder()->get()
-                ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
-                // Infected files are withheld from download/delivery (Req 15.7).
-                ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
-                ->values();
-        } else {
-            $allFiles = $this->shootMediaArchiveService->getFilesForType($shoot, 'raw');
-        }
+        $fullRawFiles = $this->shootMediaArchiveService->getFilesForType($shoot, 'raw');
+        $selectedIds = array_fill_keys($fileIdsParam, true);
+        $allFiles = $selectedIds
+            ? $fullRawFiles->filter(fn (ShootFile $file) => isset($selectedIds[$file->id]))->values()
+            : $fullRawFiles;
         $isEditorDownload = $this->shootAuthorizationSupport->hasRole($user, ['editor']);
         $files = $isEditorDownload
             ? $this->shootEditingAssignmentService->filterFilesForEditor($allFiles, $shoot, $user)
             : $allFiles;
         $fileCount = $files->count();
 
+        if ($request->isMethod('POST') && $request->boolean('require_all') && $fileCount !== count($selectedIds)) {
+            return $this->withCors(response()->json(['error' => 'The available raw files changed. Refresh and select the files again.'], 409), $request);
+        }
         if (! empty($fileIdsParam) && $fileCount === 0) {
             return $this->withCors(
                 response()->json(['error' => 'No raw files found for selected IDs'], 404),
@@ -77,9 +73,6 @@ class ShootEditorDownloadService
         // raw hand-off set. Custom photo selections fall through to a scoped ZIP.
         // Building multi-GB ZIPs inline was causing nginx 499/502 timeouts for
         // editors (Cloudflare idle timeout while PHP zipped).
-        $fullRawFiles = $isCustomSelection
-            ? $this->shootMediaArchiveService->getFilesForType($shoot, 'raw')
-            : $allFiles;
         if ($this->fileIdsMatch($files, $fullRawFiles)) {
             try {
                 $archiveResponse = $this->shootMediaArchiveService->resolveArchiveResponseData(
@@ -138,6 +131,9 @@ class ShootEditorDownloadService
         }
         $scoped = app(EditorRawArchiveService::class);
         $files = $scoped->authorizedFiles($shoot, $user, $files->pluck('id')->all());
+        if ($request->isMethod('POST') && $request->boolean('require_all') && $files->count() !== $fileCount) {
+            return $this->withCors(response()->json(['error' => 'The available raw files changed. Refresh and select the files again.'], 409), $request);
+        }
         if ($files->isEmpty()) {
             return $this->withCors(response()->json(['error' => 'No authorized raw files available'], 403), $request);
         }
