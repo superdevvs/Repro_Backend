@@ -126,7 +126,7 @@ class StudioQueueController extends StudioController
 
     private function baseJobQuery(string $modelClass): Builder
     {
-        return $modelClass::query()->with([
+        $query = $modelClass::query()->with([
             'project:id,team_id,created_by,shoot_id,name,address,workflow_id',
             'project.media' => fn ($query) => $query
                 ->where('kind', 'source')
@@ -134,6 +134,17 @@ class StudioQueueController extends StudioController
             'shoot:id,address,hero_image',
             'user:id,metadata',
         ]);
+
+        if ($modelClass === AiEditingJob::class) {
+            // Completed jobs always report 100%; skip their raw provider bodies.
+            $query->select([
+                'id', 'project_id', 'shoot_id', 'user_id', 'editing_type', 'original_image_url',
+                'status', 'error_message', 'started_at', 'completed_at', 'updated_at', 'created_at',
+            ])->selectRaw('CASE WHEN status = ? THEN NULL ELSE provider_result END AS provider_result', [AiEditingJob::STATUS_COMPLETED])
+                ->selectRaw('CASE WHEN status = ? THEN NULL ELSE provider_payload END AS provider_payload', [AiEditingJob::STATUS_COMPLETED]);
+        }
+
+        return $query;
     }
 
     private function applyMembershipScope(Builder $query, array $activeStatuses, Carbon $cutoff): void

@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Event;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -119,6 +120,16 @@ class StudioQueueControllerTest extends TestCase
         $noProgress = $this->photoJob($editor, $shoot, [
             'provider_payload' => ['state' => 'waiting'],
         ]);
+        $finished = $this->photoJob($editor, $shoot, [
+            'status' => AiEditingJob::STATUS_COMPLETED,
+            'completed_at' => now(),
+            'provider_payload' => ['progress' => 15],
+            'provider_result' => ['status' => 'completed'],
+        ]);
+        $retrieved = [];
+        Event::listen('eloquent.retrieved: '.AiEditingJob::class, function (AiEditingJob $job) use (&$retrieved): void {
+            $retrieved[$job->id] = [$job->provider_payload, $job->provider_result];
+        });
 
         Sanctum::actingAs($editor);
         $records = collect($this->getJson('/api/studio/queue')->assertOk()->json('data'))->keyBy('id');
@@ -127,6 +138,17 @@ class StudioQueueControllerTest extends TestCase
         $this->assertNull($records['photo-' . $overReported->id]['eta']);
         $this->assertNull($records['photo-' . $noProgress->id]['progress']);
         $this->assertNull($records['photo-' . $noProgress->id]['eta']);
+        $this->assertSame(100, $records['photo-' . $finished->id]['progress']);
+        $this->assertNull($records['photo-' . $finished->id]['eta']);
+        $this->assertSame([['progress' => 140], null], $retrieved[$overReported->id]);
+        $this->assertSame([null, null], $retrieved[$finished->id]);
+
+        unset($retrieved[$finished->id]);
+        $this->getJson('/api/studio/queue/photo-' . $finished->id)
+            ->assertOk()
+            ->assertJsonPath('data.progress', 100);
+        $this->assertSame([null, null], $retrieved[$finished->id]);
+        $this->assertSame(['progress' => 15], $finished->fresh()->provider_payload);
     }
 
     public function test_detail_supports_deep_links_and_enforces_record_scope(): void

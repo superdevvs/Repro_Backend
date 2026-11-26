@@ -4,6 +4,10 @@ namespace App\Jobs;
 
 use App\Models\Shoot;
 use App\Services\IguideService;
+use App\Services\Shoots\IguideServiceOwnership;
+use App\Services\Shoots\ProviderFloorplanRecovery;
+use App\Services\Shoots\ShootListingService;
+use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -31,10 +35,12 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
     public int $uniqueFor = 600;
 
     public ?int $shootServiceId = null;
+    public bool $scheduledRecovery = false;
 
-    public function __construct(public int $shootId, ?int $shootServiceId = null)
+    public function __construct(public int $shootId, ?int $shootServiceId = null, bool $scheduledRecovery = false)
     {
         $this->shootServiceId = $shootServiceId;
+        $this->scheduledRecovery = $scheduledRecovery;
     }
 
     public function uniqueId(): string
@@ -88,7 +94,15 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
 
             $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
             if (!empty($floorplans)) {
-                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $this->shootServiceId);
+                if ($this->scheduledRecovery) {
+                    // Recovery counts unscoped files as present, so first move legacy unscoped
+                    // iGUIDE files onto the booked iGUIDE line, as the full-manifest ingest did.
+                    $this->adoptUnscopedFloorplans($shoot, $floorplans);
+                    // The sweep may have already queued these assets before metadata was refreshed.
+                    app(ProviderFloorplanRecovery::class)->recover('iguide', 1, $shoot->id);
+                } else {
+                    IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $this->shootServiceId);
+                }
             }
 
             Log::info('Auto iGUIDE sync completed', [
@@ -104,6 +118,27 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
             ]);
 
             throw $e;
+        }
+    }
+
+    /**
+     * IngestIguideAssetsJob adopts unscoped files for a whole-shoot iGUIDE line. Scheduled
+     * recovery queues only missing assets, so a shoot whose files are all present but still
+     * unscoped would never reach that step.
+     */
+    private function adoptUnscopedFloorplans(Shoot $shoot, array $floorplans): void
+    {
+        if ($this->shootServiceId) {
+            return;
+        }
+        $keys = array_values(array_filter(array_column($floorplans, 'asset_key'),
+            static fn ($key) => is_string($key) && $key !== ''));
+        $ownership = app(IguideServiceOwnership::class);
+        $owner = $keys === [] ? null : $ownership->resolve($shoot->fresh());
+        // The move writes no updated_at, so drop cached file and shoot lists as the ingest job does.
+        if ($owner && $ownership->adoptUnscoped($shoot, (int) $owner->id, $keys)) {
+            app(ShootMediaMutationSupportService::class)->clearShootFilesCache($shoot);
+            ShootListingService::flushCachedListings();
         }
     }
 }

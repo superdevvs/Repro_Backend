@@ -6,10 +6,15 @@ use App\Jobs\IngestIguideAssetsJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootFile;
+use App\Models\ShootService;
+use App\Models\User;
 use App\Services\IguideService;
+use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -92,6 +97,108 @@ class IguideAutomaticSyncTest extends TestCase
         });
         Queue::assertPushed(IngestIguideAssetsJob::class, 1);
         Http::assertSentCount(2);
+    }
+
+    public function test_scheduled_sync_and_recovery_share_the_durable_ingestion_schedule(): void
+    {
+        $start = now()->startOfMinute();
+        $this->travelTo($start);
+        $shoot = $this->shootWithFloorplan(['iguide_property_id' => self::PROPERTY_ID]);
+        Queue::fake();
+        Http::fake([
+            $this->propertyUrl() => Http::response($this->metadata()),
+            $this->propertyUrl().'/asset-urls' => Http::response($this->assets()),
+        ]);
+
+        $this->artisan('iguide:resync-pending')->assertSuccessful();
+        $scheduled = Queue::pushed(SyncShootIguideJob::class, fn ($job) => $job->shootId === $shoot->id)->sole();
+        $this->assertTrue($scheduled->scheduledRecovery);
+        $scheduled->handle(app(IguideService::class));
+        Queue::assertPushed(IngestIguideAssetsJob::class, 1);
+        $this->assertDatabaseHas('provider_asset_recovery_attempts', ['shoot_id' => $shoot->id, 'attempts' => 1]);
+
+        $this->travelTo($start->copy()->addMinutes(30));
+        Cache::flush();
+        $scheduled->handle(app(IguideService::class));
+        $this->artisan('iguide:resync-pending')->assertSuccessful();
+        Queue::assertPushed(IngestIguideAssetsJob::class, 1);
+
+        (new SyncShootIguideJob($shoot->id))->handle(app(IguideService::class));
+        Queue::assertPushed(IngestIguideAssetsJob::class, 2);
+
+        $this->travelTo($start->copy()->addHour());
+        $scheduled->handle(app(IguideService::class));
+        Queue::assertPushed(IngestIguideAssetsJob::class, 3);
+        $this->assertDatabaseHas('provider_asset_recovery_attempts', ['shoot_id' => $shoot->id, 'attempts' => 2]);
+    }
+
+    public function test_scheduled_sync_still_assigns_legacy_unscoped_floorplans_to_the_iguide_service(): void
+    {
+        // Before scheduled syncs went through the recovery throttle, they queued the full manifest
+        // and the ingest job moved unscoped iGUIDE files onto the iGUIDE line. Recovery treats
+        // unscoped files as complete, so the scheduled sync must do that move itself, or the
+        // floorplans stay "unassigned" on a multi-service shoot.
+        [$shoot, $photoLine, $iguideLine, $legacy] = $this->shootWithLegacyUnscopedIguideFloorplans();
+
+        (new SyncShootIguideJob($shoot->id, null, true))->handle(app(IguideService::class));
+
+        foreach ($legacy as $file) {
+            $this->assertSame($iguideLine->id, (int) $file->fresh()->shoot_service_id, 'iGUIDE file '.$file->id.' was left unassigned');
+        }
+        $this->assertSame(0, $shoot->files()->where('shoot_service_id', $photoLine->id)->count());
+    }
+
+    public function test_scheduled_sync_refreshes_cached_media_after_assigning_legacy_floorplans(): void
+    {
+        // The ingest job bumps the shoot's media revision and drops cached shoot lists after it
+        // moves files. The move writes no updated_at, so without that the cached file list (30s)
+        // keeps showing the floorplans as unassigned. Queue::fake keeps the recovery job out.
+        Queue::fake();
+        [$shoot, , $iguideLine, $legacy] = $this->shootWithLegacyUnscopedIguideFloorplans();
+        $media = app(ShootMediaMutationSupportService::class);
+        $revision = $media->currentMediaRevision($shoot);
+        // Saving the synced shoot already drops shoot lists; a list request can still cache the
+        // old assignment between that save and the move.
+        Shoot::saved(function (): void {
+            Cache::put('shoots_index_cache_keys', ['shoots_index_cached_page']);
+            Cache::put('shoots_index_cached_page', ['stale' => true]);
+        });
+
+        (new SyncShootIguideJob($shoot->id, null, true))->handle(app(IguideService::class));
+
+        $this->assertSame($iguideLine->id, (int) $legacy[0]->fresh()->shoot_service_id);
+        $this->assertGreaterThan($revision, $media->currentMediaRevision($shoot), 'cached file lists still show the old assignment');
+        $this->assertNull(Cache::get('shoots_index_cached_page'), 'cached shoot lists were not dropped');
+    }
+
+    /** @return array{0: Shoot, 1: ShootService, 2: ShootService, 3: list<ShootFile>} */
+    private function shootWithLegacyUnscopedIguideFloorplans(): array
+    {
+        Http::fake([
+            $this->propertyUrl() => Http::response($this->metadata()),
+            $this->propertyUrl().'/asset-urls' => Http::response($this->assets()),
+        ]);
+        $shoot = $this->shootWithFloorplan(['iguide_property_id' => self::PROPERTY_ID]);
+        $photos = Service::factory()->create(['name' => 'HDR Photos', 'upload_intake_type' => 'photo']);
+        $iguide = Service::factory()->noIntake()->create(['name' => 'Premium iGuide Tour']);
+        $photoLine = $shoot->serviceItems()->create(['service_id' => $photos->id, 'price' => 150, 'quantity' => 1,
+            'is_deliverable' => true, 'workflow_status' => 'in_progress', 'delivery_status' => 'not_started']);
+        $iguideLine = $shoot->serviceItems()->create(['service_id' => $iguide->id, 'price' => 200, 'quantity' => 1,
+            'is_deliverable' => true, 'workflow_status' => 'in_progress', 'delivery_status' => 'not_started']);
+        $uploader = User::factory()->create(['role' => 'admin']);
+        $legacy = [];
+        foreach (['pdf_imperial', 'pdf_metric'] as $key) {
+            $legacy[] = ShootFile::create([
+                'shoot_id' => $shoot->id, 'filename' => $key.'.pdf', 'stored_filename' => $key.'.pdf',
+                'path' => 'shoots/'.$shoot->id.'/floorplans/'.$key.'.pdf', 'storage_path' => 'shoots/'.$shoot->id.'/floorplans/'.$key.'.pdf',
+                'file_type' => 'application/pdf', 'mime_type' => 'application/pdf', 'media_type' => 'floorplan', 'file_size' => 7,
+                'uploaded_by' => $uploader->id, 'workflow_stage' => ShootFile::STAGE_COMPLETED, 'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
+                'web_path' => 'shoots/'.$shoot->id.'/floorplans/'.$key.'.jpg',
+                'metadata' => ['source' => 'iguide', 'iguide_asset_key' => $key],
+            ]);
+        }
+
+        return [$shoot, $photoLine, $iguideLine, $legacy];
     }
 
     public function test_rich_ready_metadata_keeps_provider_urls_and_does_not_refetch_assets(): void

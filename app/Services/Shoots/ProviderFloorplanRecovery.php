@@ -31,7 +31,7 @@ class ProviderFloorplanRecovery
         $throttle = app(ProviderAssetRecoveryThrottle::class);
         $channel = 'recovery-'.$provider;
         // Read every schedule before any queue write; a SQLite read snapshot must not stay open across writes.
-        $schedules = $throttle->load($channel);
+        $schedules = $throttle->load($channel, $shootId);
         // Finish each read before writing queue/cache rows on SQLite. Apply the work limit
         // after inspecting completeness so already-complete shoots cannot starve old ones.
         $ids = Shoot::query()->where(fn ($q) => $q->whereNotNull($provider.'_floorplans')->orWhereHas('units', fn ($u) => $u->whereNotNull('provider_data'))->orWhereHas('files', fn ($f) => $f->where('media_type', 'floorplan')->where('metadata->source', $provider)))

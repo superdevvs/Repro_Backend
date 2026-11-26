@@ -63,4 +63,11 @@ return [
         'local',
     ],
 
+    /*
+    | Age limit for automation_runs and their automation_run_steps, in days. The daily
+    | model:prune deletes finished runs older than this. Empty (the default) keeps everything
+    | until the owner picks an age. Values below 30 are raised to 30.
+    */
+    'automation_runs_retention_days' => env('AUTOMATION_RUNS_RETENTION_DAYS') ?: null,
+
 ];

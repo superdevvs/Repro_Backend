@@ -1,0 +1,221 @@
+{
+    "about": "SQLite-only SQL that already exists in app/. This list may only shrink. See tests/Unit/DatabaseDialectGuardTest.php.",
+    "findings": [
+        {
+            "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
+            "rule": "sqlite-catalog",
+            "text": "$pdo->exec('PRAGMA query_only=ON');",
+            "count": 1
+        },
+        {
+            "file": "app/Console/Commands/ClassifyReviewedTravelFees.php",
+            "rule": "sqlite-catalog",
+            "text": "if ($integrity) $this->require($pdo->query('PRAGMA quick_check')->fetchColumn() === 'ok', 'The backup failed its SQLite integrity check.');",
+            "count": 1
+        },
+        {
+            "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
+            "rule": "sqlite-catalog",
+            "text": "$pdo->exec('PRAGMA query_only=ON');",
+            "count": 1
+        },
+        {
+            "file": "app/Console/Commands/ReconcilePartialServiceDelivery.php",
+            "rule": "sqlite-catalog",
+            "text": "$this->require($pdo->query('PRAGMA quick_check')->fetchColumn() === 'ok', 'The safety backup failed its SQLite integrity check.');",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/ListingStudioRequestController.php",
+            "rule": "json-extract",
+            "text": "->whereRaw(\"LOWER(json_extract(contact, '$.email')) = ?\", [strtolower($payload['contact']['email'])]);",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/StudioWorkspaceController.php",
+            "rule": "json-each",
+            "text": "\"EXISTS (SELECT 1 FROM json_each(studio_workspaces.access_media) AS retained_media WHERE CAST(json_extract(retained_media.value, '$.shootId') AS INTEGER) = ?)\", [$shootId]",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/StudioWorkspaceController.php",
+            "rule": "json-each",
+            "text": "\"EXISTS (SELECT 1 FROM json_each(studio_workspaces.media) AS selected_media WHERE CAST(json_extract(selected_media.value, '$.shootId') AS INTEGER) = ?)\", [$shootId]",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/StudioWorkspaceController.php",
+            "rule": "json-extract",
+            "text": "\"EXISTS (SELECT 1 FROM json_each(studio_workspaces.access_media) AS retained_media WHERE CAST(json_extract(retained_media.value, '$.shootId') AS INTEGER) = ?)\", [$shootId]",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/StudioWorkspaceController.php",
+            "rule": "json-extract",
+            "text": "\"EXISTS (SELECT 1 FROM json_each(studio_workspaces.media) AS selected_media WHERE CAST(json_extract(selected_media.value, '$.shootId') AS INTEGER) = ?)\", [$shootId]",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/StudioWorkspaceController.php",
+            "rule": "sqlite-cast-type",
+            "text": "\"EXISTS (SELECT 1 FROM json_each(studio_workspaces.access_media) AS retained_media WHERE CAST(json_extract(retained_media.value, '$.shootId') AS INTEGER) = ?)\", [$shootId]",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/StudioWorkspaceController.php",
+            "rule": "sqlite-cast-type",
+            "text": "\"EXISTS (SELECT 1 FROM json_each(studio_workspaces.media) AS selected_media WHERE CAST(json_extract(selected_media.value, '$.shootId') AS INTEGER) = ?)\", [$shootId]",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/Voice/VoiceTeamController.php",
+            "rule": "concat-pipes",
+            "text": "$contacts = Contact::query()->whereNull('user_id')->selectRaw(\"'contact:' || id AS id, NULL AS user_id, id AS contact_id, name, 'contact' AS role, phone, NULL AS company_name\");",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/API/Voice/VoiceTeamController.php",
+            "rule": "concat-pipes",
+            "text": "$users = User::query()->selectRaw(\"'user:' || id AS id, id AS user_id, NULL AS contact_id, name, role, COALESCE(NULLIF(phonenumber, ''), phone) AS phone, company_name\")",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/InvoiceController.php",
+            "rule": "json-extract",
+            "text": "$cq->whereRaw(\"JSON_EXTRACT(metadata, '$.accountRepId') = ?\", [$user->id])",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/InvoiceController.php",
+            "rule": "json-extract",
+            "text": "->orWhereRaw(\"JSON_EXTRACT(metadata, '$.account_rep_id') = ?\", [$user->id])",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/InvoiceController.php",
+            "rule": "json-extract",
+            "text": "->orWhereRaw(\"JSON_EXTRACT(metadata, '$.repId') = ?\", [$user->id])",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/InvoiceController.php",
+            "rule": "json-extract",
+            "text": "->orWhereRaw(\"JSON_EXTRACT(metadata, '$.rep_id') = ?\", [$user->id])",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/InvoiceController.php",
+            "rule": "scalar-max-min",
+            "text": ".\"WHEN due_date IS NOT NULL AND DATE(due_date) < DATE('now') AND MAX(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' \"",
+            "count": 1
+        },
+        {
+            "file": "app/Http/Controllers/InvoiceController.php",
+            "rule": "sqlite-date-function",
+            "text": ".\"WHEN due_date IS NOT NULL AND DATE(due_date) < DATE('now') AND MAX(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' \"",
+            "count": 1
+        },
+        {
+            "file": "app/Models/ShootFile.php",
+            "rule": "json-each",
+            "text": "$receipts->whereRaw(\"EXISTS (SELECT 1 FROM json_each(delivery_receipt.evidence, '$.files') AS delivered_file WHERE CAST(json_extract(delivered_file.value, '$.id') AS INTEGER) = shoot_files.id AND CAST(json_extract(delivered_file.value, '$.version') AS INTEGER) = COALESCE(shoot_files.content_version,",
+            "count": 1
+        },
+        {
+            "file": "app/Models/ShootFile.php",
+            "rule": "json-extract",
+            "text": "$receipts->whereRaw(\"EXISTS (SELECT 1 FROM json_each(delivery_receipt.evidence, '$.files') AS delivered_file WHERE CAST(json_extract(delivered_file.value, '$.id') AS INTEGER) = shoot_files.id AND CAST(json_extract(delivered_file.value, '$.version') AS INTEGER) = COALESCE(shoot_files.content_version,",
+            "count": 1
+        },
+        {
+            "file": "app/Models/ShootFile.php",
+            "rule": "sqlite-cast-type",
+            "text": "$receipts->whereRaw(\"EXISTS (SELECT 1 FROM json_each(delivery_receipt.evidence, '$.files') AS delivered_file WHERE CAST(json_extract(delivered_file.value, '$.id') AS INTEGER) = shoot_files.id AND CAST(json_extract(delivered_file.value, '$.version') AS INTEGER) = COALESCE(shoot_files.content_version,",
+            "count": 1
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioAccountService.php",
+            "rule": "sqlite-cast-type",
+            "text": "->where('s.client_id', $client->id)->selectRaw(\"'credit' AS record_type, CAST(c.id AS TEXT) AS record_id, c.source_type AS kind, 'succeeded' AS status,",
+            "count": 1
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "sqlite-catalog",
+            "text": "$main = collect($primaryPdo->query('PRAGMA database_list')->fetchAll(PDO::FETCH_ASSOC))->firstWhere('name', 'main');",
+            "count": 1
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "sqlite-catalog",
+            "text": "$opened = collect($pdo->query('PRAGMA database_list')->fetchAll(PDO::FETCH_ASSOC))->firstWhere('name', 'main');",
+            "count": 1
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "sqlite-catalog",
+            "text": "$pdo->exec('PRAGMA busy_timeout = '.$restoreTimeout);",
+            "count": 1
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "sqlite-catalog",
+            "text": "$pdo->exec('PRAGMA busy_timeout = 100');",
+            "count": 1
+        },
+        {
+            "file": "app/Services/ListingStudio/ListingStudioTrialMonitoring.php",
+            "rule": "sqlite-catalog",
+            "text": "$restoreTimeout = (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn();",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Messaging/SmsInboxPolicy.php",
+            "rule": "concat-pipes",
+            "text": "return \"(CASE WHEN LENGTH({$digits}) = 10 THEN '1' || {$digits} ELSE {$digits} END)\";",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Messaging/SmsReactionPresenter.php",
+            "rule": "concat-pipes",
+            "text": "return \"(case when length({$digits}) = 10 then '1' || {$digits} else {$digits} end)\";",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Search/AccountSearchQuery.php",
+            "rule": "json-extract",
+            "text": "$explicitId = \"COALESCE(NULLIF(json_extract(users.metadata, '$.accountRepId'), ''), NULLIF(json_extract(users.metadata, '$.account_rep_id'), ''), NULLIF(json_extract(users.metadata, '$.repId'), ''), NULLIF(json_extract(users.metadata, '$.rep_id'), ''))\";",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Search/AccountSearchQuery.php",
+            "rule": "json-extract",
+            "text": "$metadataName = \"COALESCE(NULLIF(json_extract(users.metadata, '$.accountRep'), ''), NULLIF(json_extract(users.metadata, '$.account_rep'), ''), NULLIF(json_extract(users.metadata, '$.rep'), ''))\";",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Shoots/ShootPaymentFilter.php",
+            "rule": "concat-pipes",
+            "text": "$key = fn (string $alias): string => \"COALESCE(NULLIF('stripe_session:' || {$alias}.stripe_session_id, 'stripe_session:'), NULLIF('stripe_payment:' || {$alias}.stripe_payment_id, 'stripe_payment:'), NULLIF('square_payment:' || {$alias}.square_payment_id, 'square_payment:'), 'payment_id:' || {$alias}",
+            "count": 3
+        },
+        {
+            "file": "app/Services/Shoots/ShootSalesRepFilter.php",
+            "rule": "json-extract",
+            "text": "private const EFFECTIVE_REP = \"COALESCE(shoots.rep_id, (SELECT COALESCE(NULLIF(json_extract(users.metadata, '$.accountRepId'), ''), NULLIF(json_extract(users.metadata, '$.account_rep_id'), ''), NULLIF(json_extract(users.metadata, '$.repId'), ''), NULLIF(json_extract(users.metadata, '$.rep_id'), ''),",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Shoots/ShootSalesRepFilter.php",
+            "rule": "sqlite-cast-type",
+            "text": "$query->whereIn(\\Illuminate\\Support\\Facades\\DB::raw(\"CAST(\".self::EFFECTIVE_REP.\" AS TEXT)\"), array_map('strval', $ids));",
+            "count": 1
+        },
+        {
+            "file": "app/Services/Shoots/ShootSearchFilter.php",
+            "rule": "sqlite-cast-type",
+            "text": "? 'CAST(shoots.id AS TEXT)'",
+            "count": 1
+        }
+    ]
+}

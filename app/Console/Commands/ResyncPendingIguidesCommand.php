@@ -53,7 +53,7 @@ class ResyncPendingIguidesCommand extends Command
             if (!$shoot || !$shoot->hasIguideEligibleService()) {
                 continue;
             }
-            SyncShootIguideJob::dispatch($shoot->id);
+            SyncShootIguideJob::dispatch($shoot->id, scheduledRecovery: true);
             $count++;
         }
 

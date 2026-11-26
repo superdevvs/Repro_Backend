@@ -136,6 +136,49 @@ class MediaStorageHealthTest extends TestCase
         $this->assertSame([], Storage::disk('health_originals')->allFiles());
     }
 
+    public function test_on_mysql_the_database_path_is_the_mysql_data_folder(): void
+    {
+        $dataFolder = storage_path('framework/testing/health-mysql-'.bin2hex(random_bytes(8)));
+        $this->roots[] = $dataFolder;
+        File::makeDirectory($dataFolder, 0770, true);
+        config()->set('database.default', 'mysql');
+        config()->set('media.database_data_directory', $dataFolder);
+
+        $this->artisan('media:storage-health')
+            ->expectsOutputToContain('"database_path":"'.realpath($dataFolder).'"')
+            ->assertSuccessful();
+    }
+
+    public function test_on_mysql_an_unknown_data_folder_fails_instead_of_using_the_sqlite_folder(): void
+    {
+        config()->set('database.default', 'mysql');
+        config()->set('database.connections.mysql.unix_socket', '/nonexistent/repro-health-mysql.sock');
+        config()->set('media.database_data_directory', null);
+
+        $this->artisan('media:storage-health')
+            ->expectsOutputToContain('Could not find the MySQL data folder')
+            ->doesntExpectOutputToContain('"database_path":"'.realpath(database_path()).'"')
+            ->assertFailed();
+    }
+
+    public function test_mysql_data_folder_on_the_originals_drive_fails(): void
+    {
+        $originalRoot = $this->separateFilesystemRoot();
+        File::makeDirectory($originalRoot.'/mysql', 0770);
+        config()->set('database.default', 'mysql');
+        config()->set('media.database_data_directory', $originalRoot.'/mysql');
+        config()->set('filesystems.disks.health_originals', ['driver' => 'local', 'root' => $originalRoot, 'throw' => true]);
+        config()->set('media.originals_disk', 'health_originals');
+        config()->set('media.tiered_storage_enabled', true);
+        $guard = Mockery::mock(OriginalsStorageGuard::class);
+        $guard->shouldReceive('assertAvailable')->once()->andReturnNull();
+        $this->app->instance(OriginalsStorageGuard::class, $guard);
+
+        $this->artisan('media:storage-health')
+            ->expectsOutputToContain('The configured database must not use the originals drive.')
+            ->assertFailed();
+    }
+
     private function separateFilesystemRoot(): string
     {
         if (! is_dir('/dev/shm') || ! is_writable('/dev/shm')) {

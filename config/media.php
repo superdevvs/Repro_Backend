@@ -43,6 +43,9 @@ return [
 
     'originals_uuid' => env('MEDIA_ORIGINALS_UUID', ''),
 
+    // media:storage-health on MySQL: the MySQL data folder. Empty asks the server (@@datadir).
+    'database_data_directory' => env('MEDIA_HEALTH_DATABASE_DIRECTORY', ''),
+
     /*
     |--------------------------------------------------------------------------
     | Migration feature flags (Dropbox/local -> R2 cutover)

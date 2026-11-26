@@ -6,6 +6,7 @@ use App\Models\{Shoot, ShootActivityLog, ShootFile, ShootService, User};
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\{ShootActiveWorkLifecycle, ShootListingService};
+use App\Support\DatabaseDriver;
 use App\Support\LockedWrite;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -36,6 +37,9 @@ class ReconcilePartialServiceDelivery extends Command
     public function handle(ShootActiveWorkLifecycle $lifecycle, ShootActivityLogger $logger): int
     {
         try {
+            // The safety backup is a SQLite file; on any other engine it would not be a backup of the live data.
+            $this->require(! $this->option('apply') || DatabaseDriver::isSqlite(),
+                'Apply checks a SQLite safety backup, but the live database is '.DatabaseDriver::driver().'. Nothing was changed.');
             $input = $this->parseInput();
             $alreadyApplied = $this->alreadyApplied($input);
             if ($alreadyApplied) {

@@ -899,7 +899,12 @@ class AutoenhanceController extends Controller
                 $query->where('user_id', $user->id);
             }
 
-            $jobs = $query->orderBy('created_at', 'desc')->paginate($request->get('per_page', 20));
+            $jobs = $query->orderBy('created_at', 'desc')->paginate($request->get('per_page', 20), [
+                'id', 'shoot_id', 'shoot_file_id', 'user_id', 'provider', 'provider_job_id',
+                'provider_order_id', 'autoenhance_image_id', 'status', 'editing_type', 'editing_params',
+                'original_image_url', 'edited_image_url', 'error_message', 'retry_count',
+                'started_at', 'completed_at', 'created_at', 'updated_at',
+            ]);
 
             return response()->json([
                 'success' => true,

@@ -50,6 +50,13 @@ return [
     'expiration' => null,
 
     /*
+    | Seconds between saves of a token's last_used_at. Sanctum saves it on every request; the
+    | app skips the save while the stored value is newer than this. 0 saves on every request.
+    */
+
+    'last_used_write_interval' => (int) env('SANCTUM_LAST_USED_WRITE_INTERVAL', 300),
+
+    /*
     |--------------------------------------------------------------------------
     | Token Prefix
     |--------------------------------------------------------------------------

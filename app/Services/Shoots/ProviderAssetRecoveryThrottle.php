@@ -52,9 +52,12 @@ final class ProviderAssetRecoveryThrottle
     }
 
     /** @return array<string, object> Current schedules for one channel, keyed by scope key. */
-    public function load(string $channel): array
+    public function load(string $channel, ?int $shootId = null): array
     {
-        return DB::table(self::TABLE)->where('channel', $channel)->get()->keyBy('scope_key')->all();
+        return DB::table(self::TABLE)
+            ->where('channel', $channel)
+            ->when($shootId !== null, fn ($query) => $query->where('shoot_id', $shootId))
+            ->get()->keyBy('scope_key')->all();
     }
 
     public function find(string $channel, int $shootId, ?int $shootServiceId): ?object

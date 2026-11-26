@@ -7,6 +7,7 @@ use App\Models\SystemOverviewErrorEvent;
 use App\Models\SystemOverviewRequestTrace;
 use App\Models\SystemOverviewRouteEvent;
 use App\Models\SystemOverviewSession;
+use App\Support\SchemaFacts;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,7 +15,6 @@ use Illuminate\Routing\Route;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Route as RouteFacade;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
@@ -97,7 +97,7 @@ class SystemOverviewTelemetryService
 
         try {
             foreach (self::REQUIRED_TABLES as $table) {
-                if (! Schema::hasTable($table)) {
+                if (! SchemaFacts::hasTable($table)) {
                     return $this->telemetryAvailableCache = false;
                 }
             }
@@ -116,7 +116,9 @@ class SystemOverviewTelemetryService
 
         $traceId = $this->resolveTraceId($request);
         $startedAt = (float) ($request->attributes->get('system_overview.started_at') ?? microtime(true));
-        $durationMs = max(0, (int) round((microtime(true) - $startedAt) * 1000));
+        // The middleware notes when the response was ready; recording may happen later.
+        $finishedAt = (float) ($request->attributes->get('system_overview.finished_at') ?? microtime(true));
+        $durationMs = max(0, (int) round(($finishedAt - $startedAt) * 1000));
         $session = $this->upsertSessionFromRequest($request);
         $blocker = $this->classifyBlocker($request, $response->getStatusCode(), $durationMs);
 

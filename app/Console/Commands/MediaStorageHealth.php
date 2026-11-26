@@ -4,7 +4,9 @@ namespace App\Console\Commands;
 
 use App\Services\Media\MediaStorage;
 use App\Services\Media\OriginalsStorageGuard;
+use App\Support\DatabaseDriver;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 
@@ -24,10 +26,7 @@ class MediaStorageHealth extends Command
             }
             $localName = $media->localDiskName();
             $localRoot = realpath((string) config("filesystems.disks.{$localName}.root"));
-            $databaseFile = (string) config('database.connections.sqlite.database', ':memory:');
-            $databaseRoot = config('database.default') === 'sqlite' && $databaseFile !== ':memory:'
-                ? realpath($databaseFile)
-                : realpath(database_path());
+            $databaseRoot = $this->databaseRoot();
             $tempRoot = realpath(sys_get_temp_dir());
             if (! $localRoot || ! $databaseRoot || ! $tempRoot) {
                 throw new RuntimeException('Local media, database, or working storage directory is missing.');
@@ -85,5 +84,40 @@ class MediaStorageHealth extends Command
         $this->line(json_encode($report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
 
         return $report['healthy'] ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * The folder that holds the live database: the SQLite file, or the MySQL data folder
+     * (media.database_data_directory, else the server's @@datadir). Never a guess.
+     */
+    private function databaseRoot(): string|false
+    {
+        $connection = (string) config('database.default');
+        $driver = DatabaseDriver::driver($connection);
+
+        if ($driver === 'sqlite') {
+            $databaseFile = (string) config("database.connections.{$connection}.database", ':memory:');
+
+            return $databaseFile !== ':memory:' ? realpath($databaseFile) : realpath(database_path());
+        }
+
+        if (! in_array($driver, ['mysql', 'mariadb'], true)) {
+            throw new RuntimeException("Cannot place a {$driver} database; this check supports SQLite and MySQL.");
+        }
+
+        $folder = (string) config('media.database_data_directory', '');
+        try {
+            if ($folder === '') {
+                $folder = (string) DB::connection($connection)->selectOne('SELECT @@datadir AS datadir')->datadir;
+            }
+        } catch (Throwable $error) {
+            throw new RuntimeException('Could not find the MySQL data folder: '.$error->getMessage());
+        }
+        $root = $folder === '' ? false : realpath(rtrim($folder, '/') ?: '/');
+        if (! $root) {
+            throw new RuntimeException("Could not find the MySQL data folder ({$folder}). Set MEDIA_HEALTH_DATABASE_DIRECTORY.");
+        }
+
+        return $root;
     }
 }

@@ -1,12 +1,18 @@
 <?php
 
-$pdo = new PDO('sqlite:/var/www/backend/database/database.sqlite');
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$rows = $pdo->query('select failed_at, exception, payload from failed_jobs')->fetchAll(PDO::FETCH_ASSOC);
+// Summarises failed_jobs through the app's configured database connection. Read-only.
+use Illuminate\Support\Facades\DB;
+
+require __DIR__.'/bootstrap-app.php';
+
+$rows = DB::table('failed_jobs')->select(['id', 'failed_at', 'exception', 'payload'])->lazyById(500);
+$total = 0;
 $counts = [];
 $oldest = null;
 $newest = null;
 foreach ($rows as $row) {
+    $row = (array) $row;
+    $total++;
     $ex = $row['exception'] ?? '';
     $payload = $row['payload'] ?? '';
     $job = 'unknown';
@@ -29,7 +35,7 @@ foreach ($rows as $row) {
     $newest = $newest === null || $row['failed_at'] > $newest ? $row['failed_at'] : $newest;
 }
 arsort($counts);
-echo 'total='.count($rows)." oldest={$oldest} newest={$newest}\n";
+echo 'total='.$total." oldest={$oldest} newest={$newest}\n";
 foreach ($counts as $key => $n) {
     echo $n."\t".$key."\n";
 }

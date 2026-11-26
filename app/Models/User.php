@@ -7,8 +7,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use App\Support\SchemaFacts;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
@@ -217,7 +217,7 @@ class User extends Authenticatable
         }
 
         try {
-            return self::$usersTableColumnCache[$column] = Schema::hasColumn($this->getTable(), $column);
+            return self::$usersTableColumnCache[$column] = SchemaFacts::hasColumn($this->getTable(), $column, $this->getConnectionName());
         } catch (\Throwable $exception) {
             Log::warning('Unable to inspect users table column metadata.', [
                 'column' => $column,
