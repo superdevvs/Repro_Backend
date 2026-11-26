@@ -1851,7 +1851,7 @@ has been done. Each production step needs its own approval.
 - Writer hold: after an aborted and reopened cutover, retire the installed
   fences or start a new run before the next deploy.
 - Writer hold: write and review the host identity and MySQL probes before
-  W1, and complete `host.json` (all four owner options, the lab-tour queue
+  W1, and complete `host.json` (all five owner options, the lab-tour queue
   if installed, `drain_fpm`, and `queue_pause` and `queue_resume` run as
   `www-data` through `runuser` with their own `umask 0022`, in the adapter
   lane's exact form) before `init`. W1 also installs the adapter lane's

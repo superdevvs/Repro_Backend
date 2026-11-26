@@ -798,10 +798,14 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
       no guard (`cubicasa-poll` does). Before W1, `crontab.py` must refuse
       or carry over such a prefix, and those profiles must run the guard.
       This is a code change; neither lane has made it.
-    - Set all four owner options in `host.json`. The adapter has no default
+    - Set all five owner options in `host.json`. The adapter has no default
       for them and refuses a missing one. The plan's values:
       `"separate_freeze_approval": false`, `"adopt_external_hold": false`,
-      `"require_long_job_predrain": true`, `"max_drain_seconds": 600`.
+      `"require_long_job_predrain": true`, `"max_drain_seconds": 600`,
+      `"unattended_reopen": false`. The complete list of `host.json` keys
+      is the contract table in `scripts/cutover/production/README.md` and
+      `example_config` in `scripts/cutover/production/test_adapter.py`;
+      write `host.json` from those, not from this list.
     - Write `drain_fpm`. `cli.py reopen` runs only `queue_resume` and
       `start_workers`, so if the drain stops the PHP-FPM pool,
       `start_workers` must start it again. The command is not written.
