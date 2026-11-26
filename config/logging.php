@@ -132,6 +132,21 @@ return [
             'permission' => 0660,
         ],
 
+        // Slow database transactions (config/transaction_timing.php). One JSON
+        // record per line. New day files join the storage/logs group, so a
+        // file the deploy user creates stays writable by the web workers.
+        'transactions' => [
+            'driver' => 'monolog',
+            'handler' => \App\Logging\SharedGroupRotatingFileHandler::class,
+            'handler_with' => [
+                'filename' => storage_path('logs/transactions.log'),
+                'maxFiles' => 14,
+                'filePermission' => 0660,
+            ],
+            'formatter' => \Monolog\Formatter\JsonFormatter::class,
+            'level' => 'info',
+        ],
+
         'slack' => [
             'driver' => 'slack',
             'tap' => [\App\Logging\PrivacyLogTap::class],

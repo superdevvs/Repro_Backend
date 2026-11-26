@@ -11,6 +11,10 @@ class PrivacyLogProcessor
 {
     public function __invoke(LogRecord $record): LogRecord
     {
+        if ($record->message === 'slow_transaction') {
+            return $record->with(context: $this->slowTransaction($record->context), extra: []);
+        }
+
         $safe = [];
         $exception = $record->context['exception'] ?? null;
         if ($exception instanceof \Throwable) {
@@ -88,6 +92,26 @@ class PrivacyLogProcessor
             ? $record->message : 'Application '.strtolower($record->level->getName()).' event.';
 
         return $record->with(message: $message, context: $safe, extra: []);
+    }
+
+    /** Timings, counts, connection name, outcome and code origin. Nothing else. */
+    private function slowTransaction(array $context): array
+    {
+        $safe = [];
+        foreach (['duration_ms', 'first_write_ms', 'writer_held_ms', 'queries', 'writes'] as $key) {
+            $value = $context[$key] ?? null;
+            if (is_int($value) || (is_float($value) && is_finite($value))) $safe[$key] = $value;
+        }
+        $connection = $context['connection'] ?? null;
+        if (is_string($connection) && preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $connection)) $safe['connection'] = $connection;
+        if (in_array($context['outcome'] ?? null, ['commit', 'rollback'], true)) $safe['outcome'] = $context['outcome'];
+        $origin = $context['origin'] ?? null;
+        if (is_string($origin) && !str_contains($origin, '..')
+            && preg_match('/\A(?:app|bootstrap|config|database|routes|vendor)\/[A-Za-z0-9_\/.+-]+\.php:[0-9]{1,6}\z/', $origin)) {
+            $safe['origin'] = $origin;
+        }
+
+        return $safe;
     }
 
     private function location(string $file, int $line): array

@@ -31,6 +31,29 @@ class RestrictedLogPrivacyTest extends IsolatedSecurityTestCase
         $this->assertArrayNotHasKey('route', $unsafe->context);
     }
 
+    public function test_slow_transaction_records_keep_only_timings_connection_outcome_and_code_origin(): void
+    {
+        $processor = new PrivacyLogProcessor();
+        $record = $processor(new LogRecord(new \DateTimeImmutable(), 'production', Level::Info, 'slow_transaction', [
+            'duration_ms' => 812.4, 'first_write_ms' => 640.1, 'writer_held_ms' => 172.3, 'queries' => 14, 'writes' => 3,
+            'connection' => 'sqlite', 'outcome' => 'commit', 'origin' => 'app/Services/InvoiceService.php:288',
+            'sql' => 'secret-canary', 'bindings' => ['secret-canary'], 'user_id' => 5,
+        ], ['trace' => 'secret-canary']));
+        $this->assertSame('slow_transaction', $record->message);
+        $this->assertSame([
+            'duration_ms' => 812.4, 'first_write_ms' => 640.1, 'writer_held_ms' => 172.3, 'queries' => 14, 'writes' => 3,
+            'connection' => 'sqlite', 'outcome' => 'commit', 'origin' => 'app/Services/InvoiceService.php:288',
+        ], $record->context);
+        $this->assertSame([], $record->extra);
+
+        foreach (['/home/secret-canary/app.php:1', 'app/../.env:1', 'app/Secret.php:1 secret-canary', 'tests/Secret.php:1'] as $origin) {
+            $unsafe = $processor(new LogRecord(new \DateTimeImmutable(), 'production', Level::Info, 'slow_transaction', [
+                'duration_ms' => 'secret-canary', 'connection' => 'secret canary', 'outcome' => 'secret-canary', 'origin' => $origin,
+            ]));
+            $this->assertSame([], $unsafe->context, $origin);
+        }
+    }
+
     public function test_reviewed_diagnostic_location_and_throttle_scope_remain_operationally_useful(): void
     {
         $processor = new PrivacyLogProcessor();

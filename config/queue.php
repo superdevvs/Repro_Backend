@@ -131,6 +131,9 @@ return [
         'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
         'database' => env('DB_CONNECTION', 'sqlite'),
         'table' => 'failed_jobs',
+        // Scheduled queue:prune-failed --hours=336. Keep off until the old
+        // rows are archived: the first run deletes everything older than 14 days.
+        'prune_enabled' => (bool) env('QUEUE_PRUNE_FAILED_ENABLED', false),
     ],
 
 ];

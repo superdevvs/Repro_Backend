@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\HealthCheckController;
 use App\Http\Middleware\EnsureAuthenticatedUserIsActive;
 use App\Http\Middleware\ImpersonationMiddleware;
 use App\Http\Middleware\PermissionMiddleware;
@@ -13,6 +14,7 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Support\Facades\Route;
 use Symfony\Component\HttpFoundation\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -21,7 +23,12 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         channels: __DIR__.'/../routes/channels.php',
-        health: '/up',
+        // /up reads the database and names its engine (Laravel's default
+        // health route never touched the database). No middleware group, so a
+        // health ping starts no session and writes nothing.
+        then: function () {
+            Route::get('/up', HealthCheckController::class)->name('health');
+        },
     )
     ->withSchedule(function (Schedule $schedule) {
         // Sales CRM. Every command returns early while CRM_ENABLED is off.
@@ -96,12 +103,25 @@ return Application::configure(basePath: dirname(__DIR__))
             ->onOneServer();
         // Completed/failed upload replays expire after 30 days; pending attempts are never pruned.
         $schedule->command('model:prune')->dailyAt('03:45')->withoutOverlapping()->onOneServer();
+        // Failed-job rows older than 14 days. Off until the remaining rows are
+        // archived; QUEUE_PRUNE_FAILED_ENABLED turns it on.
+        $schedule->command('queue:prune-failed --hours=336')
+            ->dailyAt('03:55')->withoutOverlapping()->onOneServer()
+            ->when(fn () => (bool) config('queue.failed.prune_enabled'));
+        // Outside alerting: database, backup age, free disk and the oldest
+        // waiting job, pinged to the alert service. Off while
+        // HEARTBEAT_PING_URL is empty.
+        $schedule->command('ops:heartbeat')
+            ->everyMinute()->withoutOverlapping(5)->runInBackground()
+            ->when(fn () => trim((string) config('heartbeat.url')) !== '');
         $schedule->command('media:prune-downloads')->hourly()->withoutOverlapping()->onOneServer();
         $schedule->command('media:prune-editor-archives --apply --json')
             ->dailyAt('04:15')->withoutOverlapping()->onOneServer()
             ->sendOutputTo(storage_path('logs/editor-archive-retention.log'));
     })
     ->withMiddleware(function (Middleware $middleware) {
+        // Laravel's own health route was exempt from maintenance mode; keep that.
+        $middleware->preventRequestsDuringMaintenance(except: ['/up']);
         $middleware->prepend(\App\Http\Middleware\ApiRequestContextMiddleware::class);
         $middleware->prepend(\App\Http\Middleware\ServerMonitorTiming::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
