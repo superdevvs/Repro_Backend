@@ -28,9 +28,10 @@ root reads it. Root never follows a symbolic link there and refuses anything but
   of at most 1 MiB; only DB_CONNECTION and DB_URL are taken from it. The fallback engine is **advisory**:
   PHP still loads several of these files (a link, an enum, a large file), so PHP-FPM may run another
   engine than `.env` names. It may let a rollback proceed (`observe()` accepts it, and `seal_sqlite`
-  rebuilds the cache); it never proves which engine is live, so `prepare`, both publications and both
-  reopens refuse it. With no plain `DB_CONNECTION` of sqlite or mysql, or with a `DB_URL`, the engine
-  cannot be read without PHP: `Unmeasurable`.
+  rebuilds the cache); it never proves which engine is live. Both publications (and `host_authority`)
+  refuse it today; `prepare` (D10), the SQLite reopen (D13, which still accepts it) and the MySQL reopen
+  (C03) are to refuse it too (the README's "Not yet here"). With no plain `DB_CONNECTION` of sqlite or
+  mysql, or with a `DB_URL`, the engine cannot be read without PHP: `Unmeasurable`.
 
 The CLI prints `{"version": 1, "engine", "source", "live_config_sha256", "values", "problem"}` and exits
 0, or exits 1 when the config is unmeasurable. Standard library only.

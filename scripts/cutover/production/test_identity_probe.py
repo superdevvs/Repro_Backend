@@ -162,16 +162,26 @@ SHELL_SEPARATORS = {"|", "||", "&&", ";", "&"}
 def python3_commands(text: str):
     """Each python3 command in Markdown text, as (line number, its options, the words after them).
 
-    Lines continued with a backslash are joined. A command ends at a shell separator word or at the end of
-    the inline code it is in (a closing backtick); `-W` and `-X` take a value.
+    Lines continued with a backslash are joined, and so is inline code that a line opens and does not close
+    (Markdown joins the next line with a space; review W2I-1), unless a blank line comes first; a fence line
+    ends it, and inside a fenced block no backtick opens a span. A command ends at a shell separator word or
+    at the end of the inline code it is in (a closing backtick); `-W` and `-X` take a value.
     """
-    logical, start = "", None
-    for number, line in enumerate(text.splitlines(), 1):
+    lines = text.splitlines()
+    logical, start, fenced = "", None, False
+    for number, line in enumerate(lines, 1):
         start = start or number
+        fence = line.lstrip().startswith("```")
+        fenced = fenced != fence
         if line.endswith("\\"):
             logical += line[:-1] + " "
             continue
-        words, first, logical, start = (logical + line).split(), start, "", None
+        joined = logical + line
+        following = lines[number] if number < len(lines) else ""
+        if not fenced and not fence and joined.count("`") % 2 == 1 and following.strip():
+            logical = joined + " "
+            continue
+        words, first, logical, start = joined.split(), start, "", None
         for index, word in enumerate(words):
             if not PYTHON3.fullmatch(word.strip("`'\"($")):
                 continue
@@ -192,6 +202,11 @@ def python3_commands(text: str):
 
 
 def runs_repository_code(arguments: list[str]) -> bool:
+    """Whether the command runs code in the app tree. A script named by an absolute path runs that file, so it is
+    app-tree code only under the app root, and its other arguments (`--app-root /var/www/backend` given to the
+    installed controller under /opt) are data (review W2I-2). Otherwise any word naming the app tree counts."""
+    if arguments and arguments[0].startswith("/"):
+        return bool(REPOSITORY_CODE.search(arguments[0]))
     return any(REPOSITORY_CODE.search(word) for word in arguments)
 
 
@@ -408,6 +423,10 @@ class HostPythonRuleTests(unittest.TestCase):
             "test discovery": "python3 -W ignore::ResourceWarning -m unittest discover -s scripts/cutover/production",
             "lab worker": "cd /var/www/backend && python3 -I resources/iguide-lab/bridge.py --request x",
             "after a pipe": "printf x | python3 scripts/x.py",
+            # Review W2I-1: inline code wrapped onto the next Markdown line is one command (README's old P8 line).
+            "wrapped inline code": "For P8: `/usr/bin/python3 -I -S fastcgi.py --socket\n"
+                                   "/run/php/php8.3-fpm.sock --app-root /var/www/backend` prints",
+            "wrapped over three lines": "Run `python3\n-I\nscripts/x.py --apply` first.",
         }
         fine = {
             "dash B": "python3 -B scripts/mysql/migrate.py plan",
@@ -421,6 +440,20 @@ class HostPythonRuleTests(unittest.TestCase):
             "inline script": "python3 - \"$run_dir/frozen.sqlite\" <<'PY'",
             "interpreter named in prose": "`python` `/usr/bin/python3`, `rclone` `/usr/bin/rclone`, scripts/x",
             "prose after inline code": "Run `python3 -m json.tool` on scripts/cutover/x.json first.",
+            # Review W2I-2: the installed controller runs from /opt; the app root it is given is data, not code.
+            "controller under /opt given the app root":
+                "/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/live_config.py --app-root /var/www/backend",
+            "wrapped controller command":
+                "For P8: `/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/fastcgi.py\n"
+                "--socket /run/php/php8.3-fpm.sock --app-root /var/www/backend` prints",
+            # Only inline code continues on the next line: a fence, a closed span or a blank line ends it.
+            "fenced block": "```sh\npython3 -B scripts/x.py\n```\nscripts/y.py is prose",
+            "lines in a fence stay apart": "```sh\npython3 -m json.tool\nscripts/x.json\n```",
+            "a closing fence joins nothing": "```\nx\n```\npython3 -m json.tool\nscripts/x.json",
+            "a backtick inside a fence opens no span": "```sh\necho 'a`b'\npython3 -m json.tool\nscripts/x.json\n```",
+            "an open span never runs into a fence": "Run `python3 -m json.tool\n````sh\nscripts/x.json\n````",
+            "closed span": "`python3 -m json.tool`\nscripts/x.json is prose",
+            "paragraph ends": "Then `python3 -m json.tool\n\nscripts/x.json` is prose",
         }
         for case, text in missing_dash_b.items():
             with self.subTest(case=case):

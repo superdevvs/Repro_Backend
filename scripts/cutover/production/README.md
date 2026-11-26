@@ -34,7 +34,9 @@ approval for each action (handoff item W1).
 | `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper, keeping the storage guard; `--reverse` restores them (below) |
 
 All files and every parent directory must be owned by root and not writable
-by group or others. Python runs as `/usr/bin/python3 -I -S`.
+by group or others. Python runs as `/usr/bin/python3 -I -S`: the installed
+copies are outside the app's fingerprinted trees, so they need no `-B`
+(only Python run from the app tree does; see "Bytecode caches" below).
 
 ## Writers
 
@@ -337,10 +339,19 @@ repository Python run from the app tree without `-B` changes
 `artifact_sha256` (`scripts/mysql/migrate.py` writes
 `scripts/mysql/__pycache__/` for the `conversion` module it imports), and the
 runner then refuses every action, the watchdog rollback included, until the
-folder is removed (`BytecodeCacheTests`). Rule: every repository Python on the
-host runs with `python3 -B`; `HostPythonRuleTests` fails if a Markdown file
-at the root or under `docs/` or `scripts/` runs code in the app tree with
-`python3` and no `-B`.
+folder is removed (`BytecodeCacheTests`). Rule: every repository Python run
+from the app tree on the host (a script or module under `<app_root>/scripts`
+or `resources/`) runs with `python3 -B`. The controller's installed copies
+under `/opt/repro-cutover-fence` are outside the fingerprinted trees, so they
+need no `-B`: they run exactly as `host.json`, the sudoers files and the
+units name them, `/usr/bin/python3 -I -S` (sudo matches those command lines
+exactly; adding `-B` to one form and not the others would make `sudo -n`
+refuse every cron admission), and so do the manual commands below that run
+an installed copy. `HostPythonRuleTests` fails if a Markdown file at the
+root or under `docs/` or `scripts/` runs code in the app tree with `python3`
+and no `-B`; inline code wrapped onto the next line is read as one command,
+and a script named by an absolute path outside the app tree (an installed
+copy given `--app-root /var/www/backend`) is not app-tree code.
 Pre-init check (P2, then W1, read-only): no `__pycache__` under the
 fingerprinted trees, that is
 `cd <app_root> && find app bootstrap config resources routes scripts public database -name __pycache__`
@@ -738,11 +749,14 @@ copy beside it, and a missing copy is an error.
   `password` beside `password_set`, a `url` carrying a password; the module
   docstring has the full list). PHP still loads several of these (a link, an
   enum, a large file), so **the fallback engine is advisory**: it may let a
-  rollback proceed, but it never proves which engine is live, and `prepare`,
-  both publications and both reopens refuse it. Anything other than a plain
-  `sqlite` or `mysql`, or a `DB_URL`, raises `Unmeasurable`. CLI (the installed
-  copy, with `-B` like every Python on the host):
-  `/usr/bin/python3 -I -S -B /opt/repro-cutover-fence/production/live_config.py --app-root /var/www/backend`
+  rollback proceed, but it never proves which engine is live. Both
+  publications (and `host_authority`) refuse it today; `prepare` (D10), the
+  SQLite reopen (D13, which still accepts it) and the MySQL reopen (C03) are
+  to refuse it too (see "Not yet here" below). Anything other than a plain
+  `sqlite` or `mysql`, or a `DB_URL`, raises `Unmeasurable`. CLI (the
+  installed copy, run as `/usr/bin/python3 -I -S` like every controller copy
+  under `/opt`: it reads the app root and imports nothing from it):
+  `/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/live_config.py --app-root /var/www/backend`
   prints the same as JSON (exit 1 when unmeasurable).
 - **`config_build.build(config, expected_engine=..., expected_sha256=None,
   deadline=None)`** first checks that `commands.config_build` is exactly
@@ -800,8 +814,10 @@ the accounts up (`pwd`, `grp`) only when a build runs, so the import works
 where those modules do not exist.
 
 Not yet here (later slices):
-- D13: the SQLite reopen refuses a `fallback` live config (review A2-9); so
-  do `prepare`, both publications and the MySQL reopen.
+- D13: the SQLite reopen refuses a `fallback` live config (review A2-9); it
+  accepts one today (`reopen` checks only the observed engine and
+  writability). `prepare` (D10) and the MySQL reopen (C03) must refuse it
+  too; both publications already do.
 - D10, D12, D14: `build(config, expected_engine=..., expected_sha256=<pin>,
   deadline=...)` then `live_config.measure` again (the deploy user can
   replace `config.php` at any time); `pin-config` creates the root 0711
@@ -1003,9 +1019,12 @@ USR2 reload whose config fails the test stops FPM, so the test comes first.
   and nothing else (Laravel reads `$_SERVER` as environment, so a parameter
   could stand in for the pool's own) and returns its report. The caller
   compares `engine` and `live_config.route_sha256(report["route_values"])`
-  with the pin. For P8: `/usr/bin/python3 -I -S fastcgi.py --socket
-  /run/php/php8.3-fpm.sock --app-root /var/www/backend` prints `{"version",
-  "report", "route_sha256"}` (exit 0 ok, 2 not ok, 1 no report).
+  with the pin. For P8, the installed copy (never a copy in the app tree,
+  whose imports of `live_config` and `var_export` would write `__pycache__`
+  there and change `artifact_sha256`):
+  `/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/fastcgi.py --socket /run/php/php8.3-fpm.sock --app-root /var/www/backend`
+  prints `{"version", "report", "route_sha256"}` (exit 0 ok, 2 not ok, 1 no
+  report).
 - **`fpm_drain.py --config host.json`**, the first command of `drain_fpm`,
   polls the status page every 0.25 s for at most `fpm.drain_seconds` (90 s).
   Idle is two readings in a row with no active process, an empty listen queue
