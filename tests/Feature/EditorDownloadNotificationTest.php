@@ -93,6 +93,24 @@ class EditorDownloadNotificationTest extends TestCase
         Event::assertNotDispatched(ShootActivityBroadcast::class);
     }
 
+    public function test_posted_selection_reuses_the_full_archive_and_never_expands_a_partial_selection(): void
+    {
+        \Laravel\Sanctum\Sanctum::actingAs($this->admin);
+        $url = "/api/shoots/{$this->shoot->id}/editor-download-raw";
+        $ids = $this->files->pluck('id')->all();
+        $this->postJson($url, ['file_ids' => [], 'require_all' => true])->assertUnprocessable();
+        $this->postJson($url, ['file_ids' => [$ids[0], 99999999], 'require_all' => true])->assertConflict();
+        $this->postJson($url, ['file_ids' => array_reverse($ids), 'require_all' => true])
+            ->assertStatus(202)->assertJsonPath('type', 'preparing')->assertJsonPath('file_count', 2);
+        $this->ready();
+        $full = $this->getJson($url)->assertOk()->json('url');
+        $this->postJson($url, ['file_ids' => $ids, 'require_all' => true])
+            ->assertOk()->assertJsonPath('url', $full)->assertJsonPath('file_count', 2);
+        $this->postJson($url, ['file_ids' => [$ids[0]], 'require_all' => true])
+            ->assertStatus(202)->assertJsonPath('file_count', 1);
+        Queue::assertPushed(GenerateEditorRawZipJob::class, fn ($job) => $job->fileIds === [$ids[0]]);
+    }
+
     public function test_more_than_150_preparation_polls_are_silent_then_ready_retries_notify_once(): void
     {
         for ($poll = 0; $poll < 151; $poll++) {
