@@ -252,11 +252,31 @@ dropped. Every other line must be `NAME=VALUE` with the name first on the line
 (`[A-Za-z_][A-Za-z0-9_]*`: no `export`, no space before `=`, no multi-line
 value). A denylisted name is dropped whatever its value and however often it
 appears; every other line is kept byte for byte, a repeated name is refused
-(sorting would hide a swap of two definitions), and the lines are sorted and
-joined with `\n`. The night flags, the switch and a `DB_PASSWORD` rotation
-never change the digest; any other edit does, spacing, quoting, an inline
-comment and a carriage return included. Refusals name line numbers, never a
-value.
+(Laravel's immutable repository keeps the last of two definitions, and sorting
+would hide a swap of the two), and the lines are sorted and joined with `\n`.
+Names compare exactly, letter case included, as in phpdotenv: `db_password`
+is not the denylisted `DB_PASSWORD`. The night flags, the switch and a
+`DB_PASSWORD` rotation never change the digest; any other edit does, spacing,
+quoting, an inline comment and a carriage return included. Refusals name line
+numbers, never a value.
+
+**Bytecode caches (review A2-1).** The fingerprint hashes every file in its
+trees, `__pycache__` and `*.pyc` included: excluding them would hide a
+tampered `.pyc`, and the copy stays byte-identical to the deploy script. So
+repository Python run from the app tree without `-B` changes
+`artifact_sha256` (`scripts/mysql/migrate.py` writes
+`scripts/mysql/__pycache__/` for the `conversion` module it imports), and the
+runner then refuses every action, the watchdog rollback included, until the
+folder is removed (`BytecodeCacheTests`). Rule: every repository Python on the
+host runs with `python3 -B`; `HostPythonRuleTests` fails if a Markdown file
+at the root or under `docs/` or `scripts/` runs code in the app tree with
+`python3` and no `-B`.
+Pre-init check (P2, then W1, read-only): no `__pycache__` under the
+fingerprinted trees, that is
+`cd <app_root> && find app bootstrap config resources routes scripts public database -name __pycache__`
+prints nothing (`scripts/` holds the repository tools, so
+`find <app_root>/scripts -name __pycache__` is the least to run). If the
+controller refuses on the artifact after no deploy, look there first.
 
 `deploy-meta.json`, `.env` and `auto.cnf` belong to other accounts: each is
 opened without following a final symlink and must be a regular file of at
@@ -264,9 +284,10 @@ most 1 MiB. The probe uses `identity.json`'s denylist as given; `load_config`,
 which `cli.py`, `mysql_probe.py` and `repro-queue-flag` run first, refuses one
 that is not the night flags plus the switch keys.
 
-`test_identity_probe.py`: the digest, copy and input-shape tests run on any
-POSIX system; the probe tests need Linux root (block device nodes made with
-`mknod` in a fake `by-uuid`) and run in `../run-linux-tests.sh`;
+`test_identity_probe.py`: the digest, copy, input-shape, bytecode-cache and
+docs-rule tests run on any POSIX system; the probe tests need Linux root
+(block device nodes made with `mknod` in a fake `by-uuid`) and run in
+`../run-linux-tests.sh`;
 `RealFilesystemTests` mount a real ext4 image through two loop devices and run
 only with `REPRO_IDENTITY_LOOP_DEVICES=1` in a `--privileged` container
 (command in the file's docstring). Host proof P2 compares the output with
@@ -274,6 +295,26 @@ only with `REPRO_IDENTITY_LOOP_DEVICES=1` in a `--privileged` container
 `@@server_uuid`. The deploy runs the fingerprint as the deploy user, the probe
 as root: `os.walk` skips a folder its user cannot read, so such a folder under
 the fingerprinted trees would make the two differ.
+
+Open items for this probe:
+- D10: test prepare's `.env` writer (step 6) against
+  `identity_probe.config_sha256`: the switched `.env` gives the same digest
+  and is never refused (plain `NAME=VALUE` lines, no repeated name outside
+  the denylist). Each refusal the probe adds is also a state that blocks the
+  rollback, because the runner checks the identity before every action
+  (review A2-11).
+- P2 (read-only, before init): run the probe on production's `.env`,
+  `/dev/disk/by-uuid` and `/etc/machine-id` and confirm it exits 0 (review
+  A2-11), as well as the comparisons above.
+- The app's iGUIDE lab workers start `resources/iguide-lab/*.py` with neither
+  `-B` nor `PYTHONDONTWRITEBYTECODE=1` (only `LabTourSurveyViews` sets it, and
+  the others clear the inherited environment), and most of those scripts
+  import a sibling module. A lab job whose account can write that folder
+  (the deploy user deploys it) would write `resources/iguide-lab/__pycache__/`
+  and change the identity after init. P2 should look for that folder and
+  check who can write it; the fix is an app change (set
+  `PYTHONDONTWRITEBYTECODE=1` in those environments) or keeping lab jobs
+  from running between init and retire.
 
 ## MySQL probe: the write gate (design 1.2, 2.2)
 

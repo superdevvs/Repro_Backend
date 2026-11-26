@@ -135,10 +135,11 @@ def config_sha256(raw: bytes, denylist) -> str:
     `NAME=VALUE` kept byte for byte unless NAME is denylisted, the lines sorted and joined with `\\n`.
 
     A line that is not `NAME=VALUE` (an `export` prefix, a space before `=`, a multi-line value) and a
-    repeated name outside the denylist are refused: sorting would otherwise hide a swap of two
-    definitions of one name. Denylisted lines are dropped whatever they hold or how often they appear,
-    so nothing the night or the switch does to them changes the digest or makes the probe refuse.
-    Messages name line numbers only, never a value.
+    repeated name outside the denylist are refused: Laravel's immutable repository keeps the last of two
+    definitions of one name, and sorting would otherwise hide a swap of the two. Names are compared
+    exactly, letter case included, as phpdotenv compares them. Denylisted lines are dropped whatever they
+    hold or how often they appear, so nothing the night or the switch does to them changes the digest or
+    makes the probe refuse. Messages name line numbers only, never a value.
     """
     denied = {name.encode("ascii") for name in denylist}
     kept, names = [], set()

@@ -10,6 +10,9 @@ Deploy-App runs it, canonical JSON and SHA-256 built by hand, a hand-sorted cano
 UUID written into the fixture's `auto.cnf` (the real 8.4.13 format: `[auto]` then `server-uuid=`).
 
 - The config digest, fingerprint copy, input shape and non-regular path tests need only POSIX.
+- Review A2-1: `BytecodeCacheTests` (POSIX) pin that a `__pycache__` under a fingerprinted tree changes
+  artifact_sha256 until it is removed; `HostPythonRuleTests` (any system) read the repository's Markdown and
+  fail on a python3 command that runs code in the app tree without -B.
 - `IdentityProbeTests` need Linux root: they make block device nodes (mknod) in a fake
   `/dev/disk/by-uuid`, whose numbers are those of the fixture files' own filesystem, and they run the
   probe's main(), which reads identity.json and the machine ID through the protected-file check. They
@@ -33,6 +36,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -145,6 +149,62 @@ def source_tree(app: Path) -> None:
     (app / "bootstrap" / "cache" / "config.php").write_text("<?php return ['cached' => true];\n", encoding="ascii")
 
 
+# Review A2-1: which documented commands run repository Python, so must run it with python3 -B.
+RUNBOOK = APP / "docs" / "mysql-production-cutover.md"
+PYTHON3 = re.compile(r"(?:/usr/bin/)?python3(?:\.[0-9]+)?")
+# Code in the app tree: a path relative to the app root into a fingerprinted tree that holds Python (scripts/,
+# resources/), a scripts.* module, or a path under the host's app root. A copy outside the app tree (under /opt,
+# an isolated acceptance copy) is not fingerprinted.
+REPOSITORY_CODE = re.compile(r"^(?:scripts|resources)/|^scripts\.|^/var/www/backend(?:/|$)")
+SHELL_SEPARATORS = {"|", "||", "&&", ";", "&"}
+
+
+def python3_commands(text: str):
+    """Each python3 command in Markdown text, as (line number, its options, the words after them).
+
+    Lines continued with a backslash are joined. A command ends at a shell separator word or at the end of
+    the inline code it is in (a closing backtick); `-W` and `-X` take a value.
+    """
+    logical, start = "", None
+    for number, line in enumerate(text.splitlines(), 1):
+        start = start or number
+        if line.endswith("\\"):
+            logical += line[:-1] + " "
+            continue
+        words, first, logical, start = (logical + line).split(), start, "", None
+        for index, word in enumerate(words):
+            if not PYTHON3.fullmatch(word.strip("`'\"($")):
+                continue
+            flags, arguments, value_follows, closed = [], [], False, word.endswith("`")
+            for following in words[index + 1:]:
+                if closed or following in SHELL_SEPARATORS:
+                    break
+                closed = following.endswith("`")
+                following = following.strip("`'\"()")
+                if value_follows:
+                    value_follows = False
+                elif not arguments and following.startswith("-") and following != "-":
+                    flags.append(following)
+                    value_follows = following in ("-W", "-X")
+                else:
+                    arguments.append(following)
+            yield first, flags, arguments
+
+
+def runs_repository_code(arguments: list[str]) -> bool:
+    return any(REPOSITORY_CODE.search(word) for word in arguments)
+
+
+def lacks_dash_b(flags: list[str]) -> bool:
+    return not any(re.fullmatch(r"-[A-Za-z]*B[A-Za-z]*", flag) for flag in flags)
+
+
+def unflagged_repository_python(text: str) -> list[int]:
+    """Line numbers of python3 commands that run repository code without -B."""
+    return [number for number, flags, arguments in python3_commands(text)
+            if runs_repository_code(arguments) and lacks_dash_b(flags)]
+
+
 class ConfigDigestTests(unittest.TestCase):
     """config_sha256: .env canonicalised; denylisted keys removed; any other edit changes it (design 1.1)."""
 
@@ -211,6 +271,8 @@ class ConfigDigestTests(unittest.TestCase):
             "trailing space": ENV.replace(b"APP_ENV=production", b"APP_ENV=production "),
             "carriage return": ENV.replace(b"APP_ENV=production\n", b"APP_ENV=production\r\n"),
             "key case": ENV.replace(b"APP_DEBUG=false", b"app_debug=false"),
+            # phpdotenv names are case-sensitive: db_password is another variable, not the denylisted DB_PASSWORD.
+            "lower-case denylisted name": ENV + b"db_password=x\n",
         }
         digests = {}
         for edit, raw in edits.items():
@@ -288,6 +350,95 @@ class FingerprintCopyTests(unittest.TestCase):
                     path.write_text("x", encoding="ascii")
                 with self.assertRaises(guard.Refused):
                     identity_probe.artifact_sha256(path)
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX paths")
+class BytecodeCacheTests(unittest.TestCase):
+    """Review A2-1, kept as documented behaviour: the fingerprint hashes bytecode caches like any other file.
+
+    Excluding `__pycache__` or `*.pyc` would hide a tampered `.pyc`, and the copy stays byte-identical to the
+    deploy script. So a repository tool run from the app tree without -B changes artifact_sha256, and the
+    runner refuses every action, the watchdog rollback included, until the cache folder is removed. Every
+    repository Python on the host therefore runs with python3 -B (HostPythonRuleTests checks the docs).
+    """
+
+    def run_tool(self, root: Path, tool: str, *flags: str) -> None:
+        # As a shell on the host runs it: from the app root, a relative path, no -I (the tool imports its
+        # sibling from its own folder) and no PYTHON* variable (the test runner's own settings stay out).
+        environment = {name: value for name, value in os.environ.items() if not name.startswith("PYTHON")}
+        subprocess.run([sys.executable, *flags, tool], cwd=root, env=environment, capture_output=True, check=True,
+                       timeout=60)
+
+    def test_bytecode_cache_changes_artifact_until_removed(self):
+        # migrate.py imports conversion.py the same way; the app's iGUIDE lab workers under resources/ import
+        # their siblings too.
+        for folder, module in (("scripts/mysql", "conversion"), ("resources/iguide-lab", "lab_protocol")):
+            with self.subTest(folder=folder):
+                root = fixture_root(self)
+                source_tree(root)
+                tools = root / folder
+                tools.mkdir(parents=True)
+                (tools / "tool.py").write_text(f"import {module}\nprint({module}.NAME)\n", encoding="ascii")
+                (tools / f"{module}.py").write_text("NAME = 'fixture'\n", encoding="ascii")
+                cache = tools / "__pycache__"
+                before = identity_probe.artifact_sha256(root)
+                self.run_tool(root, f"{folder}/tool.py", "-B")
+                self.assertFalse(cache.exists())
+                self.assertEqual(before, identity_probe.artifact_sha256(root))
+                self.run_tool(root, f"{folder}/tool.py")
+                self.assertEqual(1, len(list(cache.glob(f"{module}.*.pyc"))))
+                after = identity_probe.artifact_sha256(root)
+                self.assertNotEqual(before, after)
+                # The deploy script measures the cache too: both sides keep one definition of the tree.
+                self.assertEqual(deploy_fingerprint(root), after)
+                shutil.rmtree(cache)
+                self.assertEqual(before, identity_probe.artifact_sha256(root))
+
+
+class HostPythonRuleTests(unittest.TestCase):
+    """Review A2-1: every documented python3 command that runs repository code carries -B."""
+
+    def test_rule_checker_examples(self):
+        missing_dash_b = {
+            "plain": "python3 scripts/mysql/migrate.py plan --snapshot x",
+            "continued": "sudo -u maverick python3 \\\n  scripts/mysql/schema-drift.py --release x",
+            "inline code": "`python3 scripts/deploy/install-download-tcp.py` previews the remedy",
+            "app root path": "/usr/bin/python3 -I -S /var/www/backend/scripts/deploy/deployment-storage.py x",
+            "module": "python3 -m scripts.cutover.website_ledger --export x",
+            "test discovery": "python3 -W ignore::ResourceWarning -m unittest discover -s scripts/cutover/production",
+            "lab worker": "cd /var/www/backend && python3 -I resources/iguide-lab/bridge.py --request x",
+            "after a pipe": "printf x | python3 scripts/x.py",
+        }
+        fine = {
+            "dash B": "python3 -B scripts/mysql/migrate.py plan",
+            "with -I": "sudo python3 -I -B $B --job alerts --settings settings.json --apply",
+            "combined": "python3 -IB scripts/x.py",
+            "after -W": "python3 -W ignore::ResourceWarning -B -m unittest discover -s scripts/cutover/production",
+            "module": "`python3 -B -m scripts.cutover.nightly.runner check-config --config scripts/x.json`.",
+            "controller under /opt": "/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py tick",
+            "bundle copy under /opt": "sudo python3 -I /opt/repro-install-bundle/scripts/mysql/offsite/install.py",
+            "isolated copy": "python3 -I /isolated/backend/scripts/mysql/workload/run.py --app /isolated/backend",
+            "inline script": "python3 - \"$run_dir/frozen.sqlite\" <<'PY'",
+            "interpreter named in prose": "`python` `/usr/bin/python3`, `rclone` `/usr/bin/rclone`, scripts/x",
+            "prose after inline code": "Run `python3 -m json.tool` on scripts/cutover/x.json first.",
+        }
+        for case, text in missing_dash_b.items():
+            with self.subTest(case=case):
+                self.assertEqual([1], unflagged_repository_python(text))
+        for case, text in fine.items():
+            with self.subTest(case=case):
+                self.assertEqual([], unflagged_repository_python(text))
+
+    def test_docs_run_repository_python_with_dash_b(self):
+        # The scan is not empty: the runbook runs repository tools (migrate.py, schema-drift.py, export-sqlite.py).
+        runbook = [arguments for _, _, arguments in python3_commands(RUNBOOK.read_text(encoding="utf-8"))
+                   if runs_repository_code(arguments)]
+        self.assertGreaterEqual(len(runbook), 5)
+        documents = sorted({*APP.glob("*.md"), *APP.glob("docs/**/*.md"), *APP.glob("scripts/**/*.md")})
+        unflagged = [f"{path.relative_to(APP).as_posix()}:{number}" for path in documents
+                     for number in unflagged_repository_python(path.read_text(encoding="utf-8"))]
+        self.assertEqual([], unflagged, "python3 runs repository code without -B: a __pycache__ under the app tree "
+                                        "changes the identity the controller checks before every action")
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX files")
