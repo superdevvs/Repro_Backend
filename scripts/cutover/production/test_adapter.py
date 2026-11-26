@@ -1239,7 +1239,7 @@ class ProductionAdapterTests(unittest.TestCase):
 
     def test_prepare_needs_its_inputs_and_the_mysql_steps_stay_refused(self):
         # prepare (D10, test_adapter_mysql.py) refuses before any change without check-evidence's manifest;
-        # evidence() (D11) and seal_mysql (C02) are not in this adapter yet.
+        # evidence() (D11) has no report to read without a prepare, and seal_mysql (C02) is not in this adapter yet.
         journal, adapter, runner = self.started()
         runner.perform("hold", runner.approval_request("hold"))
         runner.perform("freeze")
@@ -1247,7 +1247,7 @@ class ProductionAdapterTests(unittest.TestCase):
             runner.perform("prepare")
         self.assertEqual(SQLITE_CONFIG["route_sha256"], live_config.measure(self.app).live_config_sha256)
         self.assertFalse((self.app / ".env").exists())
-        with self.assertRaisesRegex(UnsafeCutover, re.escape(production.NOT_SUPPORTED)):
+        with self.assertRaisesRegex(UnsafeCutover, "No evidence report: prepare did not finish its checks"):
             adapter.evidence()
         with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, re.escape(production.NOT_SUPPORTED)):
             adapter.seal_mysql(lease, time.time() + 60)

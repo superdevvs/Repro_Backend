@@ -955,9 +955,10 @@ Not yet here:
   `prepare` step 3 does (D10); `seal_sqlite` step 6 must refuse a fallback
   config itself (D12), as `prepare` step 8 does (D10); (3) with MySQL down, `observe()` reads false/false in
   `frozen` and `ready` while `writes_possible` is false, so `before.frozen()`
-  holds in `_promote`: `evidence()` must require a reachable, closed target
-  reading before `writes_possible` is written (D11, C02). D11's evidence also
-  carries the freeze's `fpm_drain` record from the journal history.
+  holds in `_promote`: done in D11, `evidence()` requires a reachable, closed
+  target reading, so `promote` refuses before `writes_possible` is written,
+  and the evidence report carries the freeze's `fpm_drain` record from the
+  journal history (next sections but one).
 
 Tests: `test_adapter.py` (root) with fake probes and a fake `fpm_drain.py`
 that prints the report in a file, plus the real `mysql_probe.py` twice: with
@@ -988,10 +989,11 @@ the probe's own problems).
 `adapter.prepare(lease, deadline)` runs inside `runner.perform("prepare")`
 (`Runner._prepare` is unchanged): the runner has drained the writers and
 journalled the pending `prepare`; afterwards it requires a frozen
-observation on MySQL and then calls `evidence()`, which is D11's and still
-refuses, as steps 11 and 12 are D11's. `cli.py prepare` is D14's. The steps
-are `adapter.PREPARE_STEPS`, one method `_prepare_<name>` each; before each,
-the lease must still be current and the deadline not passed.
+observation on MySQL and then calls `evidence()` (D11, next section), whose
+record it journals as the run goes `ready`. `cli.py prepare` is D14's. The
+steps are `adapter.PREPARE_STEPS`, one method `_prepare_<name>` each; before
+each, the lease must still be current and the deadline not passed. Steps 11
+and 12 (`checks`, `report`) are in the next section.
 
 | Step | Name | What |
 | --- | --- | --- |
@@ -1005,6 +1007,8 @@ the lease must still be current and the deadline not passed.
 | 8 | `config` | `config_build.build(config, expected_engine="mysql", expected_sha256=<MySQL pin>, deadline=...)`, then `live_config.measure` again: engine `mysql`, source `cache`, the pin (the deploy user can replace `config.php` at any time). Then `switch_at` in the switch record |
 | 9 | `fpm` | `commands.fpm_start` (fresh FPM workers on the MySQL config; the freeze's drain stopped FPM) |
 | 10 | `receipt` | The history scan once more; `paths.activity` removed; the receipt written (below) |
+| 11 | `checks` | Every process context, FPM, the read-only smoke, the token check and the MySQL reading on MySQL (next section) |
+| 12 | `report` | `paths.evidence_report` (next section) |
 
 Steps 1 to 4 change nothing (step 4 may end app sessions, which hold no
 grant), and the run stays `frozen` with its pending `prepare` until `abort`.
@@ -1026,10 +1030,11 @@ checked here as well as by `--since-gtid` (review B2-9). Step 10's `until`
 (the coordinate the probe read before it scanned) becomes `armed_from`.
 
 **The evidence inputs manifest** (`paths.evidence_inputs`, root 0600, read
-through the protected-file check). `cli.py check-evidence --write` (D11)
-writes it after running `adapter.check_inputs(config, pinned, policy,
-started_at, manifest)` on the same document, so a bad input is caught before
-the one-shot action; `prepare` runs the same function again:
+through the protected-file check). `cli.py check-evidence --write` writes it
+(`ProductionAdapter.check_evidence`, next section): it builds the document
+from the night's input directory and runs `adapter.check_inputs(config,
+pinned, policy, started_at, manifest)` on it first, so a bad input is caught
+before the one-shot action; `prepare` runs the same function again:
 
 ```json
 {"version": 1, "run_id": "<run>", "mode": "drill",
@@ -1124,6 +1129,8 @@ activity and refuses before step 10 runs.
 | 8 | `config.php` measures the MySQL pin; `switch_at` set |
 | 9 | FPM restarted on the MySQL config (no file: `try-reload-or-restart` covers a running and a stopped FPM) |
 | 10 | This run's receipt; the latch removed |
+| 11 | As after 10 (the checks are kept in memory; the token check's folder is removed, see below) |
+| 12 | This run's evidence report (`paths.evidence_report`); the runner then journals `evidence()` and goes `ready` |
 
 A controller killed inside a step (`PrepareHost.kill_inside`) can also leave:
 
@@ -1132,14 +1139,13 @@ A controller killed inside a step (`PrepareHost.kill_inside`) can also leave:
 | In step 7, before the rename | As after step 6, plus `.env.repro-<32 hex>` in the app root: the whole switched `.env`, the app password included, with `.env`'s owner, group, mode and ACL. The next `envfile.replace` removes it, and so does `seal_sqlite` (below) |
 | In step 8, after the rename | As after step 7, but `config.php` measures the MySQL pin from the cache; `switch_at` still null |
 | In step 8, during the build | As after step 7, plus `.config.php.repro-<32 hex>` (removed by the next build) |
+| In step 11, during the token check | As after step 10, plus `/run/repro-token-check-<random>/config.php`: the check account's private config cache, its password included, owned by the web user in a 0700 folder. The next token check removes every such folder first; a reboot empties `/run` |
 
 From any of these states a new `prepare` finishes the switch
 (`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step`,
 `test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes`).
 
 Not yet here:
-- D11: steps 11 and 12, `evidence()`, `check-evidence --write` (which writes
-  the manifest above through `check_inputs`).
 - D12: `seal_sqlite`'s full undo (design 3.5 steps 2 to 7). Until then
   `seal_sqlite` only unseals SQLite and lifts the ingress marker, and with a
   switch record it first removes `.env.repro-<32 hex>` leftovers and then
@@ -1153,9 +1159,217 @@ Not yet here:
   `test_abort_never_reopens_sqlite_under_the_switched_env` covers both;
   D12 replaces that test's refusal with the undo, from every state in the
   two tables above. Do not run `prepare` on a host before D12.
-- Step 9 does not wait for the FPM socket; D11's FastCGI probe (step 11) is
-  its first reader and owns that bounded wait.
 - D14: `cli.py prepare`.
+
+## `prepare` checks, the evidence report and `evidence()` (design 3.2 steps 11 and 12, 3.3, 5.3, 7.1, D11)
+
+**Step 11, `checks`.** Every command is checked before the first one runs,
+so a profile, a smoke command or a check account that would be refused runs
+nothing. Application PHP never runs as root: `cutover:smoke` refuses root
+only after artisan has bootstrapped, which may already have written
+root-owned files where `www-data` writes (wave 1). Then, in this order, the
+first failure refuses (the run stays `frozen` with its pending `prepare`, no
+report is written):
+
+1. **Per-profile engine probes.** `paths.wrappers` (the live
+   `wrappers.json`) is read through the protected-file check and each
+   profile through `admit.load_profile`, so a root user or group is refused
+   as `admit.py` refuses it. Profiles are grouped by the context `admit.py`
+   gives their writer: user, group and its supplementary groups
+   (`os.getgrouplist`), cwd, umask, environment (`admit.environment`), and
+   the php and artisan they run. Each distinct context runs `<php>
+   <app_root>/artisan cutover:smoke --engine-only --json` once, started as
+   `admit.py` starts the writer (`Popen` with `user`, `group`,
+   `extra_groups`, `umask`, `cwd`, that environment plus the controller's
+   child tag), in the order of each context's first profile name. A profile
+   whose argv is not `<php> <app_root>/artisan ...` is a shell script; it is
+   probed with `/usr/bin/php` and the app's artisan, for its user and cwd,
+   and shares the context of any artisan profile with the same values. The
+   report must be mode `engine-only`, `ok`, no problems, exit 0, a process
+   that ran as the context's user, group, umask and cwd (never euid 0), and
+   engine `mysql`, `mysql.database`, `mysql.target_uuid` and
+   `live_config.route_sha256(route_values)` equal to the policy's
+   `mysql_live_config_sha256`. A refusal names the context's profiles.
+2. **FastCGI probe.** Waits up to `adapter.FPM_SOCKET_SECONDS` (15 s, within
+   the deadline) for `fpm.socket` to listen (step 9 does not wait for it),
+   then `fastcgi.engine_probe(fpm.socket, app_root)`: `ok`, no problems, the
+   same engine, database, server and route hash. OPcache's state, the pool's
+   SAPI and PID are recorded, not checked.
+3. **Read-only smoke** (`commands.smoke_readonly`). Each command must begin
+   `<runuser> -u <user>` with `web_user` or `app_owner` (`config_build.RUNUSER`,
+   `/usr/sbin/runuser`), run `cutover:smoke --read-only --json` and neither
+   `--write` nor `--engine-only` (words of the argv after the user, so the
+   `/bin/sh -c` form and the direct form both count); together the commands
+   run once as each of the two users. Each report must be mode `read-only`,
+   `ok`, exit 0, a process of that user (and of the `-g` group when given),
+   the same route values, `client_id` and `shoot_id` equal to `host.json`
+   `smoke`, `client_read`, `shoot_read` and `encrypted_value_decrypts` true,
+   `smoke_queue_pending` 0.
+4. **Token check** (design 3.3). The check account comes from
+   `mysql.token_check_defaults` (root-only, mode 0600, a `[client]` section
+   with `user=repro_token_check` and `password=` of 16 to 256 characters of
+   `A-Z a-z 0-9 . _ ~ + / = -`; anything else is refused before step 11 runs
+   anything, the password never quoted). Folders a crash left are removed;
+   then a fresh 0700 folder `adapter.TOKEN_CHECK_PARENT`/`repro-token-check-<random>`
+   (`/run`) is handed to `web_user`, and two commands run as `web_user`:
+   `runuser -u www-data -- /bin/sh -c 'umask 0077 && cd <app_root> && exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan config:cache' repro-token-check <folder>/config.php`
+   with `DB_USERNAME` and `DB_PASSWORD` of the check account in its
+   environment (Laravel keeps the process environment over `.env`; never on
+   a command line), then the same with `db:writer-policy-check` and no
+   account in the environment (the command prints JSON and has no `--json`
+   option). The built cache must name the check account; the check must
+   print `problems: []`, engine `mysql`, `writer_policy` true and
+   `token.acquired` true, exit 0. The folder is removed afterwards, also
+   after a failure.
+5. **MySQL reading and `gate.check`.** One probe reading (exit 3 retried as
+   in step 4): the target's server and database, gate `closed`, `writable`,
+   `business_activity` and `foreign_activity` false, and `receipt` equal to
+   the SHA-256 of this run's receipt (a probe that did not arm on it reads
+   no activity whatever happened). Then `gate.check` (review B2-1): exit 0,
+   the gate `closed`, and the gate account's read-only self-check logged in
+   as `repro_cutover_gate@localhost` with exactly its `accounts.sql` grants.
+
+**Step 12, `report`.** `evidence.build` then `paths.evidence_report`, root
+0600, written atomically as canonical JSON (`evidence.encode`: keys sorted,
+no spaces, ASCII, one final newline). Besides the checks it holds what
+step 2 bound (mode, waiver, both snapshots, the backup coordinate, every
+input's path and digest), the receipt's SHA-256 and `armed_from`,
+`switch_at`, and the freeze's FPM drain record from the journal's last
+`freeze` entry (`fpm_drain`, D07/D08), which must be one the freeze goes on
+after; a freeze journalled without one refuses.
+
+**The evidence report.** The contract the drill harness (D18) and
+`cli.py status --evidence` (D14) read: exactly these keys, at the top level,
+in `checks` and in each check record (`evidence.REPORT_KEYS`,
+`CHECK_KEYS`, `CHECK_RECORD_KEYS`, `RESULT_KEYS`; `test_evidence.py` checks
+this block against them). `profile_probes` and `readonly_smoke` are lists, one
+record per context or user; the others are one record. Every record has
+`ok` true (a failed check writes no report). `env` lists the profile's own
+environment keys, never their values. Values below are examples.
+
+<!-- evidence-report-contract -->
+```json
+{"version": 1, "run_id": "<run>", "mode": "drill", "offsite_waiver": false,
+ "snapshot_sha256": "<forward parity: S_copy in a drill, the frozen snapshot in a cutover>",
+ "frozen_snapshot_sha256": "<S_frozen>",
+ "backup": {"file": "binlog.000012", "position": 1157, "gtid_executed": "<server uuid>:1-40"},
+ "receipt_sha256": "<SHA-256 of the receipt file>", "armed_from": {"file": "binlog.000012", "position": 5253},
+ "inputs": {"snapshot": {"path": "/root/night/frozen.sha256", "sha256": "<SHA-256>"},
+            "import": {"path": "...", "sha256": "..."}, "verify_fields": {"path": "...", "sha256": "..."},
+            "migrate_status": {"path": "...", "sha256": "..."}, "complete_schema": {"path": "...", "sha256": "..."},
+            "backup_check": {"path": "...", "sha256": "..."}},
+ "switch_at": 1764970000,
+ "fpm_drain": {"purpose": "freeze", "outcome": "drained", "active_processes": 0, "waited_seconds": 5.2, "polls": 21,
+               "problem": null},
+ "checks": {
+  "profile_probes": [{"profiles": ["cubicasa-poll", "scheduler", "studio", "voice-realtime"], "scripts": ["cubicasa-poll", "studio"],
+                "user": "maverick", "group": "www-data", "cwd": "/var/www/backend", "umask": "0002", "env": [],
+                "engine": "mysql", "database": "repro_dashboard", "server_uuid": "<target>", "route_sha256": "<MySQL pin>",
+                "ok": true}],
+  "fastcgi": {"socket": "/run/php/php8.3-fpm.sock", "engine": "mysql", "database": "repro_dashboard",
+              "server_uuid": "<target>", "route_sha256": "<MySQL pin>", "sapi": "fpm-fcgi", "pid": 4242,
+              "opcache": {"enabled": true, "start_time": 1764970003}, "ok": true},
+  "readonly_smoke": [{"user": "www-data", "group": "www-data", "engine": "mysql", "database": "repro_dashboard",
+                      "server_uuid": "<target>", "route_sha256": "<MySQL pin>", "client_id": 4101, "shoot_id": 9201,
+                      "client_read": true, "shoot_read": true, "encrypted_value_decrypts": true,
+                      "smoke_queue_pending": 0, "smoke_queue_paused": false, "ok": true}],
+  "token_check": {"account": "repro_token_check@localhost", "user": "www-data", "engine": "mysql",
+                  "writer_policy": true, "token_acquired": true, "problems": [], "ok": true},
+  "mysql": {"server_uuid": "<target>", "database": "repro_dashboard", "gate": "closed", "writable": false,
+            "business_activity": false, "foreign_activity": false, "receipt": "<receipt_sha256>", "mode": "measured",
+            "gate_account": {"current_user": "repro_cutover_gate@localhost", "problems": []}, "ok": true}},
+ "results": {"forward_parity": true, "final_schema": true, "readonly_smoke": true, "sqlite_backup_offsite": true,
+             "mysql_backup_offsite": true},
+ "written_at": 1764970060}
+```
+
+Rules `evidence.parse` enforces besides the keys: canonical bytes (another
+layout of the same document refuses, so `report_sha256` is reproducible);
+`mode` `drill` or `cutover`; `offsite_waiver` only in `drill`, and then
+`inputs.backup_check` null, else present; in `cutover` `snapshot_sha256`
+equals `frozen_snapshot_sha256`; every route check (profiles, FastCGI, smokes) reads one and the
+same engine `mysql`, database, server and route hash, the MySQL reading's
+server and database; `checks.mysql.receipt` equals `receipt_sha256`;
+`results` follow from the rest (`evidence.results`): `forward_parity` (the
+import and verify-fields inputs bound), `final_schema` (migrate:status and
+complete-schema bound), `readonly_smoke` (every check `ok`), and both
+off-site results (the final backup check bound, or the waiver in drill
+mode: in a waived drill both are true by the waiver, design 7.1).
+
+**`evidence()`** (called by the runner at the end of `prepare` and again in
+`promote`, which requires the two records equal). The record is a pure
+function of the report's bytes (`evidence.record`): `snapshot_sha256` (forward
+parity; drill: `S_copy`; cutover: the frozen snapshot),
+`report_sha256` = SHA-256 of the whole file (so Approval 2 binds it),
+`binlog_file` and `binlog_position` = `backup` (the receipt's), and the five
+results. Before it returns, what the report binds is read again, changing
+nothing: this run's ID, `host.json`'s mode and waiver, the FastCGI record's
+target and the MySQL pin; the night's inputs bound once more by
+`check_inputs` (each re-read and re-hashed; the free-disk floor too); the
+receipt unchanged (its SHA-256, `run_id`, `backup`, `armed_from`); the
+journal's freeze drain record equal to the report's. Then the live
+preconditions, which raise and never change the record (design 3.3, review
+C2-7): a MySQL reading as in step 11 point 5 (reachable after the retries,
+closed, nothing writable, no business or foreign activity, armed on this
+receipt), `gate.check` with the gate account's self-check (review B2-1), and
+the live config engine `mysql` from the cache with the MySQL pin. With
+MySQL down, `observe()` still reads not writable and no business activity
+while `writes_possible` is false (the run stays `frozen`/`ready` for the
+watchdog), but `evidence()` refuses, so `promote` refuses before it writes
+`writes_possible`.
+
+**`check_evidence(night, *, write=False)`** (`cli.py check-evidence
+[--write]`, design 3.2 and 3.10; the CLI is D14's). Only in a `frozen` run
+whose `writes_possible` is false. `night` is the night's input directory, an
+absolute path (no NUL, no `..`), holding one file per input
+(`adapter.NIGHT_FILES`) and the coordinate (`adapter.BACKUP_COORDINATE`):
+
+| Input | File in the night's directory |
+| --- | --- |
+| `snapshot` | `frozen.sha256` (`sha256sum` of the frozen snapshot) |
+| `import` | `import-result.json` (`migrate.py import-empty`'s `result.json`) |
+| `verify_fields` | `verify-fields.jsonl` (`verify-fields.php`'s stdout) |
+| `migrate_status` | `migrate-status.txt` (`migrate:status --pending`'s stdout) |
+| `complete_schema` | `complete-schema.json` (`complete-schema.php`'s stdout) |
+| `backup_check` | `final-backup-check.json` (`final_backup_check.py`'s result); absent exactly with the waiver |
+| the backup coordinate | `backup-coordinate.json`: exactly `{"file", "position", "gtid_executed"}`, the verified MySQL base's binary log coordinate and `gtid_executed` (the base's own receipt has no GTID set; with the waiver, the coordinate recorded after the copy load) |
+
+It builds D10's manifest from them (each file read as `check_inputs` reads
+it and hashed; another missing input refuses), binds it with `check_inputs`
+exactly as step 2 will, and runs `gate.check` (exit 0, closed, the gate
+account's self-check clean). With `write` it writes `paths.evidence_inputs`
+(root 0600) and nothing else; a refusal writes nothing and leaves an older
+manifest as it was. It returns what the CLI prints: `{"version": 1,
+"manifest", "bound", "gate", "written"}` (`bound` is `check_inputs`' return,
+`gate` is `gate.check`'s output; no secret in either). `check_inputs`
+refuses with `UnsafeCutover`, never another exception, a JSON input nested
+too deep for the parser and a path with NUL (review D10V-3).
+
+What D14 calls:
+
+- `check-evidence --inputs DIR [--write]` (the flag D18's harness proposes):
+  under the controller lock (`journal.acquire()`, read-only on the journal),
+  `adapter.check_evidence(DIR, write=...)`; print the returned object as JSON; an `UnsafeCutover` is
+  exit 1 with its message.
+- `prepare`: `runner.perform("prepare")` (steps 1 to 12 and `evidence()`).
+- `status --evidence`: the bytes of `paths.evidence_report` (root 0600, read
+  through `guard.read_protected`), checked with `evidence.parse`; it holds
+  no secret.
+- `approval-template --phase promote`: before issuing, `adapter.evidence()`
+  (the live preconditions and the B2-1 self-check) and
+  `dataclasses.asdict(record) == state["evidence"]`, else refuse.
+
+Tests: `test_evidence.py` (any POSIX system, any user) holds the report's
+contract, `evidence.record`, the waiver rule, step 11's parsers and the
+D10V-3 refusals of `check_inputs`. `test_adapter_mysql.py`'s `EvidenceTests`
+(Linux root, the scripted probe and a scripted `gate.check`) run step 11 and
+12, `evidence()` and `check_evidence` on `PrepareHost`, whose fake `php`
+answers `cutover:smoke` and `db:writer-policy-check` from the config the
+process would load and records its context, and whose `FpmStandIn` answers
+the FastCGI probe from the live `config.php`. `EvidenceFixtureTests` run
+`evidence()` and `check_evidence` against D04's fixture with the real probe
+and the real `gate.check` (a foreign write, an open gate, a locked gate
+account).
 
 ## Telnyx while held (design 5.2)
 
@@ -1317,9 +1531,11 @@ cli.py refresh                                           # after a reboot (plann
 cli.py reopen                                            # after abort, or after refresh
 ```
 
-This adapter covers the SQLite hold, freeze, pre-write rollback and
-`prepare`'s switch (steps 1 to 10, above). `evidence()` and `seal_mysql`
-refuse, so `promote` cannot pass and MySQL is never opened for writes.
+This adapter covers the SQLite hold, freeze, pre-write rollback, `prepare`
+(steps 1 to 12, above), `evidence()` and `check_evidence`. `seal_mysql`
+refuses (C02), so a `promote` that passes `evidence()` ends in
+`recovery_required` with the gate still closed: no CLI action runs `promote`
+(D14 refuses it in drill mode), and MySQL is never opened for writes.
 
 **After every reboot.** `/run` is a fresh tmpfs, so every writer is held: there is
 no authority proof for the new boot and no open marker. The runtime
@@ -1430,8 +1646,9 @@ be stopped between two steps (`crash_after(n)`) or killed with SIGKILL
 inside step 7 or 8 (`kill_inside(point)`, a forked controller), for D12's
 abort tests. The file's docstring has the parts table and how a later slice
 extends it.
-`../run-linux-tests.sh` runs both files after its production loop; without
-the fixture the prepare fixture tests skip and `test_adapter_mysql.py
+`../run-linux-tests.sh` runs both files after its production loop, and
+`test_evidence.py` (D11, pure) on its own line after them; without
+the fixture the prepare and evidence fixture tests skip and `test_adapter_mysql.py
 --fixture-check` names them in its own WARNING line before any suite (or
 stops the run with `REPRO_REQUIRE_PROBE_FIXTURE=1`, as
 `run-probe-fixture-tests.sh --linux-suite` sets it).

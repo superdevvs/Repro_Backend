@@ -14,7 +14,10 @@ Every effect is idempotent and re-observable, as the runner requires:
 - prepare (steps 1 to 10, design 3.2) switches the frozen host to MySQL behind the
   closed gate: bound inputs, the sealed file unchanged, no app-schema event since
   the verified backup, the switch record, the `.env` switch (envfile.py), the MySQL
-  config cache, a fresh FPM and the receipt;
+  config cache, a fresh FPM and the receipt; then (steps 11 and 12) it checks every
+  process context, FPM, the read-only smoke and the writer token on MySQL and writes
+  the evidence report (evidence.py), which evidence() reads back with its live
+  preconditions (design 3.3); check_evidence is check-evidence's manifest writer;
 - publish_authority writes the boot-bound authority proof, measured: the live
   config's route hash, the identity probe's release, artifact and source, and
   for MySQL the server UUID the probe read (design 3.4);
@@ -27,8 +30,8 @@ publications and host_authority refuse the fallback. A MySQL probe that finds
 no server listening (exit 3) reads as not writable and without business
 activity only while the journal says no MySQL write is possible (design 1.2).
 
-It never makes MySQL writable: prepare leaves the gate closed, and evidence() (D11) and
-seal_mysql (C02) refuse.
+It never makes MySQL writable: prepare leaves the gate closed, evidence() only reads, and
+seal_mysql (C02) refuses.
 Host commands are fixed argument lists from the root-owned host config, each
 run in its own process group, which a timeout or an interrupt kills whole.
 """
@@ -40,10 +43,12 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
@@ -60,6 +65,8 @@ import binlog_scan  # noqa: E402
 import config_build  # noqa: E402
 import deploy_marker  # noqa: E402
 import envfile  # noqa: E402
+import evidence  # noqa: E402
+import fastcgi  # noqa: E402
 import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
 from runner import (  # noqa: E402
@@ -67,8 +74,10 @@ from runner import (  # noqa: E402
     is_sha256,
 )
 
-NOT_SUPPORTED = "This adapter does not verify MySQL evidence or open the MySQL gate yet: evidence() and seal_mysql refuse"
+NOT_SUPPORTED = "This adapter does not open the MySQL gate yet: seal_mysql refuses (C02)"
 CHILD_TAG = "REPRO_CUTOVER_CHILD"
+# The environment of every host command: nothing of root's own (cron, Supervisor, systemd, the operator's shell).
+HOST_ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 POLL_SECONDS = 0.25
 # The MySQL probe's exit status when nothing listens at the socket, and all it prints then (design 1.2).
 MYSQL_UNREACHABLE = 3
@@ -148,12 +157,12 @@ CAPTURE_COMMAND_LINES = (
 )
 # Process patterns, matched as substrings of /proc/<pid>/cmdline (ProductionAdapter.processes).
 PROCESS_PATTERNS = ("writer_processes", "long_job_processes", "scheduler_processes")
-# prepare, the switch half (design 3.2 steps 1 to 10). Each step is the method `_prepare_<name>`; D11 adds 11
-# and 12. A crash between two steps leaves the markers the README lists ("prepare"), which seal_sqlite (D12)
-# reads to undo any part of the switch.
+# prepare (design 3.2): the switch half, steps 1 to 10, then the checks (11) and the evidence report (12). Each step is
+# the method `_prepare_<name>`. A crash between two steps leaves the markers the README lists ("prepare"), which
+# seal_sqlite (D12) reads to undo any part of the switch; steps 11 and 12 add only the report.
 PREPARE_STEPS = ((1, "writers_drained"), (2, "inputs"), (3, "sqlite_frozen"), (4, "mysql_history"),
                  (5, "switch_record"), (6, "mysql_env"), (7, "env_replaced"), (8, "config"), (9, "fpm"),
-                 (10, "receipt"))
+                 (10, "receipt"), (11, "checks"), (12, "report"))
 # The evidence inputs manifest that `check-evidence --write` (D11) writes and step 2 reads (README "prepare").
 EVIDENCE_INPUTS = {"snapshot": "frozen snapshot record", "import": "import result",
                    "verify_fields": "verify-fields report", "migrate_status": "migrate:status --pending output",
@@ -178,6 +187,20 @@ SECRET_VALUE = r"[A-Za-z0-9._~+/=-]{16,256}"
 # Bounded retries of a MySQL probe that finds nothing listening (design 3.2, critic HO-L6).
 PROBE_ATTEMPTS = 3
 PROBE_RETRY_SECONDS = 1.0
+# Step 11's FastCGI probe waits at most this long for the socket of the FPM that step 9 started (critic HO-L6).
+FPM_SOCKET_SECONDS = 15
+# The token check (design 3.3): the check account of accounts.sql, which may take the writer token in an empty
+# transaction while the gate is closed, from mysql.token_check_defaults; its private config cache lives in a 0700
+# folder of the web user under /run, removed after the check (and before the next one, after a crash).
+TOKEN_CHECK_ACCOUNT = "repro_token_check"
+TOKEN_CHECK_PARENT = Path("/run")
+TOKEN_CHECK_PREFIX = "repro-token-check-"
+# check-evidence's input directory (design 3.2, 3.10): one file per manifest input, and the verified MySQL base's
+# coordinate the operator records with its gtid_executed (the base's own receipt has no GTID set).
+NIGHT_FILES = {"snapshot": "frozen.sha256", "import": "import-result.json",
+               "verify_fields": "verify-fields.jsonl", "migrate_status": "migrate-status.txt",
+               "complete_schema": "complete-schema.json", "backup_check": "final-backup-check.json"}
+BACKUP_COORDINATE = "backup-coordinate.json"
 
 
 def _argv(value) -> bool:
@@ -186,7 +209,8 @@ def _argv(value) -> bool:
 
 
 def _absolute(value) -> bool:
-    return isinstance(value, str) and Path(value).is_absolute()
+    # NUL would reach os.open as a ValueError, not a refusal (review D10V-3).
+    return isinstance(value, str) and "\0" not in value and Path(value).is_absolute()
 
 
 def _names(value, pattern: str, *, empty: bool = False) -> bool:
@@ -248,7 +272,8 @@ def _json_object(text: str) -> dict | None:
 
     try:
         value = json.loads(text, object_pairs_hook=unique, parse_constant=constant)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # Deep nesting within the size bound is a refusal, never a RecursionError (review D10V-3).
         return None
     return value if isinstance(value, dict) else None
 
@@ -495,12 +520,17 @@ def _runtime_directory(directory: Path) -> None:
 
 
 def _write_atomic(path: Path, value: dict, mode: int) -> None:
+    _write_raw_atomic(path, (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode("utf-8"), mode)
+
+
+def _write_raw_atomic(path: Path, raw: bytes, mode: int) -> None:
+    """These exact bytes at `path`: a temporary file beside it, fsynced, renamed over it, the folder fsynced."""
     _runtime_directory(path.parent)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         with os.fdopen(descriptor, "wb") as stream:
-            stream.write((json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode("utf-8"))
+            stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -647,6 +677,40 @@ def check_inputs(config: dict, pinned: Identity, policy: dict, started_at: int, 
             "inputs": {name: entry for name, entry in sorted(entries.items())}}
 
 
+def night_manifest(directory, run_id: str, mode: str) -> dict:
+    """The evidence inputs manifest (README "prepare") from the night's input directory (check-evidence, design 3.10).
+
+    Each input is NIGHT_FILES' file in `directory`, hashed as check_inputs reads it (a regular file, never through a
+    final link, at most 1 MiB); a missing final backup check is null (the waiver), any other missing input refuses.
+    BACKUP_COORDINATE holds exactly `{"file", "position", "gtid_executed"}`: the verified MySQL base's binary log
+    coordinate with its gtid_executed (with the waiver, the coordinate recorded after the copy load). The bindings
+    themselves are check_inputs'.
+    """
+    _require(isinstance(directory, (str, Path)) and "\0" not in str(directory) and Path(directory).is_absolute()
+             and ".." not in Path(directory).parts,
+             "The night's input directory must be an absolute path without NUL or '..'")
+    night = Path(directory)
+    coordinate = _input_json(_read_input(night / BACKUP_COORDINATE, f"backup coordinate ({BACKUP_COORDINATE})"),
+                             f"backup coordinate ({BACKUP_COORDINATE})")
+    _require(_coordinate(coordinate, BACKUP_KEYS),
+             f"The recorded backup coordinate ({BACKUP_COORDINATE}) is malformed: it must hold exactly file, position "
+             "and gtid_executed")
+    inputs = {}
+    for name, filename in NIGHT_FILES.items():
+        path = night / filename
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            _require(name == "backup_check", f"The night's input directory has no {EVIDENCE_INPUTS[name]} ({filename})")
+            inputs[name] = None
+            continue
+        except OSError as error:
+            raise UnsafeCutover(f"The {EVIDENCE_INPUTS[name]} cannot be read: {os.strerror(error.errno)}") from None
+        inputs[name] = {"path": str(path), "sha256": guard.sha256(_read_input(path, EVIDENCE_INPUTS[name]))}
+    return {"version": 1, "run_id": run_id, "mode": mode,
+            "backup": {name: coordinate[name] for name in sorted(BACKUP_KEYS)}, "inputs": inputs}
+
+
 @dataclass
 class PrepareRun:
     """What one prepare call carries from step to step, in memory only: a new call (a retry, or after a crash)
@@ -658,6 +722,7 @@ class PrepareRun:
     env: bytes | None = None
     record: dict | None = None
     switched: bytes | None = None
+    checks: dict | None = None
 
 
 class ProductionAdapter:
@@ -678,19 +743,22 @@ class ProductionAdapter:
 
     # Host commands and process observation.
 
-    def _execute(self, argv: list[str], deadline: float | None = None) -> tuple[int, str]:
+    def _execute(self, argv: list[str], deadline: float | None = None, *, environment: dict | None = None,
+                 **process) -> tuple[int, str]:
         """Run one host command and return its exit status and standard output.
 
         The command runs in its own session and process group. runuser does not pass SIGKILL on to the
         command it started, so a timeout, or anything else that ends the wait (an interrupt), kills the
         whole group before it is reported: no queue command keeps running to change a flag afterwards.
+        Its environment is HOST_ENVIRONMENT, or `environment`, with the child tag; `process` passes cwd, user,
+        group, extra_groups and umask on to Popen (step 11's profile probes run as admit.py runs the profile).
         """
         seconds = self.config["command_seconds"]
         if deadline is not None:
             seconds = max(1.0, min(seconds, deadline - self.clock()))
-        environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", CHILD_TAG: "1"}
+        environment = {**(HOST_ENVIRONMENT if environment is None else environment), CHILD_TAG: "1"}
         with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              text=True, env=environment, start_new_session=True) as child:
+                              text=True, env=environment, start_new_session=True, **process) as child:
             try:
                 output, _ = child.communicate(timeout=seconds)
             except BaseException as stopped:
@@ -1125,8 +1193,269 @@ class ProductionAdapter:
             "armed_from": {"file": until["file"], "position": until["position"]},
         }, 0o600)
 
-    def _probe(self, argv: list[str], deadline: float) -> dict:
-        """One MySQL probe run for prepare: its exit-0 JSON object. Nothing listening (exit 3) is retried
+    def _prepare_checks(self, run: PrepareRun) -> None:
+        """Step 11 (design 3.2, 5.3): every process context, FPM, the read-only smoke as both users, the token check
+        and the MySQL reading, each recorded in run.checks for the report; the first that fails refuses.
+
+        Every command is checked before the first runs, so a profile, a smoke command or a token check account that
+        would refuse runs nothing: application PHP never runs as root (wave 1: cutover:smoke refuses root only
+        after artisan bootstrapped, which may already have written root-owned files where www-data writes)."""
+        mysql = self.config["mysql"]
+        contexts = self._profile_contexts()
+        smokes = self._smoke_commands()
+        account = self._token_check_account()
+        receipt_sha256 = guard.sha256(self._protected(self.paths["receipt"], "receipt"))
+        expected = {"engine": "mysql", "database": mysql["database"], "server_uuid": mysql["target_uuid"],
+                    "route_sha256": self.policy["mysql_live_config_sha256"]}
+        run.checks = {
+            "profile_probes": [self._profile_probe(context, expected, run.deadline) for context in contexts],
+            "fastcgi": self._fastcgi_probe(expected, run.deadline),
+            "readonly_smoke": [self._readonly_smoke(argv, user, group, expected, run.deadline)
+                               for argv, user, group in smokes],
+            "token_check": self._token_check(account, run.deadline),
+            "mysql": evidence.mysql_check(self._probe(self.config["commands"]["mysql"], run.deadline), self._gate_check(),
+                                          mysql, receipt_sha256),
+        }
+
+    def _prepare_report(self, run: PrepareRun) -> None:
+        """Step 12: the evidence report (README "The evidence report"), canonical JSON, root 0600: the mode, both
+        snapshots, the backup coordinate and the input digests check_inputs bound, the receipt, switch_at, the
+        freeze's FPM drain record from the journal and step 11's checks."""
+        receipt_raw = self._protected(self.paths["receipt"], "receipt")
+        receipt = guard.read_json(receipt_raw)
+        mysql = self.config["mysql"]
+        report = evidence.build(run_id=self.pinned.run_id, mode=mysql["mode"], offsite_waiver=mysql["offsite_waiver"],
+                                bound=run.inputs, receipt_sha256=guard.sha256(receipt_raw),
+                                armed_from=receipt.get("armed_from"), switch_at=run.record["switch_at"],
+                                fpm_drain=self._freeze_drain(self._journal_state()), checks=run.checks,
+                                written_at=int(self.clock()))
+        _write_raw_atomic(self.paths["evidence_report"], evidence.encode(report), 0o600)
+
+    def _protected(self, path: Path, label: str) -> bytes:
+        """A root-owned record in a root chain (guard.read_protected); missing or unsafe refuses."""
+        try:
+            return guard.read_protected(path)
+        except FileNotFoundError:
+            raise UnsafeCutover(f"The {label} ({path}) is missing") from None
+        except (guard.Refused, OSError) as error:
+            raise UnsafeCutover(f"The {label} ({path}) cannot be read: {error}") from None
+
+    def _profile_contexts(self) -> list[dict]:
+        """The distinct contexts of the live wrapper profiles (paths.wrappers, design 3.8), in the order of their first
+        profile's name: what admit.py gives a profile's writer (user, group and its supplementary groups, cwd, umask,
+        environment) and the php and artisan it runs. A profile that does not run `<php> <app_root>/artisan` is a
+        shell script: it is probed with QUEUE_PHP and the app's artisan, for its user and cwd (design 3.2 step 11).
+        admit.load_profile checks each, so a root user or group refuses as admit.py would. admit, like pwd and grp,
+        is imported here: `import adapter` needs no Unix account module (test_config_build)."""
+        import grp
+        import pwd
+
+        import admit
+
+        raw = self._protected(self.paths["wrappers"], "wrapper profiles")
+        try:
+            profiles = guard.read_json(raw).get("profiles")
+        except (guard.Refused, ValueError, RecursionError) as error:
+            raise UnsafeCutover(f"The wrapper profiles cannot be read: {error}") from None
+        _require(isinstance(profiles, dict), "The wrapper profiles are not {\"version\": 1, \"profiles\": {...}}")
+        names = sorted(profiles)
+        _require(bool(names), "The wrapper profiles name no profile to probe")
+        artisan = f"{self.config['app_root']}/artisan"
+        contexts: dict[str, dict] = {}
+        for name in names:
+            try:
+                profile = admit.load_profile(name, raw)
+                account = pwd.getpwnam(profile["user"])
+                group = grp.getgrnam(profile["group"]).gr_gid
+            except (guard.Refused, KeyError, ValueError, RecursionError) as error:
+                raise UnsafeCutover(f"The wrapper profile {name} cannot be probed: {error}") from None
+            argv = profile["argv"]
+            script = not (len(argv) >= 2 and argv[1] == artisan)
+            php = QUEUE_PHP if script else argv[0]
+            key = json.dumps([php, profile["user"], profile["group"], profile["cwd"], profile["umask"],
+                              sorted(profile["env"].items())])
+            context = contexts.setdefault(key, {
+                "profiles": [], "scripts": [], "argv": [php, artisan, "cutover:smoke", "--engine-only", "--json"],
+                "user": profile["user"], "group": profile["group"], "uid": account.pw_uid, "gid": group,
+                "groups": os.getgrouplist(account.pw_name, group), "cwd": profile["cwd"], "umask": profile["umask"],
+                "environment": admit.environment(profile, account), "env": sorted(profile["env"])})
+            context["profiles"].append(name)
+            if script:
+                context["scripts"].append(name)
+        return list(contexts.values())
+
+    def _profile_probe(self, context: dict, expected: dict, deadline: float) -> dict:
+        """`cutover:smoke --engine-only --json` in one profile context: the route its processes would read now."""
+        what = (f"The engine probe of profiles {', '.join(context['profiles'])} ({context['user']}:{context['group']}, "
+                f"umask {context['umask']}, cwd {context['cwd']})")
+        try:
+            code, output = self._execute(context["argv"], deadline, environment=context["environment"],
+                                         cwd=context["cwd"], user=context["uid"], group=context["gid"],
+                                         extra_groups=context["groups"], umask=int(context["umask"], 8))
+        except OSError as error:
+            raise UnsafeCutover(f"{what} could not start: {os.strerror(error.errno) if error.errno else error}") from None
+        values = evidence.engine_check(output, code, {"user": context["user"], "group": context["group"],
+                                                      "cwd": os.path.realpath(context["cwd"]),
+                                                      "umask": context["umask"]}, expected, what)
+        return {"profiles": context["profiles"], "scripts": context["scripts"], "user": context["user"],
+                "group": context["group"], "cwd": context["cwd"], "umask": context["umask"], "env": context["env"],
+                **values, "ok": True}
+
+    def _fastcgi_probe(self, expected: dict, deadline: float) -> dict:
+        """fpm-engine.php through FPM's own socket (design 5.3), once the socket of step 9's FPM listens (bounded by
+        FPM_SOCKET_SECONDS: step 9 does not wait for it)."""
+        socket_path = self.config["fpm"]["socket"]
+        limit = min(deadline, self.clock() + FPM_SOCKET_SECONDS)
+        while True:
+            try:
+                if fastcgi.listening(socket_path):
+                    break
+            except fastcgi.FastCgiError as error:
+                raise UnsafeCutover(f"The FPM socket {socket_path} cannot be checked: {error}") from None
+            _require(self.clock() < limit, f"The FPM socket {socket_path} is still not listening {FPM_SOCKET_SECONDS} s "
+                                           "after the FPM start (step 9)")
+            time.sleep(POLL_SECONDS)
+        try:
+            report = fastcgi.engine_probe(socket_path, self.config["app_root"],
+                                          timeout=max(1.0, min(30.0, deadline - self.clock())))
+        except fastcgi.FastCgiError as error:
+            raise UnsafeCutover(f"The FastCGI probe of FPM failed: {error}") from None
+        return evidence.fastcgi_check(report, expected, socket_path)
+
+    def _smoke_commands(self) -> list[tuple]:
+        """commands.smoke_readonly checked before anything runs: each `runuser -u <user> ...` with the web user or the
+        app owner, never root (no runuser, or runuser to root, would run application PHP as root), running
+        `cutover:smoke --read-only --json` and nothing that writes; together exactly once as each of the two users
+        (design 3.2 step 11). Returns (argv, user, group or None) for each."""
+        users = (self.config["web_user"], self.config["app_owner"])
+        found = []
+        for argv in self.config["commands"]["smoke_readonly"]:
+            _require(len(argv) > 3 and argv[0] == config_build.RUNUSER and argv[1] == "-u" and argv[2] in users,
+                     f"Each smoke_readonly command must start with {config_build.RUNUSER} -u {users[0]} or -u "
+                     f"{users[1]}: application PHP never runs as root")
+            words = " ".join(argv[3:]).split()
+            _require({"cutover:smoke", "--read-only", "--json"} <= set(words)
+                     and not {"--write", "--engine-only"} & set(words),
+                     "Each smoke_readonly command must run cutover:smoke --read-only --json and nothing that writes")
+            found.append((argv, argv[2], argv[4] if argv[3] == "-g" and len(argv) > 4 else None))
+        _require(sorted(user for _, user, _ in found) == sorted(users),
+                 f"smoke_readonly must run the read-only smoke once as {users[0]} and once as {users[1]}")
+        return found
+
+    def _readonly_smoke(self, argv: list[str], user: str, group: str | None, expected: dict, deadline: float) -> dict:
+        """One smoke_readonly command (design 5.3): the marked test records read on MySQL as `user`."""
+        code, output = self._execute(argv, deadline)
+        return evidence.readonly_check(output, code, user, group, self.config["smoke"], expected)
+
+    def _token_check_account(self) -> tuple[str, str, str]:
+        """The check account and its password from mysql.token_check_defaults (root 0600, a [client] section with
+        user and password): exactly TOKEN_CHECK_ACCOUNT. Returns (account, user, password); never printed."""
+        path = Path(self.config["mysql"]["token_check_defaults"])
+        try:
+            raw = guard.read_protected(path)
+            private = not stat.S_IMODE(path.lstat().st_mode) & 0o077
+        except FileNotFoundError:
+            raise UnsafeCutover(f"The token check's defaults file {path} is missing") from None
+        except (guard.Refused, OSError) as error:
+            raise UnsafeCutover(f"The token check's defaults file {path} is not root's: {error}") from None
+        _require(private, f"The token check's defaults file {path} must be readable by root only")
+        section, values = None, {}
+        for line in raw.decode("ascii", "replace").splitlines():
+            text = line.strip()
+            if not text or text[0] in "#;":
+                continue
+            if text.startswith("[") and text.endswith("]"):
+                section = text[1:-1].strip()
+            elif section == "client" and "=" in text:
+                key, _, value = text.partition("=")
+                values[key.strip()] = value.strip()
+        _require(values.get("user") == TOKEN_CHECK_ACCOUNT,
+                 f"{path} must name the check account {TOKEN_CHECK_ACCOUNT} (accounts.sql) in its [client] section")
+        _require(guard.matches(SECRET_VALUE, values.get("password")),
+                 f"{path} must hold the check account's password (16 to 256 characters of A-Z a-z 0-9 . _ ~ + / = -)")
+        return f"{TOKEN_CHECK_ACCOUNT}@localhost", TOKEN_CHECK_ACCOUNT, values["password"]
+
+    def _token_command(self, command: str, cache: Path) -> list[str]:
+        """`runuser -u <web user> -- /bin/sh -c 'umask 0077 && cd <app_root> && exec env APP_CONFIG_CACHE="$1" <php>
+        artisan <command>' repro-token-check <cache>`: as config_build runs config:cache, on the private cache."""
+        app_root = self.config["app_root"]
+        _require(guard.matches(SHELL_PATH, app_root), "The app root must be one plain shell word")
+        script = f'umask 0077 && cd {app_root} && exec env APP_CONFIG_CACHE="$1" {config_build.PHP} artisan {command}'
+        return [config_build.RUNUSER, "-u", self.config["web_user"], "--", "/bin/sh", "-c", script, "repro-token-check",
+                str(cache)]
+
+    def _token_check(self, account: tuple[str, str, str], deadline: float) -> dict:
+        """The token check (design 3.3): as the web user, a private config cache built with the check account's
+        DB_USERNAME and DB_PASSWORD in the environment (Laravel keeps them over .env), then
+        `db:writer-policy-check` on it: no problems, the token taken in an empty transaction (nothing is written,
+        nothing reaches the binary log, E1 T1b). The folder, which holds the password, is removed afterwards, and
+        any a crash left before. The command prints JSON without a --json option."""
+        import pwd
+
+        name, user, password = account
+        web = self.config["web_user"]
+        self._remove_token_folders()
+        try:
+            entry = pwd.getpwnam(web)
+        except KeyError:
+            raise UnsafeCutover(f"The web user {web} does not exist") from None
+        folder = Path(tempfile.mkdtemp(prefix=TOKEN_CHECK_PREFIX, dir=TOKEN_CHECK_PARENT))
+        try:
+            # mkdtemp made it 0700 in root's /run, so nobody else can have replaced it.
+            os.chown(folder, entry.pw_uid, entry.pw_gid, follow_symlinks=False)
+            cache = folder / "config.php"
+            code, _ = self._execute(self._token_command("config:cache", cache), deadline,
+                                    environment={**HOST_ENVIRONMENT, "DB_USERNAME": user, "DB_PASSWORD": password})
+            _require(code == 0, f"The token check's config cache was not built: config:cache exited {code}")
+            try:
+                built = live_config.from_cache(live_config.read_regular(cache, live_config.MAX_CACHE_BYTES))
+                connection = built.values["database.connections"][built.values["database.default"]]
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise UnsafeCutover(f"The token check's config cache cannot be read: {error}") from None
+            _require(built.engine == "mysql" and isinstance(connection, dict) and connection.get("username") == user,
+                     f"The token check's config cache does not name the check account {name}")
+            code, output = self._execute(self._token_command("db:writer-policy-check", cache), deadline)
+            return evidence.token_check(output, code, name, web)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    @staticmethod
+    def _remove_token_folders() -> None:
+        """Token-check folders an interrupted check left (each may hold the check account's password)."""
+        try:
+            entries = list(Path(TOKEN_CHECK_PARENT).iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name.startswith(TOKEN_CHECK_PREFIX) and not entry.is_symlink() and entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+
+    def _gate_check(self) -> tuple:
+        """gate.check (review B2-1): the gate state as the probe account reads it and the gate account's read-only
+        self-check (a login, CURRENT_USER() and SHOW GRANTS). Returns its (output, exit code, message)."""
+        import gate
+
+        try:
+            return gate.check(self.config)
+        except (UnsafeCutover, guard.Refused, OSError, ValueError, subprocess.SubprocessError) as error:
+            raise UnsafeCutover(f"gate.check failed: {str(error)[:PROBLEM_CHARACTERS]}") from None
+
+    def _freeze_drain(self, state: dict) -> dict:
+        """The freeze's FPM drain record from the journal history (design 5.4, D07/D08), one the freeze went on
+        after: part of the evidence, so Approval 2 binds how FPM was drained."""
+        freezes = [entry for entry in state.get("history") or [] if isinstance(entry, dict)
+                   and entry.get("action") == "freeze"]
+        record = freezes[-1].get("fpm_drain") if freezes else None
+        _require(isinstance(record, dict), "The freeze in the journal carries no FPM drain record (design 5.4): "
+                                           "nothing shows how FPM was drained")
+        try:
+            _require_freeze_drain(record)
+        except UnsafeCutover as error:
+            raise UnsafeCutover(f"The freeze's FPM drain record is not one the freeze goes on after: {error}") from None
+        return record
+
+    def _probe(self, argv: list[str], deadline: float, purpose: str = "prepare") -> dict:
+        """One MySQL probe run for prepare or evidence(): its exit-0 JSON object. Nothing listening (exit 3) is retried
         PROBE_ATTEMPTS times in all, then refused; every other exit refuses with the probe's own problems."""
         for attempt in range(1, PROBE_ATTEMPTS + 1):
             code, output = self._execute(argv, deadline)
@@ -1135,11 +1464,11 @@ class ProductionAdapter:
             if attempt < PROBE_ATTEMPTS and self.clock() + PROBE_RETRY_SECONDS < deadline:
                 time.sleep(PROBE_RETRY_SECONDS)
         else:
-            raise UnsafeCutover(f"The MySQL target is not reachable (probe exit 3, {PROBE_ATTEMPTS} attempts): prepare "
+            raise UnsafeCutover(f"The MySQL target is not reachable (probe exit 3, {PROBE_ATTEMPTS} attempts): {purpose} "
                                 "needs a reachable, closed target")
         if code != 0:
             problems = _probe_problems(output) if code in MYSQL_REFUSALS else ""
-            refused = f"The MySQL probe refused prepare's reading (exit {code})"
+            refused = f"The MySQL probe refused {purpose}'s reading (exit {code})"
             raise UnsafeCutover(f"{refused}: {problems}" if problems else refused)
         reading = _json_object(output)
         _require(reading is not None and reading.get("reachable") is True,
@@ -1220,7 +1549,76 @@ class ProductionAdapter:
         return found
 
     def evidence(self) -> Evidence:
-        raise UnsafeCutover(NOT_SUPPORTED)
+        """The target evidence of prepare's report (design 3.3), called by the runner after prepare and again in
+        promote, which requires the two to be equal.
+
+        The record is a pure function of the report's bytes (evidence.record): forward parity's snapshot (drill:
+        S_copy), the report's SHA-256, the receipt's backup coordinate and the five results. Before it is returned,
+        what the report binds is read again, changing nothing: this run and mode, the night's inputs bound once more
+        by check_inputs (each re-hashed), the receipt unchanged, the freeze's FPM drain record in the journal. Then
+        the live preconditions, which raise and never change the record: the MySQL probe reaches the target, reads
+        the gate closed, nothing writable, no business or foreign activity, armed on this receipt; gate.check with
+        the gate account's self-check (review B2-1); the live config the MySQL pin from the cache. So a MySQL that
+        went down after prepare refuses promote before writes_possible (review C2-7)."""
+        raw = self._protected(self.paths["evidence_report"], "evidence report") \
+            if self.paths["evidence_report"].exists() or self.paths["evidence_report"].is_symlink() else None
+        _require(raw is not None, "No evidence report: prepare did not finish its checks (steps 11 and 12)")
+        found = evidence.record(raw)
+        report = evidence.parse(raw)
+        self._require_report_binding(report)
+        self._require_live_target(report["receipt_sha256"])
+        return found
+
+    def _require_report_binding(self, report: dict) -> None:
+        """What the report binds, read again (evidence(), design 3.3); refuses, never writes."""
+        mysql = self.config["mysql"]
+        _require(report["run_id"] == self.pinned.run_id, "The evidence report belongs to another run")
+        _require((report["mode"], report["offsite_waiver"]) == (mysql["mode"], mysql["offsite_waiver"]),
+                 "The evidence report was written for another mode or off-site waiver than host.json's")
+        state = self._journal_state()
+        started_at = state.get("started_at")
+        _require(type(started_at) is int, "The cutover journal has no hold to bind the evidence report to")
+        bound = check_inputs(self.config, self.pinned, self.policy, started_at,
+                             evidence.manifest(report, self.pinned.run_id))
+        _require((bound["snapshot_sha256"], bound["frozen_snapshot_sha256"], bound["backup"])
+                 == (report["snapshot_sha256"], report["frozen_snapshot_sha256"], report["backup"]),
+                 "The night's inputs no longer bind the snapshots and backup coordinate of the evidence report")
+        receipt_raw = self._protected(self.paths["receipt"], "receipt")
+        _require(guard.sha256(receipt_raw) == report["receipt_sha256"],
+                 "The receipt changed after prepare wrote the evidence report")
+        _require(self._freeze_drain(state) == report["fpm_drain"],
+                 "The evidence report's FPM drain record is not the freeze's in the journal")
+
+    def _require_live_target(self, receipt_sha256: str) -> None:
+        """evidence()'s live preconditions (design 3.3): the MySQL reading and gate.check, then the live config."""
+        mysql = self.config["mysql"]
+        deadline = self.clock() + self.config["command_seconds"]
+        reading = self._probe(self.config["commands"]["mysql"], deadline, "evidence()")
+        evidence.mysql_check(reading, self._gate_check(), mysql, receipt_sha256)
+        live = self._live_config()
+        pin = self.policy["mysql_live_config_sha256"]
+        _require(live.engine == "mysql" and live.source == live_config.CACHE and live.live_config_sha256 == pin,
+                 f"The live config is not the MySQL pin from the cache (engine {live.engine}, source {live.source})")
+
+    def check_evidence(self, night, *, write: bool = False) -> dict:
+        """`cli.py check-evidence [--write]` (design 3.2, 3.10), before the one-shot prepare: in a frozen run that
+        never opened MySQL for writes, build the evidence inputs manifest from the night's input directory
+        (night_manifest), bind it with check_inputs exactly as prepare's step 2 will, and run gate.check with the
+        gate account's self-check (review B2-1). With `write`, store the manifest at paths.evidence_inputs (root
+        0600) and nothing else; a refusal writes nothing. Returns what the CLI prints: the manifest, the bindings
+        and gate.check's output."""
+        state = self._journal_state()
+        _require(state.get("phase") == "frozen" and state.get("writes_possible") is False,
+                 "check-evidence runs only in a frozen run in which MySQL was never opened for writes")
+        started_at = state.get("started_at")
+        _require(type(started_at) is int, "The cutover journal has no hold to bind the evidence inputs to")
+        manifest = night_manifest(night, self.pinned.run_id, self.config["mysql"]["mode"])
+        bound = check_inputs(self.config, self.pinned, self.policy, started_at, manifest)
+        output, code, message = self._gate_check()
+        evidence.gate_result((output, code, message))
+        if write:
+            _write_atomic(self.paths["evidence_inputs"], manifest, 0o600)
+        return {"version": 1, "manifest": manifest, "bound": bound, "gate": output, "written": write}
 
     def seal_mysql(self, lease: Lease, deadline: int) -> None:
         raise UnsafeCutover(NOT_SUPPORTED)
