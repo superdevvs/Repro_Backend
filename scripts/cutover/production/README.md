@@ -74,10 +74,18 @@ expression. A line that a rule matches is kept or wrapped only when its
 command is exactly the rule's `command`, alone or behind the storage guard
 `/usr/local/sbin/repro-storage-guard --live && ` (that form, byte for
 byte), followed only by output redirections to plain paths (letters,
-digits, `_`, `.`, `/`, `-`), `2>&1` and a marker comment without `%`.
+digits, `_`, `.`, `/`, `-`) that name nothing of the application (no
+`application_markers` entry: the live database or the app tree would be a
+writer of its own), `2>&1` and a marker comment without `%`.
 That holds for `allow` rules too: an allowed script with an artisan command
 chained before or after it, or the retention line with `sqlite3` after it,
-is refused like any other line. The guard is carried over in front of the
+is refused like any other line. Words are split at spaces and tabs only, as
+`/bin/sh` and cron split them: any line other than a comment that holds
+another control character or a character Python takes for whitespace (`\v`,
+`\f`, `\r`, `\x1c`-`\x1f`, U+0085, U+00A0, ...) is refused outright, in both
+directions, because after one of them a `#` starts no comment for `sh` and
+whatever follows would run (review W2F-3). Refused lines are printed with
+such characters escaped. The guard is carried over in front of the
 wrapper, so it still runs first:
 
 ```text

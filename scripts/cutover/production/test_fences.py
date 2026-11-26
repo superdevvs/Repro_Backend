@@ -545,6 +545,124 @@ class CronEntryTests(unittest.TestCase):
                 self.assertEqual((2, b""), (result.returncode, result.stdout))
                 self.assertIn(b"carried over separately", result.stderr)
 
+    # Wave-2 fix-up review (W2F-3, 26 Nov): /bin/sh and cron take only space and tab for blanks.
+
+    EVIL = "php artisan evil:writer"
+    # Characters Python's \s, split() and strip() take for whitespace and /bin/sh does not, then other control
+    # characters: after one of these a '#' starts no comment for sh, so whatever follows it runs.
+    ODD = {"US": "\x1f", "RS": "\x1e", "GS": "\x1d", "FS": "\x1c", "VT": "\x0b", "FF": "\x0c", "CR": "\r",
+           "NEL": "\u0085", "NBSP": "\u00a0", "OGHAM SPACE": "\u1680", "EN QUAD": "\u2000",
+           "LINE SEPARATOR": "\u2028", "IDEOGRAPHIC SPACE": "\u3000",
+           "NUL": "\x00", "BS": "\x08", "ESC": "\x1b", "DEL": "\x7f", "C1": "\x9b"}
+
+    def smuggled_lines(self, odd: str) -> list:
+        """The reviewer's lines: a rule's exact command, an odd character, then '# m' and a chained command."""
+        ensure = f"{self.RUNTIME}/ensure-supervisor.sh"
+        retention = "/usr/bin/python3 /var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention"
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        return [
+            f"* * * * * {ensure}{odd}# m; {self.EVIL}",  # an allow rule
+            f"35 3 * * * {STORAGE_GUARD}{retention}{odd}# m && {self.EVIL}",  # an allow rule behind the guard
+            f"* * * * * {scheduler}{odd}# m; {self.EVIL}",  # a rewriting rule: the trailer goes onto the wrapper
+            f"* * * * * {STORAGE_GUARD}{scheduler}{odd}# m| {self.EVIL}",
+            f"* * * * * {scheduler} >> /dev/null{odd}2>&1 # m",  # inside the trailer
+            f"* * * * *{odd}{scheduler} >> /dev/null 2>&1",  # as the separator after the schedule
+            f"*{odd}* * * * {scheduler}",  # inside the schedule
+            f"{odd}* * * * * {scheduler}",  # before it
+            f"{odd}# {scheduler}",  # before a '#': cron sees no comment
+            f"FLAG{odd}=1",  # in an assignment
+            f"0 4 * * * /usr/bin/certbot renew -q{odd}",  # a line that does not touch the application
+        ]
+
+    def test_a_character_sh_does_not_take_for_a_blank_is_refused_outright(self):
+        for name, odd in self.ODD.items():
+            with self.subTest(character=name):
+                lines = self.smuggled_lines(odd)
+                text = "\n".join(lines) + "\n"
+                wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+                self.assertEqual(lines, unknown)
+                self.assertEqual(text, wrapped)
+                result = self.cli(self.RULES, text)
+                self.assertEqual((1, b""), (result.returncode, result.stdout))
+                # Each refused line is named on a line of its own, the character escaped, never sent as it is.
+                shown = result.stderr.decode("ascii").split("\n")
+                self.assertEqual(len(lines) + 2, len(shown), result.stderr)  # heading, lines, the last newline
+                self.assertTrue(all(text.isprintable() for text in shown), result.stderr)
+                # The reverse refuses them too, also a wrapped line with one after its profile.
+                lines.append(f"* * * * * {WRAPPER} scheduler{odd}# m; {self.EVIL}")
+                text = "\n".join(lines) + "\n"
+                self.assertEqual((text, lines), crontab.unwrap(text, self.RULES, WRAPPER))
+                result = self.cli(self.RULES, text, "--reverse")
+                self.assertEqual((1, b""), (result.returncode, result.stdout))
+
+    def test_a_refused_line_would_have_run_the_chained_command_under_sh(self):
+        # The reason for the refusal, shown with /bin/sh itself: with an odd character before it, the '#' starts
+        # no comment and the chained command runs; after a space or a tab it is a comment and nothing runs.
+        if not Path("/bin/sh").is_file():
+            self.skipTest("Needs /bin/sh")
+        with tempfile.TemporaryDirectory() as directory:
+            ran = Path(directory) / "ran"
+            php = Path(directory) / "php"
+            php.write_text(f'#!/bin/sh\n[ "$2" = evil:writer ] && : > {ran}\nexit 0\n', encoding="ascii")
+            php.chmod(0o755)
+
+            def runs_evil(separator: str) -> bool:
+                ran.unlink(missing_ok=True)
+                subprocess.run(["/bin/sh", "-c", f"/bin/true{separator}# m; {self.EVIL}"], cwd=directory,
+                               env={"PATH": f"{directory}:/usr/bin:/bin"}, capture_output=True, timeout=20)
+                return ran.exists()
+
+            self.assertEqual((False, False), (runs_evil(" "), runs_evil("\t")))
+            for name in ("US", "VT", "FF", "CR", "NBSP", "NEL"):
+                with self.subTest(character=name):
+                    self.assertTrue(runs_evil(self.ODD[name]))
+
+    def test_only_space_and_tab_separate_the_fields_of_kept_lines(self):
+        # Space and tab, the blanks sh and cron share, still work everywhere a blank may stand, and a comment line
+        # stays a comment whatever it holds (cron never runs it): the byte-for-byte test keeps one with a CR.
+        lines = [f"*/5\t* * * *\t{STORAGE_GUARD}cd /var/www/backend && php artisan schedule:run \t>>\t/dev/null\t2>&1"
+                 "\t# m",
+                 f" \t* * * * * {self.RUNTIME}/ensure-supervisor.sh # repro-studio-supervisor",
+                 " \t# a comment with a CR and \x1f in it\r", "\t", ""]
+        text = "\n".join(lines) + "\n"
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual([], unknown)
+        self.assertEqual([f"*/5\t* * * *\t{STORAGE_GUARD}{WRAPPER} scheduler \t>>\t/dev/null\t2>&1\t# m", *lines[1:]],
+                         wrapped.split("\n")[:-1])
+        self.assertEqual((text, []), crontab.unwrap(wrapped, self.RULES, WRAPPER))
+
+    def test_the_line_patterns_split_at_space_and_tab_only(self):
+        # Defence in depth behind the outright refusal: the patterns themselves never take another character for
+        # a blank, so the schedule, the trailer and its marker comment are found exactly where sh finds them.
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        for name, odd in self.ODD.items():
+            with self.subTest(character=name):
+                # The odd character stays inside a field, as for cron.
+                self.assertEqual(scheduler, crontab.SCHEDULE.match(f"*{odd}* * * * * {scheduler}").group(3))
+                self.assertEqual(scheduler[len("cd "):],
+                                 crontab.SCHEDULE.match(f"* * * * *{odd}{scheduler}").group(3))
+                self.assertEqual("@reboot", crontab.SCHEDULE.match(f"@reboot {scheduler}{odd}x").group(1))
+                trailer = crontab.TRAILER.search(f"{scheduler}{odd}# m; {self.EVIL}")
+                self.assertEqual(("", None), trailer.groups())
+                trailer = crontab.TRAILER.search(f"{scheduler} >>{odd}/dev/null 2>&1{odd}# m")
+                self.assertEqual(("", None), trailer.groups())
+                self.assertIsNone(crontab.ASSIGNMENT.match(f"{odd}FLAG=1"))
+        self.assertEqual((" >> /dev/null\t2>&1", "\t# m"),
+                         crontab.TRAILER.search(f"{scheduler} >> /dev/null\t2>&1\t# m").groups())
+
+    def test_a_kept_or_wrapped_line_never_redirects_into_the_application(self):
+        # The trailer writes where the line's output goes: into the live database or the app tree it is a writer
+        # of its own, which the wrapper and the allow rule do not fence.
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        lines = [f"* * * * * {self.RUNTIME}/ensure-supervisor.sh > /var/www/backend/database/database.sqlite",
+                 f"* * * * * {scheduler} >> /var/www/backend/database/database.sqlite 2>&1",
+                 f"* * * * * {STORAGE_GUARD}{scheduler} >> /dev/null 2>> /var/www/backend/storage/logs/cron.log",
+                 f"* * * * * {scheduler} >/home/maverick/database.sqlite"]
+        text = "\n".join(lines) + "\n"
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual(lines, unknown)
+        self.assertEqual(text, wrapped)
+
 
 if __name__ == "__main__":
     unittest.main()

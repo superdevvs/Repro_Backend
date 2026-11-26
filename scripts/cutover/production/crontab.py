@@ -7,7 +7,9 @@ any way (something chained, piped or substituted after it, any other prefix
 before it, another option) is returned instead of being installed, never
 rewritten with the difference dropped. The schedule, the whitespace after it,
 the output redirection and any trailing marker comment are kept, so installer
-idempotency checks still work.
+idempotency checks still work. A redirection that names the application (the
+live database, the app tree) is refused: that output would be a writer of its
+own, which neither the wrapper nor an allow rule fences.
 
 On production the deploy user's application lines run behind the storage
 guard, `/usr/local/sbin/repro-storage-guard --live && <command>`. That exact
@@ -21,6 +23,13 @@ only when it holds that command alone, behind the same guard and before the
 same kind of trailer, so nothing rides along unfenced. `--reverse` turns wrapped
 lines back into the rule's command byte for byte; the forward rewrite refuses
 any line it could not turn back exactly.
+
+Words are split as /bin/sh and cron split them, at spaces and tabs only. Python
+counts more characters as whitespace (\\v, \\f, \\r, \\x1c-\\x1f, U+0085, U+00A0 and
+other Unicode spaces), and after one of them a '#' starts no comment for sh, so
+a line holding one, or any other control character but tab, is refused outright
+in both directions, whatever it runs (review W2F-3). Comment lines (a '#' after
+nothing but spaces and tabs) are never run by cron and are kept as they are.
 """
 
 from __future__ import annotations
@@ -31,11 +40,16 @@ import re
 import sys
 from pathlib import Path
 
-SCHEDULE = re.compile(r"^(\s*(?:@\w+|\S+\s+\S+\s+\S+\s+\S+\s+\S+))(\s+)(\S.*)$")
+# The blanks of /bin/sh and cron: space and tab, never Python's wider \s (review W2F-3).
+BLANKS = " \t"
+SCHEDULE = re.compile(r"^([ \t]*(?:@[A-Za-z0-9_]+|[^ \t]+[ \t]+[^ \t]+[ \t]+[^ \t]+[ \t]+[^ \t]+[ \t]+[^ \t]+))"
+                      r"([ \t]+)([^ \t].*)$")
 # What may follow a rule's command: output redirections to plain paths, 2>&1 and a marker comment. Nothing in
-# it can run or feed another command (no ;, &, |, $, quotes or backquotes in a target, no cron % anywhere).
-TRAILER = re.compile(r"((?:\s+(?:>>?|2>>?)\s*[A-Za-z0-9_./-]+)*(?:\s+2>&1)?)(\s+#[^'\"%]*)?$")
-ASSIGNMENT = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=")
+# it can run or feed another command (no ;, &, |, $, quotes or backquotes in a target, no cron % anywhere, no
+# character sh would read as part of a word), and no target names the application (a writer of its own).
+TRAILER = re.compile(r"((?:[ \t]+(?:>>?|2>>?)[ \t]*[A-Za-z0-9_./-]+)*(?:[ \t]+2>&1)?)([ \t]+#[^'\"%]*)?$")
+REDIRECTION_TARGET = re.compile(r"(?:>>?|2>>?)[ \t]*([A-Za-z0-9_./-]+)")
+ASSIGNMENT = re.compile(r"^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=")
 # The only prefix carried over in front of the wrapper, byte for byte.
 STORAGE_GUARD = "/usr/local/sbin/repro-storage-guard --live && "
 STORAGE_GUARD_PATH = STORAGE_GUARD.split()[0]
@@ -61,6 +75,24 @@ def _parts(command: str) -> tuple[str, str, str]:
     guard = STORAGE_GUARD if command.startswith(STORAGE_GUARD) else ""
     trailer = TRAILER.search(command).start()
     return guard, command[len(guard):trailer], command[trailer:]
+
+
+def _passive(line: str) -> bool:
+    """A line cron never runs: empty, blanks only, or a comment ('#' after nothing but blanks)."""
+    rest = line.lstrip(BLANKS)
+    return not rest or rest.startswith("#")
+
+
+def _odd(line: str) -> bool:
+    """A control character other than tab (C0, DEL, C1), or a character Python takes for whitespace and sh does not."""
+    return any((char < " " and char != "\t") or "\x7f" <= char <= "\x9f" or (char.isspace() and char not in BLANKS)
+               for char in line)
+
+
+def _writes_into_the_application(command: str, markers: list[str]) -> bool:
+    """Whether a redirection of the command's trailer names the application (the live database, the app tree)."""
+    redirections = TRAILER.search(command).group(1)
+    return any(marker in target for target in REDIRECTION_TARGET.findall(redirections) for marker in markers)
 
 
 def _split(text: str) -> list[str]:
@@ -99,8 +131,12 @@ def wrap(text: str, rules: dict, wrapper: str) -> tuple[str, list[str]]:
     markers = rules["application_markers"]
     lines, unknown = [], []
     for line in _split(text):
+        if not _passive(line) and _odd(line):
+            unknown.append(line)
+            lines.append(line)
+            continue
         parsed = SCHEDULE.match(line)
-        if not line.strip() or line.lstrip().startswith("#") or ASSIGNMENT.match(line) or parsed is None:
+        if _passive(line) or ASSIGNMENT.match(line) or parsed is None:
             lines.append(line)
             continue
         schedule, separator, command = parsed.groups()
@@ -114,6 +150,11 @@ def wrap(text: str, rules: dict, wrapper: str) -> tuple[str, list[str]]:
             lines.append(line)
             continue
         guard, exact, trailer = _parts(command)
+        if _writes_into_the_application(command, markers):
+            # Its output would write into the live database or the app tree, unfenced (review W2F-3).
+            unknown.append(line)
+            lines.append(line)
+            continue
         if "allow" in rule:
             # Left as it is only when its command is exactly the rule's, alone or behind the exact storage guard,
             # with only the trailer after it; anything else chained to an allowed command is refused (review C2-8).
@@ -138,8 +179,12 @@ def unwrap(text: str, rules: dict, wrapper: str) -> tuple[str, list[str]]:
     compiled = _checked(rules)
     lines, unknown = [], []
     for line in _split(text):
+        if not _passive(line) and _odd(line):
+            unknown.append(line)
+            lines.append(line)
+            continue
         parsed = SCHEDULE.match(line)
-        if parsed is None or line.lstrip().startswith("#") or ASSIGNMENT.match(line) \
+        if parsed is None or _passive(line) or ASSIGNMENT.match(line) \
                 or not _is_wrapped(parsed.group(3), wrapper):
             lines.append(line)
             continue
@@ -168,10 +213,14 @@ def main(argv: list[str]) -> int:
         print(f"Refusing: the cron rules cannot be used: {error}", file=sys.stderr)
         return 2
     if unknown:
-        print("Refusing: these wrapped cron entries name a profile without exactly one rule:" if args.reverse
-              else "Refusing: these application cron entries match no admission rule exactly:", file=sys.stderr)
+        odd = " or hold a character sh does not take for a blank"
+        print(f"Refusing: these wrapped cron entries name a profile without exactly one rule{odd}:" if args.reverse
+              else f"Refusing: these cron entries match no admission rule exactly, write into the application{odd}:",
+              file=sys.stderr)
         for line in unknown:
-            print(f"  {line}", file=sys.stderr)
+            # A control or space character is shown escaped, never sent to the terminal as it is.
+            shown = "".join(char if char.isprintable() or char == "\t" else ascii(char)[1:-1] for char in line)
+            print(f"  {shown}", file=sys.stderr)
         return 1
     sys.stdout.buffer.write(result.encode("utf-8", "surrogateescape"))
     return 0
