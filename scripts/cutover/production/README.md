@@ -190,7 +190,7 @@ check as `host.json`. `test_adapter.py` (`example_config`,
 | `mysql.switch_secrets` | Exactly `{"DB_PASSWORD": "<root-only file>"}`; the password never appears in `host.json` |
 | `mysql.night_flags` | Distinct `.env` key names, none of them a switch key |
 | `mysql.offsite_waiver` | `true` or `false`; `true` only in `drill` mode |
-| `fpm` | `unit` (`*.service`), `socket`, `status_socket` (absolute), `drain_seconds` (1 to 300) |
+| `fpm` | `unit` (`*.service`), `socket`, `status_socket` (absolute), `drain_seconds` (1 to 300). `status_socket` is not `socket` (compared normalised), and `drain_seconds` plus 12 s (`adapter.FPM_DRAIN_MARGIN_SECONDS`, `fpm_drain.py`'s last status request and margin) fits inside `command_seconds`: what `fpm_drain.py` refuses at run time, where its exit 1 would also keep a rollback's FPM stop from running |
 | `smoke` | `client_id`, `shoot_id`: the marked test records, positive integers |
 | `studio_pause_files` | Distinct absolute paths (may be empty) |
 | `options.unattended_reopen` | `true` or `false`, like every other option |
@@ -859,11 +859,10 @@ Not yet here (later slices):
   which this adapter still refuses, leads the runner to a MySQL publication.
 
 Not yet here:
-- `load_config` does not check `fpm.status_socket` equal to `fpm.socket`, or
-  `fpm.drain_seconds` too large for `command_seconds` (integrator, after the
-  merges; `fpm_drain.py` refuses both at run time); it does check the
-  `config_build` command. `drain` does not check that the deadline leaves
-  `fpm.drain_seconds` for `fpm_drain.py`.
+- `drain` does not check that the runner's deadline leaves
+  `fpm.drain_seconds` plus 12 s for `fpm_drain.py` (load_config now checks it
+  against `command_seconds`, and refuses `fpm.status_socket` equal to
+  `fpm.socket` and a `config_build` command other than design 1.3's).
 - The end-to-end test of the real `fpm_drain.py` through `drain` (the
   integrator's, once D08 is merged); here `drain_fpm` is a fake that prints a
   canned report.

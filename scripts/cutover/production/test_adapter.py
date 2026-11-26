@@ -674,6 +674,40 @@ class HostConfigContractTests(unittest.TestCase):
         with self.assertRaisesRegex(guard.Refused, r"commands\.config_build must be design 1\.3's runuser"):
             load(config, {**example_identity(config), "app_root": "/srv/repro/backend"})
 
+    def test_fpm_status_socket_and_drain_limit_are_checked_at_load(self):
+        # What fpm_drain.py refuses at run time (exit 1, so the FPM stop after it never runs, on a rollback too)
+        # is refused at load, so such a host.json never reaches a freeze or a rollback (D08 open item).
+        import fpm_drain
+
+        self.assertEqual(fpm_drain.REQUEST_SECONDS + fpm_drain.MARGIN_SECONDS, production.FPM_DRAIN_MARGIN_SECONDS)
+        margin = production.FPM_DRAIN_MARGIN_SECONDS
+        config = example_config()
+        self.assertLessEqual(config["fpm"]["drain_seconds"] + margin, config["command_seconds"])
+        # The longest drain that fits: command_seconds less the margin.
+        config["fpm"]["drain_seconds"] = config["command_seconds"] - margin
+        self.assertEqual(config, load(config))
+        cases = {
+            "the status socket is the pool's socket":
+                (lambda c: c["fpm"].update(status_socket=c["fpm"]["socket"]), r"fpm\.status_socket"),
+            "the pool's socket spelt another way":
+                (lambda c: c["fpm"].update(status_socket="/run/php/./php8.3-fpm.sock"), r"fpm\.status_socket"),
+            "the pool's socket with a trailing slash":
+                (lambda c: c["fpm"].update(status_socket="/run/php//php8.3-fpm.sock/"), r"fpm\.status_socket"),
+            "a drain one second too long":
+                (lambda c: c["fpm"].update(drain_seconds=c["command_seconds"] - margin + 1), "command_seconds"),
+            "command_seconds one second too short":
+                (lambda c: c.update(command_seconds=c["fpm"]["drain_seconds"] + margin - 1), "command_seconds"),
+            "a drain as long as command_seconds":
+                (lambda c: c["fpm"].update(drain_seconds=c["command_seconds"]), "command_seconds"),
+        }
+        for name, (change, message) in cases.items():
+            with self.subTest(name):
+                changed = example_config()
+                changed["fpm"]["drain_seconds"] = changed["command_seconds"] - margin
+                change(changed)
+                with self.assertRaisesRegex(guard.Refused, message):
+                    load(changed)
+
 
 @unittest.skipUnless(os.name == "posix", "POSIX file modes, links and FIFOs")
 class SqliteWritableTests(unittest.TestCase):
@@ -911,6 +945,8 @@ class ProductionAdapterTests(unittest.TestCase):
             "options": {"max_drain_seconds": 5, "separate_freeze_approval": False, "adopt_external_hold": False,
                         "require_long_job_predrain": True, "unattended_reopen": False},
         })
+        # fpm_drain.py's limit must leave its margin inside command_seconds (load_config).
+        config["fpm"] = {**config["fpm"], "drain_seconds": 5}
         config["commands"].update({
             # Design 1.3's config build for this fixture's app root (load_config checks it).
             "config_build": config_build_command(self.app),
@@ -926,6 +962,17 @@ class ProductionAdapterTests(unittest.TestCase):
             "drain_fpm": [self.fpm_drain(), self.record("fpm-stop")],
         })
         return {**config, **overrides}
+
+    def short_config(self, command_seconds):
+        """The fixture config with a command_seconds shorter than fpm_drain.py's margin, for the host-command
+        timeout tests. load_config refuses a drain that does not fit inside command_seconds, as fpm_drain.py
+        does at run time; these tests run only the fixture's stand-in for it, so the margin is lifted for them."""
+        margin = patch.object(production, "FPM_DRAIN_MARGIN_SECONDS", 0)
+        margin.start()
+        self.addCleanup(margin.stop)
+        config = self.config(command_seconds=command_seconds)
+        config["fpm"]["drain_seconds"] = 1
+        return config
 
     def spawn(self, name, seconds=30):
         process = subprocess.Popen([f"{name}-{self.tag}", str(seconds)], executable="/bin/sleep")
@@ -985,7 +1032,7 @@ class ProductionAdapterTests(unittest.TestCase):
     def test_timed_out_host_command_is_stopped_with_everything_it_started(self):
         # runuser does not pass SIGKILL on to the command it started: a timed-out queue_pause must not keep
         # running and change a flag after the controller has reported the timeout.
-        self.config_path.write_text(json.dumps(self.config(command_seconds=1)), encoding="utf-8")
+        self.config_path.write_text(json.dumps(self.short_config(1)), encoding="utf-8")
         journal, adapter, runner = self.started()
         self.php_settings(seconds=3)
         started = time.monotonic()
@@ -1099,7 +1146,7 @@ class ProductionAdapterTests(unittest.TestCase):
     def test_reopen_retry_stops_workers_that_a_failed_reopen_started(self):
         blocker = self.root / "etc" / "second-group-fails"
         blocker.write_text("", encoding="ascii")
-        config = self.config(command_seconds=3)
+        config = self.short_config(3)
         config["commands"]["start_workers"] = [self.record("start"), ["/bin/sh", "-c", f"! test -e {blocker}"]]
         self.config_path.write_text(json.dumps(config), encoding="utf-8")
         journal, adapter, runner = self.started()
@@ -1315,7 +1362,7 @@ class ProductionAdapterTests(unittest.TestCase):
         # must stay retryable and fence deploys once the deploy ends.
         import fcntl
 
-        self.config_path.write_text(json.dumps(self.config(command_seconds=1)), encoding="utf-8")
+        self.config_path.write_text(json.dumps(self.short_config(1)), encoding="utf-8")
         marker = self.root / "etc" / "active"
         errors = io.StringIO()
         with open(self.root / "home" / ".repro-backend-deploy.lock", "a+b") as deploying, patch("sys.stderr", errors):

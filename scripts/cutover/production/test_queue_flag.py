@@ -365,7 +365,12 @@ class QueueFlagHelperTests(HelperFixture):
         for seconds, exit_code, message in ((0, 7, "exited 7"), (3, 0, "timed out after 1 s")):
             with self.subTest(message):
                 config = self.recording_config()
-                config["command_seconds"] = 1
+                # Shorter than fpm_drain.py's margin, which load_config keeps inside command_seconds; no drain
+                # runs here, so the margin is lifted for this timeout alone.
+                config["command_seconds"], config["fpm"]["drain_seconds"] = 1, 1
+                margin = patch.object(adapter, "FPM_DRAIN_MARGIN_SECONDS", 0)
+                margin.start()
+                self.addCleanup(margin.stop)
                 self.write_config(config)
                 self.php_settings(seconds=seconds, code=exit_code, marker=str(marker))
                 started = time.monotonic()

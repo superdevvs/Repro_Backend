@@ -68,6 +68,9 @@ PROBLEM_CHARACTERS = 500
 # fpm_drain.py's outcomes (design 5.4). A freeze goes on after these; any other refuses it, "unmonitored"
 # (the pool listens, but its status page cannot be read) included. A rollback records any outcome and stops FPM.
 FREEZE_DRAIN_OUTCOMES = ("drained", "timed_out", "stopped")
+# What fpm_drain.py needs inside command_seconds beyond fpm.drain_seconds: its last status request (REQUEST_SECONDS)
+# plus start-up and the report (MARGIN_SECONDS). Copied, not imported: fpm_drain imports this module.
+FPM_DRAIN_MARGIN_SECONDS = 12
 ENGINE_NAMES = {"sqlite": "SQLite", "mysql": "MySQL"}
 PATHS = {"state", "policy", "evidence", "activation", "machine_id", "boot_id", "ingress_open", "deploy_marker",
          "scheduler_hold", "sqlite_seal_record", "identity_config", "switch_record", "sealed_hash", "receipt",
@@ -366,6 +369,13 @@ def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
                   and _absolute(fpm["socket"]) and _absolute(fpm["status_socket"])
                   and type(fpm["drain_seconds"]) is int and 0 < fpm["drain_seconds"] <= MAX_COMMAND_SECONDS,
                   "Host config fpm unit, sockets or drain_seconds are invalid")
+    # What fpm_drain.py refuses at run time, where its exit 1 also keeps the FPM stop of a rollback from running.
+    guard.require(os.path.normpath(fpm["status_socket"]) != os.path.normpath(fpm["socket"]),
+                  "Host config fpm.status_socket must be the pool's pm.status_listen, not fpm.socket: on the pool's "
+                  "own socket every status request is an active process, and the drain never reads idle")
+    guard.require(fpm["drain_seconds"] + FPM_DRAIN_MARGIN_SECONDS <= config["command_seconds"],
+                  f"Host config fpm.drain_seconds must leave {FPM_DRAIN_MARGIN_SECONDS} s inside command_seconds: a "
+                  "host command is stopped after command_seconds, and the FPM stop after the drain would never run")
     guard.require(isinstance(smoke, dict) and smoke.keys() == SMOKE_KEYS
                   and all(type(smoke[name]) is int and smoke[name] > 0 for name in SMOKE_KEYS),
                   "Host config smoke records must be the marked test client and shoot IDs")
