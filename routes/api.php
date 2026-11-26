@@ -922,7 +922,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/additional-files', [\App\Http\Controllers\API\ShootAdditionalFileController::class, 'index']);
     Route::get('/shoots/{shoot}/additional-files/{additionalFile}/download', [\App\Http\Controllers\API\ShootAdditionalFileController::class, 'download']);
     Route::get('/shoots/{shoot}/media/download-zip', [ShootMediaController::class, 'downloadMediaZip']);
-    Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor,admin,superadmin,editing_manager');
+    Route::match(['GET', 'POST'], '/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor,admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');
     Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
     Route::get('/shoots/{shoot}/guest-shares', [\App\Http\Controllers\API\ShootGuestShareController::class, 'index']);
