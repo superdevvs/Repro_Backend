@@ -43,6 +43,10 @@ done
 # The MySQL probe's fixture tests skip without their fixtures (see the check at the top).
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_mysql_probe.py
 python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
+# The sandbox config tests need no privileges and catch drift in the host.json contract. The
+# launcher tests in the same file need docker run --privileged (they fail without it) and run only
+# when production/sandbox/test_sandbox.py is passed as an extra argument.
+python3 -B -m unittest discover -s "$cutover/production/sandbox" -p test_sandbox.py -k MakeConfigTests -v
 for extra in "$@"; do
     python3 -B -m unittest discover -s "$(dirname "$cutover/$extra")" -p "$(basename "$extra")" -v
 done
