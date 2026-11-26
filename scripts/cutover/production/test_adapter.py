@@ -1676,6 +1676,82 @@ class ProductionAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
             adapter.observe()
 
+    def use_fake_mysql(self, config):
+        """commands.mysql is mysql_probe.py itself, against D05's root-owned stand-in for the 8.4.13 client
+        (test_mysql_probe.FakeServer: recorded server answers, no MySQL needed)."""
+        from test_mysql_probe import FakeServer
+
+        fake = FakeServer()
+        self.addCleanup(shutil.rmtree, fake.root)
+        mysql = config["mysql"]
+        mysql["client"] = str(fake.client)
+        mysql["probe_defaults"] = str(fake.root / "repro_cutover_probe.cnf")
+        mysql["socket"] = mysql["switch"]["DB_SOCKET"] = fake.socket
+        mysql["target_uuid"] = mysql["switch"]["REPRO_MYSQL_EXPECTED_SERVER_UUID"] = fake.uuid
+        self.use_real_probe(config)
+        return fake
+
+    def test_real_probe_contract_with_this_runs_receipt(self):
+        # D05's probe and D07's adapter together (design 1.2, 4.7). With this run's receipt in place, a server
+        # that does not answer is still exit 3 with exactly {"version": 2, "reachable": false}, which the adapter
+        # reads as not writable and no business activity while writes_possible is false; exits 4 to 6 are
+        # refused, and the refusal carries the probe's own problems.
+        import test_binlog_scan as recorded
+        from test_mysql_probe import gate_state, receipt_record
+
+        config = self.config()
+        fake = self.use_fake_mysql(config)
+        fake.log("binlog.000002", recorded.E6_G6)
+        fake.save()
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        self.assertEqual("frozen", runner.perform("freeze")["phase"])
+        self.assertIs(False, journal.read()["writes_possible"])
+        receipt = Path(config["paths"]["receipt"])
+        receipt.write_text(json.dumps(receipt_record(fake.uuid, "binlog.000001", 13791, f"{fake.uuid}:1-48",
+                                                     run_id=IDENTITY.run_id), sort_keys=True), encoding="utf-8")
+        receipt.chmod(0o600)
+        probe = config["commands"]["mysql"]
+        role = {**gate_state(), "role_edges": [{"user": "repro_app", "host": "localhost",
+                                                "other_user": "repro_test_role", "other_host": "%"}]}
+        cases = {
+            # The receipt's armed_from file is no longer listed (here: never was): the receipt is read.
+            "the armed_from binary log is gone": (5, fake.uuid, gate_state()),
+            "another server answers at the socket": (6, OTHER_UUID, gate_state()),
+            "a role granted to the app account (unrecognised)": (4, fake.uuid, role),
+        }
+        for name, (expected, server_uuid, gate) in cases.items():
+            with self.subTest(name, exit=expected):
+                fake.server["server_uuid"], fake.state = server_uuid, gate
+                fake.save()
+                code, output = adapter._execute(probe)
+                self.assertEqual(expected, code, output)
+                problems = json.loads(output)["problems"]
+                self.assertTrue(problems and all(isinstance(problem, str) for problem in problems), problems)
+                self.assertLessEqual(len("; ".join(problems)), production.PROBLEM_CHARACTERS)
+                with self.assertRaises(UnsafeCutover) as refused:
+                    adapter.observe()
+                self.assertEqual(f"The MySQL target probe refused the reading (exit {code}): " + "; ".join(problems),
+                                 str(refused.exception))
+        # Exit 3: nothing listens (the 8.4.13 client's error 2002), this run's receipt still in place.
+        fake.server["server_uuid"], fake.state, fake.down = fake.uuid, gate_state(), True
+        fake.save()
+        before = sorted(path.name for path in Path(config["paths"]["state"]).iterdir())
+        code, output = adapter._execute(probe)
+        self.assertEqual((3, {"version": 2, "reachable": False}), (code, json.loads(output)))
+        observed = adapter.observe()
+        self.assertEqual((False, False), (observed.mysql_writable, observed.mysql_business_activity))
+        self.assertEqual(before, sorted(path.name for path in Path(config["paths"]["state"]).iterdir()))
+        self.assertTrue(receipt.is_file())
+        # The rollback runs while MySQL is down, receipt or not.
+        self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
+        # Once writes may be possible, the same answer is no reading at all.
+        state = journal.read()
+        journal.write({**state, "phase": "writes_possible", "writes_possible": True})
+        with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+            adapter.observe()
+        journal.write(state)
+
     def test_publication_refuses_fallback_config(self):
         journal, adapter, runner = self.started()
         runner.perform("hold", runner.approval_request("hold"))

@@ -896,7 +896,10 @@ contracts between slices are also tested end to end: the real `fpm_drain.py`
 as `drain_fpm`'s first command against a pool socket that listens without its
 status socket (the freeze refuses before the FPM stop; the rollback records
 `unmonitored` and stops FPM) and against a scripted status socket (a drained
-pool's counts in the journal).
+pool's counts in the journal); and the real `mysql_probe.py` against D05's
+fake 8.4.13 client with this run's receipt in place (exit 3 still reads
+false/false while `writes_possible` is false; exits 4 to 6 are refused with
+the probe's own problems).
 
 ## Telnyx while held (design 5.2)
 
