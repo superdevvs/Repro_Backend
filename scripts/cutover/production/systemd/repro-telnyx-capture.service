@@ -1,0 +1,31 @@
+# Installed as /etc/systemd/system/repro-telnyx-capture.service and enabled
+# (systemctl enable --now repro-telnyx-capture.service). It runs at all
+# times; nginx sends Telnyx to it only while the cutover hold is in force.
+#
+# Its own PHP-FPM master, independent of php8.3-fpm.service: the freeze
+# drains and stops the app's FPM, and this unit must keep answering. Never
+# tie it to that unit (PartOf, BindsTo, Requires) and never list it in the
+# host config's drain_fpm, stop_workers or writer_processes.
+[Unit]
+Description=RePro Telnyx capture while the cutover hold is in force (own PHP-FPM, no database)
+Documentation=file:///opt/repro-cutover-fence/production/README.md
+# The socket directory /run/repro-telnyx-capture comes from
+# /etc/tmpfiles.d/repro-cutover-fence.conf at boot. ExecStartPre makes it the
+# same way (root, 0755), so the unit also starts when it is installed and
+# started before systemd-tmpfiles --create has run (W1 has no reboot).
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=nginx.service
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /run/repro-telnyx-capture
+ExecStart=/usr/sbin/php-fpm8.3 --nodaemonize --fpm-config /etc/repro-telnyx-capture/php-fpm.conf
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=always
+RestartSec=2
+PrivateTmp=true
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

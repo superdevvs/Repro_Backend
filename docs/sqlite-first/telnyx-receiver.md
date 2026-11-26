@@ -109,6 +109,16 @@ through the shared `www-data` group. `storage/app` must be writable by
 `www-data`. Files are encrypted with the app key; keep the key in the
 recovery kit.
 
+## During the database cutover hold
+
+The cutover's nginx hold answers 503 before Laravel starts and the freeze
+stops the app's PHP-FPM, so this middleware never sees a text then. The
+cutover installs a separate capture for that window
+(`scripts/cutover/production/capture/`, its own PHP-FPM, no database, see
+the production README). It checks each request the same way, saves it with
+this spool class into this spool folder, and answers the same way (texts
+200, voice 503). `telnyx:replay-spool` replays both kinds of entry alike.
+
 ## By hand
 
 ```bash
