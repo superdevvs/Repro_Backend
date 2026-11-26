@@ -54,8 +54,8 @@ prepare between step n and the next; `kill_inside(point)` SIGKILLs a forked cont
 root through a symbolic link. D11's tests are EvidenceTests and EvidenceFixtureTests; D12 drives `abort` from
 each crash point that
 `test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step` and
-`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes` build, and replaces the interim refusal
-`test_abort_never_reopens_sqlite_under_the_switched_env` checks with the undo.
+`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes` build (`SealSqliteTests`, on `UndoHost`, at
+the end of this file), and its undo replaced D10's interim refusal and that refusal's test.
 
     python3 -B -m unittest discover -s scripts/cutover/production -p test_adapter_mysql.py -v
 """
@@ -1650,35 +1650,6 @@ class PrepareTests(unittest.TestCase):
                 change(host)
                 host.refused(pattern, scans=True)
 
-    def test_abort_never_reopens_sqlite_under_the_switched_env(self):
-        # Review D10R-1, until D12's full undo (design 3.5 step 3). Before the .env changed (a crash after step 6, a
-        # kill inside step 7 before its rename) the rollback reopens SQLite, and removes the switched temporary .env
-        # a kill left beside it (review D10R-5: the whole MySQL .env, the app password included).
-        for name, stop in (("crash after step 6", lambda host: host.crash_after(6)),
-                           ("kill inside step 7", lambda host: host.kill_inside("before-env-rename"))):
-            with self.subTest(name):
-                host = self.frozen()
-                original = host.env.read_bytes()
-                stop(host)
-                self.assertEqual("sqlite_authoritative", host.runner().perform("abort")["phase"])
-                self.assertEqual(original, host.env.read_bytes())
-                self.assertEqual([], host.leftovers())
-                self.assertTrue(sqlite_seal.writable(host.database))
-        # From the rename on (a crash after step 7, a kill inside step 8 after config.php's rename) the rollback
-        # refuses before it unseals SQLite: the site stays held, the watchdog retries, D12 undoes the switch.
-        for name, stop in (("crash after step 7", lambda host: host.crash_after(7)),
-                           ("kill inside step 8", lambda host: host.kill_inside("after-config-rename"))):
-            with self.subTest(name):
-                host = self.frozen()
-                stop(host)
-                with self.assertRaisesRegex(UnsafeCutover, "holds the MySQL switch"):
-                    host.runner().perform("abort")
-                state = host.host()[0].read()
-                self.assertEqual(("frozen", "abort"), (state["phase"], state["pending"]["action"]))
-                self.assertFalse(sqlite_seal.writable(host.database))
-                self.assertTrue(host.switched())
-                self.assertFalse(host.path("evidence").exists())
-
     def test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes(self):
         # Review D10R-5: the two in-step states README "What a crash leaves" lists (D12's abort tests start from
         # them too). Inside step 7, before the rename: the switched temporary .env, with .env's owner, mode and ACL.
@@ -2572,6 +2543,1016 @@ class LinuxSuiteTests(unittest.TestCase):
         for name in ("test_envfile.py", "test_adapter_mysql.py"):
             with self.subTest(name):
                 self.assertEqual(1, sum(1 for line in lines if line.strip().endswith(f"-p {name}")), name)
+
+
+# seal_sqlite, the full undo of prepare (design 3.5, 4.4, 4.7; build plan D12).
+#
+# systemctl's stand-in for the rollback: it records and exits as the harness's recorder does, and keeps
+# php8.3-fpm.service's state in fpm.json. start and restart run FPM, stop stops it; try-reload-or-restart reloads
+# a running FPM (and records the live config that reload made it read) and does nothing to a stopped one.
+FPM_SYSTEMCTL = RECORD + """try:
+    with open({settings!r}) as stream:
+        settings = json.load(stream)
+except FileNotFoundError:
+    settings = {{}}
+verb = sys.argv[1] if len(sys.argv) > 1 else ""
+code = settings.get("systemctl", {{}}).get(verb, 0)
+if code == 0 and sys.argv[2:] == [{unit!r}]:
+    with open({fpm!r}) as stream:
+        fpm = json.load(stream)
+    if verb in ("start", "restart"):
+        fpm["running"] = True
+    elif verb == "stop":
+        fpm["running"] = False
+    elif verb == "try-reload-or-restart" and fpm["running"]:
+        sys.path[:0] = [{here!r}, {parent!r}]
+        import live_config
+        measured = live_config.measure({app!r})
+        fpm["reloads"].append([measured.engine, measured.source, measured.live_config_sha256])
+    with open({fpm!r}, "w") as stream:
+        json.dump(fpm, stream)
+sys.exit(code)
+"""
+# drain_fpm's second command, the FPM stop.
+FPM_STOP = RECORD + """with open({fpm!r}) as stream:
+    fpm = json.load(stream)
+fpm["running"] = False
+with open({fpm!r}, "w") as stream:
+    json.dump(fpm, stream)
+"""
+# drain_fpm's first command, fpm_drain.py: records ["fpm-drain"] and prints a drained pool's report.
+FPM_DRAIN = RECORD + """print({report!r})
+"""
+# The scripted MySQL probe, which also reads business activity the way the real one does after a rollback: only
+# while this run's receipt is still armed (`business` stands for an app write after a boundary).
+RECEIPT_PROBE = RECORD + """with open({answers!r}) as stream:
+    answers = json.load(stream)
+if "--since" in sys.argv[1:]:
+    try:
+        with open({count!r}) as stream:
+            count = int(stream.read())
+    except FileNotFoundError:
+        count = 0
+    with open({count!r}, "w") as stream:
+        stream.write(str(count + 1))
+    answer = answers["since"][min(count, len(answers["since"]) - 1)]
+else:
+    answer = answers["observe"]
+    if answer["code"] == 0 and os.path.exists({business!r}) and os.path.exists({receipt!r}):
+        answer = {{"code": 0, "stdout": {{**answer["stdout"], "business_activity": True}}}}
+print(json.dumps(answer["stdout"]))
+sys.exit(answer["code"])
+"""
+# Where the rollback's controller is killed inside seal_sqlite: the temporary file whose rename it precedes or follows.
+ROLLBACK_KILL_POINTS = {"before-env-rename": ".env.repro-", "after-env-rename": ".env.repro-",
+                        "after-config-rename": ".config.php.repro-"}
+# The rollback's record (paths.unseal_proof; README "seal_sqlite").
+UNSEAL_PROOF_KEYS = {"version", "run_id", "hold_id", "started_at", "database", "sha256", "sealed_sha256", "unchanged",
+                     "problem", "gate", "gate_close_skipped", "at"}
+UNREACHABLE = {"version": 2, "reachable": False}
+
+
+class UndoHost(PrepareHost):
+    """PrepareHost for the rollback (D12). PHP-FPM's state is kept by systemctl's stand-in (`fpm()`), and drain_fpm
+    is fpm_drain.py's stand-in (records ["fpm-drain"], prints a drained report) then the FPM stop, so a test sees
+    whether FPM runs after the rollback. Without the fixture gate.close_gate is scripted from the probe's answer
+    (exit 3: not listening; `gate_refusal`: an unrecognised state) and records ["gate-close"], and the probe reports
+    business activity once `business` exists while the receipt is armed."""
+
+    def __init__(self, test: unittest.TestCase, **options):
+        super().__init__(test, **options)
+        import gate
+
+        bin_ = self.root / "bin"
+        self.fpm_state = self.etc / "fpm.json"
+        self.fpm_state.write_text(json.dumps({"running": True, "reloads": []}), encoding="utf-8")
+        self._program("systemctl", FPM_SYSTEMCTL, settings=str(self.recorders), fpm=str(self.fpm_state), unit=UNIT,
+                      app=str(self.app))
+        self._program("fpm-stop", FPM_STOP, fpm=str(self.fpm_state))
+        self._program("fpm-drain", FPM_DRAIN, report=json.dumps(drain_report("drained")))
+        self.business = self.etc / "business"
+        self.gate_refusal = None
+        if not self.fixture:
+            self._program("mysql-probe", RECEIPT_PROBE, answers=str(self.answers), count=str(self.etc / "since-count"),
+                          business=str(self.business), receipt=self.config["paths"]["receipt"])
+            patcher = patch.object(gate, "close_gate", side_effect=self._close_gate)
+            patcher.start()
+            test.addCleanup(patcher.stop)
+        self.rewrite_config(lambda config: config["commands"].update(
+            drain_fpm=[[str(bin_ / "fpm-drain")], [str(bin_ / "fpm-stop")]]))
+        self.original = (self.env.read_bytes(), metadata(self.env))
+
+    def _close_gate(self, config: dict, **_) -> dict:
+        import gate
+
+        with open(self.log, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(["gate-close"]) + "\n")
+        if json.loads(self.answers.read_text())["observe"]["code"] == production.MYSQL_UNREACHABLE:
+            raise gate.GateUnreachable("The MySQL server is not listening; the gate was not changed")
+        if self.gate_refusal:
+            raise gate.GateRefused(self.gate_refusal)
+        return {"before": "closed", "revoked": {}, "killed": []}
+
+    def fpm(self) -> dict:
+        return json.loads(self.fpm_state.read_text(encoding="utf-8"))
+
+    def hold(self) -> dict:
+        """init and hold through the runner, no freeze (a rollback from `holding`)."""
+        journal, adapter, runner = self.host()
+        runner.initialize(fence_deploys=adapter.hold_deploys)
+        self.state = runner.perform("hold", runner.approval_request("hold"))
+        return self.state
+
+    def ready(self) -> dict:
+        """prepare through the runner to `ready`, with evidence() (D11's) answered by a verified record."""
+        from runner import Evidence
+
+        evidence = Evidence(snapshot_sha256=COPY_SNAPSHOT, report_sha256="7" * 64, binlog_file=self.backup["file"],
+                            binlog_position=self.backup["position"], forward_parity=True, final_schema=True,
+                            readonly_smoke=True, sqlite_backup_offsite=True, mysql_backup_offsite=True)
+        with patch.object(production.ProductionAdapter, "evidence", return_value=evidence):
+            self.test.assertIsNone(self.prepare())
+        self.state = self.host()[0].read()
+        self.test.assertEqual("ready", self.state["phase"])
+        return self.state
+
+    def runner_at(self, seconds: float):
+        """A runner and adapter whose clock reads `seconds` now (the watchdog's tick at a given point of the run)."""
+        offset = seconds - time.time()
+
+        def clock() -> float:
+            return time.time() + offset
+
+        loaded = production.load_config(guard.read_protected(self.config_path), read=guard.read_protected)
+        journal = Journal(Path(loaded["paths"]["state"]))
+        adapter = production.ProductionAdapter(loaded, journal, clock=clock)
+        return production.runner_for(loaded, journal, adapter, clock=clock)
+
+    def abort(self) -> dict:
+        return self.runner().perform("abort")
+
+    def crash_rollback_after(self, number: int) -> None:
+        """runner.perform("abort") stopped inside seal_sqlite between its step `number` and the next one."""
+        steps = dict(production.SEAL_SQLITE_STEPS)
+        with patch.object(production.ProductionAdapter, f"_seal_sqlite_{steps[number + 1]}",
+                          side_effect=Crash(f"stopped after seal_sqlite step {number}")):
+            with self.test.assertRaises(Crash):
+                self.abort()
+
+    def kill_rollback_inside(self, point: str) -> None:
+        """runner.perform("abort") in a child process that SIGKILLs itself inside seal_sqlite's .env restore or its
+        config build, before or after the rename of the temporary file (ROLLBACK_KILL_POINTS)."""
+        prefix = ROLLBACK_KILL_POINTS[point]
+        pid = os.fork()
+        if pid == 0:  # The child never returns into the test runner.
+            try:
+                rename = os.replace
+
+                def replace(source, destination, *arguments, **keywords):
+                    named = os.path.basename(os.fspath(source)).startswith(prefix)
+                    if named and point.startswith("before-"):
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    result = rename(source, destination, *arguments, **keywords)
+                    if named:
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return result
+
+                os.replace = replace
+                self.abort()
+            finally:
+                os._exit(1)
+        _, status = os.waitpid(pid, 0)
+        self.test.assertEqual(signal.SIGKILL, os.WTERMSIG(status) if os.WIFSIGNALED(status) else None,
+                              f"the rollback was not killed at {point}")
+
+    def seal_sqlite(self, deadline: float | None = None) -> None:
+        """adapter.seal_sqlite under a drained lease, as the runner's rollback calls it."""
+        journal, adapter, _ = self.host()
+        with self.lease(journal) as lease:
+            adapter.seal_sqlite(lease, deadline or time.time() + 600)
+
+    def release_scheduler(self) -> None:
+        """The scheduler release a reopen leaves (design 3.8), for the rollback to remove."""
+        path = self.path("scheduler_release")
+        path.parent.mkdir(mode=0o755, exist_ok=True)
+        path.write_text("{}", encoding="ascii")
+
+    def rollback_effects(self, since: int) -> list:
+        """The host effects (systemctl, runuser, config:cache) and drain commands since the `since`-th command."""
+        return [entry[:2] if entry[0] in ("systemctl", "php") else entry[:1] for entry in self.commands()[since:]
+                if entry[0] in ("systemctl", "runuser", "fpm-drain", "fpm-stop", "gate-close")
+                or entry[:2] == ["php", "config:cache"]]
+
+    def held_on_mysql_switch(self) -> bool:
+        """True when SQLite is writable while .env or the live config still routes to MySQL (review D10R-1)."""
+        measured = live_config.measure(self.app)
+        return sqlite_seal.writable(self.database) and (self.switched() or measured.engine != "sqlite")
+
+
+@unittest.skipUnless(LINUX_ROOT, "Needs Linux root: owners, ACLs, runuser and the guard's protected files")
+class SealSqliteTests(unittest.TestCase):
+    """seal_sqlite undoes any part of prepare (design 3.5; build plan D12), with the scripted MySQL probe."""
+
+    def frozen(self, **options) -> UndoHost:
+        host = UndoHost(self, **options)
+        host.freeze()
+        return host
+
+    def assert_undone(self, host: UndoHost, *, gate_close_skipped: bool = False) -> None:
+        """The rollback finished: SQLite authority published, every part of the switch undone, FPM stopped."""
+        journal = host.host()[0]
+        state = journal.read()
+        self.assertEqual(("sqlite_authoritative", None, "abort"),
+                         (state["phase"], state["pending"], state["history"][-1]["action"]))
+        # The .env byte for byte, with its owner, group, mode and every extended attribute (the ACL), as before
+        # prepare; no temporary file beside it or beside config.php.
+        env, before = host.original
+        self.assertEqual(env, host.env.read_bytes())
+        self.assertEqual(before[1:], metadata(host.env)[1:])
+        self.assertEqual([], host.leftovers())
+        measured = live_config.measure(host.app)
+        self.assertEqual(("sqlite", live_config.CACHE, host.sqlite_pin),
+                         (measured.engine, measured.source, measured.live_config_sha256))
+        info = host.cache.lstat()
+        self.assertEqual((host.deploy, WEB_UID, 0o644), (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)))
+        self.assertTrue(sqlite_seal.writable(host.database))
+        self.assertFalse(host.path("ingress_open").exists())
+        self.assertFalse(host.path("scheduler_release").exists())
+        self.assertFalse(host.fpm()["running"], "PHP-FPM must be stopped after a rollback; the reopen starts it")
+        proof, sealed = host.record("unseal_proof"), host.record("sealed_hash")
+        self.assertEqual((sealed["sha256"], sealed["sha256"], True, gate_close_skipped),
+                         (proof["sha256"], proof["sealed_sha256"], proof["unchanged"], proof["gate_close_skipped"]))
+        # The SQLite authority the rollback published admits SQLite writers: measured on the SQLite pin.
+        guard.verify((host.etc / "policy.json").read_bytes(), journal.path.read_bytes(),
+                     host.path("evidence").read_bytes(), machine_sha=guard.sha256((host.root / "machine-id").read_bytes()),
+                     boot_id=host.boot.read_text().strip(), action="queue-worker", expected_engine="sqlite")
+        # The identity still matches the pin (the .env digest never moved), so the watchdog keeps the phase.
+        self.assertEqual("sqlite_authoritative", host.runner().perform("tick")["phase"])
+
+    def assert_held(self, host: UndoHost, pattern: str) -> None:
+        """The rollback refused with `pattern` before it unsealed SQLite: the run stays held with its pending abort,
+        nothing is published, and .env and config.php are as they were (never reopened on a MySQL route)."""
+        def files() -> tuple:
+            return host.env.read_bytes(), host.cache.read_bytes() if host.cache.exists() else None
+
+        before = files()
+        with self.assertRaisesRegex(UnsafeCutover, pattern):
+            host.abort()
+        state = host.host()[0].read()
+        self.assertEqual("abort", state["pending"]["action"])
+        self.assertIn(state["phase"], ("frozen", "ready"))
+        self.assertFalse(sqlite_seal.writable(host.database))
+        self.assertFalse(host.path("evidence").exists())
+        self.assertEqual(before, files())
+
+    def test_abort_from_frozen_without_prepare(self):
+        # A rollback that has nothing to undo: no switch record, the .env and config.php untouched (same inode, no
+        # build, no FPM reload), the gate closed (no login: the probe read it closed), the unseal proof recorded.
+        host = self.frozen()
+        env, cache = metadata(host.env), (host.cache.read_bytes(), host.cache.lstat().st_ino)
+        host.release_scheduler()
+        mark = len(host.commands())
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assertEqual([["fpm-drain"], ["fpm-stop"], ["gate-close"]], host.rollback_effects(mark))
+        self.assertEqual((env, cache), (metadata(host.env), (host.cache.read_bytes(), host.cache.lstat().st_ino)))
+        self.assertIsNone(host.record("switch_record"))
+        self.assert_undone(host)
+        proof = host.record("unseal_proof")
+        self.assertEqual(UNSEAL_PROOF_KEYS, set(proof))
+        self.assertEqual({"before": "closed", "revoked": {}, "killed": []}, proof["gate"])
+        # From `holding` (no freeze): nothing was sealed, so the proof has no sealed hash to compare with.
+        held = UndoHost(self)
+        held.hold()
+        self.assertEqual("sqlite_authoritative", held.abort()["phase"])
+        proof = held.record("unseal_proof")
+        self.assertEqual((None, None, False), (proof["sealed_sha256"], proof["unchanged"], proof["gate_close_skipped"]))
+        self.assertEqual(hashlib.sha256(held.database.read_bytes()).hexdigest(), proof["sha256"])
+        self.assertRegex(proof["problem"], "no sealed hash of this run and hold")
+        self.assertTrue(sqlite_seal.writable(held.database))
+        self.assertEqual(held.original[0], held.env.read_bytes())
+
+    def test_abort_from_ready(self):
+        host = self.frozen()
+        host.ready()
+        self.assertTrue(host.switched())
+        records = {name: host.path(name).read_bytes() for name in ("switch_record", "sealed_hash", "receipt")}
+        host.release_scheduler()
+        mark = len(host.commands())
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assert_undone(host)
+        # In order: the rollback's drain stopped FPM; then seal_sqlite closed the gate, built the SQLite cache as the
+        # deploy user (after the .env restore) and sent try-reload-or-restart, which leaves the stopped FPM stopped.
+        self.assertEqual([["fpm-drain"], ["fpm-stop"], ["gate-close"], ["runuser"], ["php", "config:cache"],
+                          ["systemctl", "try-reload-or-restart"]], host.rollback_effects(mark))
+        # The switch record and the sealed hash stay until retire; the receipt stays armed (design 3.5).
+        self.assertEqual(records, {name: host.path(name).read_bytes() for name in records})
+
+    def test_abort_after_crash_at_each_prepare_step(self):
+        # Every state README "What a crash leaves" lists (PrepareHost.crash_after and kill_inside), then an abort:
+        # always the whole undo, never SQLite reopened under a MySQL .env (review D10R-1).
+        steps = production.PREPARE_STEPS
+        points = [(f"crash after step {number}", number, lambda host, number=number: host.crash_after(number))
+                  for number, _ in steps[:-1]]
+        points += [("every step, then evidence() refused", 10, lambda host: host.prepare()),
+                   ("kill inside step 7, before the rename", 6, lambda host: host.kill_inside("before-env-rename")),
+                   ("kill inside step 8, after the rename", None, lambda host: host.kill_inside("after-config-rename"))]
+        for name, after, stop in points:
+            with self.subTest(name):
+                host = self.frozen()
+                stop(host)
+                if after is None:
+                    self.assertTrue(host.switched())
+                    self.assertEqual(host.mysql_pin, live_config.measure(host.app).live_config_sha256)
+                    self.assertIsNone(host.record("switch_record")["switch_at"])
+                else:
+                    host.assert_markers(after=after)
+                # Design 3.5 steps 4 and 5: the cache is built again once the .env is restored (or not the pin),
+                # and try-reload-or-restart goes out wherever this run's switch may have reached FPM.
+                switched, recorded = host.switched(), host.record("switch_record") is not None
+                mark = len(host.commands())
+                self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+                effects = host.rollback_effects(mark)
+                self.assertEqual((switched, recorded), (["php", "config:cache"] in effects,
+                                                        ["systemctl", "try-reload-or-restart"] in effects))
+                self.assert_undone(host)
+
+    def test_watchdog_rollback_at_45_minutes(self):
+        def failed_fpm_start(host: UndoHost) -> None:
+            # D18's r2.prepare-fails: prepare stops at step 9, after the .env switch and the MySQL build.
+            host.recorders.write_text(json.dumps({"systemctl": {"restart": 1}}), encoding="utf-8")
+            self.assertRegex(str(host.prepare()), "Host command failed: systemctl exited 1")
+            host.recorders.unlink()
+            host.assert_markers(after=8, restarts=1)  # The recorder lists the restart that failed.
+            self.assertFalse(host.fpm()["running"])
+
+        for name, setup, phase in (("from ready", UndoHost.ready, "ready"),
+                                   ("after a prepare that failed at the FPM start", failed_fpm_start, "frozen")):
+            with self.subTest(name):
+                host = self.frozen()
+                setup(host)
+                started = host.host()[0].read()["started_at"]
+                # A tick before 0:45 keeps the phase; the tick at 0:45 rolls back unattended.
+                early = host.runner_at(started + production.Runner.DECISION_SECONDS - 60).perform("tick")
+                self.assertEqual(phase, early["phase"])
+                self.assertTrue(host.switched())
+                late = host.runner_at(started + production.Runner.DECISION_SECONDS).perform("tick")
+                self.assertEqual("sqlite_authoritative", late["phase"])
+                self.assert_undone(host)
+
+    def test_mysql_down_close_skipped_and_recorded(self):
+        host = self.frozen()
+        host.ready()
+        # Nothing listens: observe() reads false/false (writes_possible is false), the gate close is skipped.
+        host.answer(UNREACHABLE, 3)
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assert_undone(host, gate_close_skipped=True)
+        self.assertIsNone(host.record("unseal_proof")["gate"])
+        # A rollback that crashed after its proof with MySQL down, retried once MySQL is back, records the close.
+        retried = self.frozen()
+        retried.ready()
+        retried.answer(UNREACHABLE, 3)
+        retried.crash_rollback_after(7)
+        self.assertTrue(retried.record("unseal_proof")["gate_close_skipped"])
+        retried.answer(probe_reading(server_uuid=retried.target))
+        self.assertEqual("sqlite_authoritative", retried.abort()["phase"])
+        self.assert_undone(retried)
+        # The skip is only allowed while the journal says writes are impossible: with writes_possible true the
+        # undo refuses before it changes anything (the runner refuses such a rollback first).
+        fresh = self.frozen()
+        fresh.ready()
+        fresh.answer(UNREACHABLE, 3)
+        journal = fresh.host()[0]
+        journal.write({**journal.read(), "writes_possible": True})
+        env = fresh.env.read_bytes()
+        with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+            fresh.seal_sqlite()
+        self.assertEqual(env, fresh.env.read_bytes())
+        self.assertFalse(sqlite_seal.writable(fresh.database))
+        self.assertIsNone(fresh.record("unseal_proof"))
+        # Only writes_possible exactly false allows the skip: a journal without it, or with any other value, does not.
+        for value in ("missing", None):
+            with self.subTest(writes_possible=value):
+                unknown = self.frozen()
+                unknown.ready()
+                unknown.answer(UNREACHABLE, 3)
+                journal = unknown.host()[0]
+                state = journal.read()
+                if value == "missing":
+                    state.pop("writes_possible", None)
+                else:
+                    state["writes_possible"] = value
+                journal.write(state)
+                with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+                    unknown.seal_sqlite()
+                self.assertFalse(sqlite_seal.writable(unknown.database))
+                self.assertIsNone(unknown.record("unseal_proof"))
+        # A gate the close cannot handle (an unrecognised state) refuses before any undo; the retry finishes.
+        refused = self.frozen()
+        refused.ready()
+        refused.gate_refusal = "The gate state is unrecognised: a role is granted to repro_app@localhost"
+        self.assert_held(refused, "gate state is unrecognised")
+        self.assertTrue(refused.switched())
+        refused.gate_refusal = None
+        self.assertEqual("sqlite_authoritative", refused.abort()["phase"])
+        self.assert_undone(refused)
+
+    def test_hand_switch_without_record_refuses(self):
+        def by_hand_env(host: UndoHost) -> None:
+            host.env.write_bytes(host.env.read_bytes().replace(b"DB_CONNECTION=sqlite", b"DB_CONNECTION=mysql"))
+
+        def by_hand_cache(host: UndoHost) -> None:
+            host.cache.write_bytes(cache_text(config_for({**host.config["mysql"]["switch"],
+                                                          "DB_PASSWORD": host.password})))
+
+        def another_runs_record(host: UndoHost) -> None:
+            # Review D10V-1 (1): another run's record is never used to restore, whatever the .env holds.
+            host.crash_after(7)
+            host.write_record("switch_record", {**host.record("switch_record"), "run_id": "earlier-run"})
+
+        def two_lines(host: UndoHost) -> None:
+            # Review D10V-1 (2): a .env the switch record cannot be checked against.
+            host.crash_after(7)
+            host.env.write_bytes(host.env.read_bytes() + b"DB_CONNECTION=mysql\n")
+
+        def linked(host: UndoHost) -> None:
+            host.crash_after(7)
+            real = host.app / "env.real"
+            host.env.rename(real)
+            host.env.symlink_to(real)
+
+        def tampered_record(host: UndoHost) -> None:
+            host.crash_after(7)
+            host.write_record("switch_record", {**host.record("switch_record"), "env_sha256": "0" * 64})
+
+        def malformed_record(host: UndoHost) -> None:
+            host.crash_after(7)
+            record = host.record("switch_record")
+            record["values"].pop("DB_SOCKET")
+            host.write_record("switch_record", record)
+
+        def by_hand_env_no_cache(host: UndoHost) -> None:
+            # No cache to tell the engine either: refused as switched by hand, before any build from that .env.
+            by_hand_env(host)
+            host.cache.unlink()
+
+        def another_runs_record_two_lines(host: UndoHost) -> None:
+            # Review D10V-1 (2) with another run's record: a .env it cannot be checked against refuses too.
+            host.write_record("switch_record", {"version": 1, "run_id": "earlier-run", "values": envfile.values(
+                host.env.read_bytes(), production.switch_keys(host.config)),
+                "env_sha256": envfile.digest(host.env.read_bytes(), NIGHT_FLAGS), "switch_at": None})
+            host.env.write_bytes(host.env.read_bytes() + b"DB_CONNECTION=sqlite\n")
+
+        def another_engine_by_hand(host: UndoHost) -> None:
+            # Without a switch of this run only sqlite (or no DB_CONNECTION) passes, not merely "not mysql".
+            host.env.write_bytes(host.env.read_bytes().replace(b"DB_CONNECTION=sqlite", b"DB_CONNECTION=pgsql"))
+
+        def another_runs_record_no_cache(host: UndoHost) -> None:
+            # Another run's record over a switched .env is refused in step 3 itself, before step 4 would build a
+            # config cache from that .env.
+            another_runs_record(host)
+            host.cache.unlink()
+
+        for name, change, pattern in (
+            ("a .env switched by hand", by_hand_env, "switched by hand"),
+            ("a .env naming another engine by hand", another_engine_by_hand, "switched by hand"),
+            ("another run's record over a switched .env and no config cache", another_runs_record_no_cache,
+             "switched by hand"),
+            ("a .env switched by hand and no config cache", by_hand_env_no_cache, "switched by hand"),
+            ("another run's record and a switch key on two lines", another_runs_record_two_lines,
+             "cannot be checked against the switch record"),
+            ("a MySQL config cache built by hand", by_hand_cache, "switched by hand"),
+            ("another run's record over a switched .env", another_runs_record, "switched by hand"),
+            ("a switch key on two lines", two_lines, "cannot be checked against the switch record"),
+            ("a .env that is a symbolic link", linked, "cannot be read"),
+            ("a record the .env does not match", tampered_record, "does not match the .env"),
+            ("a malformed record", malformed_record, "switch record is malformed"),
+        ):
+            with self.subTest(name):
+                host = self.frozen()
+                change(host)
+                self.assert_held(host, pattern)
+                self.assertFalse(host.held_on_mysql_switch())
+        # Put right by hand, the retried rollback finishes.
+        host = self.frozen()
+        by_hand_env(host)
+        self.assert_held(host, "switched by hand")
+        host.env.write_bytes(host.original[0])
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assert_undone(host)
+        # A .env with no DB_CONNECTION line (Laravel's default connection, sqlite) and no record: nothing to undo.
+        bare = self.frozen()
+        lines = bare.env.read_bytes().splitlines(keepends=True)
+        bare.env.write_bytes(b"".join(line for line in lines if not line.startswith(b"DB_CONNECTION=")))
+        bare.original = (bare.env.read_bytes(), metadata(bare.env))
+        self.assertEqual("sqlite_authoritative", bare.abort()["phase"])
+        self.assert_undone(bare)
+        # Another run's record over a SQLite .env: nothing of this run to undo; the record is never used or replaced.
+        other = self.frozen()
+        record = {"version": 1, "run_id": "earlier-run", "values": envfile.values(
+            other.env.read_bytes(), production.switch_keys(other.config)),
+            "env_sha256": envfile.digest(other.env.read_bytes(), NIGHT_FLAGS), "switch_at": None}
+        other.write_record("switch_record", record)
+        raw = other.path("switch_record").read_bytes()
+        # What an interrupted replacement left beside the .env is cleared with any run's record (review D10R-5).
+        leftover = other.app / f".env.repro-{'a' * 32}"
+        leftover.write_bytes(b"DB_CONNECTION=mysql\n")
+        self.assertEqual([leftover.name], other.leftovers())
+        self.assertEqual("sqlite_authoritative", other.abort()["phase"])
+        self.assert_undone(other)
+        self.assertEqual(raw, other.path("switch_record").read_bytes())
+
+    def test_a_missing_env_with_a_switch_record_refuses(self):
+        # With a switch record, this run's or another run's, a missing .env is refused in step 3 by name: nothing
+        # records what the app would read, so the rollback stops before it unseals SQLite and the run stays held.
+        # Through the runner the identity probe refuses first (it measures the .env); seal_sqlite refuses by itself.
+        def this_runs(host: UndoHost) -> None:
+            host.crash_after(7)
+
+        def another_runs(host: UndoHost) -> None:
+            host.write_record("switch_record", {"version": 1, "run_id": "earlier-run", "values": envfile.values(
+                host.env.read_bytes(), production.switch_keys(host.config)),
+                "env_sha256": envfile.digest(host.env.read_bytes(), NIGHT_FLAGS), "switch_at": None})
+
+        for name, change in (("this run's record", this_runs), ("another run's record", another_runs)):
+            with self.subTest(name):
+                host = self.frozen()
+                change(host)
+                host.env.unlink()
+                with self.assertRaisesRegex(UnsafeCutover, "identity-probe"):
+                    host.abort()
+                with self.assertRaisesRegex(UnsafeCutover, "cannot be read to undo the switch: it is missing"):
+                    host.seal_sqlite()
+                self.assertEqual("frozen", host.host()[0].read()["phase"])
+                self.assertFalse(sqlite_seal.writable(host.database))
+                self.assertFalse(host.path("evidence").exists())
+                self.assertFalse(host.env.exists())
+
+    def test_truncated_config_cache_rebuilt(self):
+        # Design 4.7: a missing or unparseable config.php is the fallback; the rollback runs and rebuilds it.
+        for name, prepared, change in (
+            ("truncated after prepare", True, lambda host: host.cache.write_bytes(host.cache.read_bytes()[:40])),
+            ("truncated, no prepare", False, lambda host: host.cache.write_bytes(host.cache.read_bytes()[:40])),
+            ("missing, no prepare", False, lambda host: host.cache.unlink()),
+        ):
+            with self.subTest(name):
+                host = self.frozen()
+                if prepared:
+                    host.ready()
+                change(host)
+                self.assertEqual(live_config.FALLBACK, live_config.measure(host.app).source)
+                mark = len(host.commands())
+                self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+                effects = host.rollback_effects(mark)
+                self.assertIn(["php", "config:cache"], effects)
+                # The rebuilt cache reaches FPM: step 5 follows the build even without a switch of this run.
+                reload = ["systemctl", "try-reload-or-restart"]
+                self.assertIn(reload, effects)
+                self.assertLess(effects.index(["php", "config:cache"]), effects.index(reload))
+                self.assert_undone(host)
+        # A rebuild that fails leaves the live file as it was and SQLite sealed; the retry finishes.
+        host = self.frozen()
+        host.cache.write_bytes(host.cache.read_bytes()[:40])
+        host.php(config_cache="half-then-fail")
+        self.assert_held(host, "fallback.*not rebuilt|not rebuilt.*fallback")
+        self.assertEqual(["config.php"], sorted(entry.name for entry in host.cache.parent.iterdir()))
+        host.php()
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assert_undone(host)
+        # A build that cannot give the SQLite pin (here the .env's SQLite path was changed by hand, a denylisted
+        # key) is refused before it replaces config.php: the live file stays as it was.
+        other = self.frozen()
+        other.cache.write_bytes(other.cache.read_bytes()[:40])
+        other.env.write_bytes(other.original[0].replace(f"DB_DATABASE={other.database}".encode(),
+                                                        b"DB_DATABASE=/var/www/backend/database/other.sqlite"))
+        self.assert_held(other, "not rebuilt.*not the expected route hash")
+        other.env.write_bytes(other.original[0])
+        self.assertEqual("sqlite_authoritative", other.abort()["phase"])
+        self.assert_undone(other)
+
+    def test_fpm_stopped_and_running_use_try_reload_or_restart(self):
+        # Stopped (the rollback's drain stopped it, as after every freeze and rollback): try-reload-or-restart does
+        # nothing, and FPM stays stopped until the reopen starts it.
+        host = self.frozen()
+        host.ready()
+        self.assertTrue(host.fpm()["running"])
+        mark = len(host.commands())
+        host.abort()
+        self.assertEqual([["systemctl", "try-reload-or-restart", UNIT]],
+                         [entry for entry in host.commands()[mark:] if entry[0] == "systemctl"])
+        self.assertEqual({"running": False, "reloads": []}, host.fpm())
+        self.assert_undone(host)
+        # Running (seal_sqlite after a drain that did not stop it): reloaded once, after the undo, so its workers
+        # read the SQLite config; FPM keeps running.
+        running = self.frozen()
+        running.ready()
+        # Called directly (no close_admissions before it), step 9 removes the ingress marker and the scheduler release.
+        running.release_scheduler()
+        running.path("ingress_open").parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        running.path("ingress_open").write_text("", encoding="ascii")
+        mark = len(running.commands())
+        running.seal_sqlite()
+        self.assertEqual((False, False), (running.path("ingress_open").exists(),
+                                          running.path("scheduler_release").exists()))
+        self.assertEqual([["systemctl", "try-reload-or-restart", UNIT]],
+                         [entry for entry in running.commands()[mark:] if entry[0] == "systemctl"])
+        self.assertEqual({"running": True, "reloads": [["sqlite", live_config.CACHE, running.sqlite_pin]]},
+                         running.fpm())
+        # A reload that fails stops the undo before SQLite is unsealed; the retry finishes.
+        failing = self.frozen()
+        failing.ready()
+        failing.recorders.write_text(json.dumps({"systemctl": {"try-reload-or-restart": 1}}), encoding="utf-8")
+        with self.assertRaisesRegex(UnsafeCutover, "Host command failed: systemctl exited 1"):
+            failing.abort()
+        self.assertFalse(sqlite_seal.writable(failing.database))
+        self.assertFalse(failing.held_on_mysql_switch())
+        failing.recorders.unlink()
+        self.assertEqual("sqlite_authoritative", failing.abort()["phase"])
+        self.assert_undone(failing)
+
+    def test_unseal_proof_equals_sealed_hash(self):
+        host = self.frozen()
+        host.ready()
+        host.abort()
+        proof, sealed = host.record("unseal_proof"), host.record("sealed_hash")
+        self.assertEqual(UNSEAL_PROOF_KEYS, set(proof))
+        self.assertEqual({key: sealed[key] for key in ("run_id", "hold_id", "started_at", "database")},
+                         {key: proof[key] for key in ("run_id", "hold_id", "started_at", "database")})
+        self.assertEqual((sealed["sha256"], sealed["sha256"], True, None),
+                         (proof["sha256"], proof["sealed_sha256"], proof["unchanged"], proof["problem"]))
+        self.assertEqual(hashlib.sha256(host.database.read_bytes()).hexdigest(), proof["sha256"])
+        info = host.path("unseal_proof").lstat()
+        self.assertEqual((0, 0o600), (info.st_uid, stat.S_IMODE(info.st_mode)))
+        # A sealed file that changed after the freeze: recorded and reported, and the rollback still finishes (SQLite
+        # is the only copy with every confirmed write).
+        import io
+
+        changed = self.frozen()
+        changed.ready()
+        with open(changed.database, "ab") as stream:
+            stream.write(b"\0" * 512)
+        errors = io.StringIO()
+        with patch("sys.stderr", errors):
+            self.assertEqual("sqlite_authoritative", changed.abort()["phase"])
+        proof = changed.record("unseal_proof")
+        self.assertEqual((hashlib.sha256(changed.database.read_bytes()).hexdigest(), changed.record("sealed_hash")["sha256"],
+                          False), (proof["sha256"], proof["sealed_sha256"], proof["unchanged"]))
+        self.assertRegex(proof["problem"], "changed after the freeze")
+        self.assertRegex(errors.getvalue(), r"WARNING: .*unseal proof.*changed after the freeze")
+        self.assertTrue(sqlite_seal.writable(changed.database))
+        # Only this run's and this hold's sealed hash counts: another hold's record (a journal reset by hand) is no
+        # proof either way, and the rollback goes on.
+        for name, change in (("another hold's", {"hold_id": str(uuid.uuid4())}), ("another run's", {"run_id": "earlier"}),
+                             ("another database's", {"database": "/var/www/backend/database/other.sqlite"}),
+                             ("another start's", {"started_at": "started_at+1"}),
+                             ("a malformed", {"sha256": "not-a-digest"}), ("a malformed", {"extra": True})):
+            with self.subTest(name, change=change):
+                stale = self.frozen()
+                record = stale.record("sealed_hash")
+                if change.get("started_at") == "started_at+1":
+                    change = {"started_at": stale.host()[0].read()["started_at"] + 1}
+                stale.write_record("sealed_hash", {**record, **change})
+                self.assertEqual("sqlite_authoritative", stale.abort()["phase"])
+                proof = stale.record("unseal_proof")
+                self.assertEqual((None, None), (proof["sealed_sha256"], proof["unchanged"]))
+                self.assertRegex(proof["problem"], "malformed" if name == "a malformed" else "another run, hold or database")
+        # A sealed file the proof cannot hash stops the rollback before step 8: SQLite stays sealed, the retry finishes.
+        unhashable = self.frozen()
+        unhashable.ready()
+        with patch.object(sqlite_seal, "file_sha256", side_effect=PermissionError(13, "Permission denied")):
+            with self.assertRaisesRegex(UnsafeCutover, "cannot be hashed for the unseal proof: Permission denied"):
+                unhashable.abort()
+        self.assertFalse(sqlite_seal.writable(unhashable.database))
+        self.assertIsNone(unhashable.record("unseal_proof"))
+        self.assertEqual("sqlite_authoritative", unhashable.abort()["phase"])
+        self.assert_undone(unhashable)
+
+    def test_receipt_still_armed_after_publication(self):
+        # Design 3.5 (critic RC-L10): the receipt stays armed until the SQLite reopen, so the runner's publication
+        # after seal_sqlite still sees real business activity. Here an app write after a boundary lands after the
+        # undo and before the publication: the publication refuses, and the next tick records recovery_required.
+        host = self.frozen()
+        host.ready()
+        receipt = host.path("receipt").read_bytes()
+        seal = production.ProductionAdapter.seal_sqlite
+
+        def seal_then_write(adapter, lease, deadline):
+            seal(adapter, lease, deadline)
+            host.business.write_text("an app write after a boundary", encoding="ascii")
+
+        with patch.object(production.ProductionAdapter, "seal_sqlite", seal_then_write):
+            with self.assertRaisesRegex(UnsafeCutover, "sealed single-engine route could not be verified"):
+                host.abort()
+        self.assertEqual(receipt, host.path("receipt").read_bytes())
+        self.assertFalse(host.path("evidence").exists())
+        with self.assertRaisesRegex(UnsafeCutover, "MySQL writes may exist"):
+            host.runner().perform("tick")
+        self.assertEqual("recovery_required", host.host()[0].read()["phase"])
+        # Without the write the rollback finishes, and the receipt is still there, byte for byte.
+        plain = self.frozen()
+        plain.ready()
+        receipt = plain.path("receipt").read_bytes()
+        self.assertEqual("sqlite_authoritative", plain.abort()["phase"])
+        self.assertEqual(receipt, plain.path("receipt").read_bytes())
+
+    def test_seal_sqlite_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step(self):
+        steps = dict(production.SEAL_SQLITE_STEPS)
+        self.assertEqual(list(range(1, len(steps) + 1)), sorted(steps))
+        points = [(f"crash after seal_sqlite step {number} ({steps[number]})",
+                   lambda host, number=number: host.crash_rollback_after(number)) for number in range(1, len(steps))]
+        points += [(f"kill inside the undo, {point}", lambda host, point=point: host.kill_rollback_inside(point))
+                   for point in ROLLBACK_KILL_POINTS]
+        for name, stop in points:
+            with self.subTest(name):
+                host = self.frozen()
+                host.ready()
+                host.release_scheduler()
+                stop(host)
+                state = host.host()[0].read()
+                self.assertEqual(("ready", "abort"), (state["phase"], state["pending"]["action"]))
+                # Wherever it stopped, SQLite is never writable under a MySQL .env or config (review D10R-1).
+                self.assertFalse(host.held_on_mysql_switch())
+                self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+                self.assert_undone(host)
+        # Twice is once: seal_sqlite again after a finished rollback changes nothing but its proof.
+        host = self.frozen()
+        host.ready()
+        host.abort()
+        env, cache = metadata(host.env), (host.cache.read_bytes(), host.cache.lstat().st_ino)
+        mark = len(host.commands())
+        host.seal_sqlite()
+        self.assertEqual((env, cache), (metadata(host.env), (host.cache.read_bytes(), host.cache.lstat().st_ino)))
+        self.assertEqual([["gate-close"], ["systemctl", "try-reload-or-restart"]], host.rollback_effects(mark))
+        self.assertTrue(host.record("unseal_proof")["unchanged"])
+
+    def test_the_undo_checks_again_before_it_unseals(self):
+        # Step 6 measures the host again after the undo (the deploy user can write .env and config.php at any time):
+        # a .env or a live config that reads MySQL again, a cache off the SQLite pin, or a configuration digest
+        # that moved refuses before SQLite is unsealed.
+        def after_step(name: str, change):
+            original = getattr(production.ProductionAdapter, f"_seal_sqlite_{name}")
+
+            def step(adapter, run):
+                original(adapter, run)
+                change()
+
+            return patch.object(production.ProductionAdapter, f"_seal_sqlite_{name}", step)
+
+        def switch_env(host: UndoHost):
+            return lambda: host.env.write_bytes(host.env.read_bytes().replace(b"DB_CONNECTION=sqlite",
+                                                                              b"DB_CONNECTION=mysql"))
+
+        def mysql_cache(host: UndoHost):
+            return lambda: host.cache.write_bytes(cache_text(config_for({**host.config["mysql"]["switch"],
+                                                                         "DB_PASSWORD": host.password})))
+
+        def other_sqlite_cache(host: UndoHost):
+            def change():
+                settings = env_settings(host.env.read_bytes())
+                config = config_for(settings)
+                config["cache"] = {**config["cache"], "default": "database"}
+                host.cache.write_bytes(cache_text(config))
+            return change
+
+        def another_line(host: UndoHost):
+            return lambda: host.env.write_bytes(host.env.read_bytes() + b"APP_DEBUG_EXTRA=true\n")
+
+        def no_cache(host: UndoHost):
+            return host.cache.unlink
+
+        def linked_env(host: UndoHost):
+            def change():
+                real = host.app / "env.real"
+                host.env.rename(real)
+                host.env.symlink_to(real)
+            return change
+
+        def no_env(host: UndoHost):
+            return host.env.unlink
+
+        for name, prepared, step, change, pattern in (
+            ("no prepare: config.php removed after step 4", False, "config", no_cache,
+             "not SQLite from the config cache"),
+            # "resumed": a rollback that stopped after its step 5 is retried, so this pass builds nothing and the
+            # pin is checked for this run's switch alone.
+            ("a resumed undo: a SQLite cache off the pin after step 5", "resumed", "fpm", other_sqlite_cache,
+             "not the SQLite pin"),
+            ("this run's switch: .env made a symbolic link after step 5", True, "fpm", linked_env,
+             "cannot be read to undo the switch"),
+            ("this run's switch: .env removed after step 5", True, "fpm", no_env,
+             "does not hold the switch record's SQLite values"),
+            ("no prepare: .env switched after step 3", False, "config", switch_env, "switched by hand"),
+            ("this run's switch: .env switched again after step 3", True, "config", switch_env,
+             "does not hold the switch record's SQLite values"),
+            ("a MySQL cache after the build", True, "config", mysql_cache, "not SQLite from the config cache"),
+            ("a SQLite cache off the pin after the build", True, "fpm", other_sqlite_cache, "not the SQLite pin"),
+            ("a .env line outside the denylist", True, "fpm", another_line, "configuration digest is not the pin's"),
+        ):
+            with self.subTest(name):
+                host = self.frozen()
+                if prepared:
+                    host.ready()
+                if prepared == "resumed":
+                    host.crash_rollback_after(5)
+                with after_step(step, change(host)), self.assertRaisesRegex(UnsafeCutover, pattern):
+                    host.abort()
+                self.assertFalse(sqlite_seal.writable(host.database))
+                self.assertFalse(host.path("evidence").exists())
+                self.assertIsNone(host.record("unseal_proof"))
+
+    def test_seal_sqlite_needs_its_lease_current_and_time_before_each_step(self):
+        host = self.frozen()
+        host.ready()
+        journal, adapter, _ = host.host()
+        before = host.changes(scans=False)
+        # A lease whose admitted writers were never drained: step 1 refuses.
+        with journal.acquire() as (state, lease):
+            journal.write({**state, "generation": lease.generation})
+            with self.assertRaisesRegex(UnsafeCutover, "Admitted writers have not been drained"):
+                adapter.seal_sqlite(lease, time.time() + 600)
+        # No time left: nothing runs.
+        with self.assertRaisesRegex(UnsafeCutover, r"seal_sqlite ran out of time before step 1 \(writers drained\)"):
+            host.seal_sqlite(deadline=time.time() - 1)
+        # The deadline passes during step 2: the time is checked again before step 3, and nothing from it on runs.
+        offset = [0.0]
+        _, timed, _ = host.host()
+        timed.clock = lambda: time.time() + offset[0]
+        gate_close = production.ProductionAdapter._seal_sqlite_gate
+
+        def slow_gate(adapter_self, run):
+            gate_close(adapter_self, run)
+            offset[0] += 120
+
+        with patch.object(production.ProductionAdapter, "_seal_sqlite_gate", slow_gate), host.lease(journal) as lease:
+            with self.assertRaisesRegex(UnsafeCutover, r"seal_sqlite ran out of time before step 3 \(env\)"):
+                timed.seal_sqlite(lease, time.time() + 60)
+        # Another controller took the journal while the gate closed: nothing from step 3 on runs.
+        gate_step = production.ProductionAdapter._seal_sqlite_gate
+
+        def gate_then_taken_over(adapter_self, run):
+            gate_step(adapter_self, run)
+            current = journal.read()
+            journal.write({**current, "generation": current["generation"] + 1})
+
+        with patch.object(production.ProductionAdapter, "_seal_sqlite_gate", gate_then_taken_over):
+            with self.assertRaisesRegex(UnsafeCutover, "no longer owns the journal generation"):
+                host.seal_sqlite()
+        after = host.changes(scans=False)
+        self.assertEqual({key: before[key] for key in ("env", "config", "records", "effects", "sqlite")},
+                         {key: after[key] for key in ("env", "config", "records", "effects", "sqlite")})
+        self.assertIsNone(host.record("unseal_proof"))
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        self.assert_undone(host)
+
+    def test_rollback_under_a_short_deadline_stops_fpm_without_the_drain(self):
+        # The drain deadline item (README "seal_sqlite"): with less than fpm.drain_seconds + 12 s left, a rollback
+        # does not start fpm_drain.py (the deadline would kill it and the FPM stop would never run): it stops FPM at
+        # once and records outcome "skipped". With time enough, and for a freeze (unchanged), the drain runs first.
+        host = self.frozen()
+        host.ready()
+        journal, adapter, _ = host.host()
+        needed = host.config["fpm"]["drain_seconds"] + production.FPM_DRAIN_MARGIN_SECONDS
+        mark = len(host.commands())
+        with host.lease(journal) as lease:
+            record = adapter.drain(lease, time.time() + needed - 5, purpose="rollback")
+        self.assertEqual({"purpose": "rollback", "outcome": "skipped", "waited_seconds": 0, "polls": 0},
+                         {key: record[key] for key in ("purpose", "outcome", "waited_seconds", "polls")})
+        self.assertRegex(record["problem"], rf"fewer than fpm.drain_seconds plus {production.FPM_DRAIN_MARGIN_SECONDS} s")
+        self.assertEqual([["fpm-stop"]], host.rollback_effects(mark))
+        self.assertFalse(host.fpm()["running"])
+        # The skip still waits until no writer process remains after the stop (one that exits 1.5 s later here).
+        writer = subprocess.Popen([sys.executable, "-I", "-S", "-c", "import time; time.sleep(1.5)",
+                                   f"fake-queue-worker-{host.tag}"])
+        self.addCleanup(writer.wait)
+        self.addCleanup(writer.kill)
+        with host.lease(journal) as lease:
+            record = adapter.drain(lease, time.time() + needed - 5, purpose="rollback")
+        self.assertEqual("skipped", record["outcome"])
+        self.assertIsNotNone(writer.poll(), "the skipped drain returned while a writer process was still running")
+        # The time left is measured after stop_workers, when the FPM drain would start: worker stops that use up
+        # the margin turn a drain that had time into the skip.
+        offset = [0.0]
+        adapter.clock = lambda: time.time() + offset[0]
+        run = adapter._run
+
+        def slow_stop_workers(argv, deadline=None):
+            output = run(argv, deadline)
+            if [argv] == host.config["commands"]["stop_workers"]:
+                offset[0] += 30
+            return output
+
+        mark = len(host.commands())
+        with patch.object(adapter, "_run", side_effect=slow_stop_workers), host.lease(journal) as lease:
+            record = adapter.drain(lease, adapter.clock() + needed + 10, purpose="rollback")
+        self.assertEqual("skipped", record["outcome"])
+        self.assertEqual([["fpm-stop"]], host.rollback_effects(mark))
+        adapter.clock = time.time
+        for purpose, seconds in (("rollback", needed + 30), ("freeze", needed - 5)):
+            with self.subTest(purpose=purpose, seconds=seconds):
+                mark = len(host.commands())
+                with host.lease(journal) as lease:
+                    record = adapter.drain(lease, time.time() + seconds, purpose=purpose)
+                self.assertEqual((purpose, "drained"), (record["purpose"], record["outcome"]))
+                self.assertEqual([["fpm-drain"], ["fpm-stop"]], host.rollback_effects(mark))
+        # Through the runner: a watchdog tick after 1:00 gets a fresh budget shorter than the drain needs.
+        late = self.frozen()
+        late.ready()
+        started = late.host()[0].read()["started_at"]
+        with patch.object(production.Runner, "ROLLBACK_SECONDS", needed - 2):
+            state = late.runner_at(started + production.Runner.WINDOW_SECONDS).perform("tick")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertEqual("skipped", state["history"][-1]["fpm_drain"]["outcome"])
+        self.assert_undone(late)
+
+
+@unittest.skipUnless(LINUX_ROOT, "Needs Linux root: owners, ACLs, runuser and the guard's protected files")
+class SealSqliteFixtureTests(unittest.TestCase):
+    """seal_sqlite against D04's MySQL 8.4.13 fixture: the real gate close and the real probe's armed receipt.
+
+    Not in fixture_tests(): without the fixture these skip, but fail when REPRO_REQUIRE_PROBE_FIXTURE=1, as
+    test_adapter.py's real-probe test does."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not PROBE_FIXTURE:
+            if REQUIRE_PROBE_FIXTURE:
+                raise AssertionError("REPRO_REQUIRE_PROBE_FIXTURE=1, but REPRO_MYSQL_PROBE_FIXTURE is unset: "
+                                     "SealSqliteFixtureTests would skip")
+            raise unittest.SkipTest("Needs the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
+        from test_mysql_probe import APP_TABLES, Fixture
+
+        cls.fixture = Fixture(PROBE_FIXTURE)
+        cls.fixture.restore()
+        cls.fixture.sql(APP_TABLES)
+        cls.baseline = cls.fixture.snapshot()
+
+    def setUp(self):
+        self.addCleanup(self.assert_restored)
+
+    def assert_restored(self):
+        self.fixture.sql("ALTER USER 'repro_maint'@'localhost' ACCOUNT UNLOCK;"
+                         "ALTER USER 'repro_parity_reader'@'localhost' ACCOUNT UNLOCK")
+        self.fixture.restore()
+        self.assertEqual(self.baseline, self.fixture.snapshot())
+
+    def ready(self) -> UndoHost:
+        host = UndoHost(self, fixture=self.fixture)
+        host.freeze()
+        host.ready()
+        return host
+
+    def test_abort_from_ready_closes_the_gate_and_ends_app_sessions(self):
+        host = self.ready()
+        session = subprocess.Popen([MYSQL_CLIENT, f"--defaults-file={self.fixture.directory / 'repro_app.cnf'}",
+                                    "--no-login-paths", "--protocol=SOCKET", f"--socket={self.fixture.socket}",
+                                    "-e", "SELECT SLEEP(120)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: session.poll() is None and session.kill())
+        listed = "SELECT ID FROM performance_schema.processlist WHERE USER = 'repro_app'"
+        for _ in range(100):
+            if self.fixture.sql(listed).strip():
+                break
+            time.sleep(0.1)
+        [session_id] = [int(line) for line in self.fixture.sql(listed).split()]
+        self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+        proof = host.record("unseal_proof")
+        self.assertEqual(({"before": "closed", "revoked": {}, "killed": [session_id]}, False, True),
+                         (proof["gate"], proof["gate_close_skipped"], proof["unchanged"]))
+        self.assertEqual("", self.fixture.sql(listed).strip())
+        self.assertNotEqual(0, session.wait(timeout=30))
+        self.assertEqual(host.original[0], host.env.read_bytes())
+        measured = live_config.measure(host.app)
+        self.assertEqual(("sqlite", host.sqlite_pin), (measured.engine, measured.live_config_sha256))
+
+    def test_receipt_still_armed_after_publication(self):
+        from test_mysql_probe import FOREIGN_WRITE
+
+        # A boundary (an account statement outside lockable_accounts) and an app-schema write after it, after the
+        # undo and before the publication: the real probe reads business activity from the armed receipt.
+        host = self.ready()
+        receipt = host.path("receipt").read_bytes()
+        seal = production.ProductionAdapter.seal_sqlite
+
+        def seal_then_write(adapter, lease, deadline):
+            seal(adapter, lease, deadline)
+            self.fixture.sql("ALTER USER 'repro_parity_reader'@'localhost' ACCOUNT LOCK")
+            self.fixture.sql(FOREIGN_WRITE[1], account=FOREIGN_WRITE[0])
+
+        with patch.object(production.ProductionAdapter, "seal_sqlite", seal_then_write):
+            with self.assertRaisesRegex(UnsafeCutover, "sealed single-engine route could not be verified"):
+                host.abort()
+        self.assertEqual(receipt, host.path("receipt").read_bytes())
+        self.assertFalse(host.path("evidence").exists())
+        with self.assertRaisesRegex(UnsafeCutover, "MySQL writes may exist"):
+            host.runner().perform("tick")
+        self.assertEqual("recovery_required", host.host()[0].read()["phase"])
+        # Without a write: SQLite authority, and the strict reading after it is still made from this run's receipt.
+        plain = self.ready()
+        receipt = plain.path("receipt").read_bytes()
+        self.assertEqual("sqlite_authoritative", plain.abort()["phase"])
+        self.assertEqual(receipt, plain.path("receipt").read_bytes())
+        code, output = plain.host()[1]._execute(plain.config["commands"]["mysql"])
+        reading = json.loads(output)
+        self.assertEqual((0, "strict", hashlib.sha256(receipt).hexdigest(), False, False),
+                         (code, reading["mode"], reading["receipt"], reading["writable"], reading["business_activity"]))
 
 
 if __name__ == "__main__":
