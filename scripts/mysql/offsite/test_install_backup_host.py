@@ -246,6 +246,16 @@ class JobTests(unittest.TestCase):
         inbox = next(item for item in job.directories if item.path == "/var/lib/repro-alert-inbox")
         self.assertEqual((inbox.owner, inbox.group, inbox.mode), ("repro-backup", "repro-alert", 0o2750))
 
+    def test_alert_job_installs_the_shared_var_export_reader_beside_the_probe(self):
+        # alert_probe.py reads the cached config with the cutover controller's reader (design v2, 1.3).
+        job = installer.build_job("alerts", self.settings)
+        files = {item.path: item for item in job.files}
+        shared = OFFSITE.parents[1] / "cutover" / "production" / "var_export.py"
+        item = files["/opt/repro-backup-tools/var_export.py"]
+        self.assertEqual(item.data, shared.read_bytes())
+        self.assertEqual((item.owner, item.group, item.mode), ("root", "root", 0o444))
+        self.assertIn(shared, installer.bundle_sources())
+
     def test_alert_job_installs_the_read_only_cutover_view(self):
         import cutover_view
 
@@ -533,8 +543,10 @@ class BundleOwnershipTests(unittest.TestCase):
             return done.stdout.strip().decode()
 
         self.assertEqual(protected(), "True")
-        # Another account could swap the units or the rotation wrapper through these folders.
-        for middle in (offsite / "systemd", offsite / "systemd" / "binlog-fixture"):
+        # Another account could swap the units, the rotation wrapper or the shared var_export reader through
+        # these folders.
+        for middle in (offsite / "systemd", offsite / "systemd" / "binlog-fixture",
+                       folder / "scripts" / "cutover" / "production"):
             os.chmod(middle, 0o775)
             self.assertEqual(protected(), "False", middle)
             os.chmod(middle, 0o755)

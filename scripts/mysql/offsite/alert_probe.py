@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import datetime as dt
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -171,71 +172,27 @@ def env_engine(plan: dict) -> str:
     return engine or "unset"
 
 
-OPAQUE = object()  # A cached config value the engine check does not need (object, concatenation, number).
+def _shared_reader():
+    """The reader of PHP var_export output shared with the cutover controller (design v2, 1.3).
+
+    The alerts job installs var_export.py beside this file (/opt/repro-backup-tools); in the repository it
+    is scripts/cutover/production/var_export.py. Loaded by path, so the probe's sys.path stays as it is.
+    """
+    for path in (TOOLS / "var_export.py", TOOLS.parent.parent / "cutover" / "production" / "var_export.py"):
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("var_export", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError(f"var_export.py is missing beside {TOOLS / 'alert_probe.py'}")
+
+
+var_export = _shared_reader()
+# The lenient reader, moved unchanged: strings and NULL are kept, any other value is OPAQUE.
+OPAQUE = var_export.OPAQUE  # A cached config value the engine check does not need (object, concatenation, number).
+var_export_tokens = var_export.tokens
+var_export_value = var_export.value
 URL_DRIVERS = {"mysql2": "mysql", "postgres": "pgsql", "postgresql": "pgsql", "sqlite3": "sqlite", "mssql": "sqlsrv"}
-
-
-def var_export_tokens(raw: bytes) -> list[tuple[str, bytes]]:
-    """Tokens of PHP var_export output: quoted strings (unescaped), the symbols => ( ) , ; and bare words."""
-    tokens, index, size = [], 0, len(raw)
-    while index < size:
-        char = raw[index:index + 1]
-        if char in b" \t\r\n":
-            index += 1
-        elif char == b"'":
-            value, index = bytearray(), index + 1
-            while True:
-                need(index < size, "unterminated string")
-                char = raw[index:index + 1]
-                if char == b"\\" and raw[index + 1:index + 2] in (b"\\", b"'"):
-                    value += raw[index + 1:index + 2]
-                    index += 2
-                elif char == b"'":
-                    index += 1
-                    break
-                else:
-                    value += char
-                    index += 1
-            tokens.append(("str", bytes(value)))
-        elif raw.startswith(b"=>", index):
-            tokens.append(("op", b"=>"))
-            index += 2
-        elif char in b"(),;":
-            tokens.append(("op", char))
-            index += 1
-        else:
-            start = index
-            while index < size and raw[index:index + 1] not in b" \t\r\n'(),;" and not raw.startswith(b"=>", index):
-                index += 1
-            tokens.append(("word", raw[start:index]))
-    return tokens
-
-
-def var_export_value(tokens: list, index: int):
-    """Parse one value; return (value, index of the token after it). Arrays become dicts."""
-    if tokens[index] == ("word", b"array") and tokens[index + 1] == ("op", b"("):
-        result, index = {}, index + 2
-        while tokens[index] != ("op", b")"):
-            kind, key = tokens[index]
-            need(kind in ("str", "word") and tokens[index + 1] == ("op", b"=>"), "unexpected array entry")
-            result[key.decode("utf-8", "replace")], index = var_export_value(tokens, index + 2)
-            if tokens[index] == ("op", b","):
-                index += 1
-        return result, index + 1
-    if tokens[index][0] == "str" and tokens[index + 1] in (("op", b","), ("op", b")"), ("op", b";")):
-        return tokens[index][1].decode("utf-8", "replace"), index + 1
-    if tokens[index] == ("word", b"NULL") and tokens[index + 1] in (("op", b","), ("op", b")")):
-        return None, index + 1
-    depth = 0  # Anything else (object, enum, concatenation, number) is skipped to its end.
-    while True:
-        kind, text = tokens[index]
-        if kind == "op" and text == b"(":
-            depth += 1
-        elif kind == "op" and text in (b")", b",", b";") and depth == 0:
-            return OPAQUE, index
-        elif kind == "op" and text == b")":
-            depth -= 1
-        index += 1
 
 
 def cached_engine(raw: bytes) -> str:
@@ -254,7 +211,7 @@ def cached_engine(raw: bytes) -> str:
             driver = URL_DRIVERS.get(scheme, scheme)
         need(isinstance(driver, str) and driver != "", "no driver")
         return driver
-    except (Refusal, IndexError, KeyError, TypeError):
+    except (Refusal, var_export.Refused, IndexError, KeyError, TypeError):
         raise DetectorError("cached config could not be read") from None
 
 

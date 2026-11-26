@@ -7,7 +7,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
+import subprocess
 from contextlib import closing
 import sys
 import tempfile
@@ -890,6 +892,49 @@ class WriterTokenTests(CutoverFixture):
         with self.assertRaises(probe.Refusal):
             probe.parse_plan(json.dumps(self.plan).encode())
 
+
+
+class SharedReaderTests(unittest.TestCase):
+    """The cached-config reader is the cutover controller's var_export.py (design v2, 1.3): one copy, moved."""
+
+    OFFSITE = Path(__file__).resolve().parent
+    SHARED = REPO / "scripts" / "cutover" / "production" / "var_export.py"
+
+    def test_cached_engine_reads_through_the_shared_reader(self):
+        self.assertEqual(Path(probe.var_export.__file__).resolve(), self.SHARED)
+        source = Path(probe.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("def var_export_tokens", source)
+        self.assertNotIn("def var_export_value", source)
+        self.assertIs(probe.var_export_tokens, probe.var_export.tokens)
+        self.assertIs(probe.var_export_value, probe.var_export.value)
+        self.assertIs(probe.OPAQUE, probe.var_export.OPAQUE)
+        self.assertFalse((self.OFFSITE / "var_export.py").exists(), "a second copy of the reader sits here")
+        # The shared reader's own refusal (an unterminated string) is still an unreadable cache.
+        with self.assertRaises(probe.DetectorError):
+            probe.cached_engine(b"<?php return array (\n  'database' => '")
+
+    @unittest.skipUnless(os.name == "posix", "the tools are installed on Linux")
+    def test_installed_layout_reads_the_copy_beside_the_probe(self):
+        # The alerts job installs var_export.py beside alert_probe.py in /opt/repro-backup-tools, run with -I.
+        folder = Path(tempfile.mkdtemp(prefix="alert-tools-"))
+        self.addCleanup(shutil.rmtree, folder)
+        for source in (self.OFFSITE / "alert_probe.py", self.OFFSITE / "alert-conditions.json", self.SHARED):
+            shutil.copyfile(source, folder / source.name)
+        check = ("import sys; sys.path.insert(0, sys.argv[1]); import alert_probe; "
+                 "print(alert_probe.var_export.__file__); print(alert_probe.cached_engine(sys.stdin.buffer.read()))")
+
+        def run(*argv):
+            return subprocess.run([sys.executable, "-I", "-B", *argv], input=CACHED_CONFIG.encode(),
+                                  capture_output=True, timeout=60)
+
+        done = run("-c", check, str(folder))
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        self.assertEqual(done.stdout.decode().split(), [str(folder / "var_export.py"), "mysql"])
+        self.assertEqual(run(str(folder / "alert_probe.py"), "--help").returncode, 0)
+        (folder / "var_export.py").unlink()
+        done = run(str(folder / "alert_probe.py"), "--help")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("var_export.py", done.stderr.decode())
 
 
 class ExternalAlertContractTests(unittest.TestCase):
