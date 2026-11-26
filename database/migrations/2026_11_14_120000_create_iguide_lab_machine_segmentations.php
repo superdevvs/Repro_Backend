@@ -11,8 +11,8 @@ return new class extends Migration {
             $table->uuid('id')->primary(); $table->foreignUuid('project_id')->constrained('iguide_lab_projects')->cascadeOnDelete();
             $table->foreignUuid('step_id')->unique()->constrained('iguide_lab_workflow_steps')->cascadeOnDelete();
             $table->uuid('request_id'); $table->string('request_hash', 64); $table->string('status', 24)->default('queued');
-            $table->string('provider_request_id')->nullable(); $table->json('provider_attempts')->nullable();
-            $table->json('data'); $table->json('result')->nullable(); $table->text('error')->nullable();
+            $table->string('provider_request_id')->nullable(); $table->longText('provider_attempts')->nullable();
+            $table->longText('data'); $table->longText('result')->nullable(); $table->text('error')->nullable();
             $table->timestamp('started_at')->nullable(); $table->timestamp('completed_at')->nullable(); $table->timestamps();
             $table->unique(['project_id', 'request_id']);
         });

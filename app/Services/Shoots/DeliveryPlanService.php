@@ -461,7 +461,12 @@ class DeliveryPlanService
             }
             // Availability metadata is not a new provider output revision.
             unset($external['readiness'], $stored['readiness']);
-            return hash_equals(hash('sha256', json_encode($external)), hash('sha256', json_encode($stored)));
+            // MySQL's JSON storage can reorder object keys. These flat identity
+            // maps must retain every key and exact value/type, independent of
+            // the database's serialization order.
+            ksort($external, SORT_STRING);
+            ksort($stored, SORT_STRING);
+            return $external === $stored;
         }
         if (empty($evidence['files'])) return false;
         foreach ($evidence['files'] as $entry) {

@@ -20,8 +20,8 @@ return new class extends Migration
             $table->uuid('support_request_id')->unique();
             $table->string('support_status', 30)->default('pending');
             $table->string('support_provider_request_id')->nullable();
-            $table->json('support_metadata')->nullable();
-            $table->json('data');
+            $table->longText('support_metadata')->nullable();
+            $table->longText('data');
             $table->text('error')->nullable();
             $table->timestamp('started_at')->nullable();
             $table->timestamp('completed_at')->nullable();

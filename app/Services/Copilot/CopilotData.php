@@ -81,7 +81,9 @@ final class CopilotData
         $page = max(1, (int) ($args['page'] ?? 1));
         $query = $this->query($user)->with(['services', 'client:id,name', 'photographer:id,name']);
         if (! empty($args['query'])) {
-            $query->where(fn ($q) => $q->where('address', 'like', '%'.$args['query'].'%')->orWhere('city', 'like', '%'.$args['query'].'%')->orWhere('id', $args['query']));
+            $term = (string) $args['query'];
+            $query->where(fn ($q) => $q->where('address', 'like', '%'.$term.'%')->orWhere('city', 'like', '%'.$term.'%')
+                ->orWhere('id', ctype_digit($term) ? (int) $term : -1));
         }
         if (! empty($args['status'])) {
             $query->where(fn ($q) => $q->where('status', $args['status'])->orWhere('workflow_status', $args['status']));

@@ -40,10 +40,14 @@ class DeploymentSqliteBackupTest extends TestCase
             $process = $this->backup();
             $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
             $backup = new SQLite3($this->directory.'/backup.sqlite', SQLITE3_OPEN_READONLY);
+            $this->assertSame('delete', $backup->querySingle('PRAGMA journal_mode'));
             $this->assertSame('ok', $backup->querySingle('PRAGMA quick_check'));
             $this->assertSame(1, $backup->querySingle('SELECT COUNT(*) FROM items'));
             $this->assertSame('committed', $backup->querySingle('SELECT value FROM items'));
             $backup->close();
+            foreach (['-wal', '-shm', '-journal'] as $sidecar) {
+                $this->assertFileDoesNotExist($this->directory.'/backup.sqlite'.$sidecar);
+            }
             if (PHP_OS_FAMILY !== 'Windows') {
                 $this->assertSame(0600, fileperms($this->directory.'/backup.sqlite') & 0777);
             }

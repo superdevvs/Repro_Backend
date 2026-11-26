@@ -271,10 +271,13 @@ class SpaceAndWorkflowTest(unittest.TestCase):
         self.assertLess(workflow.index('Test-DeploymentSpace -Sizes $releaseSizes'), workflow.index('Invoke-Scp -LocalPath $archivePath'))
         backend = workflow.split('function Deploy-Backend {', 1)[1].split('function Deploy-Frontend {', 1)[0]
         frontend = workflow.split('function Deploy-Frontend {', 1)[1].split('\ntry {', 1)[0]
-        self.assertLess(backend.index('flock -w 300 9'), backend.index('python3 - preflight backend'))
+        cutover_marker = 'if [ -e /etc/repro-database-cutover/active ]'
+        self.assertLess(backend.index('flock -w 300 9'), backend.index(cutover_marker))
+        self.assertLess(backend.index(cutover_marker), backend.index('python3 - preflight backend'))
         self.assertLess(backend.index('python3 - preflight backend'), backend.index('php artisan down'))
         self.assertLess(backend.index('python3 - preflight backend'), backend.index('tar -czf "$backup/source.tar.gz"'))
-        self.assertLess(frontend.index('flock -w 300 9'), frontend.index('deployment-storage.py preflight frontend'))
+        self.assertLess(frontend.index('flock -w 300 9'), frontend.index(cutover_marker))
+        self.assertLess(frontend.index(cutover_marker), frontend.index('deployment-storage.py preflight frontend'))
         self.assertLess(frontend.index('deployment-storage.py preflight frontend'), frontend.index('rsync -rltD'))
         self.assertNotIn('retention --apply', backend)
         self.assertNotIn('retention --apply', frontend)

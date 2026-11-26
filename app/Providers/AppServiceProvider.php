@@ -22,6 +22,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        \Illuminate\Database\Connection::resolverFor('mysql', fn ($pdo, $database, $prefix, $config) => new \App\Database\MySqlConnection($pdo, $database, $prefix, $config));
+        $this->app->bind('db.connector.mysql', \App\Database\MySqlConnector::class);
+
         $this->app->scoped(\App\Services\Shoots\DeliveryPlanService::class);
         $this->app->scoped(\App\Services\Shoots\ProviderAutoDeliverySettings::class);
         $this->app->bind(\App\Contracts\ListingStudio\ListingStudioRefundDispatcher::class, \App\Services\ListingStudio\StudioRefundService::class);
@@ -50,10 +53,10 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         foreach (['read' => 180, 'write' => 30] as $kind => $limit) {
-            \Illuminate\Support\Facades\RateLimiter::for('iguide-lab-'.$kind, fn ($request) =>
-                \Illuminate\Cache\RateLimiting\Limit::perMinute($limit)->by('iguide-lab-'.$kind.':'.hash('sha256', $request->bearerToken() ?: $request->ip())));
+            \Illuminate\Support\Facades\RateLimiter::for('iguide-lab-'.$kind, fn ($request) => \Illuminate\Cache\RateLimiting\Limit::perMinute($limit)->by('iguide-lab-'.$kind.':'.hash('sha256', $request->bearerToken() ?: $request->ip())));
         }
         $this->app['queue']->extend('database', fn () => new \App\Queue\SqliteRetryDatabaseConnector($this->app['db']));
+        $this->app->make(\App\Database\LeftoverTransactions::class)->register($this->app['events']);
 
         \Illuminate\Support\Facades\View::composer('emails.*', \App\Services\SystemEmails\EmailViewComposer::class);
 

@@ -304,7 +304,7 @@ class ListingStudioTrialAdmissionTest extends TestCase
         $token = $this->mint($key);
         $this->verify($token)->assertOk();
         DB::listen(function ($query) {
-            if (str_starts_with($query->sql, 'update "listing_studio_trial_guard"')) {
+            if (preg_match('/\Aupdate ["`]listing_studio_trial_guard["`]/i', $query->sql)) {
                 config(['listing-studio-trials.enabled' => false]);
             }
         });

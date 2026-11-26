@@ -30,7 +30,10 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('crm:follow-up-digest')->weekdays()->at('07:00')->timezone(\App\Services\Crm\CrmBusinessTime::TIMEZONE)->withoutOverlapping()->onOneServer();
         $schedule->call(fn () => app(\App\Services\Crm\CrmWebsiteIntakeReceipt::class)->retryPending())
             ->name('crm:website-intake')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
-        $schedule->command('crm:calendar-sync')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+        // Held after a freeze (CRM_CALENDAR_SYNC_HOLD) until crm:calendar-reconcile --dry-run exits 0,
+        // or until only cancelled push_pending rows are left, which only a sync run clears.
+        $schedule->command('crm:calendar-sync')->everyFiveMinutes()->withoutOverlapping()->onOneServer()
+            ->skip(fn () => (bool) config('crm.calendar_sync_hold'));
         $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();
         $schedule->command('groundwire-sms:recover')->everyMinute()->withoutOverlapping();
         // Laravel 11 in this project boots schedules from the application builder.
@@ -106,6 +109,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(\App\Http\Middleware\ServerMonitorTiming::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
         $middleware->prepend(\App\Http\Middleware\ListingStudioAdmissionCors::class);
+        // Producer replay hold: first in the stack, before anything that writes.
+        $middleware->prepend(\App\Http\Middleware\HoldProducerIngress::class);
         $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustConfiguredProxies::class);
         $middleware->trustProxies(
             headers: Request::HEADER_X_FORWARDED_TRAEFIK,

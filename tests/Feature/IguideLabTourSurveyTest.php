@@ -625,12 +625,22 @@ class IguideLabTourSurveyTest extends TestCase
     {
         ['captures' => [$capture]] = $this->seedTour();
         $survey = $this->dispatchCapture($capture);
-        DB::statement("CREATE TRIGGER fixture_attempt_update_fails BEFORE UPDATE ON iguide_lab_tour_survey_attempts WHEN NEW.status = 'received'
-            BEGIN SELECT RAISE(ABORT, 'fixture attempt update failure'); END");
+        $injected = false;
+        $connection = DB::connection();
+        $update = 'update '.$connection->getQueryGrammar()->wrapTable('iguide_lab_tour_survey_attempts').' ';
+        // Fail the real statement boundary on either engine, without DDL that
+        // would implicitly commit MySQL's RefreshDatabase transaction.
+        $connection->beforeExecuting(function ($sql, $bindings, $connection) use (&$injected, $update) {
+            if (str_starts_with($sql, $update) && in_array('received', $bindings, true)) {
+                $injected = true;
+                throw new QueryException($connection->getName(), $sql, $bindings, new \PDOException('fixture attempt update failure'));
+            }
+        });
         $this->fakeProvider('kitchen');
 
         app(LabTourSurveys::class)->process($survey);
 
+        $this->assertTrue($injected, 'the received-attempt write reached the failing database boundary');
         $this->assertSame($this->response('kitchen'), Storage::disk(LabService::DISK)->get($this->base($survey).'/response-0.json'));
         $this->assertSame(['needs_attention', 'receipt_unconfirmed'], [$survey->fresh()->status, $survey->fresh()->error_code]);
         $this->assertArrayNotHasKey('providerReceipt', $survey->fresh()->data);

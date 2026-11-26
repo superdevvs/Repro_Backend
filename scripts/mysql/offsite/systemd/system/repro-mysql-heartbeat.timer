@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro MySQL heartbeat every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:05 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-mysql-heartbeat.service
+
+[Install]
+WantedBy=timers.target

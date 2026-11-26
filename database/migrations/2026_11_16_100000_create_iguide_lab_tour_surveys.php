@@ -16,8 +16,8 @@ return new class extends Migration {
             $table->string('case_source_sha256', 64); $table->string('preview_sha256', 64); $table->string('survey_version', 32);
             $table->unsignedTinyInteger('generation')->default(1);
             $table->string('status', 24)->default('queued'); $table->string('error_code', 64)->nullable(); $table->string('parse_error', 120)->nullable();
-            $table->json('protocol'); $table->json('data'); $table->json('result')->nullable(); $table->string('result_sha256', 64)->nullable();
-            $table->string('parser_version', 40)->nullable(); $table->string('provider_request_id', 255)->nullable(); $table->json('usage')->nullable();
+            $table->longText('protocol'); $table->longText('data'); $table->longText('result')->nullable(); $table->string('result_sha256', 64)->nullable();
+            $table->string('parser_version', 40)->nullable(); $table->string('provider_request_id', 255)->nullable(); $table->longText('usage')->nullable();
             $table->unsignedSmallInteger('dispatch_count')->default(0); $table->timestamp('dispatched_at')->nullable();
             $table->timestamp('started_at')->nullable(); $table->timestamp('completed_at')->nullable(); $table->timestamps();
             $table->unique(['project_id', 'case_id', 'preview_sha256', 'survey_version', 'generation'], 'iguide_lab_tour_surveys_identity_unique');

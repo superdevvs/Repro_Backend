@@ -16,6 +16,7 @@ use Tests\TestCase;
 class ProfileSecurityTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\InjectsDatabaseWriteFailures;
 
     public function test_user_can_enrol_in_real_totp_and_login_requires_a_valid_code(): void
     {
@@ -256,13 +257,7 @@ class ProfileSecurityTest extends TestCase
         $user->createToken('other');
         $code = app(TwoFactorAuthenticationService::class)->currentCodeForSecret($secret);
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_two_factor_disable_token_delete
-            BEFORE DELETE ON personal_access_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced token deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('personal_access_tokens');
 
         try {
             $this->withToken($current->plainTextToken)
@@ -272,7 +267,7 @@ class ProfileSecurityTest extends TestCase
                 ])
                 ->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_two_factor_disable_token_delete');
+            $restoreDatabaseDeletes();
         }
 
         $user->refresh();
@@ -341,13 +336,7 @@ class ProfileSecurityTest extends TestCase
             ->json();
         $code = app(TwoFactorAuthenticationService::class)->currentCodeForSecret($setup['secret']);
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_two_factor_token_delete
-            BEFORE DELETE ON personal_access_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced token deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('personal_access_tokens');
 
         try {
             $this->withToken($current)
@@ -357,7 +346,7 @@ class ProfileSecurityTest extends TestCase
                 ])
                 ->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_two_factor_token_delete');
+            $restoreDatabaseDeletes();
         }
 
         $user->refresh();
@@ -482,6 +471,14 @@ class ProfileSecurityTest extends TestCase
 
     public function test_profile_password_change_revokes_tokens_before_audit_and_mail_side_effects(): void
     {
+        // This failure-ordering fixture must not depend on public DNS.
+        $this->app->instance(\App\Services\Users\EmailHealthService::class,
+            new class extends \App\Services\Users\EmailHealthService {
+                protected function domainCanReceiveMail(string $domain): bool
+                {
+                    return $domain === 'example.com';
+                }
+            });
         $password = 'Secret123!';
         $user = User::factory()->create([
             'email' => 'profile-security-old@example.com',
@@ -528,13 +525,7 @@ class ProfileSecurityTest extends TestCase
         $current = $user->createToken('current')->plainTextToken;
         $user->createToken('other');
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_profile_token_delete
-            BEFORE DELETE ON personal_access_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced token deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('personal_access_tokens');
 
         try {
             $this->withToken($current)
@@ -545,7 +536,7 @@ class ProfileSecurityTest extends TestCase
                 ])
                 ->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_profile_token_delete');
+            $restoreDatabaseDeletes();
         }
 
         $user->refresh();
@@ -570,13 +561,7 @@ class ProfileSecurityTest extends TestCase
             'created_at' => now(),
         ]);
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_profile_reset_link_delete
-            BEFORE DELETE ON password_reset_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced reset link deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('password_reset_tokens');
 
         try {
             $this->withToken($current)
@@ -587,7 +572,7 @@ class ProfileSecurityTest extends TestCase
                 ])
                 ->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_profile_reset_link_delete');
+            $restoreDatabaseDeletes();
         }
 
         $user->refresh();
@@ -617,13 +602,7 @@ class ProfileSecurityTest extends TestCase
             'created_at' => now(),
         ]);
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_emailed_reset_token_delete
-            BEFORE DELETE ON personal_access_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced token deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('personal_access_tokens');
 
         try {
             $this->postJson('/api/password/reset', [
@@ -633,7 +612,7 @@ class ProfileSecurityTest extends TestCase
                 'password_confirmation' => 'Updated456!',
             ])->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_emailed_reset_token_delete');
+            $restoreDatabaseDeletes();
         }
 
         $user->refresh();

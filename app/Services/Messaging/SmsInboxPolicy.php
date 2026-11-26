@@ -241,7 +241,7 @@ class SmsInboxPolicy
             ->where('context_threads.channel', 'SMS')->where('context_threads.sms_inbox_active', false)->whereNull('context_threads.sms_group_id')
             ->where('sms_context.channel', 'SMS')->where('sms_context.direction', 'OUTBOUND')
             ->where(fn ($visible) => $visible->where('sms_context.hidden_from_inbox', false)->orWhereNull('sms_context.hidden_from_inbox'))
-            ->whereRaw("LOWER(COALESCE(sms_context.body_text, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern])
+            ->whereRaw("LOWER(COALESCE(sms_context.body_text, '')) LIKE LOWER(?) ESCAPE CHAR(92)", [$pattern])
             ->select('sms_context.thread_id as context_thread_id')
             ->selectRaw($this->phoneSql('sms_context.from_address').' as business')
             ->selectRaw($this->phoneSql('sms_context.to_address').' as person')
@@ -294,7 +294,9 @@ class SmsInboxPolicy
             $digits = "REPLACE({$digits}, '{$separator}', '')";
         }
 
-        return "(CASE WHEN LENGTH({$digits}) = 10 THEN '1' || {$digits} ELSE {$digits} END)";
+        $national = \App\Support\DatabaseSql::concat(["'1'", $digits]);
+
+        return "(CASE WHEN LENGTH({$digits}) = 10 THEN {$national} ELSE {$digits} END)";
     }
 
     /** One-time migration/recovery helper; no message bodies or unread receipts are rewritten. */

@@ -23,6 +23,20 @@ class InvoiceApprovalControllerTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_review_queue_uses_stable_identity_order_across_pages_when_activity_times_tie(): void
+    {
+        Carbon::setTestNow('2026-11-05 12:00:00');
+        $payee = User::factory()->photographer()->create();
+        $invoices = collect(range(1, 3))->map(fn () => $this->createWeeklyInvoice($payee));
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        $first = $this->getJson('/api/admin/invoices/review-queue?per_page=2')->assertOk()->assertJsonPath('total', 3);
+        $second = $this->getJson('/api/admin/invoices/review-queue?per_page=2&page=2')->assertOk()->assertJsonPath('total', 3);
+        $this->assertSame($invoices->pluck('id')->reverse()->values()->all(), array_merge(
+            array_column($first->json('data'), 'id'), array_column($second->json('data'), 'id')
+        ));
+    }
+
     public function test_admin_review_queue_filters_photographer_invoices_by_status_search_and_date(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-04-09 10:00:00'));
@@ -192,7 +206,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->getJson('/api/admin/invoices/' . $invoice->id . '/review-detail');
+        $response = $this->getJson('/api/admin/invoices/'.$invoice->id.'/review-detail');
 
         $response->assertOk();
         $response->assertJsonPath('data.id', $invoice->id);
@@ -236,7 +250,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->getJson('/api/admin/invoices/' . $invoice->id . '/review-detail');
+        $response = $this->getJson('/api/admin/invoices/'.$invoice->id.'/review-detail');
 
         $response->assertOk();
         $response->assertJsonPath('data.id', $invoice->id);
@@ -300,7 +314,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         $queue = $this->getJson(
             '/api/admin/invoices/review-queue?role=photographer&approval_status=pending_approval'
-            . '&search=jay&start=2026-04-05&end=2026-04-11'
+            .'&search=jay&start=2026-04-05&end=2026-04-11'
         );
 
         $queue->assertOk();
@@ -406,7 +420,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/approve');
+        $response = $this->postJson('/api/admin/invoices/'.$invoice->id.'/approve');
 
         $response->assertOk();
         $response->assertJsonPath('invoice.approval_status', Invoice::APPROVAL_STATUS_APPROVED);
@@ -448,7 +462,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $blockedResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/approve');
+        $blockedResponse = $this->postJson('/api/admin/invoices/'.$invoice->id.'/approve');
         $blockedResponse->assertUnprocessable();
         $blockedResponse->assertJsonPath('message', 'Unresolved warnings must be fixed or overridden with a reason before approval.');
 
@@ -456,7 +470,7 @@ class InvoiceApprovalControllerTest extends TestCase
         $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $invoice->approval_status);
         $this->assertNull($invoice->warning_override_reason);
 
-        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/approve', [
+        $response = $this->postJson('/api/admin/invoices/'.$invoice->id.'/approve', [
             'warning_override_reason' => 'Verified pricing against the signed client quote.',
         ]);
 
@@ -488,7 +502,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $missingReasonResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/reject', []);
+        $missingReasonResponse = $this->postJson('/api/admin/invoices/'.$invoice->id.'/reject', []);
         $missingReasonResponse->assertUnprocessable();
 
         $invoice->refresh();
@@ -496,7 +510,7 @@ class InvoiceApprovalControllerTest extends TestCase
         $this->assertNull($invoice->rejected_by);
         $this->assertNull($invoice->rejected_at);
 
-        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/reject', [
+        $response = $this->postJson('/api/admin/invoices/'.$invoice->id.'/reject', [
             'reason' => 'Please attach the missing parking receipt.',
         ]);
 
@@ -524,7 +538,7 @@ class InvoiceApprovalControllerTest extends TestCase
         $queueResponse = $this->getJson('/api/admin/invoices/review-queue');
         $queueResponse->assertForbidden();
 
-        $detailResponse = $this->getJson('/api/admin/invoices/' . $invoice->id . '/review-detail');
+        $detailResponse = $this->getJson('/api/admin/invoices/'.$invoice->id.'/review-detail');
         $detailResponse->assertForbidden();
     }
 
@@ -546,7 +560,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->getJson('/api/admin/invoices/' . $invoice->id . '/review-detail');
+        $response = $this->getJson('/api/admin/invoices/'.$invoice->id.'/review-detail');
 
         $response->assertNotFound();
     }
@@ -568,7 +582,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/approve');
+        $response = $this->postJson('/api/admin/invoices/'.$invoice->id.'/approve');
 
         $response->assertOk();
         $response->assertJsonPath('invoice.approval_status', Invoice::APPROVAL_STATUS_APPROVED);
@@ -599,7 +613,7 @@ class InvoiceApprovalControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/mark-paid', [
+        $response = $this->postJson('/api/admin/invoices/'.$invoice->id.'/mark-paid', [
             'amount_paid' => $invoice->total_amount,
             'payment_method' => 'manual',
             'paid_at' => '2026-04-10 09:00:00',
@@ -627,7 +641,7 @@ class InvoiceApprovalControllerTest extends TestCase
             'client_id' => $client->id,
             'photographer_id' => $photographer->id,
             'scheduled_date' => $overrides['billing_period_start'] ?? '2026-03-02',
-            'completed_at' => ($overrides['billing_period_end'] ?? '2026-03-08') . ' 14:00:00',
+            'completed_at' => ($overrides['billing_period_end'] ?? '2026-03-08').' 14:00:00',
             'total_quote' => 240,
             'base_quote' => 220,
             'tax_amount' => 20,
@@ -692,7 +706,7 @@ class InvoiceApprovalControllerTest extends TestCase
             'client_id' => $client->id,
             'rep_id' => $salesRep->id,
             'scheduled_date' => $overrides['billing_period_start'] ?? '2026-03-02',
-            'completed_at' => ($overrides['billing_period_end'] ?? '2026-03-08') . ' 14:00:00',
+            'completed_at' => ($overrides['billing_period_end'] ?? '2026-03-08').' 14:00:00',
             'total_quote' => 600,
             'base_quote' => 560,
             'tax_amount' => 40,

@@ -1,0 +1,6 @@
+{
+  "schema": "repro.nightly-data-parity.manifest.v2",
+  "identity_sha256": null,
+  "nightly_scope_sha256": "a3807732af33e799198c3e681b2610ff470605e023d2029fc5b8ec81bf5c99d2",
+  "nights": []
+}

@@ -1,0 +1,301 @@
+# Nightly parity runner and dress-rehearsal profile
+
+`runner.py` runs one scheduled UTC night and writes every input a reviewer
+needs for the nightly streak. `dress_profile.py` derives and pins the
+dress-rehearsal host profile, workload and endpoint lists. `policy.py` checks
+the draft review policy and manifest and pins reviewed nights into them.
+
+None of these tools uses ssh, a network connection or a provider. The runner
+does nothing on a server unless someone with approval starts it there.
+
+## What one night produces
+
+The runner works in `<state-dir>/<YYYY-MM-DD>/`, a private directory (mode 0700).
+
+| Stage | Work | Main outputs |
+| --- | --- | --- |
+| `capture` | Read-only online backup of the live SQLite file with `scripts/deploy/backup-sqlite.php`, then checks of the CRM migrations, CRM tables and linked clients. | `copy-receipt.json` (the dated capture), `snapshot.sqlite` |
+| `plan` | Scope audit, source scan with `migrate.py plan`, reverse schema template and the finance date census. The converted layout must equal `reviewed_schema_sha256`. | `scope-audit.json`, `forward-plan/`, `reverse-schema/`, `week-census.json` |
+| `target` | Starts a disposable socket-only MySQL 8.4.13 with durable binary logs and checks its settings. | `target.json` |
+| `import_and_verify` | `migrate.py import-empty` (import and checksum verification), then the independent PHP reader. Timed against the budget. | `forward-import-result.json`, `forward-fields-private.jsonl` |
+| `reverse` | Optional reviewed trigger helper, export back to SQLite, PHP verification of the export and the CRM relationship audit. The disposable MySQL is then stopped. | `reverse-export-result.json`, `reverse-fields-private.jsonl`, `crm-audit-private.json` |
+| `finance` | The configured finance step, after the reverse step. Its receipt is checked like the reviewed finance verifier. | `finance-proof.json` |
+| `applicant_files` | `verify-crm-applicant-files.py` against the configured private disk. Only an empty inventory counts as applicant-file parity: with files present the runner has no target-side comparison or permitted and denied access checks, so `crm_applicant_file_parity_verified` stays false. | `applicant-files.json` |
+| `crm_review` | Draft CRM review and its evidence index. | `crm-review.json`, `crm-parity-evidence.json` |
+| `report` | Draft nightly report and manifest entry, checked with `verify_nightly_capture` and the per-night gate. | `night.json`, `manifest-entry.json` |
+
+`run-receipt.json` records the status, each stage's time, the import and
+verification split, the budget, the projection, the tuning and the tool
+digests. `night.json` has exactly the fields in `NIGHTLY_REPORT_FIELDS` and
+`crm-review.json` exactly those in `NIGHTLY_CRM_FIELDS`. A reviewer still
+confirms them against the evidence before pinning their digests.
+
+When a night stops, the runner keeps its diagnostics in
+`diagnostics-private/attempt-N/` (folder 0700, files 0600) before it removes
+the disposable work directory: the MySQL error log, the converter's and
+exporter's protected `failure-private.json` reports, and the failed tool's
+stdout and stderr (each kept to its last 8 MiB). Credential files, keys, the
+data directory and the recovered SQLite copy are never kept. The receipt's
+`diagnostics` lists the files for the attempt.
+
+The night's `release_sha` is the commit of the clean candidate checkout whose
+tools ran. The capture's `release` is the live backend commit read from
+`deploy-meta.json` at run time, before and after the copy. A deploy during the
+copy stops the night: the deploy lock is probed before and again after the
+copy (a deploy holds it from the start but rewrites `deploy-meta.json` only at
+the end), and a changed `deploy-meta.json` is refused. The runner does not
+hold the deploy lock during the copy, so it never delays or refuses a deploy.
+A deploy that takes and releases the lock entirely within the copy, without
+finishing, is not seen by either probe. One that stops before
+`php artisan migrate` (which runs only after the deploy's own database backup)
+has not changed the database. One that fails after its migrations ran leaves
+the previous release live, because the deploy restores the old source, on the
+migrated database: a layout change is refused by the reviewed-layout pin, but
+a data-only migration is not detected. Either way the copy is one consistent
+state of the live database, which is what the night verifies.
+
+## Safety
+
+- `run` is a dry run unless `--execute` is given. A dry run prints the stages,
+  their commands and the guard results. It writes nothing and runs no tool.
+- `--execute` needs `--approval` with a file the owner approved:
+
+  ```json
+  {"schema": "repro.nightly-runner.approval.v1", "first_day_utc": "2026-11-27",
+   "last_day_utc": "2026-12-05", "config_sha256": "<from check-config>"}
+  ```
+
+  The night must fall inside the dates and the configuration digest must match.
+- One runner at a time holds `runner.lock` in the state directory.
+- Before the copy: clean candidate checkout, every pinned file unchanged, deploy
+  lock free, the scheduled date is today in UTC, the live database is SQLite,
+  and free space is above `max(45 GB, 9 x live size)`. Before MySQL starts:
+  `MemAvailable` covers the buffer pool plus an 8 GiB margin (at least 12 GiB).
+- The capture must finish on the scheduled UTC date. A copy that crosses
+  midnight, fails a check or is cut short by a timeout or signal is deleted
+  at once.
+- Every command runs under `nice` and `ionice`. MySQL runs with
+  `--skip-networking`. A test checks that no command names ssh, curl, rclone,
+  sudo, systemctl or a URL.
+- The runner refuses to run as root.
+
+## Budget and fail fast
+
+Import plus both forward verifications must finish within 12 minutes
+(720,000 ms). Measured runs took 593 to 754 seconds, so the runner:
+
+- projects the time from the baseline in the config (596.7 s for 4,460,900,352
+  bytes) and stops before the import when the projection is over budget;
+- gives the import a timeout equal to the budget and the PHP reader only what
+  is left, and stops the night when either reaches it;
+- skips the reverse, finance and CRM stages after a budget stop, so the host
+  is freed early;
+- records `import_ms`, `verify_ms`, `import_and_verify_ms`, `projected_ms` and
+  `headroom_ms`, plus every stage's time.
+
+Set `budget.fail_fast` to `false` to measure an over-budget night to the end.
+That night still cannot qualify.
+
+## Tuning without weakening durability
+
+`mysql_tuning` accepts only options that do not change what a commit
+guarantees: `innodb_buffer_pool_size` (1G to 16G), `innodb_redo_log_capacity`
+(512M to 16G), `innodb_log_buffer_size`, `innodb_io_capacity`,
+`innodb_io_capacity_max`, `innodb_flush_method` (`fsync` or `O_DIRECT`) and
+`innodb_adaptive_hash_index`. `priority` can move the timed stages from the
+idle IO class to best-effort level 7 (`ionice_class: 2, ionice_level: 7`),
+which still yields to the live site but is not starved by it.
+
+The runner always passes `--sync-binlog=1`,
+`--innodb-flush-log-at-trx-commit=1`, `--innodb-doublewrite=ON`, full-row
+binary logs and GTIDs, and checks them on the running server. Any other option,
+such as `sync_binlog`, `skip_log_bin` or `O_DIRECT_NO_FSYNC`, is refused.
+
+The committed config keeps the measured profile (4G buffer pool, 2G redo, nice
+10, idle IO). Change one option at a time and compare `run-receipt.json`
+timings across nights without other jobs running.
+
+## Resume and re-run
+
+Each finished stage is journaled with the digests of its outputs. Running the
+same night again:
+
+- refuses if any journaled output changed, or the config or candidate changed;
+- once the capture is done, refuses unless the checkout is still clean, every
+  pin (scope, exceptions, driver, reverse helper, finance) still holds and each
+  candidate tool still has the digest the capture recorded, so a resume never
+  runs code the capture did not check; the reverse helper's pin is also checked
+  again right before it runs;
+- reuses the capture and plan;
+- restarts `target`, `import_and_verify` and `reverse` together, because they
+  share one disposable MySQL, after stopping any leftover `mysqld` found by
+  this night's `--datadir` (even when its pid was never journaled);
+- returns the stored receipt without running anything once the night is done.
+
+## Configuration
+
+Validate a config and print the digest the approval must carry:
+
+```sh
+python3 -B -m scripts.cutover.nightly.runner check-config --config scripts/cutover/nightly/nightly-config.json
+```
+
+| Field | Committed value | Notes |
+| --- | --- | --- |
+| `candidate_root` | `/home/maverick/repro-nightly-candidate` | A clean checkout of the candidate release. |
+| `scope` | `database/schema/migration-scope.json`, `a3807732…` | Re-pin after any reviewed scope change. |
+| `reviewed_schema_sha256` | `87e79c75…` | The reviewed converted layout. A schema change stops the night until it is reviewed. `migrate.py plan` computes it from the captured live file, so only a production snapshot can re-pin it: a fresh build has 321 tables, not 328, and another digest. It was pinned while the live ledger had nine CRM migrations. The tenth adds two `recruit_application_receipts` columns, which change the digest, so a night after the candidate is deployed stops at `plan` (`reviewed-layout-differs`) until it is re-pinned from such a snapshot. See [Re-pin the reviewed layout](#re-pin-the-reviewed-layout). |
+| `crm_migrations` | the ten CRM migrations | Every migration that names a CRM table (`crm_*`, `recruit_*`, `email_suppressions`) anywhere, including in a `DB::statement`. The capture stops (`crm-ledger-differs`) unless the live ledger has all of them, so nights before the candidate is deployed stop there. `test_committed_config_lists_every_crm_migration` fails when one is missing. `crm-snapshot-audit.py` checks the same list and refuses any other ledger row whose name contains `crm_`, `recruit_` or `email_suppressions`, and `scripts/mysql/crm-rehearsal-fixture.php` runs the same set (both tested). |
+| `reverse_triggers` | `null` | The reviewed trigger helper is not committed yet. Pin its path and digest here. |
+| `finance` | `null` | The finance rehearsal needs an administrator sandbox. Until a step is configured, `invoice_and_payout_parity_verified` is false and the night cannot qualify. |
+| `applicant_files_root` | `null` | Set to the private disk root to read applicant files read-only. |
+| `retain_snapshots` | `null` | Keep every snapshot. A number keeps only that many of the newest runner snapshots; receipts are always kept. |
+
+## Re-pin the reviewed layout
+
+No night can count until the candidate is deployed and `reviewed_schema_sha256`
+is re-pinned:
+
+- Before the deploy, every night stops at `capture` (`crm-ledger-differs`).
+  `crm_migrations` lists ten CRM migrations and the live ledger has nine.
+  `crm-snapshot-audit.py` also requires all ten.
+- After the deploy, every night stops at `plan` (`reviewed-layout-differs`).
+  The tenth migration adds `payload_sha256` and `attachment_sha256s` to
+  `recruit_application_receipts`, which changes the digest.
+
+So the order is: deploy the candidate, re-pin, then start the five-night
+streak. That order needs the owner's yes. The deploy is a server action, and
+the re-pin changes the config digest, so the owner approves a new approval
+file.
+
+To re-pin, as the deploy user, from the clean candidate checkout:
+
+1. After the deploy, run one night with an owner approval for the current
+   config (`run … --execute --approval …`). It stops at `plan` with
+   `reviewed-layout-differs`. Its folder
+   `<state-dir>/<day>/` keeps the dated capture (`snapshot.sqlite`,
+   `copy-receipt.json`) and the runner's own plan output in `forward-plan/`.
+2. Run the plan again on that capture, into a folder that does not exist
+   yet (its parent must). It writes `schema-plan.json`,
+   `exceptions-private.json` and `result.json`, all mode 0600, and never
+   changes the snapshot. On the full snapshot it can take many minutes; the
+   runner allows it 30. It reads the whole snapshot on the live host, so run
+   it at the runner's priority (`priority` in the config: nice 10, idle I/O
+   class 3).
+
+   ```sh
+   /usr/bin/nice -n 10 /usr/bin/ionice -c 3 \
+     /usr/bin/python3 -B scripts/mysql/migrate.py plan \
+     --snapshot <state-dir>/<day>/snapshot.sqlite \
+     --snapshot-sha256 <snapshot_sha256 from copy-receipt.json> \
+     --output <state-dir>/repin-<day>
+   ```
+
+3. Review `<state-dir>/repin-<day>/schema-plan.json`. It must equal
+   `<state-dir>/<day>/forward-plan/schema-plan.json`. Compared with the
+   layout pinned before, the only change should be the two new
+   `recruit_application_receipts` columns. Ignore `maximum_characters`:
+   those are observed lengths and not part of the digest. The runner does
+   not keep the earlier layout, so take it from an earlier reviewed run's
+   `schema-plan.json`, or read the whole file.
+4. Copy `schema_sha256` from `<state-dir>/repin-<day>/result.json` into
+   `reviewed_schema_sha256` of the config the runner uses. The runner
+   refuses a dirty checkout, so either keep that config as a private file
+   outside the checkout and pass it with `--config`, or commit the change to
+   `nightly-config.json` and update the candidate checkout. A commit is a
+   new candidate release: every later night's `release_sha` is that commit,
+   not the release deployed in step 1. The readiness check requires the
+   last two nights' `release_sha` to equal the frozen release in the policy
+   (`scripts/cutover/readiness/check.py`), and at the cutover the identity
+   probe must find that same release deployed (`scripts/cutover/runner.py`).
+   So a committed re-pin must be deployed too, and the frozen identity must
+   name it.
+5. Run `check-config` and give the owner the new `config_sha256` for a new
+   approval file.
+6. Start the streak on the next night. The stopped night cannot be resumed
+   under the new config (`config-changed-for-this-night`).
+
+Check disk space before the streak. `retain_snapshots` is `null`, so every
+night that gets past `capture` keeps its `snapshot.sqlite` (about 4.5 GB),
+the stopped re-pin night too; a night that stops at `capture` removes its
+copy. Each night also needs more free space than the larger of
+`guards.min_free_bytes` (45 GB) and `guards.free_bytes_per_source_byte` (9)
+times the live database, checked before the copy and again before `target`,
+or it stops with `insufficient-disk`. If space is short, set
+`retain_snapshots` (a config change, so a new approval) or ask the owner to
+approve a cleanup.
+
+## Commands
+
+```sh
+# Dry run: guards and commands only.
+python3 -B -m scripts.cutover.nightly.runner run --config nightly-config.json \
+  --state-dir /home/maverick/repro-nightly --day 2026-11-27
+
+# The night itself, with the owner's approval file.
+python3 -B -m scripts.cutover.nightly.runner run --config nightly-config.json \
+  --state-dir /home/maverick/repro-nightly --day 2026-11-27 --execute --approval approval.json
+```
+
+The command exits 0 when the night's draft passes the per-night gate, 3 when
+the night finished but cannot qualify (for example finance is not configured),
+and 1 when it stopped or was refused. SIGTERM and SIGHUP stop the night
+cleanly: the journal records the stop and the disposable MySQL is stopped.
+Tools never inherit the caller's environment.
+
+## After each night
+
+1. Review the outputs, then add the night to the manifest:
+   `python3 -B -m scripts.cutover.nightly.policy add-night --manifest reviewed-nights.json --entry <night>/manifest-entry.json --output reviewed-nights.next.json`.
+2. After five consecutive nights, with the cutover identity set in the policy,
+   pin the manifest: `policy pin-manifest --policy … --manifest … --policy-output … --manifest-output …`.
+3. Build the summary with all five capture receipts:
+   `python3 -B -m scripts.cutover.readiness.summarize_nightly_parity … --producer-receipts <five copy-receipt.json>`.
+4. Pin its `summary_sha256` with `policy pin-summary` and run `readiness.check`.
+
+## Dress-rehearsal profile
+
+`dress/host-profile.json` and `dress/workload.json` are drafts for owner
+review. The workload encodes the plan's stress and crash marks (ten minutes at
+20 clients, three mid-write MySQL kills, 60-second recovery), the observed rates
+(p95 minute 125, peak 237 requests) and a proposed surge of twice the peak.
+`critical_endpoints` names the write workflows and money reports.
+
+The 50 busiest endpoints need the private telemetry, so `busiest_endpoints` is
+unset. On a private copy, rank them read-only and fill a new workload file:
+
+```sh
+python3 -B -m scripts.cutover.nightly.dress_profile busiest --snapshot snapshot.sqlite \
+  --snapshot-sha256 <sha> --as-of-utc 2026-11-27T05:00:00Z > busiest.json
+python3 -B -m scripts.cutover.nightly.dress_profile fill-workload --workload dress/workload.json \
+  --busiest busiest.json --busiest-sha256 <sha of busiest.json> --output workload.reviewed.json
+python3 -B -m scripts.cutover.nightly.dress_profile pins --host-profile dress/host-profile.json \
+  --workload workload.reviewed.json
+```
+
+`pins` prints `host_profile_sha256`, `workload_sha256`, `critical_endpoints` and
+`busiest_endpoints` for the policy.
+
+## Policy and manifest drafts
+
+`review-policy.draft.json` pins the nightly scope and the two profile files and
+leaves the identity, the busiest list and the operations evidence unset.
+`reviewed-nights.draft.json` is the empty v2 manifest for that scope.
+
+```sh
+python3 -B -m scripts.cutover.nightly.policy check-drafts --policy scripts/cutover/nightly/review-policy.draft.json \
+  --manifest scripts/cutover/nightly/reviewed-nights.draft.json --scope database/schema/migration-scope.json \
+  --host-profile scripts/cutover/nightly/dress/host-profile.json --workload scripts/cutover/nightly/dress/workload.json
+```
+
+It fails when a pin no longer matches its file and lists what is still unset.
+
+## Tests
+
+```sh
+python3 -B -m unittest discover -s scripts/cutover/nightly -p 'test_*.py' -v
+```
+
+The runner tests use a fake host that simulates each tool and records every
+command. `test_local_host.py` tests the real host adapter on Linux as an
+unprivileged user and skips those cases elsewhere.

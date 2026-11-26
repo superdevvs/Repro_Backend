@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\MigrationForeignId;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -10,15 +11,15 @@ return new class extends Migration
     {
         Schema::create('shoot_service_earning_snapshots', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('shoot_id')->constrained()->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'shoot_id', 'shoots')->constrained()->cascadeOnDelete();
             // The original booked identity survives deletion; intentionally not a foreign key.
             $table->unsignedBigInteger('shoot_service_id');
-            $table->foreignId('recipient_id')->constrained('users')->restrictOnDelete();
+            MigrationForeignId::matching($table, 'recipient_id', 'users')->constrained('users')->restrictOnDelete();
             $table->date('scheduled_date')->index();
             $table->timestamp('earned_at');
             $table->decimal('amount', 12, 2);
             $table->json('snapshot');
-            $table->foreignId('removed_by')->nullable()->constrained('users')->nullOnDelete();
+            MigrationForeignId::matching($table, 'removed_by', 'users')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamps();
             $table->unique('shoot_service_id', 'service_earned_pay_once');
         });

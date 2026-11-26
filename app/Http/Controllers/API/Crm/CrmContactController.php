@@ -8,6 +8,7 @@ use App\Services\Crm\CrmAssignmentService;
 use App\Services\Crm\CrmContactService;
 use App\Services\Crm\CrmDuplicateException;
 use App\Services\Crm\CrmStageService;
+use App\Support\DatabaseSql;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -60,12 +61,13 @@ class CrmContactController extends CrmController
 
         return $query
             ->when($search !== '', function ($q) use ($search) {
-                $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($search)).'%';
+                $pattern = '%'.DatabaseSql::escapeLike(mb_strtolower($search)).'%';
                 $digits = preg_replace('/\D+/', '', $search);
-                $q->where(function ($inner) use ($like, $digits) {
-                    $inner->whereRaw('LOWER(name) LIKE ? ESCAPE \'!\'', [$like])
-                        ->orWhereRaw('LOWER(COALESCE(company, \'\')) LIKE ? ESCAPE \'!\'', [$like])
-                        ->orWhereRaw('LOWER(COALESCE(email, \'\')) LIKE ? ESCAPE \'!\'', [$like]);
+                $q->where(function ($inner) use ($pattern, $digits) {
+                    foreach (['name', 'company', 'email'] as $column) {
+                        $inner->orWhereRaw(...DatabaseSql::sqliteLowerLike("COALESCE({$column}, '')", $pattern,
+                            $inner->getConnection(), escapeBang: true));
+                    }
                     if (strlen((string) $digits) >= 4) {
                         $inner->orWhere('phone_digits', 'like', '%'.$digits.'%');
                     }

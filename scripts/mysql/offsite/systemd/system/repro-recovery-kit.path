@@ -1,0 +1,9 @@
+[Unit]
+Description=RePro republish the recovery kit after the app .env changes
+
+[Path]
+PathChanged=/var/www/backend/.env
+Unit=repro-recovery-kit.service
+
+[Install]
+WantedBy=paths.target

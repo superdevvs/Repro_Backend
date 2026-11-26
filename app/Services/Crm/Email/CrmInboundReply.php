@@ -42,7 +42,9 @@ class CrmInboundReply
             }
             $receipt = $this->record($send, $eventId, $emailId, $payload, $this->stripQuoted($text));
         }
-        if (empty($receipt->payload['forward_status'])) {
+        // Reconciliation can record the reply before permitting outbound mail.
+        // A subsequent signed delivery can forward the same recorded receipt.
+        if (empty($receipt->payload['forward_status']) && ! config('crm.email.defer_reply_forwarding')) {
             $this->forward($send, $receipt);
         }
 

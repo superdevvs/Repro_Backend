@@ -241,9 +241,9 @@ class ClientConfirmationRecoveryTest extends TestCase
         Artisan::call('messaging:audit-client-confirmations');
         $output = Artisan::output();
 
-        $this->assertStringContainsString((string) $failed->id, $output);
-        $this->assertStringContainsString((string) $skipped->id, $output);
-        $this->assertStringNotContainsString((string) $sent->id, $output);
+        $this->assertMatchesRegularExpression('/\|\s*'.preg_quote((string) $failed->id, '/').'\s*\|/', $output);
+        $this->assertMatchesRegularExpression('/\|\s*'.preg_quote((string) $skipped->id, '/').'\s*\|/', $output);
+        $this->assertDoesNotMatchRegularExpression('/^\|\s*'.preg_quote((string) $sent->id, '/').'\s*\|/m', $output);
     }
 
     private function createDefaultEmailChannel(): MessageChannel

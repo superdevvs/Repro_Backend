@@ -1,0 +1,45 @@
+[Unit]
+Description=RePro rotate one MySQL binary log
+OnSuccess=repro-binlog-archive.service
+OnFailure=repro-binlog-archive.service
+
+[Service]
+Type=oneshot
+User=repro-binlog
+Group=repro-binlog
+SupplementaryGroups=repro-binlog-plan
+StateDirectory=repro-binlog-rotation
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/repro-binlog-rotation
+# The guard stays held after an ambiguous rotation; see binlog-fixture/README.md.
+ExecStartPre=/usr/bin/mkdir -- /var/lib/repro-binlog-rotation/attempt.pending
+ExecStartPre=/usr/bin/sync /var/lib/repro-binlog-rotation
+ExecStart=/usr/bin/python3 -I -B /opt/repro-backup-tools/rotation_attempt.py --plan /etc/repro-backup/rotation.json --plan-sha256 REVIEWED_ROTATION_PLAN_SHA256 --guard /var/lib/repro-binlog-rotation/attempt.pending
+TimeoutStartSec=75s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KillMode=control-group
+TimeoutStopSec=10s
+SendSIGKILL=yes
+Restart=no
+StandardOutput=journal
+StandardError=journal
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectHome=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=-/var/lib/repro-mysql84-native/data -/var/lib/repro-backup -/var/www
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=16
+SyslogIdentifier=repro-binlog-rotate

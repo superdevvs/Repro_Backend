@@ -28,6 +28,8 @@ use Tests\TestCase;
  */
 class ShootUploadLockContentionTest extends TestCase
 {
+    use \Tests\Concerns\FreshDatabaseOutsideTransaction;
+
     /** @var array<int, string> */
     private array $recordedLockRetries = [];
 
@@ -44,7 +46,6 @@ class ShootUploadLockContentionTest extends TestCase
     {
         parent::setUp();
 
-        $this->artisan('migrate:fresh')->run();
         $this->app[Kernel::class]->setArtisan(null);
     }
 
@@ -143,7 +144,7 @@ class ShootUploadLockContentionTest extends TestCase
 
         $attempts = 0;
         DB::listen(function (QueryExecuted $query) use (&$attempts): void {
-            if (! str_starts_with(strtolower(trim($query->sql)), 'insert into "shoot_files"')) {
+            if (! preg_match('/\Ainsert into ["`]shoot_files["`]/i', trim($query->sql))) {
                 return;
             }
 
@@ -180,7 +181,7 @@ class ShootUploadLockContentionTest extends TestCase
         $remaining = $times;
 
         DB::listen(function (QueryExecuted $query) use (&$remaining): void {
-            if ($remaining <= 0 || ! str_starts_with(strtolower(trim($query->sql)), 'insert into "shoot_files"')) {
+            if ($remaining <= 0 || ! preg_match('/\Ainsert into ["`]shoot_files["`]/i', trim($query->sql))) {
                 return;
             }
 

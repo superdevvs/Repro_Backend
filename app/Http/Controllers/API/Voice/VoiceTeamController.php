@@ -22,9 +22,11 @@ class VoiceTeamController extends Controller
     {
         $data = $request->validate(['q' => ['nullable', 'string', 'max:120'], 'role' => ['nullable', Rule::in(['all', 'client', 'salesRep', 'photographer', 'staff', 'contact'])],
             'page' => ['sometimes', 'integer', 'min:1'], 'per_page' => ['sometimes', 'integer', 'between:1,50']]);
-        $users = User::query()->selectRaw("'user:' || id AS id, id AS user_id, NULL AS contact_id, name, role, COALESCE(NULLIF(phonenumber, ''), phone) AS phone, company_name")
+        $userId = \App\Support\DatabaseSql::concat(["'user:'", 'id']);
+        $contactId = \App\Support\DatabaseSql::concat(["'contact:'", 'id']);
+        $users = User::query()->selectRaw("{$userId} AS id, id AS user_id, NULL AS contact_id, name, role, COALESCE(NULLIF(phonenumber, ''), phone) AS phone, company_name")
             ->where(fn ($q) => $q->whereNull('account_status')->orWhere('account_status', 'active'))->whereNull('locked_at');
-        $contacts = Contact::query()->whereNull('user_id')->selectRaw("'contact:' || id AS id, NULL AS user_id, id AS contact_id, name, 'contact' AS role, phone, NULL AS company_name");
+        $contacts = Contact::query()->whereNull('user_id')->selectRaw("{$contactId} AS id, NULL AS user_id, id AS contact_id, name, 'contact' AS role, phone, NULL AS company_name");
         $query = DB::query()->fromSub($users->unionAll($contacts), 'directory');
         if (($role = $data['role'] ?? 'all') !== 'all') {
             if ($role === 'staff') {

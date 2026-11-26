@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro archive catch-up between rotations
+
+[Timer]
+OnCalendar=*-*-* *:1/2:30 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-binlog-archive.service
+
+[Install]
+WantedBy=timers.target

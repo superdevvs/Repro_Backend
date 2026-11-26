@@ -75,6 +75,18 @@ class VoiceCall extends Model
         'preferred_callback_at' => 'datetime',
     ];
 
+    public function getDurationSecondsAttribute(mixed $value): int|float|null
+    {
+        if ($value === null) {
+            return null;
+        }
+        // MySQL DECIMAL arrives as text. Retain SQLite's numeric API values,
+        // including historical fractional durations, without rounding to int.
+        $integer = (int) $value;
+
+        return $integer == $value ? $integer : (float) $value;
+    }
+
     public function callerUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'caller_user_id');

@@ -1,0 +1,12 @@
+[Unit]
+Description=RePro server-alive ping every minute
+
+[Timer]
+# No catch-up: a missed minute is exactly what the provider should see.
+OnCalendar=*-*-* *:*:00 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-alert-heartbeat.service
+
+[Install]
+WantedBy=timers.target

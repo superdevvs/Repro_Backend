@@ -39,7 +39,7 @@ class TravelOverrideAuthorizationTest extends TestCase
         Sanctum::actingAs($rep);
         $this->patchJson('/api/shoots/'.$shoot->id, $flags + ['scheduled_at' => '2026-10-16T14:00:00Z',
             'action_mode' => 'reschedule'])->assertOk();
-        $this->assertSame('2026-10-16 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-16 14:00:00', \Tests\Support\StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
         $pending = ShootRescheduleRequest::create(['shoot_id' => $shoot->id, 'requested_by' => $shoot->client_id,
             'requested_date' => '2026-10-16', 'requested_time' => '10:00', 'status' => 'pending']);
         $engine = Mockery::mock(ScheduleFeasibilityService::class);

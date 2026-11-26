@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\MigrationForeignId;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -11,8 +12,8 @@ return new class extends Migration
         Schema::create('mobile_device_preferences', function (Blueprint $table) {
             // A native sign-in token belongs to one phone. Never key preferences
             // by the account alone: the same administrator can use many phones.
-            $table->foreignId('personal_access_token_id')->primary()->constrained('personal_access_tokens')->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'personal_access_token_id', 'personal_access_tokens')->primary()->constrained('personal_access_tokens')->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'user_id', 'users')->constrained()->cascadeOnDelete();
             $table->uuid('installation_id');
             $table->unsignedBigInteger('sequence');
             $table->json('preferences');

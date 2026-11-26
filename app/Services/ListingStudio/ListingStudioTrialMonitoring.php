@@ -22,26 +22,30 @@ class ListingStudioTrialMonitoring
             return;
         }
         $service = array_key_exists((string) $service, ListingStudioGuestTrialService::SERVICES) ? $service : 'all';
-        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('INSERT INTO "'.$prefix.'listing_studio_trial_counters" (day, event, service, count) VALUES (?, ?, ?, 1) ON CONFLICT (day, event, service) DO UPDATE SET count = count + 1')
-            ->execute([now('UTC')->toDateString(), $event, $service]));
+        $this->bestEffort(function (PDO $pdo, string $prefix, string $driver) use ($event, $service): void {
+            $upsert = $driver === 'mysql' ? 'ON DUPLICATE KEY UPDATE `count` = `count` + 1'
+                : 'ON CONFLICT (day, event, service) DO UPDATE SET count = count + 1';
+            $pdo->prepare('INSERT INTO `'.$prefix.'listing_studio_trial_counters` (`day`, `event`, `service`, `count`) VALUES (?, ?, ?, 1) '.$upsert)
+                ->execute([now('UTC')->toDateString(), $event, $service]);
+        });
     }
 
     public function workerStarted(string $trialId): void
     {
-        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('UPDATE "'.$prefix.'listing_studio_guest_trials" SET worker_started_at = ? WHERE id = ? AND worker_started_at IS NULL')
+        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('UPDATE `'.$prefix.'listing_studio_guest_trials` SET worker_started_at = ? WHERE id = ? AND worker_started_at IS NULL')
             ->execute([now()->format('Y-m-d H:i:s'), $trialId]));
     }
 
     /** A successful authorized response was requested, not proof of completed browser delivery. */
     public function downloadRequested(string $trialId): void
     {
-        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('UPDATE "'.$prefix.'listing_studio_guest_trials" SET download_request_count = download_request_count + 1, first_download_requested_at = COALESCE(first_download_requested_at, ?) WHERE id = ?')
+        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('UPDATE `'.$prefix.'listing_studio_guest_trials` SET download_request_count = download_request_count + 1, first_download_requested_at = COALESCE(first_download_requested_at, ?) WHERE id = ?')
             ->execute([now()->format('Y-m-d H:i:s'), $trialId]));
     }
 
     public function prune(): void
     {
-        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('DELETE FROM "'.$prefix.'listing_studio_trial_counters" WHERE day < ?')
+        $this->bestEffort(fn (PDO $pdo, string $prefix) => $pdo->prepare('DELETE FROM `'.$prefix.'listing_studio_trial_counters` WHERE day < ?')
             ->execute([now('UTC')->subDays(89)->toDateString()]));
     }
 
@@ -52,16 +56,27 @@ class ListingStudioTrialMonitoring
         $primary = null;
         try {
             $primary = DB::connection();
+            $prefix = $primary->getTablePrefix();
+            if (! preg_match('/\A[a-zA-Z0-9_]*\z/', $prefix)) {
+                throw new \RuntimeException('Unsupported telemetry table prefix.');
+            }
+            if ($primary->getDriverName() === 'mysql') {
+                // Counters must survive a rejected business transaction. Use an
+                // independent autocommit session with a bounded lock wait, and
+                // never change the business connection's session settings.
+                $configuration = $primary->getConfig();
+                $pdo = (new \App\Database\MySqlConnector)->connect($configuration);
+                $pdo->exec('SET SESSION innodb_lock_wait_timeout = 1');
+                $write($pdo, $prefix, 'mysql');
+
+                return;
+            }
             if ($primary->getDriverName() !== 'sqlite') {
                 throw new \RuntimeException('Unsupported telemetry database.');
             }
             $primaryPdo = $primary->getPdo();
             if ($primaryPdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite') {
                 throw new \RuntimeException('Unsupported telemetry database.');
-            }
-            $prefix = $primary->getTablePrefix();
-            if (! preg_match('/\A[a-zA-Z0-9_]*\z/', $prefix)) {
-                throw new \RuntimeException('Unsupported telemetry table prefix.');
             }
             $main = collect($primaryPdo->query('PRAGMA database_list')->fetchAll(PDO::FETCH_ASSOC))->firstWhere('name', 'main');
             if (($main['file'] ?? null) === '' && $primary->getDatabaseName() === ':memory:') {
@@ -71,7 +86,9 @@ class ListingStudioTrialMonitoring
                 $restoreTimeout = (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn();
             } else {
                 $file = $main['file'] ?? '';
-                if ($file !== '') { clearstatcache(true, $file); }
+                if ($file !== '') {
+                    clearstatcache(true, $file);
+                }
                 $canonical = $file !== '' ? realpath($file) : false;
                 if (! $canonical || ! is_file($canonical) || ! is_readable($canonical) || ! is_writable($canonical)) {
                     throw new \RuntimeException('Unsupported telemetry database file.');
@@ -85,17 +102,23 @@ class ListingStudioTrialMonitoring
                 }
             }
             $pdo->exec('PRAGMA busy_timeout = 100');
-            $write($pdo, $prefix);
+            $write($pdo, $prefix, 'sqlite');
         } catch (\Throwable) {
             // Do not attach exceptions, request context, or identifiers to this message.
-            try { Log::error('Listing Studio operational telemetry could not be stored.'); } catch (\Throwable) { /* Logging is best-effort too. */ }
+            try {
+                Log::error('Listing Studio operational telemetry could not be stored.');
+            } catch (\Throwable) { /* Logging is best-effort too. */
+            }
         } finally {
             if ($restoreTimeout !== null && $pdo) {
                 try {
                     $pdo->exec('PRAGMA busy_timeout = '.$restoreTimeout);
                 } catch (\Throwable) {
                     // Never leave a reduced timeout on a connection reused by business writes.
-                    try { $primary?->disconnect(); } catch (\Throwable) { /* The failed connection is unusable. */ }
+                    try {
+                        $primary?->disconnect();
+                    } catch (\Throwable) { /* The failed connection is unusable. */
+                    }
                 }
             }
             $pdo = null;
@@ -155,9 +178,13 @@ class ListingStudioTrialMonitoring
             'note' => 'Account creation timing is an attribution proxy. A download request is not proof of complete file transfer.'];
         $warnings = [];
         foreach (['needs_attention', 'queued_over_5_minutes', 'processing_over_15_minutes', 'finalization_gap'] as $key) {
-            if ($active[$key] > 0) { $warnings[] = $key; }
+            if ($active[$key] > 0) {
+                $warnings[] = $key;
+            }
         }
-        if ($limit > 0 && $starts >= $limit * .8) { $warnings[] = 'global_quota_at_80_percent'; }
+        if ($limit > 0 && $starts >= $limit * .8) {
+            $warnings[] = 'global_quota_at_80_percent';
+        }
 
         return ['generated_at' => $now->toIso8601String(), 'since' => $since->toIso8601String(), 'services' => $services,
             'active' => $active, 'quota' => $quota, 'conversion' => $conversion,

@@ -1,0 +1,40 @@
+[Unit]
+Description=RePro MySQL recovery heartbeat (one row per UTC minute)
+
+[Service]
+Type=oneshot
+User=repro-binlog
+Group=repro-binlog
+SupplementaryGroups=repro-binlog-plan
+StateDirectory=repro-binlog-heartbeat
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/repro-binlog-heartbeat
+ExecStart=/usr/bin/python3 -I -B /opt/repro-backup-tools/heartbeat.py record --plan /etc/repro-backup/heartbeat-source.json --plan-sha256 REVIEWED_HEARTBEAT_PLAN_SHA256
+TimeoutStartSec=50s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KillMode=control-group
+TimeoutStopSec=10s
+SendSIGKILL=yes
+Restart=no
+StandardOutput=journal
+StandardError=journal
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectHome=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=-/var/lib/repro-mysql84-native/data -/var/lib/repro-backup -/var/www
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=16
+SyslogIdentifier=repro-mysql-heartbeat

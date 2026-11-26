@@ -208,6 +208,13 @@ command -v flock >/dev/null
 exec 9>"$HOME/.repro-backend-deploy.lock"
 flock -w 300 9 || { echo 'Another backend deployment holds the lock; retry later.' >&2; exit 94; }
 
+# The administrator-installed cutover controller owns this flag. Check it
+# after taking the deploy lock, before any app mutation.
+if [ -e /etc/repro-database-cutover/active ] || [ -L /etc/repro-database-cutover/active ]; then
+  echo 'Database cutover holds the backend deployment fence.' >&2
+  exit 95
+fi
+
 # Recheck current free blocks under the deployment lock, before extraction,
 # maintenance or rollback backups. The first check ran before SCP.
 tar -xOf "$archive" scripts/deploy/deployment-storage.py | python3 - preflight backend "$archive_bytes" "$release_bytes"
@@ -311,9 +318,7 @@ tar -czf "$backup/source.tar.gz" -C "$app" \
   --exclude='.env*' --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.pfx' --exclude='*.jks' --exclude='./output' --exclude='quarantine*' --exclude='./bootstrap/cache/*.php' --exclude='./.git' --exclude='./vendor' --exclude='./node_modules' \
   --exclude='./storage' --exclude='./database/*.sqlite' --exclude='./database/*.sqlite-*' \
   --exclude='./public/storage' .
-if [ -f "$app/database/database.sqlite" ]; then
-  php "$stage/scripts/deploy/backup-sqlite.php" "$app/database/database.sqlite" "$backup/database.sqlite"
-fi
+php "$stage/scripts/deploy/backup-database.php" "$app" "$backup"
 echo "Rollback backups: $backup"
 
 code_replaced=1
@@ -471,6 +476,11 @@ stage="/tmp/repro-frontend-$commit"
 command -v flock >/dev/null
 exec 9>"$HOME/.repro-frontend-deploy.lock"
 flock -w 300 9 || { echo 'Another frontend deployment holds the lock; retry later.' >&2; exit 94; }
+if [ -e /etc/repro-database-cutover/active ] || [ -L /etc/repro-database-cutover/active ]; then
+  echo 'Database cutover holds the frontend deployment fence.' >&2
+  exit 95
+fi
+
 python3 /var/www/backend/scripts/deploy/deployment-storage.py preflight frontend "$archive_bytes" "$release_bytes"
 
 case "$archive" in /tmp/repro-frontend-*.tar.gz) ;; *) echo "Unsafe archive path" >&2; exit 90 ;; esac

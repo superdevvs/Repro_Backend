@@ -296,6 +296,9 @@ class SupportKnowledgeTest extends TestCase
 
     public function test_empty_role_opt_outs_survive_knowledge_and_support_migration_sequence(): void
     {
+        if (\Illuminate\Support\Facades\DB::getDriverName() === 'mysql') {
+            $this->markTestSkipped('Historical SQLite support-table rebuild; current MySQL role opt-outs are tested separately.');
+        }
         $knowledge = require database_path('migrations/2026_09_30_120000_enable_robbie_role_support_guides.php');
         $support = require database_path('migrations/2026_10_01_100000_create_support_tickets.php');
         foreach ([true, false] as $wrapped) {

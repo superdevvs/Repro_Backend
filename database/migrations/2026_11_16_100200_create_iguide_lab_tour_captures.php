@@ -18,8 +18,8 @@ return new class extends Migration {
             $table->string('source_sha256', 64); $table->string('preview_sha256', 64); $table->boolean('exterior_hint')->default(false);
             $table->string('status', 24)->default('pending'); $table->string('error_code', 64)->nullable(); $table->uuid('survey_id')->nullable();
             $table->boolean('dispatch_allowed')->default(true); $table->unsignedTinyInteger('paid_survey_requests')->default(0);
-            $table->json('survey')->nullable(); $table->json('applicability')->nullable(); $table->json('candidates')->nullable();
-            $table->string('defaults_version', 24)->nullable(); $table->json('defaults_flags')->nullable();
+            $table->longText('survey')->nullable(); $table->longText('applicability')->nullable(); $table->longText('candidates')->nullable();
+            $table->string('defaults_version', 24)->nullable(); $table->longText('defaults_flags')->nullable();
             $table->timestamp('surveyed_at')->nullable(); $table->timestamps();
             $table->unique(['analysis_id', 'case_id']);
             $table->unique(['analysis_id', 'position']);

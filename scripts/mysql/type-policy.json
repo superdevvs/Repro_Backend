@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "indexed_text_default_characters": 255,
+  "temporal_text_characters": 64,
+  "overrides": {
+    "iguide_lab_tour_surveys.preview_sha256": {"type": "VARCHAR(64)", "kind": "text"},
+    "iguide_lab_tour_surveys.survey_version": {"type": "VARCHAR(32)", "kind": "text"},
+    "services.delivery_time": {"type": "LONGTEXT", "kind": "legacy_text"},
+    "voice_calls.duration_seconds": {"type": "DECIMAL(65,30)", "kind": "decimal"}
+  }
+}

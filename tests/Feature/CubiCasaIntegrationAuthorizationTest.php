@@ -71,7 +71,7 @@ class CubiCasaIntegrationAuthorizationTest extends TestCase
     public function test_unauthenticated_requests_cannot_reach_provider_work(): void
     {
         [, $shoot] = $this->fixture('admin');
-        $before = $shoot->getRawOriginal();
+        $before = $shoot->fresh()->getRawOriginal();
         $this->expectNoProviderCalls();
 
         foreach ($this->requests() as [$action, $payload]) {
@@ -137,7 +137,7 @@ class CubiCasaIntegrationAuthorizationTest extends TestCase
 
     private function assertAllMutationsDenied(Shoot $shoot, int $status = 403): void
     {
-        $before = $shoot->getRawOriginal();
+        $before = $shoot->fresh()->getRawOriginal();
         $this->expectNoProviderCalls();
 
         foreach ($this->requests() as [$action, $payload]) {

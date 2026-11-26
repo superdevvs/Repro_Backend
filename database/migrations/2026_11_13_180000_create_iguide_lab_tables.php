@@ -8,6 +8,8 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // Lab JSON carries immutable request/evidence snapshots. Keep its original
+        // serialized order on both engines instead of native MySQL JSON normalization.
         Schema::create('iguide_lab_projects', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->string('name');
@@ -31,7 +33,7 @@ return new class extends Migration
             $table->string('source_sha256', 64);
             $table->string('source_path');
             $table->string('source_mime', 40);
-            $table->json('metadata')->nullable();
+            $table->longText('metadata')->nullable();
             $table->timestamps();
         });
         Schema::create('iguide_lab_runs', function (Blueprint $table) {
@@ -45,10 +47,10 @@ return new class extends Migration
             $table->string('preset', 30);
             $table->string('style', 30)->nullable();
             $table->text('prompt');
-            $table->json('options');
+            $table->longText('options');
             $table->string('status', 30)->default('queued');
             $table->string('provider_request_id')->nullable();
-            $table->json('usage')->nullable();
+            $table->longText('usage')->nullable();
             $table->string('output_path')->nullable();
             $table->unsignedInteger('output_width')->nullable();
             $table->unsignedInteger('output_height')->nullable();

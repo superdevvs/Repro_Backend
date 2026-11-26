@@ -1,0 +1,17 @@
+# Fixture only: requires an externally isolated user manager and prepared state.
+# This profile does not provide the system profile's filesystem/network sandbox.
+[Unit]
+Description=RePro daily database base backup schedule
+
+[Timer]
+# 03:30 UTC keeps 90 minutes clear of the monthly 02:00 reboot on the 28th.
+# Persistent=true runs one catch-up after a missed night; the 26 h freshness
+# limit still covers 5 min of jitter and a 30 min run.
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=5m
+AccuracySec=1m
+Persistent=true
+Unit=repro-backup.service
+
+[Install]
+WantedBy=timers.target

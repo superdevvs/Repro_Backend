@@ -67,11 +67,12 @@ class ShootActivityLogger
      * @param string $action Action identifier (e.g., 'shoot_scheduled_email', 'payment_done', 'media_uploaded')
      * @param array $metadata Additional context data
      * @param User|null $user User who performed the action (defaults to authenticated user)
+     * @param bool $broadcastAfterCommit Publish only after the outer transaction commits.
      * @return \App\Models\ShootActivityLog
      */
-    public function log(Shoot $shoot, string $action, array $metadata = [], ?User $user = null): \App\Models\ShootActivityLog
+    public function log(Shoot $shoot, string $action, array $metadata = [], ?User $user = null, bool $broadcastAfterCommit = false): \App\Models\ShootActivityLog
     {
-        return DB::transaction(function () use ($shoot, $action, $metadata, $user) {
+        return DB::transaction(function () use ($shoot, $action, $metadata, $user, $broadcastAfterCommit) {
             $description = $this->generateDescription($action, $metadata);
 
             $activityLog = $shoot->activityLogs()->create([
@@ -100,7 +101,7 @@ class ShootActivityLogger
                         \Log::warning('Failed to broadcast shoot activity: ' . $e->getMessage());
                     }
                 };
-                if (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()) {
+                if ($broadcastAfterCommit || app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()) {
                     DB::afterCommit($broadcast);
                 } else {
                     $broadcast();

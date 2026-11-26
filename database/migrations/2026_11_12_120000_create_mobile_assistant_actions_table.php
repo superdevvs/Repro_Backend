@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\MigrationForeignId;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -10,7 +11,7 @@ return new class extends Migration
     {
         Schema::create('mobile_assistant_actions', function (Blueprint $table) {
             $table->uuid('id')->primary();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'user_id', 'users')->constrained()->cascadeOnDelete();
             $table->uuid('request_id');
             $table->string('action', 64);
             $table->string('state', 24)->default('prepared');

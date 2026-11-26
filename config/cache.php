@@ -2,6 +2,15 @@
 
 use Illuminate\Support\Str;
 
+$schedulingConnection = env('DB_CONNECTION', 'sqlite') === 'mysql'
+    && env('REPRO_MYSQL_SCHEDULING_CACHE', false) === true
+        ? 'mysql_scheduling_cache'
+        : null;
+
+// On MySQL, database cache locks use their own session without the writer token,
+// so a lock never waits for (or deadlocks against) its own caller's transaction.
+$mysqlLockConnection = env('DB_CONNECTION', 'sqlite') === 'mysql' ? 'mysql_cache_locks' : null;
+
 return [
 
     /*
@@ -42,9 +51,9 @@ return [
         // database avoids the per-owner permissions of ordinary file-cache locks.
         'scheduling' => [
             'driver' => 'database',
-            'connection' => null,
+            'connection' => $schedulingConnection,
             'table' => 'cache',
-            'lock_connection' => null,
+            'lock_connection' => $schedulingConnection ?? $mysqlLockConnection,
             'lock_table' => 'cache_locks',
         ],
 
@@ -52,7 +61,7 @@ return [
             'driver' => 'database',
             'connection' => env('DB_CACHE_CONNECTION'),
             'table' => env('DB_CACHE_TABLE', 'cache'),
-            'lock_connection' => env('DB_CACHE_LOCK_CONNECTION'),
+            'lock_connection' => env('DB_CACHE_LOCK_CONNECTION', $mysqlLockConnection),
             'lock_table' => env('DB_CACHE_LOCK_TABLE'),
         ],
 

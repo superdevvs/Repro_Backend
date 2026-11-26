@@ -29,7 +29,10 @@ class ShootUploadSummaryController extends Controller
             ->whereNotNull('upload_batch_id')->where('upload_batch_total', '>', 0)
             ->where('status', ShootUploadAttempt::STATUS_COMPLETED)->whereNotNull('completed_at')
             ->when(strtolower($actor->role) === 'photographer', function ($query) use ($shoot, $actor, $authorization) {
-                $assigned = $shoot->serviceItems()->get()->filter(fn ($item) => $authorization->canPhotographerAccessServiceItem($shoot, $item->id, $actor))->pluck('id');
+                $shoot->load('serviceItems');
+                $assigned = $shoot->serviceItems
+                    ->filter(fn ($item) => $authorization->canPhotographerAccessServiceItem($shoot, $item->id, $actor))
+                    ->pluck('id');
                 $query->where(fn ($scope) => $scope->whereIn('shoot_service_id', $assigned)->orWhereNull('shoot_service_id'));
             })
             ->when($unitId, fn ($query) => $query->where(function ($scoped) use ($shoot, $unitId) {

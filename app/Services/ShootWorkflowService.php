@@ -126,8 +126,10 @@ class ShootWorkflowService
         // Capture the shoot's current (old) local calendar day before mutating it so a
         // reschedule that moves the shoot to a different day busts both buckets (Req 8.1, 8.3).
         $previousLocalDate = $scheduleScope->localDateForShoot($shoot);
+        $connection = DB::connection();
+        $isMySql = $connection->getDriverName() === 'mysql';
 
-        $this->writeTransaction(function () use ($shoot, $scheduledAt, $user, $isAlreadyScheduled, $isResumingFromHold, $scheduleScope) {
+        $this->writeTransaction(function () use ($shoot, $scheduledAt, $user, $isAlreadyScheduled, $isResumingFromHold, $scheduleScope, $isMySql) {
             // Update status if resuming from hold or if not already scheduled
             $shoot->workflow_status = self::STATUS_SCHEDULED;
             $shoot->status = self::STATUS_SCHEDULED;
@@ -150,20 +152,35 @@ class ShootWorkflowService
                         'scheduled_at' => $scheduledAtCarbon->toIso8601String(),
                         'by' => $user?->name ?? auth()->user()?->name,
                     ],
-                    $user
+                    $user,
+                    broadcastAfterCommit: $isMySql,
                 );
             }
         }, "shoot.{$shoot->id}.workflow.schedule");
 
-        // Clear dashboard cache so changes reflect immediately
-        $this->clearDashboardCache();
-
-        // Bust the per-date schedule buckets for both the old and the new calendar day so the
-        // Schedule_View reflects the create/reschedule within the same request (Req 8.1, 8.3).
-        $scheduleScope->invalidateDates([
+        $dates = [
             $previousLocalDate,
             $scheduleScope->localDateForShoot($shoot),
-        ]);
+        ];
+        $invalidate = function () use ($scheduleScope, $dates): void {
+            $this->clearDashboardCache();
+            $scheduleScope->invalidateDates($dates);
+        };
+
+        if ($isMySql && $connection->transactionLevel() > 0) {
+            // A shared cache can refill from the old schedule until the outer write commits.
+            $connection->afterCommit(function () use ($invalidate, $shoot): void {
+                try {
+                    $invalidate();
+                } catch (\Throwable $exception) {
+                    Log::error('Schedule cache invalidation failed after commit.', ['shoot_id' => $shoot->id, 'exception' => $exception]);
+                }
+            });
+
+            return;
+        }
+
+        $invalidate();
     }
 
     /**

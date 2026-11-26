@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\{DB, Schema};
+use App\Support\MigrationForeignId;
 
 return new class extends Migration {
     public function up(): void
@@ -12,13 +13,13 @@ return new class extends Migration {
         if (! Schema::hasColumn('shoots', 'active_work_is_reopened')) Schema::table('shoots', fn (Blueprint $table) => $table->boolean('active_work_is_reopened')->nullable());
         if (! Schema::hasTable('shoot_delivery_receipts')) Schema::create('shoot_delivery_receipts', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('shoot_id')->constrained('shoots')->cascadeOnDelete();
-            $table->foreignId('shoot_service_id')->constrained('shoot_service')->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'shoot_id', 'shoots')->constrained('shoots')->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'shoot_service_id', 'shoot_service')->constrained('shoot_service')->cascadeOnDelete();
             $table->string('component_key', 80);
             $table->string('execution_key', 100);
             $table->string('method', 40);
             $table->json('evidence');
-            $table->foreignId('actor_id')->nullable()->constrained('users')->nullOnDelete();
+            MigrationForeignId::matching($table, 'actor_id', 'users')->nullable()->constrained('users')->nullOnDelete();
             $table->text('reason')->nullable();
             $table->string('plan_revision', 64);
             $table->string('operation_key', 100)->index();

@@ -69,6 +69,12 @@ final class NotificationReadStateService
         $now = (int) now()->getTimestampMs();
 
         return LockedWrite::run(fn () => DB::transaction(function () use ($userId, $context, $ids, $watermark, $now) {
+            if (DB::getDriverName() === 'mysql') {
+                // Duplicate INSERT IGNORE checks can both hold shared locks on
+                // an existing receipt before each upgrades to FOR UPDATE. Lock
+                // the stable parent first, including when this context is new.
+                DB::table('users')->where('id', $userId)->lockForUpdate()->first(['id']);
+            }
             DB::table('notification_read_states')->insertOrIgnore([
                 'user_id' => $userId, 'context' => $context, 'last_seen_at' => null,
                 'read_ids' => '{}', 'created_at' => now(), 'updated_at' => now(),

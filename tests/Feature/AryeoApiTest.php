@@ -102,6 +102,54 @@ class AryeoApiTest extends TestCase
         $this->provider();
     }
 
+    public function test_persisted_snapshot_ignores_object_key_order_but_rejects_changed_identity(): void
+    {
+        $this->destination->update(['identity' => array_reverse($this->destination->identity, true)]);
+        $export = app(Exports::class)->preview($this->destination, $this->admin->id);
+        $snapshot = $export->snapshot;
+        $reordered = array_reverse($snapshot, true);
+        $reordered['identity'] = array_reverse($snapshot['identity'], true);
+        $reordered['consent'] = array_reverse($snapshot['consent'], true);
+        $export->update(['snapshot' => $reordered]);
+        $snapshots = app(Snapshots::class);
+        $snapshots->assertCurrent($export->fresh(), true);
+        $this->assertSame($snapshots->hash($snapshot), $snapshots->hash($export->fresh()->snapshot));
+
+        $reordered['identity']['id'] = (string) $snapshot['identity']['id'];
+        $export->update(['snapshot' => $reordered]);
+        try {
+            $snapshots->assertCurrent($export->fresh(), true);
+            $this->fail('Changing an identity value type must invalidate the approval.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) {
+            $this->assertSame(409, $error->getStatusCode());
+            $this->assertSame('approval_stale', $error->getMessage());
+        }
+    }
+
+    public function test_snapshot_identity_preserves_list_order_and_scalar_types(): void
+    {
+        $snapshots = app(Snapshots::class);
+        $original = ['assets' => [['id' => 1, 'version' => 2], ['id' => 3, 'version' => 4]], 'authorized' => true];
+        $reorderedKeys = ['authorized' => true, 'assets' => [['version' => 2, 'id' => 1], ['version' => 4, 'id' => 3]]];
+        $this->assertSame($snapshots->hash($original), $snapshots->hash($reorderedKeys));
+        foreach ([['assets' => array_reverse($original['assets']), 'authorized' => true],
+            ['assets' => [['id' => '1', 'version' => 2], ['id' => 3, 'version' => 4]], 'authorized' => true],
+            ['assets' => $original['assets'], 'authorized' => 1]] as $changed) {
+            $this->assertNotSame($snapshots->hash($original), $snapshots->hash($changed));
+        }
+    }
+
+    public function test_cancelled_export_cannot_reacquire_destination_ownership(): void
+    {
+        $export = $this->approved();
+        app(Exports::class)->cancel($export, $this->admin->id, 'Synthetic cancellation');
+        $this->blocked(fn () => app(Guard::class)->claim($export), 'export_not_executable');
+        $destination = $this->destination->fresh();
+        $this->assertNull($destination->active_export_id);
+        $this->assertNull($destination->executor_token);
+        $this->assertSame([], $this->writes);
+    }
+
     private function provider(): void
     {
         $this->resetHttp();
