@@ -355,6 +355,19 @@ class StatementTests(unittest.TestCase):
             self.assertEqual(["The gate account could not log in (no error text)"],
                              self.gate.gate_account_check(self.config)["problems"])
 
+    def test_the_clients_error_comes_before_what_the_first_statement_printed(self):
+        # Review W2V-6: the login worked and CURRENT_USER() printed the account on stdout, then SHOW GRANTS
+        # failed. The reason is the client's error on stderr; stdout's first line is only the account.
+        for error in ("ERROR 1142 (42000) at line 1: SHOW command denied to user 'repro_cutover_gate'@'localhost'",
+                      "ERROR 2013 (HY000) at line 1: Lost connection to MySQL server during query"):
+            with self.subTest(error=error[:10]):
+                both = subprocess.CompletedProcess([], 1, stdout=f"{self.gate.GATE_ACCOUNT}\n", stderr=f"{error}\n")
+                with mock.patch.object(self.gate, "_client", return_value=both):
+                    account = self.gate.gate_account_check(self.config)
+                self.assertEqual(None, account["current_user"])
+                self.assertEqual([f"The gate account could not log in ({error})"], account["problems"])
+                self.assertNotIn(f"({self.gate.GATE_ACCOUNT})", account["problems"][0])
+
 
 @unittest.skipUnless(sys.platform == "linux" and hasattr(os, "geteuid"), "The gate CLI runs on the Linux host")
 class CommandLineTests(unittest.TestCase):
