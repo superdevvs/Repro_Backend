@@ -37,7 +37,7 @@ class LabHarmonization
     {
         $this->validate($snapshot);
         $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
-        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
+        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'PYTHONDONTWRITEBYTECODE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
         $process = new Process([(string) config('iguide-lab.harmonization_python_path'), resource_path('iguide-lab/harmonize_section.py'), '--request', $requestPath,
             '--runtime-manifest', (string) config('iguide-lab.harmonization_runtime_manifest')], null, $env, null, 65);
         $process->run(); $report = json_decode($process->getOutput(), true);

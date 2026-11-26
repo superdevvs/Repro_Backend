@@ -169,7 +169,7 @@ function Test-DeploymentSpace {
 function Invoke-DeploymentRetention {
     # Both remote deployment wrappers have returned, closing their flock FDs.
     # The retention helper can now acquire backend then frontend without a cycle.
-    Invoke-Ssh -Command 'set -eu; python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
+    Invoke-Ssh -Command 'set -eu; python3 -B /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 -B /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
 }
 
 function Deploy-Backend {
@@ -185,6 +185,8 @@ set -Eeuo pipefail
 [ "$(id -gn)" = "www-data" ] || { echo 'Backend deployment requires the shared www-data group.' >&2; exit 93; }
 # Code must stay non-writable by PHP-FPM; SQLite inherits database file modes.
 umask 0022
+# Python must not write __pycache__ into the fingerprinted app tree.
+export PYTHONDONTWRITEBYTECODE=1
 archive="$1"
 commit="$2"
 run_migrations="$3"
@@ -511,6 +513,8 @@ function Deploy-Frontend {
     )
     $remoteScript = @'
 set -Eeuo pipefail
+# Python must not write __pycache__ into the fingerprinted app tree.
+export PYTHONDONTWRITEBYTECODE=1
 archive="$1"
 commit="$2"
 archive_bytes="$3"

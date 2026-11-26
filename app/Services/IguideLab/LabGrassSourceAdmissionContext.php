@@ -83,7 +83,7 @@ class LabGrassSourceAdmissionContext
     {
         abort_unless(in_array($worker, ['analysis_views.py', 'grass_source_detail_views.py'], true), 422);
         $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
-        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
+        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'PYTHONDONTWRITEBYTECODE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
         $args = [(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/'.$worker), '--request', $request];
         if ($worker === 'grass_source_detail_views.py') array_push($args, '--allowed-root', Storage::disk(LabService::DISK)->path('iguide-lab/'.$projectId));
         // A follow-up capture has at most three 30-second local processes,
