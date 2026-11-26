@@ -79,6 +79,15 @@ class ShootFileObserver
         );
     }
 
+    /**
+     * Runs inside the delete's transaction: an unresolved returned edit for
+     * this photo would otherwise be unreachable and block finalise forever.
+     */
+    public function deleting(ShootFile $shootFile): void
+    {
+        app(\App\Services\Shoots\OrphanedFileVersions::class)->dismissForDeletedFile($shootFile);
+    }
+
     public function deleted(ShootFile $shootFile): void
     {
         app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles();

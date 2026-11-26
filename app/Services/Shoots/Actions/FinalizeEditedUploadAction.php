@@ -149,6 +149,9 @@ class FinalizeEditedUploadAction
                     ->whereIn('status', ['queued', 'processing', 'ready', 'conflict', 'failed'])->get()
                     ->filter(fn ($version) => ($version->metadata['origin'] ?? '') === 'intake'
                         && ($user?->role !== 'editor' || (int) $version->created_by === (int) $user->id));
+                // A returned edit whose photo was deleted can no longer be reviewed in
+                // Versions, so it must not block finalise.
+                $savedReturns = app(\App\Services\Shoots\OrphanedFileVersions::class)->withoutMissingFiles($savedReturns);
                 if ($savedReturns->isNotEmpty()) {
                     return ['status' => 409, 'payload' => ['error_type' => 'saved_edits_pending',
                         'message' => 'Uploads are saved. Wait for processing or review the returned edit in Versions / upload saved edit before submitting.',
