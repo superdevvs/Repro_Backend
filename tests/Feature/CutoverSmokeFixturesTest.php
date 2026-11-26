@@ -33,6 +33,10 @@ class CutoverSmokeFixturesTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        if (DB::getDriverName() !== 'sqlite') {
+            // CutoverTableSnapshots reads sqlite_master and the read-only checks expect SQLite's own refusal.
+            $this->markTestSkipped('SQLite smoke fixture; cutover:smoke-fixtures on MySQL is covered by tests/MySql/CutoverSmokeMySqlTest.php.');
+        }
         $this->standInForRoot();
     }
 

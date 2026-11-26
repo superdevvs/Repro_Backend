@@ -1,11 +1,5 @@
 <?php
 
-// PENDING (D09 review item B2). The release D branch has no phpunit.mysql.xml or
-// tests/MySql, so this file waits here. On feat/mysql-adapter-lane-20261126, once
-// D09 is merged, move it to tests/MySql/CutoverSmokeMySqlTest.php, delete this
-// comment and the pending/ folder, and provision the two accounts below in
-// .github/workflows/mysql.yml (otherwise two of the four tests skip).
-
 namespace Tests\MySql;
 
 use App\Support\Cutover\CutoverEngineProbe;
@@ -34,14 +28,15 @@ use Tests\TestCase;
  *   REPRO_MYSQL_SMOKE_BINLOG_USERNAME, REPRO_MYSQL_SMOKE_BINLOG_PASSWORD
  *     REPLICATION SLAVE, REPLICATION CLIENT on *.* (reads the binary log)
  *
- * mysql.yml, next to repro_pitr_fixture ('%' as the host there):
+ * .github/workflows/mysql.yml provisions both next to repro_pitr_fixture ('%' as
+ * the host there; a local socket-only fixture uses localhost):
  *   CREATE USER 'repro_smoke_reader'@'%' IDENTIFIED BY '<random>';
  *   GRANT SELECT ON repro_mysql_test.* TO 'repro_smoke_reader'@'%';
  *   GRANT SELECT ON repro_mysql_control.writer_token TO 'repro_smoke_reader'@'%';
  *   CREATE USER 'repro_smoke_binlog'@'%' IDENTIFIED BY '<random>';
  *   GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repro_smoke_binlog'@'%';
- * and the four variables in $GITHUB_ENV (passwords masked). The binary log is on
- * by default in the mysql:8.4 service.
+ * and puts the four variables in $GITHUB_ENV (passwords masked). The binary log
+ * is on by default in the mysql:8.4 service.
  */
 final class CutoverSmokeMySqlTest extends TestCase
 {

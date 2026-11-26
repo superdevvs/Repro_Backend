@@ -91,8 +91,8 @@ name; the hashes stay pinned in `test_route_hash_vectors.py`.
 a private pool as `www-data` and is skipped elsewhere. It also runs both smoke
 commands as the real root and expects the refusal.
 
-`pending/CutoverSmokeMySqlTest.php.txt` is the MySQL test (server UUID, the
+`tests/MySql/CutoverSmokeMySqlTest.php` is the MySQL test (server UUID, the
 read-only session as a SELECT-only account, the write smoke's tables in the
-binary log). This branch has no MySQL profile, so it waits here for the lane,
-where it becomes `tests/MySql/CutoverSmokeMySqlTest.php`; its header lists the
-two extra test accounts it needs.
+binary log), in the `phpunit.mysql.xml` profile. Its header lists the two extra
+test accounts it needs; `.github/workflows/mysql.yml` provisions them. The two
+SQLite feature tests above skip on MySQL and point to it.

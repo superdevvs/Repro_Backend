@@ -79,6 +79,17 @@ jobs:
           # outside the application schema, bound to the test database.
           printf "CREATE DATABASE repro_mysql_control CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin; CREATE TABLE repro_mysql_control.writer_token (id TINYINT UNSIGNED NOT NULL PRIMARY KEY CHECK (id=1), application_database VARBINARY(64) NOT NULL, contract_version INT UNSIGNED NOT NULL) ENGINE=InnoDB; INSERT INTO repro_mysql_control.writer_token VALUES (1,'repro_mysql_test',1); GRANT SELECT, UPDATE(id) ON repro_mysql_control.writer_token TO 'repro_test'@'%%';\n" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
           printf "CREATE USER 'repro_pitr_fixture'@'%%' IDENTIFIED BY '%s'; GRANT SELECT, SHOW VIEW, TRIGGER, EVENT ON repro_mysql_test.* TO 'repro_pitr_fixture'@'%%'; GRANT RELOAD, REPLICATION CLIENT ON *.* TO 'repro_pitr_fixture'@'%%';\n" "$backup_password" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
+          # tests/MySql/CutoverSmokeMySqlTest.php: a SELECT-only app account (the gate
+          # closed) and a binary log reader, so its two binary-log tests never skip.
+          smoke_reader_password="$(openssl rand -hex 32)"
+          smoke_binlog_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$smoke_reader_password"
+          echo "::add-mask::$smoke_binlog_password"
+          printf "CREATE USER 'repro_smoke_reader'@'%%' IDENTIFIED BY '%s'; GRANT SELECT ON repro_mysql_test.* TO 'repro_smoke_reader'@'%%'; GRANT SELECT ON repro_mysql_control.writer_token TO 'repro_smoke_reader'@'%%'; CREATE USER 'repro_smoke_binlog'@'%%' IDENTIFIED BY '%s'; GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repro_smoke_binlog'@'%%';\n" "$smoke_reader_password" "$smoke_binlog_password" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
+          echo "REPRO_MYSQL_SMOKE_READER_USERNAME=repro_smoke_reader" >> "$GITHUB_ENV"
+          echo "REPRO_MYSQL_SMOKE_READER_PASSWORD=$smoke_reader_password" >> "$GITHUB_ENV"
+          echo "REPRO_MYSQL_SMOKE_BINLOG_USERNAME=repro_smoke_binlog" >> "$GITHUB_ENV"
+          echo "REPRO_MYSQL_SMOKE_BINLOG_PASSWORD=$smoke_binlog_password" >> "$GITHUB_ENV"
           umask 077
           printf '[client]\nuser=repro_pitr_fixture\npassword=%s\n' "$backup_password" > "$RUNNER_TEMP/repro-pitr.cnf"
           echo "REPRO_MYSQL_PITR_TEST_DEFAULTS_FILE=$RUNNER_TEMP/repro-pitr.cnf" >> "$GITHUB_ENV"
