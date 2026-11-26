@@ -59,6 +59,7 @@ VECTORS = {vector["name"]: vector for vector in json.loads(
 SQLITE_CONFIG = VECTORS["sqlite-production-shape"]
 MYSQL_CONFIG = VECTORS["mysql-socket-with-extras"]
 MYSQL_PROBE = Path(__file__).resolve().parent / "mysql_probe.py"
+FPM_DRAIN = Path(__file__).resolve().parent / "fpm_drain.py"
 OTHER_UUID = "0b9f5f1e-0000-4000-8000-000000000001"
 # D04's socket-only MySQL 8.4.13 fixture (mysql/fixture.sh serve); run-probe-fixture-tests.sh sets both.
 PROBE_FIXTURE = os.environ.get("REPRO_MYSQL_PROBE_FIXTURE")
@@ -2120,6 +2121,82 @@ class ProductionAdapterTests(unittest.TestCase):
                 with self.subTest(purpose=purpose), self.assertRaisesRegex(UnsafeCutover, "purpose"):
                     adapter.drain(lease, time.time() + 60, purpose=purpose)
         self.assertEqual([], self.commands()[before:], "a drain ran without a known purpose")
+
+    # The same contract with fpm_drain.py itself as drain_fpm's first command (design 5.4, reviews A2-2, A2-3).
+
+    def use_real_drain(self, config, *, socket, status_socket):
+        """drain_fpm runs fpm_drain.py as the controller runs it (root, /usr/bin/python3 -I -S), then the fixture's
+        FPM stop. fpm_drain loads its own copy of the host config, with this fixture's pool sockets and design
+        5.1's /usr/bin/php queue commands (it runs neither); the adapter's copy names the same sockets."""
+        drain_config = self.root / "etc" / "drain-host.json"
+        config["fpm"] = {**config["fpm"], "socket": str(socket), "status_socket": str(status_socket)}
+        drain_config.write_text(json.dumps({**config, "commands": {**config["commands"], **{
+            f"queue_{verb}": queue_command(verb, script=f'cd {self.app} && umask 0022 && exec /usr/bin/php artisan '
+                                                        f'queue:{verb} "$1"') for verb in ("pause", "resume")}}}),
+                                encoding="utf-8")
+        config["commands"]["drain_fpm"] = [PYTHON + ["-B", str(FPM_DRAIN), "--config", str(drain_config)],
+                                           self.record("fpm-stop")]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    def listening_pool(self):
+        """The app pool's socket: it listens (a full FPM would accept), and nothing answers at its status socket."""
+        import socket
+
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(str(self.root / "run" / "fpm.sock"))
+        listener.listen(8)
+        return Path(listener.getsockname())
+
+    def test_real_fpm_drain_without_the_status_socket_refuses_the_freeze_and_lets_the_rollback_stop_fpm(self):
+        import fpm_drain
+
+        config = self.config()
+        self.use_real_drain(config, socket=self.listening_pool(), status_socket=self.root / "run" / "fpm-status.sock")
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, re.escape(fpm_drain.NO_STATUS_SOCKET)):
+            runner.perform("freeze")
+        self.assertEqual([["stop"]], self.drains(before), "the FPM stop ran after an unmonitored drain")
+        state = journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+        self.assertTrue(sqlite_seal.writable(self.database), "the freeze went on to seal SQLite")
+        # The rollback drains for the rollback: fpm_drain's report is recorded and the FPM stop runs.
+        before = len(self.commands())
+        state = runner.perform("abort")
+        self.assertEqual("sqlite_authoritative", state["phase"])
+        self.assertEqual([["stop"], ["fpm-stop"]], self.drains(before))
+        record = state["history"][-1]["fpm_drain"]
+        self.assertEqual({"purpose": "rollback", "outcome": "unmonitored", "active_processes": None,
+                          "problem": fpm_drain.NO_STATUS_SOCKET}, {k: v for k, v in record.items() if k != "waited_seconds"})
+        self.assertIs(type(record["waited_seconds"]), float)
+        self.assertLess(record["waited_seconds"], 5)
+        self.assertNotIn(str(self.root), json.dumps(record), "a path reached the journal")
+        self.assertEqual(state, journal.read())
+
+    def test_real_fpm_drain_records_the_pools_counts(self):
+        import fpm_drain
+        from test_fpm_drain import StatusServer
+
+        status = StatusServer(self.root / "run" / "fpm-status.sock", [(0, 1), (0, 0)])
+        self.addCleanup(status.close)
+        config = self.config()
+        self.use_real_drain(config, socket=self.listening_pool(), status_socket=status.path)
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        before = len(self.commands())
+        state = runner.perform("freeze")
+        self.assertEqual("frozen", state["phase"])
+        self.assertEqual([["stop"], ["fpm-stop"]], self.drains(before))
+        record = state["history"][-1]["fpm_drain"]
+        # One busy reading, then two idle ones with the same accepted count (fpm_drain's two-reading rule).
+        self.assertEqual({"purpose": "freeze", "outcome": "drained", "active_processes": 0, "problem": None},
+                         {k: v for k, v in record.items() if k != "waited_seconds"})
+        self.assertGreaterEqual(record["waited_seconds"], 2 * fpm_drain.POLL_SECONDS)
+        self.assertLess(record["waited_seconds"], config["fpm"]["drain_seconds"])
+        self.assertGreaterEqual(status.served, 3)
+        self.assertEqual(state, journal.read())
 
     def test_freeze_needs_the_fpm_drain_report(self):
         # drain_fpm is fpm_drain.py then the stop (design 5.4). Without it a freeze has nothing to record.

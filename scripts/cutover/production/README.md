@@ -863,9 +863,6 @@ Not yet here:
   `fpm.drain_seconds` plus 12 s for `fpm_drain.py` (load_config now checks it
   against `command_seconds`, and refuses `fpm.status_socket` equal to
   `fpm.socket` and a `config_build` command other than design 1.3's).
-- The end-to-end test of the real `fpm_drain.py` through `drain` (the
-  integrator's, once D08 is merged); here `drain_fpm` is a fake that prints a
-  canned report.
 - Review C2-4: measured publication makes correct pins a precondition of the
   W1 drill init sequence (marker, `init`, `rehold`, `refresh`, reopen). D14's
   W1 sequence must refuse before `rehold` unless `live_config.py --app-root`
@@ -894,7 +891,12 @@ skips without `REPRO_MYSQL_PROBE_FIXTURE` and fails when
 `REPRO_REQUIRE_PROBE_FIXTURE=1`, as under `run-probe-fixture-tests.sh
 --linux-suite`; the probe's `--fixture-check` warning does not list it. The
 runner's part of the drain contract and the identity refusal are in
-`../test_runner.py` (fake adapters, any platform).
+`../test_runner.py` (fake adapters, any platform). Since the lane merge the
+contracts between slices are also tested end to end: the real `fpm_drain.py`
+as `drain_fpm`'s first command against a pool socket that listens without its
+status socket (the freeze refuses before the FPM stop; the rollback records
+`unmonitored` and stops FPM) and against a scripted status socket (a drained
+pool's counts in the journal).
 
 ## Telnyx while held (design 5.2)
 
