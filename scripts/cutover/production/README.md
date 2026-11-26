@@ -778,7 +778,13 @@ a crash test; no test here can tell a missing fsync apart.
 
 `adapter.load_config` also calls `config_build.check_command`, so a wrong
 command is refused when the host config loads; the sandbox's `make_config.py`
-writes design 1.3's form for the sandbox app copy.
+writes design 1.3's form for the sandbox app copy. `adapter.py` therefore
+imports `config_build.py` (and through it and `live_config.py`,
+`var_export.py`): every program that imports the adapter (`cli.py`,
+`identity_probe.py`, `mysql_probe.py`, `gate.py`, `fpm_drain.py`,
+`repro-queue-flag`) needs all three installed beside it. `config_build` looks
+the accounts up (`pwd`, `grp`) only when a build runs, so the import works
+where those modules do not exist.
 
 Not yet here (later slices):
 - D13: the SQLite reopen refuses a `fallback` live config (review A2-9); so

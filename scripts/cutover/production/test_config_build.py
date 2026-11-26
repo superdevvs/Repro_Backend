@@ -167,6 +167,19 @@ class ConfigBuildCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(config_build.BuildFailed, "plain shell word"):
             config_build.check_command(config)
 
+    def test_adapter_and_this_module_import_without_the_unix_account_modules(self):
+        # adapter.load_config calls check_command, so the adapter imports this module at the top. Like the
+        # adapter's own `import pwd` in ProductionAdapter, the account lookups (pwd, grp) happen only when a
+        # build runs, so `import adapter` and load_config's command check need neither.
+        script = ("import sys; sys.modules['pwd'] = sys.modules['grp'] = None; "
+                  f"sys.path[:0] = [{str(HERE)!r}, {str(HERE.parent)!r}]; "
+                  "import config_build, adapter; "
+                  "from test_adapter import example_config; "
+                  "print(config_build.check_command(example_config())[0])")
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script], capture_output=True, text=True,
+                                timeout=60)
+        self.assertEqual((0, RUNUSER), (result.returncode, result.stdout.strip()), result.stderr)
+
     def test_build_and_stage_check_the_command_before_anything_runs(self):
         # load_config refuses such a command too (test_adapter), but build() and stage() take any config dict,
         # so they stay a gate of their own (review A2-5).
@@ -327,7 +340,7 @@ class ConfigBuildTests(unittest.TestCase):
             real = pwd.getpwnam
             other = lambda name: real("daemon") if name == DEPLOY else real(name)  # noqa: E731
             self.fake("valid")
-            with patch.object(config_build.pwd, "getpwnam", side_effect=other):
+            with patch.object(pwd, "getpwnam", side_effect=other):  # config_build looks the account up per build.
                 with self.assertRaisesRegex(config_build.BuildFailed, "belong to the deploy user"):
                     config_build.build(self.config, expected_engine="sqlite")
             self.assertEqual((state(self.live), self.leftovers()), (before, []))

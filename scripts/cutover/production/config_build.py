@@ -45,9 +45,7 @@ command check_command refuses, so a wrong command is caught when the config load
 from __future__ import annotations
 
 import errno
-import grp
 import os
-import pwd
 import re
 import shutil
 import signal
@@ -129,6 +127,10 @@ def _seconds(config: dict, deadline: float | None) -> float:
 
 
 def _accounts(config: dict) -> tuple[int, int]:
+    # Looked up here, not imported at the top: the adapter imports this module, and imports where neither exists.
+    import grp
+    import pwd
+
     try:
         return pwd.getpwnam(config["app_owner"]).pw_uid, grp.getgrnam(config["app_group"]).gr_gid
     except KeyError:
