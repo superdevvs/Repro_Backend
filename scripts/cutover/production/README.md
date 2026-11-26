@@ -1195,7 +1195,8 @@ report is written):
    `mysql.token_check_defaults` (root-only, mode 0600, a `[client]` section
    with `user=repro_token_check` and `password=` of 16 to 256 characters of
    `A-Z a-z 0-9 . _ ~ + / = -`; anything else is refused before step 11 runs
-   anything, the password never quoted). Folders a crash left are removed;
+   anything, the password never quoted). Folders a crash left are removed
+   (here, and by a rollback's `seal_sqlite` step 9);
    then a fresh 0700 folder `adapter.TOKEN_CHECK_PARENT`/`repro-token-check-<random>`
    (`/run`) is handed to `web_user`, and two commands run as `web_user`:
    `runuser -u www-data -- /bin/sh -c 'umask 0077 && cd <app_root> && exec env APP_CONFIG_CACHE="$1" /usr/bin/php artisan config:cache' repro-token-check <folder>/config.php`
@@ -1379,7 +1380,7 @@ current and the deadline not passed.
 | 6 | `verify` | The live config: engine `sqlite`, source `cache`, and the SQLite pin wherever this run switched or step 4 built; the `.env`: this run's record's values (every switch key), or no MySQL (below); the identity probe's `config_sha256` equal to the pin's |
 | 7 | `unseal_proof` | `paths.unseal_proof` (below) |
 | 8 | `unseal` | `sqlite_seal.unseal` |
-| 9 | `markers` | The ingress open marker and `paths.scheduler_release` removed |
+| 9 | `markers` | The ingress open marker and `paths.scheduler_release` removed, and any `repro-token-check-*` folder a killed step 11 left under `adapter.TOKEN_CHECK_PARENT` (it may hold the check account's password, and a rolled-back run has no next step 11 to remove it; a symbolic link of that name is left alone) |
 
 Every refusal comes before step 8, so SQLite is never unsealed while `.env`
 or the live config routes to MySQL (review D10R-1): the run stays in its

@@ -1863,9 +1863,11 @@ class ProductionAdapter:
         sqlite_seal.unseal(self.database, self.paths["sqlite_seal_record"])
 
     def _seal_sqlite_markers(self, run: SealRun) -> None:
-        """Step 9: the ingress marker and the scheduler release removed."""
+        """Step 9: the ingress marker and the scheduler release removed, and any token-check folder a killed step 11
+        left (it may hold the check account's password; a rolled-back run has no next check to remove it)."""
         _remove(self.paths["ingress_open"])
         _remove(self.paths["scheduler_release"])
+        self._remove_token_folders()
 
     # Authority and reopening.
 

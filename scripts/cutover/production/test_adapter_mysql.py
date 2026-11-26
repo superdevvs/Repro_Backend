@@ -3287,6 +3287,29 @@ class SealSqliteTests(unittest.TestCase):
             host.runner().perform("prepare")
         self.assertEqual("sqlite_authoritative", journal.read()["phase"])
 
+    def test_the_undo_removes_token_check_folders_a_crash_left(self):
+        # D11 x D12: step 11's token check removes its folder (the check account's password is in its config cache)
+        # after the check, and a folder a killed check left is removed by the next check. A rolled-back run has no
+        # next check, so the undo removes such folders (step 9); a symbolic link of that name is left alone.
+        for name, crash in (("frozen, no prepare", None), ("prepare stopped after step 10", 10)):
+            with self.subTest(name):
+                host = self.frozen()
+                if crash:
+                    host.crash_after(crash)
+                leftover = Path(tempfile.mkdtemp(prefix=production.TOKEN_CHECK_PREFIX,
+                                                 dir=production.TOKEN_CHECK_PARENT))
+                self.addCleanup(shutil.rmtree, leftover, True)
+                (leftover / "config.php").write_text(f"<?php return array ('password' => '{host.token_password}');\n",
+                                                     encoding="ascii")
+                link = Path(production.TOKEN_CHECK_PARENT) / f"{production.TOKEN_CHECK_PREFIX}link-{uuid.uuid4().hex}"
+                link.symlink_to(host.root)
+                self.addCleanup(link.unlink, True)
+                self.assertEqual("sqlite_authoritative", host.abort()["phase"])
+                self.assert_undone(host)
+                self.assertEqual((False, True), (leftover.exists(), link.is_symlink()))
+                self.assertIn(link.name, host.token_folders())
+                self.assertTrue(host.root.is_dir())
+
     def test_receipt_still_armed_after_publication(self):
         # Design 3.5 (critic RC-L10): the receipt stays armed until the SQLite reopen, so the runner's publication
         # after seal_sqlite still sees real business activity. Here an app write after a boundary lands after the
