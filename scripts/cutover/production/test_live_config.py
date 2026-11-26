@@ -484,13 +484,23 @@ class MeasureTests(unittest.TestCase):
         objects_inside = cache_text(config).replace(b"'rollback'", b"\\App\\Enums\\Leftover::Rollback")
         # A valid config, padded past the limit: only the size refuses it.
         oversized = cache_text(config).replace(b"<?php return array (", b"<?php return array (" + b" " * (8 << 20), 1)
-        cases = {"an enum inside": objects_inside, "over 8 MiB": oversized}
+        # Every case the module docstring lists. PHP would still load several of them (an enum, a large file,
+        # a link): the fallback engine is advisory and never proves which engine PHP-FPM runs (A2-9).
+        beside, url, missing = mysql_config(), mysql_config(), mysql_config()
+        beside["database"]["connections"]["mysql"]["password_set"] = True
+        url["database"]["connections"]["mysql"]["url"] = "mysql://repro_app:secret@localhost/repro"
+        missing["database"]["default"] = "absent"
+        cases = {"an enum inside": objects_inside, "over 8 MiB": oversized,
+                 "password beside password_set": cache_text(beside), "a url carrying a password": cache_text(url),
+                 "no default connection": cache_text(missing)}
         for name, content in cases.items():
             with self.subTest(name):
                 self.cache.write_bytes(content)
                 result = live_config.measure(self.root)
-                self.assertEqual((result.engine, result.source), ("sqlite", "fallback"))
+                self.assertEqual((result.engine, result.source, result.live_config_sha256, result.values),
+                                 ("sqlite", "fallback", None, None))
                 self.assertIn("larger than 8388608 bytes" if name == "over 8 MiB" else "refused", result.problem)
+                self.assertNotIn("secret", result.problem)
         # Root never follows a link the deploy user could point anywhere.
         target = self.root / "elsewhere.php"
         target.write_bytes(cache_text(config))
@@ -521,6 +531,24 @@ class MeasureTests(unittest.TestCase):
             with self.subTest(name):
                 self.env(text)
                 self.assertEqual(live_config.measure(self.root).engine, engine)
+
+    def test_fallback_reads_env_through_a_link_as_phpdotenv_does(self):
+        # phpdotenv reads .env with file_get_contents, which follows a link; so does the fallback (A2-8).
+        # Only DB_CONNECTION and DB_URL are taken from it, and no value is ever printed but the engine.
+        shared = self.root / "shared"
+        shared.mkdir()
+        (shared / "env").write_text("APP_ENV=production\nDB_CONNECTION=mysql\n")
+        (self.root / ".env").unlink()
+        (self.root / ".env").symlink_to(shared / "env")
+        result = live_config.measure(self.root)
+        self.assertEqual((result.engine, result.source), ("mysql", "fallback"))
+        # A link to nothing, or to something other than a regular file, tells no engine.
+        for name, target in {"dangling": shared / "missing", "a folder": shared}.items():
+            with self.subTest(name):
+                (self.root / ".env").unlink()
+                (self.root / ".env").symlink_to(target)
+                with self.assertRaises(live_config.Unmeasurable):
+                    live_config.measure(self.root)
 
     def test_no_fallback_without_a_plain_db_connection(self):
         # Laravel would fall back to config/database.php's default or follow DB_URL; neither is read here.

@@ -12,13 +12,25 @@ root reads it. Root never follows a symbolic link there and refuses anything but
   module, `scripts/cutover/probe/fpm-engine.php` and `php artisan cutover:smoke --engine-only` share
   (PHP prints the values raw; Python hashes them). Every key named `password`, at any depth, becomes
   `password_set`; night flags are outside the allowlist; the hash is the SHA-256 of canonical JSON.
-- **Fallback**: a missing cache, or one the reader refuses (empty, truncated, not var_export, an object
-  or expression inside, a link, not a regular file, over 8 MiB, or a shape the contract cannot hash),
-  gives the engine of `.env` `DB_CONNECTION` with source `fallback` and no hash. That is what Laravel
-  reads without a cache, and an app whose cache does not load cannot write. `observe()` accepts the
-  fallback so a rollback can run (and `seal_sqlite` rebuilds the cache); `prepare`, both publications
-  and both reopens refuse it. With no plain `DB_CONNECTION` of sqlite or mysql, or with a `DB_URL`, the
-  engine cannot be read without PHP: `Unmeasurable`.
+- **Fallback**: source `fallback`, no hash, no values, the reason in `problem`, and the engine of `.env`
+  `DB_CONNECTION`, taken when the cache file
+  - is missing (or a path component is not a folder);
+  - is a symbolic link, or not a regular file (a folder, a FIFO);
+  - is over 8 MiB;
+  - is empty, truncated, or not var_export output (any text around `<?php return array (...);`);
+  - holds an object, enum, constant, expression, `INF`/`NAN`, a duplicate key, nesting over 32 levels or
+    invalid UTF-8 (anything var_export.parse refuses);
+  - has a shape the contract cannot hash: `database`, `database.connections`, `cache`, `cache.stores`,
+    `queue`, `queue.connections` or a queue connection that is not an array, no `database.default`, no
+    default connection or one with neither a url nor a driver, an `app.key` that is not a string, a
+    `password` beside a `password_set`, or a `url` carrying a password.
+  `.env` is read as phpdotenv reads it, through a link (file_get_contents follows one), as a regular file
+  of at most 1 MiB; only DB_CONNECTION and DB_URL are taken from it. The fallback engine is **advisory**:
+  PHP still loads several of these files (a link, an enum, a large file), so PHP-FPM may run another
+  engine than `.env` names. It may let a rollback proceed (`observe()` accepts it, and `seal_sqlite`
+  rebuilds the cache); it never proves which engine is live, so `prepare`, both publications and both
+  reopens refuse it. With no plain `DB_CONNECTION` of sqlite or mysql, or with a `DB_URL`, the engine
+  cannot be read without PHP: `Unmeasurable`.
 
 The CLI prints `{"version": 1, "engine", "source", "live_config_sha256", "values", "problem"}` and exits
 0, or exits 1 when the config is unmeasurable. Standard library only.
