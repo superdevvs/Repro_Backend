@@ -16,11 +16,11 @@ change if the lab-tour worker is installed (`4e4a262d` refuses
 in `host.json` that run as `www-data` and set `umask 0022` themselves, in
 the exact form the adapter lane's `load_config` accepts (the
 watchdog's `UMask=0077` would otherwise make flags the `maverick` workers
-cannot read), and a `crontab.py` that keeps the storage guard: W1's cron
-rewrite drops anything before the matched command, and on production all
-but one of the deploy user's cron lines run through
-`/usr/local/sbin/repro-storage-guard`. Neither lane has changed
-`crontab.py`. The cache store no longer blocks
+cannot read). On production all but one of the deploy user's cron lines
+run through `/usr/local/sbin/repro-storage-guard`; the adapter lane's
+`crontab.py` (D20) keeps that exact prefix in front of the wrapper and
+refuses any other, and its rules' exact commands are checked against the
+live crontab before W1. The cache store no longer blocks
 the abort: production keeps the queue pause flags in the `file` store
 (measured 25 November), so an abort after the seal writes them under
 `storage/framework/cache`, not into the sealed SQLite file.
@@ -1857,11 +1857,16 @@ has been done. Each production step needs its own approval.
   lane's exact form) before `init`. W1 also installs the adapter lane's
   `repro-queue-flag` and its sudoers line (`visudo -cf` at install) for
   the deploy user's own pauses and resumes.
-- Writer hold: before W1, change `crontab.py` to refuse or carry over a
-  command prefix such as `/usr/local/sbin/repro-storage-guard --live &&`,
-  and make the `scheduler` and `auth-prune` profiles run the storage
-  guard. Today the rewrite drops the prefix without a report (checked at
-  `4e4a262d`). A code change; not in either lane.
+- Writer hold: the cron rewrite keeps the storage guard. The adapter
+  lane's `crontab.py` (D20) carries the exact prefix
+  `/usr/local/sbin/repro-storage-guard --live && ` over in front of the
+  wrapper, so the guard still runs first and the `scheduler` and
+  `auth-prune` profiles need no guard of their own. It refuses (exit 1,
+  nothing to install) any other prefix before a rule's exact command and
+  anything after it, and `--reverse` restores the original lines byte for
+  byte. Before W1, check each rule's `command` in `cron-rules.json`
+  against the live crontab and install only a rewrite that reverses to the
+  saved crontab.
 - Cutover runbook: build the
   [MySQL adapter lane](mysql-production-cutover.md#mysql-adapter-lane-not-built),
   and decide its open choices: the MySQL write gate that `seal_mysql` opens

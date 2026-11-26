@@ -4,14 +4,16 @@ run-sandbox.sh calls this module; nobody else should:
 
     prepare --root ROOT                  host namespace: validate the sandbox root, lay it out
                                          (refusing any symbolic link or file in the layout)
-    arm --root ROOT [--reboot]           host namespace, under the launch lock: layout again, boot ID,
-                                         the checker copy ROOT/sync/sandbox_check.py, canaries, host
-                                         facts; prints the launch token and the copy's sha256
+    arm --root ROOT [--reboot]           host namespace, under the launch lock: layout again, no
+                                         shadow of the launcher and no loader file in the copy-on-write
+                                         layers, boot ID, the checker copy ROOT/sync/sandbox_check.py,
+                                         canaries, host facts; prints the launch token and the copy's
+                                         sha256
     outside --root ROOT --token T        host namespace, while the sandbox waits: the canary check
                                          from outside; writes go (exit 0) or stop
     init --root ROOT --token T -- CMD    PID 1 inside the new namespaces, run from the checker copy:
-                                         the inside checks, then CMD as a child; reaps orphans;
-                                         stops everything at the end
+                                         closes every inherited descriptor, the inside checks, then
+                                         CMD as a child; reaps orphans; stops everything at the end
 
 The controller's fixed paths (cli.py, the guard, admit.py) and its /proc scans
 mean a "sandbox with private paths" would act on production (critic HO-H2).
@@ -84,6 +86,9 @@ SHIMS = ("/usr/bin/systemctl", "/usr/bin/systemd-run", "/usr/bin/supervisorctl",
 # sandbox and a stray write (app tree, deploy locks, Studio files, root's dot files) never reaches
 # the host.
 COPY_ON_WRITE = ("/etc", "/var", "/opt", "/home", "/root")
+# Read by the dynamic loader at every program start (glibc); one left in the /etc layer by a launch would
+# load into the inside half's own programs at every later launch.
+LOADER_FILES = ("ld.so.preload", "ld.so.cache")
 # Fresh per launch: host unix sockets (systemd, D-Bus, Supervisor, PHP-FPM, MySQL) live here and
 # a network namespace does not hide a socket that has a path; /dev/shm is POSIX shared memory.
 PRIVATE = ("/run", "/tmp", "/dev/shm")
@@ -253,6 +258,25 @@ def _shadow(root: Path) -> Path | None:
     return None
 
 
+def _shadow_refusal(shadow: Path) -> str:
+    hint = ""
+    if stat.S_ISDIR(os.lstat(shadow).st_mode) and os.path.lexists(shadow / "__pycache__"):
+        hint = (f". {shadow}/__pycache__ is Python's bytecode cache, written when Python inside imported from "
+                f"{HERE}: run Python inside with -B, and make_config.py in the host namespace "
+                "(python3 -I -S -B, README)")
+    return (f"The sandbox's copy-on-write layer holds {shadow}, which shadows the launcher's own files at {HERE} "
+            f"inside{hint}. Inspect it, then remove it from the sandbox root (rm -r -- {shadow})")
+
+
+def _loader_file(root: Path) -> Path | None:
+    """A dynamic loader file in the /etc layer, which every program inside would read, if any."""
+    for name in LOADER_FILES:
+        entry = root / "cow" / "upper" / "etc" / name
+        if os.path.lexists(entry):
+            return entry
+    return None
+
+
 def arm(root: Path, reboot: bool) -> str:
     """Per-launch state under the launch lock: boot ID, the checker copy, canaries and the host facts.
 
@@ -263,8 +287,14 @@ def arm(root: Path, reboot: bool) -> str:
     # Installed under /opt (README), the launcher's files are seen through the sandbox's /opt
     # overlay; a write there inside one launch stays in the upper layer for every later one.
     shadow = _shadow(root)
-    require(shadow is None, f"The sandbox's copy-on-write layer holds {shadow}, which shadows the launcher's own "
-                            f"files at {HERE} inside; inspect it and remove it from the sandbox root")
+    if shadow is not None:
+        raise Refused(_shadow_refusal(shadow))
+    # A preload or loader cache written inside persists in the /etc layer, and the loader would read it into
+    # the inside half's own programs (mount, sha256sum, PID 1's python3) at this and every later launch.
+    loader = _loader_file(root)
+    require(loader is None, f"The sandbox's copy-on-write layer holds {loader}, which the dynamic loader would read "
+                            f"into every program inside, the checks included (a preload, or ldconfig run inside). "
+                            f"Inspect it, then remove it from the sandbox root (rm -- {loader})")
     boot = root / "boot" / "boot_id"
     if reboot or not boot.exists():
         _write_atomic(boot, f"{uuid.uuid4()}\n".encode("ascii"), 0o444)
@@ -464,7 +494,7 @@ def run_as_init(command: list[str], environment: dict) -> int:
     child = os.fork()
     if child == 0:
         try:
-            # Only stdin, stdout and stderr: the launch lock stays with this init.
+            # Only stdin, stdout and stderr.
             os.closerange(3, os.sysconf("SC_OPEN_MAX"))
             os.chdir("/")
             os.execvpe(command[0], command, environment)
@@ -491,6 +521,10 @@ def run_as_init(command: list[str], environment: dict) -> int:
 
 
 def init(root: Path, token: str, command: list[str]) -> int:
+    # Keep no descriptor inherited from the host namespace, the launch lock included (it stays with the
+    # launcher and unshare). Such a descriptor resolves '..' in the host's tree, past every mount made
+    # here, so through /proc/1/fd it would lead every root process inside onto the host's file system.
+    os.closerange(3, os.sysconf("SC_OPEN_MAX"))
     require(bool(command), "No command to run", USAGE)
     launch = read_launch(root, token)
     failures = inside_checks(root, token, launch)

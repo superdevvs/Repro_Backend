@@ -61,15 +61,39 @@ when sandbox services running as `www-data` need the app copy under it), have
 root-owned parents that are not group or other writable, lie below a
 top-level directory (`/srv/repro-cutover-sandbox`, not `/sandbox`), and lie
 outside `/etc`, `/var`, `/opt`, `/home`, `/root`, `/run`, `/tmp` and the
-system trees. One launch per root at a time (`flock` on `ROOT/launch.lock`,
-held until the last sandbox process is gone). Remove the root with `rm -rf`
-after the run; no mount outlives the sandbox's PID 1.
+system trees. One launch per root at a time: `flock` on the ROOT directory
+itself, opened read-only and held until the last sandbox process is gone.
+Only the launcher and `unshare` hold it, both in the host namespace:
+`unshare` waits for PID 1 inside, which exits only after every other
+sandbox process, and `--kill-child` ends the sandbox if `unshare` is
+killed. PID 1 closes every descriptor it inherits, the lock included, and
+the inside half changes to `/` before it mounts anything. A descriptor or
+working directory from the host namespace resolves `..` in the host's
+tree, past every mount the sandbox makes, so through `/proc/1/fd` or
+`/proc/1/cwd` it would lead every root process inside onto the host's file
+system. ROOT is writable inside, so the launcher keeps no lock file there (a
+command could replace one with a link that the next launch, as root, would
+truncate or create); a `launch.lock` left by an older launcher is unused.
+Remove the root with `rm -rf` after the run; no mount outlives the
+sandbox's PID 1.
 
 If a launch refuses because the copy-on-write layer "shadows the launcher's
 own files", an earlier command wrote into the launcher's directory as seen
-inside (for example `/opt/repro-cutover-sandbox`). Look at
-`ROOT/cow/upper/opt/repro-cutover-sandbox`, find out what wrote it, and remove
-it before the next launch.
+inside (for example `/opt/repro-cutover-sandbox`). A likely cause is
+`__pycache__`: Python run inside that imports from that directory (as
+`make_config.py` imports `sandbox_check`) writes its bytecode cache there.
+Run `make_config.py` in the host namespace and any Python inside with `-B`.
+Look at `ROOT/cow/upper/opt/repro-cutover-sandbox`, find out what wrote it,
+and remove it before the next launch (`rm -r --` that directory; the
+refusal names it). The refusal stays: the launcher never runs with its own
+files shadowed.
+
+A launch also refuses while `ROOT/cow/upper/etc` holds `ld.so.preload` or
+`ld.so.cache`: written inside (a preload, or `ldconfig` run inside), the
+dynamic loader would read them into the inside half's own programs
+(`mount`, `sha256sum`, PID 1's `python3`) at every later launch. Do not run
+`ldconfig` inside; inspect the file and remove it (`rm --`, the refusal
+names it).
 
 ## What the sandbox replaces
 
@@ -104,11 +128,9 @@ before W2a and stop if one is writable and outside the trees above), SysV
 IPC, the kernel, CPU and memory (see "Resource limits"), and the host's
 machine ID (read only). The sandbox protects the host from the controller's
 fixed paths and from configuration mistakes, not from hostile code running as
-root inside. In particular, `/etc/ld.so.preload` or `/etc/ld.so.cache`
-written inside persist in `cow/upper/etc` and are read by the inside half's
-own programs (`mount`, `sha256sum`, PID 1's `python3`) on later launches; do
-not run `ldconfig` inside, and check `ROOT/cow/upper/etc` for `ld.so.*`
-before reusing a root.
+root inside. `/etc/ld.so.preload` and `/etc/ld.so.cache` written inside
+stop the next launch (above), but within one launch a preload written
+inside reaches every program started after it.
 
 ## Resource limits
 
@@ -141,15 +163,16 @@ under `/var` the sandbox opens for writing) counts against this budget.
    a file where a directory belongs is refused, and owners and modes are set
    through the opened directory, never through a path.
 2. `arm` (under the launch lock) checks the layout again, refuses when the
-   copy-on-write layer holds anything at the launcher's own directory (see
-   above), sets the boot ID, copies `sandbox_check.py` from the launcher's
-   directory (read in the host namespace) to `ROOT/sync/sandbox_check.py`,
+   copy-on-write layer holds anything at the launcher's own directory or a
+   loader file in `cow/upper/etc` (see above), sets the boot ID, copies
+   `sandbox_check.py` from the launcher's directory (read in the host
+   namespace) to `ROOT/sync/sandbox_check.py`,
    writes a canary holding a fresh token into every `ROOT/binds/...`
    directory and records host facts (boot ID, namespaces, devices of the
    private and copy-on-write trees and of ROOT, hashes of the four
    service-manager binaries) and the checker copy's sha256 in
    `ROOT/sync/launch.json`.
-3. Inside, `run-sandbox.sh` mounts in this order: private `/run`, `/tmp` and
+3. Inside, `run-sandbox.sh` changes to `/`, then mounts in this order: private `/run`, `/tmp` and
    `/dev/shm`; ROOT's top-level directory with only ROOT; the five overlays;
    the ten binds; the boot ID; read-only `/usr` and `/boot`; the shims;
    finally `/` read-only. A missing mount point is created only inside a
@@ -158,7 +181,8 @@ under `/var` the sandbox opens for writing) counts against this budget.
    checks the per-launch checker copy against the sha256 that `arm` printed
    and runs PID 1 from that copy, never from the launcher's directory (which
    the sandbox may see through its `/opt` overlay).
-4. PID 1 (`sandbox_check.py init`) checks: it is PID 1 with its own `/proc`;
+4. PID 1 (`sandbox_check.py init`) closes every descriptor it inherited
+   other than stdin, stdout and stderr, then checks: it is PID 1 with its own `/proc`;
    the PID, network and mount namespaces differ from the host's; `/etc`,
    `/var`, `/opt`, `/home` and `/root` are overlays with their upper layer in
    the root; `/run`, `/tmp` and `/dev/shm` are tmpfs and not the host's; `/`,
@@ -187,17 +211,28 @@ Any failure prints `run-sandbox: refused: ...` and exits 96.
 | `boot/boot_id` | The sandbox boot ID |
 | `shims/refuse` | Copy of the shim, refreshed every launch |
 | `sync/` | `launch.json`, `sandbox_check.py` (PID 1's copy, rewritten every launch), `ready`, `go`, `stop` |
-| `launch.lock` | The launch lock |
+| ROOT itself | The launch lock (`flock` on the directory, held only by the launcher and `unshare` in the host namespace; no lock file) |
 | `bin/`, `app/`, `mysql/`, `locks/`, `studio/` | Written by the drill script and `make_config.py` (D18) |
 
 ## Sandbox config (`make_config.py`)
 
 ```sh
-/usr/bin/python3 -I -S make_config.py --root ROOT --controller ROOT/binds/opt/repro-cutover-fence \
+/usr/bin/python3 -I -S -B /opt/repro-cutover-sandbox/make_config.py --root ROOT \
+    --controller CONTROLLER \
     --app-root ROOT/app/backend --run-id RUN --mysql-datadir ROOT/mysql/data \
     --smoke-client-id N --smoke-shoot-id N [--deploy-owner maverick] [--mode drill|cutover] \
     [--mysql-client PATH] [--measured measured.json] [--wrappers wrappers.template.json]
 ```
+
+Run it as root in the host namespace, not through `run-sandbox.sh`, and
+keep `-B`: it imports `sandbox_check` from its own directory, and run
+inside without `-B` it would leave `__pycache__` in the `/opt` layer, which
+stops every later launch. In the host namespace it runs the `adapter.py`,
+`cli.py` and `admit.py` of `CONTROLLER` as root and writes through paths
+under ROOT, which commands inside can change. So `CONTROLLER` is the
+reviewed controller tree read from outside ROOT (the one copied into
+`ROOT/binds/opt/repro-cutover-fence`), never the copy under ROOT, and it
+runs before the first launch on the root.
 
 It writes into `ROOT/binds/etc/repro-cutover-fence/` only, which inside is
 `/etc/repro-cutover-fence`. Fixed paths keep their production values; the app

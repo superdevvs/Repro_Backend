@@ -21,6 +21,7 @@ from runner import UnsafeCutover
 
 REPO = Path(__file__).resolve().parents[3]
 WRAPPER = "/usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py"
+STORAGE_GUARD = "/usr/local/sbin/repro-storage-guard --live && "
 LINUX_ROOT = sys.platform == "linux" and hasattr(os, "geteuid") and os.geteuid() == 0
 
 
@@ -297,7 +298,8 @@ class CronEntryTests(unittest.TestCase):
         self.assertEqual(["MAILTO=\"\"", "# keep this comment"], lines[:2])
         self.assertEqual(f"* * * * * {WRAPPER} scheduler >> /dev/null 2>&1", lines[2])
         self.assertEqual(f"17 * * * * {WRAPPER} auth-prune >/dev/null 2>&1", lines[3])
-        self.assertEqual(f"7,37 * * * * {WRAPPER} cubicasa-poll >> {self.STATE}/poll.log 2>&1 "
+        # The installer's storage guard stays in front of the wrapper (D20).
+        self.assertEqual(f"7,37 * * * * {STORAGE_GUARD}{WRAPPER} cubicasa-poll >> {self.STATE}/poll.log 2>&1 "
                          "# repro-cubicasa-revision-poll", lines[4])
         # The Supervisor bootstrap starts wrapped programs, so it stays as it was.
         self.assertEqual(self.installed_lines()[2:], lines[5:])
@@ -322,6 +324,226 @@ class CronEntryTests(unittest.TestCase):
         self.assertEqual(2, len(unknown))
         self.assertTrue(all("/var/www/backend" in line for line in unknown))
         self.assertIn("certbot renew", wrapped)
+
+    # D20: production runs the deploy user's application cron lines behind the storage guard.
+
+    def guarded_lines(self):
+        return [
+            f"* * * * * {STORAGE_GUARD}cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1",
+            f"17 * * * * {STORAGE_GUARD}cd /var/www/backend && /usr/bin/php artisan auth:prune-security-limits "
+            "--limit=1000 >/dev/null 2>&1",
+            self.installed_lines()[1],
+        ]
+
+    def test_guard_prefix_is_carried_over_to_the_wrapped_line(self):
+        text = "\n".join(self.guarded_lines()) + "\n"
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual([], unknown)
+        self.assertEqual([f"* * * * * {STORAGE_GUARD}{WRAPPER} scheduler >> /dev/null 2>&1",
+                          f"17 * * * * {STORAGE_GUARD}{WRAPPER} auth-prune >/dev/null 2>&1",
+                          f"7,37 * * * * {STORAGE_GUARD}{WRAPPER} cubicasa-poll >> {self.STATE}/poll.log 2>&1 "
+                          "# repro-cubicasa-revision-poll"],
+                         wrapped.splitlines())
+        self.assertEqual((wrapped, []), crontab.wrap(wrapped, self.RULES, WRAPPER))
+
+    def test_unknown_prefix_before_a_known_command_is_refused(self):
+        # Only the exact guard form is carried over; the wrapper would silently drop anything else.
+        scheduler = "cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1"
+        prefixes = (
+            "/usr/local/sbin/repro-storage-guard && ",
+            "/usr/local/sbin/repro-storage-guard --dry-run && ",
+            "/usr/local/sbin/repro-storage-guard --live; ",
+            "/usr/local/sbin/repro-storage-guard --live || ",
+            "/usr/local/sbin/repro-storage-guard --live  && ",
+            "/usr/local/sbin/repro-storage-guard --live &&",
+            "/usr/local/bin/repro-storage-guard --live && ",
+            "repro-storage-guard --live && ",
+            f"{STORAGE_GUARD}{STORAGE_GUARD}",
+            f"/usr/bin/test -e /var/tmp/ok && {STORAGE_GUARD}",
+            "/usr/bin/nice -n 10 ",
+            "cd /tmp && ",
+        )
+        lines = [f"* * * * * {prefix}{scheduler}" for prefix in prefixes]
+        # Something between the guard and the rule's command, or inside the command, is a prefix too.
+        lines += [f"* * * * * {STORAGE_GUARD}/usr/bin/timeout 50 {scheduler}",
+                  f"* * * * * {STORAGE_GUARD}cd /var/www/backend && /usr/bin/nice php artisan schedule:run",
+                  f"17 * * * * /usr/bin/flock -n /tmp/prune.lock {STORAGE_GUARD}cd /var/www/backend && "
+                  "/usr/bin/php artisan auth:prune-security-limits --limit=1000 >/dev/null 2>&1",
+                  self.installed_lines()[1].replace("/usr/bin/flock -n", "/usr/bin/flock -w 5", 1)]
+        text = "\n".join(lines) + "\n"
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual(lines, unknown)
+        self.assertEqual(text, wrapped)
+        # From the command line: exit 1, every refused line named, nothing on stdout to install.
+        rules = Path(__file__).resolve().parent / "cron-rules.example.json"
+        refused = subprocess.run([sys.executable, "-I", "-S", "-B", str(Path(crontab.__file__).resolve()),
+                                  "--rules", str(rules), "--wrapper", WRAPPER],
+                                 input=text.encode("utf-8"), capture_output=True)
+        self.assertEqual((1, b""), (refused.returncode, refused.stdout))
+        self.assertEqual(lines, [line[2:] for line in refused.stderr.decode("utf-8").splitlines()[1:]])
+
+    def test_reverse_rewrite_restores_the_original_line_byte_for_byte(self):
+        original = "\n".join([
+            # A line saved with a Windows line end keeps its carriage return, a Latin-1 byte stays that byte.
+            'MAILTO=""', "# keep this comment", "# edited elsewhere\r", "# caf\udce9", "",
+            *self.guarded_lines(),
+            # Unguarded, as the repository's installer writes it, and with tabs and double spaces.
+            "17  3 * * *\tcd /var/www/backend && /usr/bin/php artisan auth:prune-security-limits --limit=1000",
+            f"*/5 * * * *  {STORAGE_GUARD}cd /var/www/backend && php artisan schedule:run  >>  /dev/null  2>&1",
+            *self.installed_lines()[2:],
+            "0 4 * * * /usr/bin/certbot renew -q",
+            "47 3 * * * /usr/local/sbin/repro-storage-guard --live && /usr/bin/python3 "
+            "/var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention >/dev/null 2>&1 "
+            "# repro-deploy-backup-retention",
+        ]) + "\n"
+        wrapped, unknown = crontab.wrap(original, self.RULES, WRAPPER)
+        self.assertEqual([], unknown)
+        self.assertEqual(5, wrapped.count(WRAPPER))
+        restored, unknown = crontab.unwrap(wrapped, self.RULES, WRAPPER)
+        self.assertEqual([], unknown)
+        raw = original.encode("utf-8", "surrogateescape")
+        self.assertEqual(raw, restored.encode("utf-8", "surrogateescape"))
+        # The operator's path: stdin to stdout through the command line, compared as bytes (in the caller's
+        # locale; a UTF-8 locale's text streams would refuse the Latin-1 byte).
+        rules = Path(__file__).resolve().parent / "cron-rules.example.json"
+        command = [sys.executable, "-I", "-S", "-B", str(Path(crontab.__file__).resolve()), "--rules", str(rules),
+                   "--wrapper", WRAPPER]
+        forward = subprocess.run(command, input=raw, capture_output=True)
+        self.assertEqual((0, b""), (forward.returncode, forward.stderr))
+        self.assertEqual(wrapped.encode("utf-8", "surrogateescape"), forward.stdout)
+        reverse = subprocess.run(command + ["--reverse"], input=forward.stdout, capture_output=True)
+        self.assertEqual((0, b""), (reverse.returncode, reverse.stderr))
+        self.assertEqual(raw, reverse.stdout)
+
+    def test_reverse_refuses_a_wrapped_profile_without_exactly_one_rule(self):
+        text = f"* * * * * {STORAGE_GUARD}{WRAPPER} unknown-profile >> /dev/null 2>&1\n" \
+               f"17 * * * * {WRAPPER} auth-prune >/dev/null 2>&1\n"
+        restored, unknown = crontab.unwrap(text, self.RULES, WRAPPER)
+        self.assertEqual(text.splitlines()[:1], unknown)
+        twice = {**self.RULES, "rules": self.RULES["rules"] + [
+            {"match": "artisan schedule:run --verbose", "profile": "auth-prune",
+             "command": "cd /var/www/backend && php artisan schedule:run --verbose"}]}
+        restored, unknown = crontab.unwrap(text, twice, WRAPPER)
+        self.assertEqual(text.splitlines(), unknown)
+
+    def test_a_rewrite_that_could_not_be_reversed_is_refused(self):
+        # Two rules for one profile: the reverse could not tell which command the line held.
+        rules = {**self.RULES, "rules": [
+            {"match": "artisan schedule:run --verbose", "profile": "scheduler",
+             "command": "cd /var/www/backend && php artisan schedule:run --verbose"}, *self.RULES["rules"]]}
+        text = "* * * * * cd /var/www/backend && php artisan schedule:run --verbose >> /dev/null 2>&1\n"
+        wrapped, unknown = crontab.wrap(text, rules, WRAPPER)
+        self.assertEqual(text.splitlines(), unknown)
+        self.assertEqual(text, wrapped)
+
+    def test_rule_without_its_exact_command_is_refused(self):
+        for rule in ({"match": "artisan schedule:run", "profile": "scheduler"},
+                     {"match": "artisan schedule:run", "profile": "scheduler", "command": ""},
+                     {"match": "artisan schedule:run", "profile": "scheduler", "command": "x", "allow": "both"},
+                     {"match": "artisan schedule:run"},
+                     # An allow rule names its exact command too (review C2-8).
+                     {"match": "/ensure-supervisor\\.sh", "allow": "Starts the user Supervisor"},
+                     {"match": "/ensure-supervisor\\.sh", "allow": "Starts the user Supervisor", "command": ""}):
+            with self.subTest(rule=rule):
+                with self.assertRaisesRegex(ValueError, "cron rule"):
+                    crontab.wrap("", {**self.RULES, "rules": [rule]}, WRAPPER)
+                with self.assertRaisesRegex(ValueError, "cron rule"):
+                    crontab.unwrap("", {**self.RULES, "rules": [rule]}, WRAPPER)
+
+    # Wave-2 review (C2-8, C2-9, 26 Nov).
+
+    RETENTION = ("47 3 * * * /usr/bin/python3 /var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention "
+                 ">/dev/null 2>&1 # repro-deploy-backup-retention")
+
+    def cli(self, rules: dict, text: str, *extra: str) -> subprocess.CompletedProcess:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "cron-rules.json"
+        path.write_text(json.dumps(rules), encoding="utf-8")
+        return subprocess.run([sys.executable, "-I", "-S", "-B", str(Path(crontab.__file__).resolve()),
+                               "--rules", str(path), "--wrapper", WRAPPER, *extra],
+                              input=text.encode("utf-8"), capture_output=True)
+
+    def test_allow_rules_keep_only_their_exact_command(self):
+        # An allow rule used to match anywhere in the command and skip every exactness check, so a line
+        # holding an allowed script name was kept whatever else it ran.
+        kept = [*self.installed_lines()[2:], self.RETENTION,
+                self.RETENTION.replace("47 3 * * * ", f"47 3 * * * {STORAGE_GUARD}", 1)]
+        refused = [
+            # The reviewer's two lines.
+            "*/5 * * * * cd /var/www/backend && php artisan telnyx:prune-webhook-events; "
+            "/home/maverick/.local/bin/ensure-supervisor.sh",
+            f"35 3 * * * {STORAGE_GUARD}/usr/bin/python3 /var/www/backend/scripts/deploy/deployment-storage.py "
+            "scheduled-retention && sqlite3 /var/www/backend/database/database.sqlite 'VACUUM'",
+            # An unknown artisan command chained before and after the allowed script itself.
+            f"* * * * * cd /var/www/backend && php artisan telnyx:prune-webhook-events; {self.RUNTIME}/ensure-supervisor.sh "
+            f">> {self.RUNTIME}/logs/bootstrap.log 2>&1 # repro-studio-supervisor",
+            f"* * * * * {self.RUNTIME}/ensure-supervisor.sh && cd /var/www/backend && php artisan "
+            f"telnyx:prune-webhook-events >> {self.RUNTIME}/logs/bootstrap.log 2>&1",
+            # Another option, another prefix.
+            "47 3 * * * /usr/bin/python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply "
+            ">/dev/null 2>&1",
+            f"47 3 * * * /usr/bin/nice {self.RETENTION[len('47 3 * * * '):]}",
+        ]
+        text = "\n".join(kept + refused) + "\n"
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual(refused, unknown)
+        self.assertEqual(text, wrapped)
+        self.assertEqual([], crontab.wrap("\n".join(kept) + "\n", self.RULES, WRAPPER)[1])
+        result = self.cli(self.RULES, text)
+        self.assertEqual((1, b""), (result.returncode, result.stdout))
+        self.assertEqual(refused, [line[2:] for line in result.stderr.decode("utf-8").splitlines()[1:]])
+
+    def test_a_command_hidden_in_a_redirection_target_is_refused(self):
+        # The trailer kept behind the wrapper is output redirections to plain paths and a marker comment only:
+        # a target holding ;, &&, |, $( ), backquotes or cron's % would run (or feed) something unfenced.
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        lines = [
+            f"* * * * * {scheduler} >/dev/null;/usr/local/bin/ping-check",
+            f"* * * * * {STORAGE_GUARD}{scheduler} >> /dev/null&&/usr/local/bin/ping-check",
+            "17 * * * * cd /var/www/backend && /usr/bin/php artisan auth:prune-security-limits --limit=1000 "
+            ">/dev/null 2>&1|/usr/bin/logger",
+            f"* * * * * {scheduler} >> /tmp/$(/usr/local/bin/ping-check).log 2>&1",
+            f"* * * * * {scheduler} >> /tmp/`/usr/local/bin/ping-check`.log 2>&1",
+            f"* * * * * {scheduler} >> /dev/null%input 2>&1",
+            f"* * * * * {scheduler} >> /dev/null 2>&1 # marker%input",
+            f"* * * * * {self.RUNTIME}/ensure-supervisor.sh >> {self.RUNTIME}/logs/bootstrap.log;"
+            "/usr/bin/sqlite3 2>&1 # repro-studio-supervisor",
+        ]
+        text = "\n".join(lines) + "\n"
+        wrapped, unknown = crontab.wrap(text, self.RULES, WRAPPER)
+        self.assertEqual(lines, unknown)
+        self.assertEqual(text, wrapped)
+
+    def test_a_bad_match_expression_means_the_rules_cannot_be_used(self):
+        rules = {**self.RULES, "rules": [{"match": "(", "profile": "scheduler",
+                                          "command": "cd /var/www/backend && php artisan schedule:run"}]}
+        line = "* * * * * cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1\n"
+        for extra in ((), ("--reverse",)):
+            with self.subTest(extra=extra):
+                result = self.cli(rules, line, *extra)
+                self.assertEqual((2, b""), (result.returncode, result.stdout), result.stderr)
+                self.assertIn(b"the cron rules cannot be used", result.stderr)
+                self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_rule_command_that_starts_with_the_storage_guard_is_refused(self):
+        # The natural mistake: the rule's command copied from the live line, guard included. The guard is
+        # carried over separately, so such a rule could never match and every guarded line would be refused.
+        scheduler = "cd /var/www/backend && php artisan schedule:run"
+        for rule in ({"match": "artisan schedule:run", "profile": "scheduler", "command": STORAGE_GUARD + scheduler},
+                     {"match": "artisan schedule:run", "profile": "scheduler",
+                      "command": "/usr/local/sbin/repro-storage-guard && " + scheduler},
+                     {"match": "deployment-storage\\.py", "allow": "Deploy backup retention",
+                      "command": STORAGE_GUARD + "/usr/bin/python3 /var/www/backend/scripts/deploy/deployment-storage.py "
+                                                 "scheduled-retention"}):
+            with self.subTest(rule=rule):
+                rules = {**self.RULES, "rules": [rule]}
+                for rewrite in (crontab.wrap, crontab.unwrap):
+                    with self.assertRaisesRegex(ValueError, "carried over separately"):
+                        rewrite("", rules, WRAPPER)
+                result = self.cli(rules, f"* * * * * {STORAGE_GUARD}{scheduler}\n")
+                self.assertEqual((2, b""), (result.returncode, result.stdout))
+                self.assertIn(b"carried over separately", result.stderr)
 
 
 if __name__ == "__main__":

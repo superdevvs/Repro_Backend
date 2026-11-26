@@ -265,6 +265,11 @@ The code implements the safe default and makes each a config value.
   `scheduler` and `auth-prune` lines, whose profiles run no guard. The chained-command fix
   (`e2513923`) checks only what follows the match. Before W1, refuse or
   carry over such a prefix and add the guard to those profiles.
+  Done in the adapter lane (D20): `crontab.py` now carries the exact prefix
+  `/usr/local/sbin/repro-storage-guard --live && ` over in front of the
+  wrapper and refuses any other prefix, anything chained after the command
+  and, since the wave-2 review, allowed lines that are not exactly their
+  rule's command; see `scripts/cutover/production/README.md`, "Cron lines".
 
 ## Risks
 

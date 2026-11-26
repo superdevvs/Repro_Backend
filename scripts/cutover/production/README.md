@@ -30,7 +30,8 @@ approval for each action (handoff item W1).
 | `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` (root 0644) | Release path and open marker |
 | `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times; makes `/run/repro-telnyx-capture` itself (`ExecStartPre`) if tmpfiles has not yet |
 | `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | `wrappers.example.json` plus `telnyx-replay` and `cutover-smoke` (design 3.8) |
-| `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper |
+| `sandbox/` (`run-sandbox.sh`, `sandbox_check.py`, `make_config.py`, `shims/refuse`) | `/opt/repro-cutover-sandbox/` for a sandbox run only (W2a, W2c; owner approval each time), removed after it; never part of W1 | Namespace sandbox for on-host rehearsals and its host config (`sandbox/README.md`) |
+| `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper, keeping the storage guard; `--reverse` restores them (below) |
 
 All files and every parent directory must be owned by root and not writable
 by group or others. Python runs as `/usr/bin/python3 -I -S`.
@@ -54,11 +55,71 @@ start again through the wrapper.
 | User Supervisor: studio, lab-tour (when installed), voice-realtime, voice-notifications, voice-transcripts | `sudo -n ... admit.py <profile>` |
 | `repro-media-archives.service` | systemd drop-in `ExecStart=+... admit.py media-archives` |
 | Laravel scheduler (cron `schedule:run`) | `admit.py scheduler`; background commands keep the lease |
-| Other application cron lines | `crontab.py` rewrites known lines; unknown ones are refused |
+| Other application cron lines | `crontab.py` rewrites lines that match a rule exactly, keeping the storage guard in front of the wrapper, and keeps an allowed line only when it is exactly its rule's command; any other application line is refused (below) |
 | Deployments | `/etc/repro-database-cutover/active`, published under both deploy locks from `init` (Deploy-App checks only this file, never the guard) until reopening a completed rollback lifts it |
 | Manual `sqlite3` or tinker as the deploy or web user | SQLite seal: no write bits on the database files during the freeze. Write bits stop new opens only, so the seal first refuses while any other process holds the database, `-wal` or `-shm` open for writing (an idle session opened earlier), and checks again after the modes change. It needs root's `/proc` access to every process (`CAP_SYS_PTRACE`); an unreadable process also refuses |
 
 Root bypasses file modes. Root-run tools are fenced by the runbook only.
+
+### Cron lines (`crontab.py`, D20)
+
+A rule in `cron-rules.json` names the exact command text of its lines
+(`command`) and either leaves them as they are (`match`, `allow` with the
+reason, `command`) or rewrites them (`match`, `profile`, `command`, the
+command the profile replaces); any other shape is refused (exit 2). A
+rule's `command` never includes the storage guard, which is carried over
+separately: a `command` that starts with `/usr/local/sbin/repro-storage-guard`
+is refused (exit 2), and so is a `match` that is not a valid regular
+expression. A line that a rule matches is kept or wrapped only when its
+command is exactly the rule's `command`, alone or behind the storage guard
+`/usr/local/sbin/repro-storage-guard --live && ` (that form, byte for
+byte), followed only by output redirections to plain paths (letters,
+digits, `_`, `.`, `/`, `-`), `2>&1` and a marker comment without `%`.
+That holds for `allow` rules too: an allowed script with an artisan command
+chained before or after it, or the retention line with `sqlite3` after it,
+is refused like any other line. The guard is carried over in front of the
+wrapper, so it still runs first:
+
+```text
+* * * * * /usr/local/sbin/repro-storage-guard --live && cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1
+* * * * * /usr/local/sbin/repro-storage-guard --live && /usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py scheduler >> /dev/null 2>&1
+```
+
+Any other prefix (another guard form, `flock`, `nice`, a second `cd`),
+anything chained, piped or substituted after the command, or another option
+is refused, never rewritten with the difference dropped: `crontab.py` exits
+1, names each such line on stderr and prints nothing on stdout. So is a line
+the reverse could not restore exactly (two rules for one profile). The
+schedule, the whitespace after it, the redirections and the marker comment
+are kept. `--reverse` turns each wrapped line back into its rule's command,
+guard and trailer kept, so a rewrite and its reverse give the original
+crontab byte for byte (input and output are bytes, with no newline or
+encoding translation). Lines that are already wrapped are left alone.
+
+The example's commands are the repository installers' forms. At W1, check
+each rule's `command` against the live crontab, the `allow` rules included:
+production's `ensure-supervisor.sh` and backup retention lines must be
+compared with their rules like the wrapped ones (only schedules and command
+names were read on 25 November). A live line that differs is refused, and
+the rule is corrected, not the line.
+
+The `cubicasa-poll` line keeps the cron guard in front of the wrapper, and
+its profile in `wrappers.example.json` runs
+`/usr/local/sbin/repro-storage-guard --live` again before the command. The
+guard is installed by hand on production and its source is not in this
+repository, so this checkout cannot show that a second run is harmless (a
+read-only check). Both stay for now; at W1, read the installed guard
+(read-only) and drop the profile's copy if the guard writes anything.
+
+Write to a file and install only on exit 0:
+
+```sh
+wrapper='/usr/bin/sudo -n /usr/bin/python3 -I -S /opt/repro-cutover-fence/production/admit.py'
+crontab -u maverick -l > before.txt
+python3 -I -S -B crontab.py --rules cron-rules.json --wrapper "$wrapper" < before.txt > after.txt \
+  && python3 -I -S -B crontab.py --rules cron-rules.json --wrapper "$wrapper" --reverse < after.txt | cmp - before.txt \
+  && crontab -u maverick after.txt
+```
 
 ## Host config
 
@@ -1062,6 +1123,18 @@ unit's `ExecStartPre` and needs root);
 its `CaptureTests` run the real `capture.php` behind nginx and replay a
 captured text through `telnyx:replay-spool` into the app's handler, so they
 need root, nginx, PHP-FPM and an application checkout whose `vendor/` the
-web user can read (the command is in the file's docstring). Real systemd, Supervisor, nginx reloads
+web user can read (the command is in the file's docstring).
+`test_cross_slice.py` checks contracts between slices that no single
+slice's tests can see: the smoke tables in the example host config and the
+sandbox `host.json` against the app's `CutoverSmokeFixture::SMOKE_TABLES`,
+and `adapter.CAPTURE_COMMAND_LINES` against the capture's unit and pool.
+It is pure Python, needs a POSIX system and also runs as an ordinary user.
+`../run-linux-tests.sh` runs it in its production loop, and by default also
+runs the sandbox's `MakeConfigTests` (`sandbox/test_sandbox.py -k
+MakeConfigTests`, no privileges needed), which fail when the `host.json`
+contract drifts from `sandbox/make_config.py`. The sandbox launcher tests
+need a disposable `--privileged` container and run only when
+`production/sandbox/test_sandbox.py` is passed as an extra argument
+(`sandbox/README.md`). Real systemd, Supervisor, nginx reloads
 and a host reboot are not exercised here; they need the staging or production
 drill (W2).

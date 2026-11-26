@@ -53,15 +53,14 @@ after no deploy, look for `__pycache__` under the app tree's `scripts/` (and
 >   resumes (the 9:20 pm step and the called-off undo list) go through
 >   `sudo -n /usr/local/sbin/repro-queue-flag`, which the adapter lane
 >   adds and W1 installs.
-> - The storage guard on cron lines. W1's cron rewrite (`crontab.py`)
->   keeps only the schedule, the wrapper call and the output redirection,
->   so anything before the matched command is dropped. On production all
->   but one of the deploy user's cron lines run through
->   `/usr/local/sbin/repro-storage-guard` (25 November), and the
->   `scheduler` and `auth-prune` profiles in `wrappers.example.json` run no
->   guard, so W1 would remove the guard from those lines. `crontab.py` must
->   refuse such a prefix, or carry it over, and those two profiles must run
->   the guard, as `cubicasa-poll` does. Neither lane has changed this.
+> - The storage guard on cron lines. On production all but one of the
+>   deploy user's cron lines run through
+>   `/usr/local/sbin/repro-storage-guard` (25 November). The adapter
+>   lane's `crontab.py` (D20) carries that exact prefix over in front of
+>   the wrapper and refuses any other prefix, so W1 keeps the guard on the
+>   `scheduler` and `auth-prune` lines. Its rules name the exact command
+>   each profile replaces; check them against the live crontab before W1
+>   (Release step 10).
 >
 > The cache store no longer blocks the abort. Production keeps the queue
 > pause flags in the `file` cache store (measured 25 November). So an abort
@@ -795,15 +794,25 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
       uses `resume`.
     - Carry the storage guard through the cron rewrite. On production all
       but one of the deploy user's cron lines run through
-      `/usr/local/sbin/repro-storage-guard`. `crontab.py` drops anything
-      before the matched command: checked at `4e4a262d`, `* * * * *
-      /usr/local/sbin/repro-storage-guard --live && cd /var/www/backend &&
-      php artisan schedule:run >> /dev/null 2>&1` becomes `* * * * *
-      /opt/repro-cutover-fence/admit-cron scheduler >> /dev/null 2>&1`,
-      with nothing reported. The `scheduler` and `auth-prune` profiles run
-      no guard (`cubicasa-poll` does). Before W1, `crontab.py` must refuse
-      or carry over such a prefix, and those profiles must run the guard.
-      This is a code change; neither lane has made it.
+      `/usr/local/sbin/repro-storage-guard`. The adapter lane's
+      `crontab.py` (D20) carries that exact prefix over in front of the
+      wrapper: `* * * * * /usr/local/sbin/repro-storage-guard --live &&
+      cd /var/www/backend && php artisan schedule:run >> /dev/null 2>&1`
+      becomes `* * * * * /usr/local/sbin/repro-storage-guard --live &&
+      /usr/bin/sudo -n /usr/bin/python3 -I -S
+      /opt/repro-cutover-fence/production/admit.py scheduler >> /dev/null
+      2>&1`. The guard still runs before the wrapper, so the `scheduler`
+      and `auth-prune` profiles need no guard of their own. Each rule in
+      `cron-rules.json` names the exact command it replaces. A line with
+      any other prefix (another guard form, `flock`, `nice`), anything
+      chained after the command, or a different command text is refused:
+      `crontab.py` exits 1, names the lines and prints nothing to
+      install. Before W1, check each rule's `command` against `crontab -u
+      maverick -l` (only schedules and command names were read on 25
+      November) and correct the rule, not the line. Install the rewrite
+      only on exit 0 and after `crontab.py --reverse` gives back the saved
+      crontab byte for byte (the commands are under "Cron lines" in
+      `scripts/cutover/production/README.md`).
     - Set all five owner options in `host.json`. The adapter has no default
       for them and refuses a missing one. The plan's values:
       `"separate_freeze_approval": false`, `"adopt_external_hold": false`,
@@ -1414,7 +1423,7 @@ so check which slots were really skipped.
 | `repro-recovery-kit.timer` and `.path` | 04:15 UTC and every `.env` change | held (step 4) | Start them in the undo list and run the kit once. |
 | Deploy-backup retention cron (`deployment-storage.py scheduled-retention`) | `47 3 * * *`, host time: 03:47 Eastern (08:47 UTC) | outside: it runs about 4 hours 45 minutes after the outage ends. It is not wrapped and takes both deploy locks for its run | None. |
 | The deploy user's `35 3 * * *` cron line (its command is not recorded here) | 03:35 Eastern (08:35 UTC) | outside | None. |
-| The deploy user's other cron lines (`@reboot`, three every minute, `17 * * * *`, two `*/5`, `7,37 * * * *`) | each slot, host time | lines that W1's cron rules wrap are refused while held | None: each runs at its next slot. W1's rewrite drops the storage guard in front of the wrapped lines unless `crontab.py` changes first (Release step 10). |
+| The deploy user's other cron lines (`@reboot`, three every minute, `17 * * * *`, two `*/5`, `7,37 * * * *`) | each slot, host time | lines that W1's cron rules wrap are refused while held | None: each runs at its next slot. W1's rewrite keeps the storage guard in front of the wrapped lines (Release step 10). |
 | `telnyx:prune-webhook-events` | 02:30 UTC (9:30 pm EST) | before the hold | None. |
 | `crm:follow-up-digest` | weekdays 07:00 Eastern | not on a Saturday night | None. |
 

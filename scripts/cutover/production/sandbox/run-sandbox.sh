@@ -119,6 +119,9 @@ inside() {  # ROOT TOKEN CHECKER_SHA256 -- COMMAND...
     [ "${1-}" = "--" ] || refuse "internal: missing command separator"
     shift
     [ "$$" -eq 1 ] || refuse "the sandbox shell is not PID 1 of a new PID namespace"
+    # Work in / first. The working directory inherited from the host namespace stays on its host file
+    # system even when a mount below hides that path, and /proc/1/cwd would lead every process inside there.
+    cd / || refuse "cannot change to /"
     # Sizes (README): sockets and pid files; MySQL's tmpdir and sort files; POSIX shared memory.
     private_tmpfs /run 0755 64m
     private_tmpfs /tmp 1777 1g
@@ -184,10 +187,16 @@ root=$1
 shift 2
 
 "$python" -I -S "$check" prepare --root "$root" || exit $?
-# One launch per sandbox root at a time. unshare and the sandbox init inherit the lock and keep it
-# until the last sandbox process is gone, even if this shell dies first; the init closes it for
-# the command.
-exec 9>"$root/launch.lock"
+# One launch per sandbox root at a time: the lock is on the ROOT directory itself, opened read-only.
+# ROOT is writable inside, so a lock file in it could be swapped for a link that this shell, as root
+# in the host namespace, would then create or truncate. prepare checked ROOT and its root-owned
+# parents, which nothing inside can reach. Only this shell and unshare hold the lock, both in the host
+# namespace: unshare keeps it until the last sandbox process is gone (PID 1 inside, its child, exits
+# only then), even if this shell dies first, and --kill-child ends the sandbox if unshare dies. PID 1
+# closes it with every other descriptor it inherits: opened in the host namespace, a descriptor
+# resolves '..' in the host's tree, so held inside it would lead every root process there onto the
+# host's file system through /proc/1/fd.
+exec 9<"$root"
 flock -n 9 || { echo "run-sandbox: another launch is using $root" >&2; exit 2; }
 armed=$("$python" -I -S "$check" arm --root "$root" $reboot 9>&-) || exit $?
 token=${armed%% *}
