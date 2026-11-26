@@ -48,6 +48,8 @@ jobs:
           python3 -m unittest discover -s scripts/cutover/readiness
           python3 -m unittest discover -s scripts/cutover/nightly
           python3 -m unittest discover -s scripts/cutover/production
+          python3 -m unittest discover -s scripts/cutover/production/sandbox
+          python3 -m unittest discover -s scripts/cutover/probe
           python3 -m unittest discover -s scripts/cutover/host
 
       - name: Setup PHP
