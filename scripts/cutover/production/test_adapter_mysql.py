@@ -1938,6 +1938,23 @@ class SealSqliteTests(unittest.TestCase):
         self.assertEqual(env, fresh.env.read_bytes())
         self.assertFalse(sqlite_seal.writable(fresh.database))
         self.assertIsNone(fresh.record("unseal_proof"))
+        # Only writes_possible exactly false allows the skip: a journal without it, or with any other value, does not.
+        for value in ("missing", None):
+            with self.subTest(writes_possible=value):
+                unknown = self.frozen()
+                unknown.ready()
+                unknown.answer(UNREACHABLE, 3)
+                journal = unknown.host()[0]
+                state = journal.read()
+                if value == "missing":
+                    state.pop("writes_possible", None)
+                else:
+                    state["writes_possible"] = value
+                journal.write(state)
+                with self.assertRaisesRegex(UnsafeCutover, "unreachable while MySQL writes may be possible"):
+                    unknown.seal_sqlite()
+                self.assertFalse(sqlite_seal.writable(unknown.database))
+                self.assertIsNone(unknown.record("unseal_proof"))
         # A gate the close cannot handle (an unrecognised state) refuses before any undo; the retry finishes.
         refused = self.frozen()
         refused.ready()
@@ -1994,8 +2011,21 @@ class SealSqliteTests(unittest.TestCase):
                 "env_sha256": envfile.digest(host.env.read_bytes(), NIGHT_FLAGS), "switch_at": None})
             host.env.write_bytes(host.env.read_bytes() + b"DB_CONNECTION=sqlite\n")
 
+        def another_engine_by_hand(host: UndoHost) -> None:
+            # Without a switch of this run only sqlite (or no DB_CONNECTION) passes, not merely "not mysql".
+            host.env.write_bytes(host.env.read_bytes().replace(b"DB_CONNECTION=sqlite", b"DB_CONNECTION=pgsql"))
+
+        def another_runs_record_no_cache(host: UndoHost) -> None:
+            # Another run's record over a switched .env is refused in step 3 itself, before step 4 would build a
+            # config cache from that .env.
+            another_runs_record(host)
+            host.cache.unlink()
+
         for name, change, pattern in (
             ("a .env switched by hand", by_hand_env, "switched by hand"),
+            ("a .env naming another engine by hand", another_engine_by_hand, "switched by hand"),
+            ("another run's record over a switched .env and no config cache", another_runs_record_no_cache,
+             "switched by hand"),
             ("a .env switched by hand and no config cache", by_hand_env_no_cache, "switched by hand"),
             ("another run's record and a switch key on two lines", another_runs_record_two_lines,
              "cannot be checked against the switch record"),
@@ -2018,6 +2048,13 @@ class SealSqliteTests(unittest.TestCase):
         host.env.write_bytes(host.original[0])
         self.assertEqual("sqlite_authoritative", host.abort()["phase"])
         self.assert_undone(host)
+        # A .env with no DB_CONNECTION line (Laravel's default connection, sqlite) and no record: nothing to undo.
+        bare = self.frozen()
+        lines = bare.env.read_bytes().splitlines(keepends=True)
+        bare.env.write_bytes(b"".join(line for line in lines if not line.startswith(b"DB_CONNECTION=")))
+        bare.original = (bare.env.read_bytes(), metadata(bare.env))
+        self.assertEqual("sqlite_authoritative", bare.abort()["phase"])
+        self.assert_undone(bare)
         # Another run's record over a SQLite .env: nothing of this run to undo; the record is never used or replaced.
         other = self.frozen()
         record = {"version": 1, "run_id": "earlier-run", "values": envfile.values(
@@ -2025,9 +2062,39 @@ class SealSqliteTests(unittest.TestCase):
             "env_sha256": envfile.digest(other.env.read_bytes(), NIGHT_FLAGS), "switch_at": None}
         other.write_record("switch_record", record)
         raw = other.path("switch_record").read_bytes()
+        # What an interrupted replacement left beside the .env is cleared with any run's record (review D10R-5).
+        leftover = other.app / f".env.repro-{'a' * 32}"
+        leftover.write_bytes(b"DB_CONNECTION=mysql\n")
+        self.assertEqual([leftover.name], other.leftovers())
         self.assertEqual("sqlite_authoritative", other.abort()["phase"])
         self.assert_undone(other)
         self.assertEqual(raw, other.path("switch_record").read_bytes())
+
+    def test_a_missing_env_with_a_switch_record_refuses(self):
+        # With a switch record, this run's or another run's, a missing .env is refused in step 3 by name: nothing
+        # records what the app would read, so the rollback stops before it unseals SQLite and the run stays held.
+        # Through the runner the identity probe refuses first (it measures the .env); seal_sqlite refuses by itself.
+        def this_runs(host: UndoHost) -> None:
+            host.crash_after(7)
+
+        def another_runs(host: UndoHost) -> None:
+            host.write_record("switch_record", {"version": 1, "run_id": "earlier-run", "values": envfile.values(
+                host.env.read_bytes(), production.switch_keys(host.config)),
+                "env_sha256": envfile.digest(host.env.read_bytes(), NIGHT_FLAGS), "switch_at": None})
+
+        for name, change in (("this run's record", this_runs), ("another run's record", another_runs)):
+            with self.subTest(name):
+                host = self.frozen()
+                change(host)
+                host.env.unlink()
+                with self.assertRaisesRegex(UnsafeCutover, "identity-probe"):
+                    host.abort()
+                with self.assertRaisesRegex(UnsafeCutover, "cannot be read to undo the switch: it is missing"):
+                    host.seal_sqlite()
+                self.assertEqual("frozen", host.host()[0].read()["phase"])
+                self.assertFalse(sqlite_seal.writable(host.database))
+                self.assertFalse(host.path("evidence").exists())
+                self.assertFalse(host.env.exists())
 
     def test_truncated_config_cache_rebuilt(self):
         # Design 4.7: a missing or unparseable config.php is the fallback; the rollback runs and rebuilds it.
@@ -2044,7 +2111,12 @@ class SealSqliteTests(unittest.TestCase):
                 self.assertEqual(live_config.FALLBACK, live_config.measure(host.app).source)
                 mark = len(host.commands())
                 self.assertEqual("sqlite_authoritative", host.abort()["phase"])
-                self.assertIn(["php", "config:cache"], host.rollback_effects(mark))
+                effects = host.rollback_effects(mark)
+                self.assertIn(["php", "config:cache"], effects)
+                # The rebuilt cache reaches FPM: step 5 follows the build even without a switch of this run.
+                reload = ["systemctl", "try-reload-or-restart"]
+                self.assertIn(reload, effects)
+                self.assertLess(effects.index(["php", "config:cache"]), effects.index(reload))
                 self.assert_undone(host)
         # A rebuild that fails leaves the live file as it was and SQLite sealed; the retry finishes.
         host = self.frozen()
@@ -2082,8 +2154,14 @@ class SealSqliteTests(unittest.TestCase):
         # read the SQLite config; FPM keeps running.
         running = self.frozen()
         running.ready()
+        # Called directly (no close_admissions before it), step 9 removes the ingress marker and the scheduler release.
+        running.release_scheduler()
+        running.path("ingress_open").parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        running.path("ingress_open").write_text("", encoding="ascii")
         mark = len(running.commands())
         running.seal_sqlite()
+        self.assertEqual((False, False), (running.path("ingress_open").exists(),
+                                          running.path("scheduler_release").exists()))
         self.assertEqual([["systemctl", "try-reload-or-restart", UNIT]],
                          [entry for entry in running.commands()[mark:] if entry[0] == "systemctl"])
         self.assertEqual({"running": True, "reloads": [["sqlite", live_config.CACHE, running.sqlite_pin]]},
@@ -2133,14 +2211,29 @@ class SealSqliteTests(unittest.TestCase):
         # Only this run's and this hold's sealed hash counts: another hold's record (a journal reset by hand) is no
         # proof either way, and the rollback goes on.
         for name, change in (("another hold's", {"hold_id": str(uuid.uuid4())}), ("another run's", {"run_id": "earlier"}),
-                             ("another database's", {"database": "/var/www/backend/database/other.sqlite"})):
-            with self.subTest(name):
+                             ("another database's", {"database": "/var/www/backend/database/other.sqlite"}),
+                             ("another start's", {"started_at": "started_at+1"}),
+                             ("a malformed", {"sha256": "not-a-digest"}), ("a malformed", {"extra": True})):
+            with self.subTest(name, change=change):
                 stale = self.frozen()
-                stale.write_record("sealed_hash", {**stale.record("sealed_hash"), **change})
+                record = stale.record("sealed_hash")
+                if change.get("started_at") == "started_at+1":
+                    change = {"started_at": stale.host()[0].read()["started_at"] + 1}
+                stale.write_record("sealed_hash", {**record, **change})
                 self.assertEqual("sqlite_authoritative", stale.abort()["phase"])
                 proof = stale.record("unseal_proof")
                 self.assertEqual((None, None), (proof["sealed_sha256"], proof["unchanged"]))
-                self.assertRegex(proof["problem"], "another run, hold or database")
+                self.assertRegex(proof["problem"], "malformed" if name == "a malformed" else "another run, hold or database")
+        # A sealed file the proof cannot hash stops the rollback before step 8: SQLite stays sealed, the retry finishes.
+        unhashable = self.frozen()
+        unhashable.ready()
+        with patch.object(sqlite_seal, "file_sha256", side_effect=PermissionError(13, "Permission denied")):
+            with self.assertRaisesRegex(UnsafeCutover, "cannot be hashed for the unseal proof: Permission denied"):
+                unhashable.abort()
+        self.assertFalse(sqlite_seal.writable(unhashable.database))
+        self.assertIsNone(unhashable.record("unseal_proof"))
+        self.assertEqual("sqlite_authoritative", unhashable.abort()["phase"])
+        self.assert_undone(unhashable)
 
     def test_receipt_still_armed_after_publication(self):
         # Design 3.5 (critic RC-L10): the receipt stays armed until the SQLite reopen, so the runner's publication
@@ -2232,7 +2325,30 @@ class SealSqliteTests(unittest.TestCase):
         def another_line(host: UndoHost):
             return lambda: host.env.write_bytes(host.env.read_bytes() + b"APP_DEBUG_EXTRA=true\n")
 
+        def no_cache(host: UndoHost):
+            return host.cache.unlink
+
+        def linked_env(host: UndoHost):
+            def change():
+                real = host.app / "env.real"
+                host.env.rename(real)
+                host.env.symlink_to(real)
+            return change
+
+        def no_env(host: UndoHost):
+            return host.env.unlink
+
         for name, prepared, step, change, pattern in (
+            ("no prepare: config.php removed after step 4", False, "config", no_cache,
+             "not SQLite from the config cache"),
+            # "resumed": a rollback that stopped after its step 5 is retried, so this pass builds nothing and the
+            # pin is checked for this run's switch alone.
+            ("a resumed undo: a SQLite cache off the pin after step 5", "resumed", "fpm", other_sqlite_cache,
+             "not the SQLite pin"),
+            ("this run's switch: .env made a symbolic link after step 5", True, "fpm", linked_env,
+             "cannot be read to undo the switch"),
+            ("this run's switch: .env removed after step 5", True, "fpm", no_env,
+             "does not hold the switch record's SQLite values"),
             ("no prepare: .env switched after step 3", False, "config", switch_env, "switched by hand"),
             ("this run's switch: .env switched again after step 3", True, "config", switch_env,
              "does not hold the switch record's SQLite values"),
@@ -2244,6 +2360,8 @@ class SealSqliteTests(unittest.TestCase):
                 host = self.frozen()
                 if prepared:
                     host.ready()
+                if prepared == "resumed":
+                    host.crash_rollback_after(5)
                 with after_step(step, change(host)), self.assertRaisesRegex(UnsafeCutover, pattern):
                     host.abort()
                 self.assertFalse(sqlite_seal.writable(host.database))
@@ -2263,6 +2381,19 @@ class SealSqliteTests(unittest.TestCase):
         # No time left: nothing runs.
         with self.assertRaisesRegex(UnsafeCutover, r"seal_sqlite ran out of time before step 1 \(writers drained\)"):
             host.seal_sqlite(deadline=time.time() - 1)
+        # The deadline passes during step 2: the time is checked again before step 3, and nothing from it on runs.
+        offset = [0.0]
+        _, timed, _ = host.host()
+        timed.clock = lambda: time.time() + offset[0]
+        gate_close = production.ProductionAdapter._seal_sqlite_gate
+
+        def slow_gate(adapter_self, run):
+            gate_close(adapter_self, run)
+            offset[0] += 120
+
+        with patch.object(production.ProductionAdapter, "_seal_sqlite_gate", slow_gate), host.lease(journal) as lease:
+            with self.assertRaisesRegex(UnsafeCutover, r"seal_sqlite ran out of time before step 3 \(env\)"):
+                timed.seal_sqlite(lease, time.time() + 60)
         # Another controller took the journal while the gate closed: nothing from step 3 on runs.
         gate_step = production.ProductionAdapter._seal_sqlite_gate
 
@@ -2297,6 +2428,33 @@ class SealSqliteTests(unittest.TestCase):
         self.assertRegex(record["problem"], rf"fewer than fpm.drain_seconds plus {production.FPM_DRAIN_MARGIN_SECONDS} s")
         self.assertEqual([["fpm-stop"]], host.rollback_effects(mark))
         self.assertFalse(host.fpm()["running"])
+        # The skip still waits until no writer process remains after the stop (one that exits 1.5 s later here).
+        writer = subprocess.Popen([sys.executable, "-I", "-S", "-c", "import time; time.sleep(1.5)",
+                                   f"fake-queue-worker-{host.tag}"])
+        self.addCleanup(writer.wait)
+        self.addCleanup(writer.kill)
+        with host.lease(journal) as lease:
+            record = adapter.drain(lease, time.time() + needed - 5, purpose="rollback")
+        self.assertEqual("skipped", record["outcome"])
+        self.assertIsNotNone(writer.poll(), "the skipped drain returned while a writer process was still running")
+        # The time left is measured after stop_workers, when the FPM drain would start: worker stops that use up
+        # the margin turn a drain that had time into the skip.
+        offset = [0.0]
+        adapter.clock = lambda: time.time() + offset[0]
+        run = adapter._run
+
+        def slow_stop_workers(argv, deadline=None):
+            output = run(argv, deadline)
+            if [argv] == host.config["commands"]["stop_workers"]:
+                offset[0] += 30
+            return output
+
+        mark = len(host.commands())
+        with patch.object(adapter, "_run", side_effect=slow_stop_workers), host.lease(journal) as lease:
+            record = adapter.drain(lease, adapter.clock() + needed + 10, purpose="rollback")
+        self.assertEqual("skipped", record["outcome"])
+        self.assertEqual([["fpm-stop"]], host.rollback_effects(mark))
+        adapter.clock = time.time
         for purpose, seconds in (("rollback", needed + 30), ("freeze", needed - 5)):
             with self.subTest(purpose=purpose, seconds=seconds):
                 mark = len(host.commands())

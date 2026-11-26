@@ -1174,8 +1174,8 @@ switch record and `sealed_hash` stay until `retire`.
 
 **The `.env`** (step 3). With any run's switch record, first the
 temporary files an interrupted `envfile.replace` left are removed
-(`envfile.remove_leftovers`, review D10R-5), and the `.env` must be a
-regular file whose switch keys `envfile.values` can read (one line each);
+(`envfile.remove_leftovers`, review D10R-5), and the `.env` must exist and
+be a regular file whose switch keys `envfile.values` can read (one line each);
 otherwise the rollback stops (review D10V-1).
 - This run's record: `envfile.assign(<.env>, record values)` sets each
   switch key back to its SQLite value (removing the keys that had none) and
@@ -1236,13 +1236,15 @@ no FastCGI reading of FPM between the rollback and the reopen.
 least 10 minutes (`ROLLBACK_SECONDS`, even for a late watchdog), so a short
 deadline only comes from host commands before the drain that used most of
 it (`close_admissions`, `stop_workers`, each bounded by `command_seconds`).
-`drain` checks the time left when the FPM drain would start: with less than
+`drain` checks the time left when the FPM drain would start (after
+`stop_workers`): with less than
 `fpm.drain_seconds` plus 12 s (what `fpm_drain.py` needs inside
 `command_seconds`) a rollback does not start `fpm_drain.py`, whose kill at
 the deadline would leave the FPM stop unrun and the rollback failing until
 the next tick; it runs the stop at once and records `{"purpose":
 "rollback", "outcome": "skipped", "waited_seconds": 0, "polls": 0,
-"problem": "<n> s were left ..."}` in the `abort` history entry. nginx
+"problem": "<n> s were left ..."}` in the `abort` history entry; it still
+waits, as every drain does, until no writer process remains. nginx
 holds every request by then (review A2-2), and a request the stop ends
 mid-write is rolled back by SQLite (design 5.4). A freeze is unchanged: its
 deadline is the 0:45 point or `max_drain_seconds`, and `fpm_drain.py` killed
