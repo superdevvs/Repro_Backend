@@ -1,6 +1,7 @@
 """Linux tests for the production host adapter and CLI with fake host commands and real processes."""
 
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -2428,5 +2429,113 @@ class UnitFileTests(unittest.TestCase):
         self.assertIn("admit.py laravel-worker", supervisor)
 
 
+# The real-probe test against D04's fixture: named before any suite when it would skip (review W2F-5, C2-3(c)).
+
+REAL_PROBE_TEST = "ProductionAdapterTests.test_real_probe_reading_gives_mysql_authority_the_server_uuid"
+LINUX_ROOT = sys.platform == "linux" and hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def probe_fixture_tests() -> list[str]:
+    """The tests here that run mysql_probe.py against D04's fixture (they call probe_fixture()), as Class.method."""
+    return [f"{ProductionAdapterTests.__name__}.{name}"
+            for name in unittest.TestLoader().getTestCaseNames(ProductionAdapterTests)
+            if "self.probe_fixture()" in inspect.getsource(getattr(ProductionAdapterTests, name))]
+
+
+def fixture_skips() -> list[str]:
+    """The probe-fixture tests that skip here: all of them without Linux root or REPRO_MYSQL_PROBE_FIXTURE."""
+    return [] if LINUX_ROOT and PROBE_FIXTURE else probe_fixture_tests()
+
+
+def fixture_check() -> int:
+    """`--fixture-check`, run by run-linux-tests.sh first: one WARNING line on stdout naming the probe-fixture
+    tests that would skip, or, with REPRO_REQUIRE_PROBE_FIXTURE=1, an error and exit 1."""
+    skipped = fixture_skips()
+    if not skipped:
+        return 0
+    missing = [] if PROBE_FIXTURE else ["REPRO_MYSQL_PROBE_FIXTURE unset"]
+    if not LINUX_ROOT:
+        missing.append("not Linux root")
+    tests = "test" if len(skipped) == 1 else "tests"
+    summary = (f"{len(skipped)} adapter {tests} against the MySQL probe fixture SKIPPED ({', '.join(missing)}): "
+               f"{', '.join(skipped)}")
+    if REQUIRE_PROBE_FIXTURE:
+        print(f"ERROR: REPRO_REQUIRE_PROBE_FIXTURE=1 but {summary}", file=sys.stderr)
+        return 1
+    print(f"WARNING: {summary}. This run says nothing about MySQL authority from a real probe reading: run "
+          "scripts/cutover/production/run-probe-fixture-tests.sh --linux-suite, or set REPRO_REQUIRE_PROBE_FIXTURE=1 "
+          "to fail.")
+    return 0
+
+
+def without_fixture_environment(**extra: str) -> dict:
+    environment = {name: value for name, value in os.environ.items()
+                   if not name.startswith("REPRO_MYSQL_PROBE_FIXTURE") and name != "REPRO_REQUIRE_PROBE_FIXTURE"}
+    return {**environment, **extra}
+
+
+class FixtureCheckTests(unittest.TestCase):
+    """`test_adapter.py --fixture-check`, which run-linux-tests.sh runs before any suite, beside the probe's and
+    the gate's own (review W2F-5)."""
+
+    def check(self, environment: dict) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()), "--fixture-check"],
+                              env=environment, capture_output=True, text=True, timeout=120)
+
+    def test_the_fixture_tests_are_those_that_use_the_probe_fixture(self):
+        self.assertEqual([REAL_PROBE_TEST], probe_fixture_tests())
+
+    def test_missing_fixture_prints_one_warning_line_naming_the_real_probe_test(self):
+        result = self.check(without_fixture_environment())
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        lines = result.stdout.splitlines()
+        self.assertEqual(1, len(lines), result.stdout)
+        self.assertRegex(lines[0], r"^WARNING: 1 adapter test against the MySQL probe fixture SKIPPED ")
+        for name in ("REPRO_MYSQL_PROBE_FIXTURE", REAL_PROBE_TEST, "run-probe-fixture-tests.sh --linux-suite"):
+            self.assertIn(name, lines[0])
+
+    def test_missing_fixture_fails_when_required(self):
+        result = self.check(without_fixture_environment(REPRO_REQUIRE_PROBE_FIXTURE="1"))
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertRegex(result.stderr, r"^ERROR: REPRO_REQUIRE_PROBE_FIXTURE=1 ")
+        self.assertIn(REAL_PROBE_TEST, result.stderr)
+
+    @unittest.skipUnless(LINUX_ROOT, "The real-probe test needs Linux root as well")
+    def test_fixture_named_is_silent(self):
+        result = self.check(without_fixture_environment(REPRO_REQUIRE_PROBE_FIXTURE="1",
+                                                        REPRO_MYSQL_PROBE_FIXTURE="/fixture/socket"))
+        self.assertEqual((0, "", ""), (result.returncode, result.stdout, result.stderr))
+
+    @unittest.skipIf(LINUX_ROOT or os.name != "posix", "Shows the check as another user")
+    def test_fixture_named_without_root_still_names_the_test(self):
+        result = self.check(without_fixture_environment(REPRO_MYSQL_PROBE_FIXTURE="/fixture/socket"))
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        self.assertIn("SKIPPED (not Linux root)", result.stdout)
+        self.assertIn(REAL_PROBE_TEST, result.stdout)
+
+
+RUN_LINUX_TESTS = Path(__file__).resolve().parents[1] / "run-linux-tests.sh"
+
+
+@unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0 and Path("/.dockerenv").is_file()
+                     and RUN_LINUX_TESTS == Path("/src/scripts/cutover/run-linux-tests.sh")
+                     and not os.environ.get("REPRO_LINUX_SUITE_NESTED"),
+                     "Needs root in a disposable container with the checkout at /src, as run-linux-tests.sh")
+class LinuxSuiteTests(unittest.TestCase):
+    """run-linux-tests.sh names the real-probe test before any suite (review W2F-5)."""
+
+    def test_required_missing_fixture_names_the_real_probe_test_before_any_suite(self):
+        # REPRO_LINUX_SUITE_NESTED keeps a broken script from starting this test again inside itself.
+        result = subprocess.run(["/bin/sh", str(RUN_LINUX_TESTS)], capture_output=True, text=True, timeout=600,
+                                env=without_fixture_environment(REPRO_REQUIRE_PROBE_FIXTURE="1",
+                                                                REPRO_LINUX_SUITE_NESTED="1"))
+        self.assertNotEqual(0, result.returncode, result.stderr[-2000:])
+        self.assertIn(REAL_PROBE_TEST, result.stderr)
+        self.assertNotIn("Ran ", result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--fixture-check"]:
+        raise SystemExit(fixture_check())
     unittest.main()

@@ -905,8 +905,6 @@ Not yet here:
   holds in `_promote`: `evidence()` must require a reachable, closed target
   reading before `writes_possible` is written (D11, C02). D11's evidence also
   carries the freeze's `fpm_drain` record from the journal history.
-- `test_real_probe_reading_gives_mysql_authority_the_server_uuid` is not
-  named in the probe's `--fixture-check` warning (D05's `fixture_skips()`).
 
 Tests: `test_adapter.py` (root) with fake probes and a fake `fpm_drain.py`
 that prints the report in a file, plus the real `mysql_probe.py` twice: with
@@ -914,7 +912,11 @@ nothing installed (exit 3), and against D04's fixture
 (`test_real_probe_reading_gives_mysql_authority_the_server_uuid`). That one
 skips without `REPRO_MYSQL_PROBE_FIXTURE` and fails when
 `REPRO_REQUIRE_PROBE_FIXTURE=1`, as under `run-probe-fixture-tests.sh
---linux-suite`; the probe's `--fixture-check` warning does not list it. The
+--linux-suite`. `test_adapter.py --fixture-check`, which
+`../run-linux-tests.sh` runs before any suite beside the probe's and the
+gate's, names it in a WARNING line when it would skip (no fixture, or not
+Linux root) and stops the run when `REPRO_REQUIRE_PROBE_FIXTURE=1` (review
+W2F-5). The
 runner's part of the drain contract and the identity refusal are in
 `../test_runner.py` (fake adapters, any platform). Since the lane merge the
 contracts between slices are also tested end to end: the real `fpm_drain.py`

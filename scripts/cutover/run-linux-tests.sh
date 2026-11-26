@@ -16,26 +16,28 @@
 # The MySQL probe's gate-state tests need the three fixtures that
 # production/mysql/fixture.sh serves (REPRO_MYSQL_PROBE_FIXTURE and its
 # _NETWORKING and _SKIP_GRANTS variants). Without them those tests skip and a
-# WARNING line names them, first and last (test_gate.py's fixture tests on a
-# line of their own); with REPRO_REQUIRE_PROBE_FIXTURE=1 the run stops before
-# any suite instead. production/run-probe-fixture-tests.sh
+# WARNING line names them, first and last (test_gate.py's fixture tests and
+# test_adapter.py's real-probe test each on a line of their own); with
+# REPRO_REQUIRE_PROBE_FIXTURE=1 the run stops before any suite instead.
+# production/run-probe-fixture-tests.sh
 # --linux-suite builds the fixtures and runs this with the requirement set.
 set -eu
 test "$(id -u)" -eq 0
 test -f /.dockerenv || { echo 'Run only inside a disposable container' >&2; exit 2; }
 cutover=/src/scripts/cutover
 
-# Both files whose tests need the MySQL fixtures are checked, each naming its own tests, before any suite.
+# Every file whose tests need the MySQL fixtures is checked, each naming its own tests, before any suite.
 fixture_failed=0
 probe_warning=$(python3 -B "$cutover/production/test_mysql_probe.py" --fixture-check) || fixture_failed=1
 gate_warning=$(python3 -B "$cutover/production/test_gate.py" --fixture-check) || fixture_failed=1
+adapter_warning=$(python3 -B "$cutover/production/test_adapter.py" --fixture-check) || fixture_failed=1
 test "$fixture_failed" -eq 0 || exit 1
 fixture_warnings() {
-    for warning in "$probe_warning" "$gate_warning"; do
+    for warning in "$probe_warning" "$gate_warning" "$adapter_warning"; do
         [ -z "$warning" ] || printf '%s\n' "$warning" >&2
     done
 }
-if [ -n "$probe_warning$gate_warning" ]; then
+if [ -n "$probe_warning$gate_warning$adapter_warning" ]; then
     fixture_warnings
     trap fixture_warnings EXIT
 fi
