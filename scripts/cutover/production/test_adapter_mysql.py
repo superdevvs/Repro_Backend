@@ -28,25 +28,31 @@ world-writable chain), removed when the test ends:
 | SQLite | `database/database.sqlite` (www-data, WAL) | the live database; init, hold and freeze run on it for real |
 | night inputs | `night/` (root 0700) and `paths.evidence_inputs` | the night's tool outputs and the manifest check-evidence writes (`write_inputs`) |
 | recorders | `bin/systemctl`, `bin/runuser` | `systemctl` (records `["systemctl", ...]`, exit from `recorders.json`) and runuser (records `["runuser", ...]`, then runs the real /usr/sbin/runuser) |
-| php | `bin/php` | /usr/bin/php: `queue:pause|resume` (records), `config:cache` (writes $APP_CONFIG_CACHE from `.env` through ROUTES, see `config_for`), any other artisan command records itself and exits 0 (D11's smokes: set answers in `fake-php.json` via `php(...)`) |
+| php | `bin/php` | /usr/bin/php: `queue:pause|resume` (records), `config:cache` (writes $APP_CONFIG_CACHE from `.env` through ROUTES, see `config_for`; DB_* variables in its environment win over `.env`, as Laravel's), `cutover:smoke` and `db:writer-policy-check` (D11: printed from the config the process would load and its own user, group, cwd and umask, `fake_artisan`; each run records its context, `php_context`; `php(answers=...)` changes them), any other artisan command records itself and exits 0 |
 | identity probe | `bin/identity-probe` | identity_probe.py: the pinned release, artifact, source and target, and `config_sha256` measured from the live `.env` with identity.json's denylist, so the runner refuses a switch that moved it |
-| MySQL probe | `bin/mysql-probe` | fixture: records, then runs the real mysql_probe.py with `etc/probe-host.json` (design-form commands); otherwise answers from `etc/mysql-answers.json` (`answer(...)`, `since(...)`) |
+| MySQL probe | `bin/mysql-probe` | fixture: records, then runs the real mysql_probe.py with `etc/probe-host.json` (design-form commands); otherwise answers from `etc/mysql-answers.json` (`answer(...)`, `since(...)`); a reachable reading whose `receipt` is null names this run's receipt once it exists, as the real probe does (`answer(..., arm=False)`: not armed) |
+| wrapper profiles | `state/wrappers.json` (`profiles()`, `write_wrappers(...)`) | /etc/repro-cutover-fence/wrappers.json: nine profiles in five contexts, two shell scripts, one with its own environment (D11's per-profile probes) |
+| FPM pool | `fpm/php-fpm.sock` (`FpmStandIn`, `host.fpm`) | the app's PHP-FPM for the FastCGI probe: fpm-engine.php's report for the live config.php (`fpm.settings`, `fpm.stop()`, `fpm.start()`) |
+| gate.check | patched on scripted hosts (`gate(...)`, `gate_check` counts calls) | the real gate.check with the gate account's self-check runs on fixture hosts |
+| token check account | `etc/mysql-token-check.cnf` | repro_token_check's defaults file (fixture: the fixture's; scripted: a fake password, `token_password`) |
 
 Every recorder appends one JSON list per call to `log/commands.jsonl` (`commands()`); the MySQL probe records
 `["mysql-probe", *arguments]`. In-process, the adapter's QUEUE_PHP and config_build's RUNUSER and PHP are patched
 to `bin/php` and `bin/runuser`, so load_config's command checks hold for the harness's own paths.
 
 Use: `freeze()` runs init, hold and freeze through the real runner and writes the night inputs; `prepare()`
-runs `runner.perform("prepare")` and returns the refusal; `assert_prepared(error)` checks that steps 1 to 10
-passed and the runner's observation after them was frozen on MySQL (only `evidence()`, D11's, refused);
+runs `runner.perform("prepare")` and returns the refusal; `assert_prepared(error)` checks that steps 1 to 12
+passed, `evidence()` held and the run is `ready` with the record of this run's report (D11), so a retry after it
+uses `adapter_prepare()` instead (the run stays `frozen`); `write_night(...)` writes check-evidence's input
+directory, `report()` reads the evidence report, `tree()` snapshots every file for "nothing else changed";
 `adapter_prepare()` calls `adapter.prepare` again under a drained lease (a retry); `changes()` is everything
 prepare may change, for "refused without change" checks; `assert_markers(after=n)` checks the durable state a
 crash after step n leaves (the markers D12's abort reads, README "prepare"). `crash_after(n)` stops a runner
 prepare between step n and the next; `kill_inside(point)` SIGKILLs a forked controller inside step 7
 (`before-env-rename`) or step 8 (`after-config-rename`), the in-step states of README "What a crash leaves";
 `leftovers()` lists the temporary files such a kill leaves. `PrepareHost(..., app_link=True)` reaches the app
-root through a symbolic link. D11 adds steps 11 and 12 by extending `prepare()`'s expectation and the fake php's
-answers; D12 drives `abort` from each crash point that
+root through a symbolic link. D11's tests are EvidenceTests and EvidenceFixtureTests; D12 drives `abort` from
+each crash point that
 `test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step` and
 `test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes` build, and replaces the interim refusal
 `test_abort_never_reopens_sqlite_under_the_switched_env` checks with the undo.
@@ -63,10 +69,12 @@ import os
 import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -80,15 +88,18 @@ sys.path[:0] = [str(HERE.parent), str(HERE)]
 import adapter as production  # noqa: E402
 import config_build  # noqa: E402
 import envfile  # noqa: E402
+import gate  # noqa: E402
 import identity_probe  # noqa: E402
 import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
+import var_export  # noqa: E402
 from fence import guard  # noqa: E402
 from runner import Identity, Journal, UnsafeCutover  # noqa: E402
-from test_adapter import (MYSQL_CLIENT, MYSQL_CONFIG, MYSQL_PROBE, NIGHT_FLAGS, OTHER_UUID,  # noqa: E402
-                          PROBE_FIXTURE, REQUIRE_PROBE_FIXTURE, SQLITE_CONFIG, TARGET_UUID, drain_report,
+from test_adapter import (CLOSE_GATE, MYSQL_CLIENT, MYSQL_CONFIG, MYSQL_PROBE, NIGHT_FLAGS, OPEN_GATE,  # noqa: E402
+                          OTHER_UUID, PROBE_FIXTURE, REQUIRE_PROBE_FIXTURE, SQLITE_CONFIG, TARGET_UUID, drain_report,
                           example_config, probe_reading, queue_command)
 from test_envfile import BACKUP_ACL  # noqa: E402
+from test_fastcgi import decode_pairs, end, read_records, rec  # noqa: E402
 from test_live_config import cache_text  # noqa: E402
 
 LINUX_ROOT = sys.platform == "linux" and hasattr(os, "geteuid") and os.geteuid() == 0
@@ -102,6 +113,12 @@ INPUTS = ("snapshot", "import", "verify_fields", "migrate_status", "complete_sch
 FROZEN_SNAPSHOT, COPY_SNAPSHOT = "1" * 64, "2" * 64
 RECEIPT_KEYS = {"version", "run_id", "server_uuid", "database", "backup", "armed_from"}
 SWITCH_RECORD_KEYS = {"version", "run_id", "values", "env_sha256", "switch_at"}
+# D11 (step 11): the marked test records the read-only smoke reads (host.json smoke), the check account the token check
+# logs in as (mysql-token-check.cnf; scripted hosts get this password) and the FPM pool's OPcache the stand-in reports.
+SMOKE_RECORDS = example_config()["smoke"]
+TOKEN_USER, FAKE_TOKEN_PASSWORD = "repro_token_check", "fixture-token-check-password-0123"
+OPCACHE = {"enabled": True, "cache_full": False, "restart_pending": False, "num_cached_scripts": 0,
+           "start_time": None, "last_restart_time": 0, "validate_timestamps": True}
 # A production-shaped SQLite .env (production has these DB_ keys and no other switch key, review A5).
 ENV = """APP_NAME=RePro
 APP_ENV=production
@@ -202,7 +219,17 @@ if "--since" in sys.argv[1:]:
     answer = answers["since"][min(count, len(answers["since"]) - 1)]
 else:
     answer = answers["observe"]
-print(json.dumps(answer["stdout"]))
+stdout = answer["stdout"]
+# A reading of a reachable server names the receipt it armed on, as mysql_probe.py does once prepare wrote this run's
+# receipt (D11's checks compare it), unless the answer says it is not armed.
+if answer.get("arm", True) and isinstance(stdout, dict) and stdout.get("reachable") and stdout.get("receipt", 0) is None:
+    import hashlib
+    try:
+        with open({receipt!r}, "rb") as stream:
+            stdout["receipt"] = hashlib.sha256(stream.read()).hexdigest()
+    except FileNotFoundError:
+        pass
+print(json.dumps(stdout))
 sys.exit(answer["code"])
 """
 REAL_PROBE = RECORD + """os.execv("/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "-B", {probe!r}, "--config", {config!r},
@@ -241,19 +268,207 @@ if command == "config:cache":
     record(["php", "config:cache", target, os.getuid(), os.getgid(), umask])
     with open(".env", "rb") as stream:
         env = env_settings(stream.read())
+    # Laravel's immutable environment keeps what the process already has over .env (the token check's account);
+    # "ignore-env" builds from .env alone.
     mode = settings.get("config_cache", "ok")
+    if mode != "ignore-env":
+        env.update((name, value) for name, value in os.environ.items() if name.startswith("DB_"))
     if mode == "other-route":
         env["DB_COLLATION"] = "utf8mb4_general_ci"
     content = cache_text(config_for(env))
     with open(target, "wb") as stream:
         stream.write(content[:len(content) // 2] if mode == "half-then-fail" else content)
     sys.exit(1 if mode == "half-then-fail" else 0)
+if command in ("cutover:smoke", "db:writer-policy-check"):
+    from test_adapter_mysql import fake_artisan, php_context
+    record(["php", command, *arguments, php_context()])
+    stdout, code = fake_artisan(command, arguments, settings, artisan)
+    print(stdout)
+    sys.exit(code)
 record(["php", command, *arguments])
 answer = settings.get("answers", {{}}).get(command)
 if answer is not None:
     print(answer["stdout"])
     sys.exit(answer["code"])
 """
+
+
+def engine_report(config: dict, path: str, settings: dict, process: dict) -> dict:
+    """What `cutover:smoke --engine-only --json` and fpm-engine.php print for a process on this cached config
+    (CutoverEngineProbe::measure): engine, database, server identity and the raw route values; the fixture's server
+    UUID comes from the fake's settings, since the fake never connects."""
+    engine = live_config.engine(config)
+    default = config["database"]["default"]
+    connection = config["database"]["connections"][default]
+    return {"engine": engine, "connection": default, "database": connection.get("database"),
+            "server_uuid": settings.get("server_uuid") if engine == "mysql" else None,
+            "server_version": "8.4.13" if engine == "mysql" else "3.46.1", "config_cached": True,
+            "config_path": path, "process": process, "route_values": live_config.route_values(config), "problems": []}
+
+
+def _changed(report: dict, changes: dict) -> dict:
+    """A computed report with an answer's changes: maps one level deep, any other value replaced."""
+    for key, value in changes.items():
+        report[key] = {**report[key], **value} if isinstance(value, dict) and isinstance(report.get(key), dict) else value
+    return report
+
+
+def fake_artisan(command: str, arguments: list, settings: dict, artisan: str) -> tuple[str, int]:
+    """What the fake php prints for D11's artisan commands, computed from the config this process would load (the
+    APP_CONFIG_CACHE it was given, else the app's live config.php) and its own user, group, cwd and umask.
+
+    An answer in fake-php.json's `answers`, keyed `"<command line>@<user>"`, `"<command line>"` or `"<command>"`,
+    either replaces the output (`stdout`, `code`) or changes the computed report (`changes`, merged one level deep;
+    `ok` and the exit follow the problems unless the answer names them)."""
+    import grp
+    import pwd
+
+    user = pwd.getpwuid(os.geteuid()).pw_name
+    line = " ".join([command, *arguments])
+    answers = settings.get("answers", {})
+    answer = answers.get(f"{line}@{user}") or answers.get(line) or answers.get(command) or {}
+    if "stdout" in answer:
+        return answer["stdout"], answer.get("code", 0)
+    path = os.environ.get("APP_CONFIG_CACHE") or os.path.join(os.path.dirname(os.path.abspath(artisan)), "bootstrap",
+                                                              "cache", "config.php")
+    with open(path, "rb") as stream:
+        config = var_export.parse(stream.read())
+    if command == "db:writer-policy-check":
+        connection = config["database"]["connections"][config["database"]["default"]]
+        if live_config.engine(config) != "mysql":
+            report = {"engine": live_config.engine(config), "writer_policy": "not applicable", "problems": []}
+        else:
+            # The token check account may take the token; the app account, behind the closed gate, may not.
+            acquired = connection.get("username") in settings.get("token_accounts", []) and bool(connection.get("password"))
+            report = {"engine": "mysql", "writer_policy": True,
+                      "session": {"isolation": "READ-COMMITTED", "row_lock_wait": 5, "metadata_lock_wait": 5},
+                      "token": {"acquired": acquired}, "problems": [] if acquired else [
+                          f"SQLSTATE[42000]: UPDATE command denied to user '{connection.get('username')}'@'localhost' "
+                          "for table 'writer_token'"]}
+        report = _changed(report, answer.get("changes", {}))
+        return json.dumps(report), answer.get("code", 1 if report["problems"] else 0)
+    if os.geteuid() == 0:
+        # The command's own refusal, which the real one gives only after artisan bootstrapped as root (wave 1).
+        return json.dumps({"version": 1, "mode": None, "ok": False, "problems": [
+            "refused: cutover:smoke never runs as root (effective uid 0); run it as www-data or the deploy user"]}), 1
+    flags = [argument[2:] for argument in arguments if argument in ("--engine-only", "--read-only", "--write")]
+    umask = os.umask(0o022)
+    os.umask(umask)
+    process = {"euid": os.geteuid(), "user": user, "egid": os.getegid(), "group": grp.getgrgid(os.getegid()).gr_name,
+               "cwd": os.getcwd(), "umask": f"{umask:04o}"}
+    report = {"version": 1, "mode": flags[0] if len(flags) == 1 else None, "ok": True,
+              **engine_report(config, path, settings, process)}
+    if report["mode"] in ("read-only", "write"):
+        smoke = settings.get("smoke", SMOKE_RECORDS)
+        report["checks"] = {"client_id": smoke["client_id"], "shoot_id": smoke["shoot_id"], "client_read": True,
+                            "shoot_read": True, "encrypted_value_decrypts": True, "smoke_queue": "database:cutover-smoke",
+                            "smoke_queue_pending": 0, "smoke_queue_paused": False}
+    changes = answer.get("changes", {})
+    report = _changed(report, changes)
+    if "ok" not in changes:
+        report["ok"] = not report["problems"]
+    return json.dumps(report), answer.get("code", 0 if report["ok"] else 1)
+
+
+def php_context() -> dict:
+    """The fake php's process, for step 11's tests: ids, groups, cwd, umask and environment (a password's value
+    hashed); run on a private config cache (APP_CONFIG_CACHE), also that cache's folder and file (owner, group and
+    mode), its account and its password's SHA-256."""
+    umask = os.umask(0o022)
+    os.umask(umask)
+    context = {"uid": os.getuid(), "euid": os.geteuid(), "gid": os.getgid(), "egid": os.getegid(),
+               "groups": sorted(os.getgroups()), "cwd": os.getcwd(), "umask": f"{umask:04o}",
+               "env": {name: hashlib.sha256(value.encode()).hexdigest() if "PASSWORD" in name else value
+                       for name, value in os.environ.items()}}
+    cache = os.environ.get("APP_CONFIG_CACHE")
+    if cache:
+        def owner(path: str) -> list:
+            info = os.stat(path)
+            return [info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)]
+
+        with open(cache, "rb") as stream:
+            config = var_export.parse(stream.read())
+        connection = config["database"]["connections"][config["database"]["default"]]
+        context["cache"] = {"path": cache, "folder": owner(os.path.dirname(cache)), "file": owner(cache),
+                            "username": connection.get("username"),
+                            "password_sha256": hashlib.sha256(str(connection.get("password")).encode()).hexdigest()}
+    return context
+
+
+class FpmStandIn:
+    """The app's PHP-FPM pool for fastcgi.engine_probe (design 5.3): a FastCGI responder on the host's fpm.socket that
+    answers every request with fpm-engine.php's report for the live config.php, as the pool user www-data prints it.
+
+    `settings`: `changes` (merged into the report as fake_artisan merges them) and `status` (the HTTP status; 200, or
+    500 when the report is not ok). `stop()` closes the socket (FPM stopped), `start()` listens again. `requests`
+    holds each request's FastCGI parameters."""
+
+    def __init__(self, host: "PrepareHost"):
+        self.host = host
+        self.path = Path(host.root / "fpm" / "php-fpm.sock")
+        self.settings: dict = {}
+        self.requests: list[dict] = []
+        self.listener = None
+        self.thread = None
+        self.stopped = threading.Event()
+        self.start()
+        host.test.addCleanup(self.stop)
+
+    def start(self) -> None:
+        self.stopped.clear()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.path))
+        listener.listen(8)
+        listener.settimeout(0.1)
+        self.listener = listener
+        self.thread = threading.Thread(target=self.serve, args=(listener,), daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(15)
+        if self.listener is not None:
+            self.listener.close()
+        self.listener = self.thread = None
+        self.path.unlink(missing_ok=True)
+
+    def serve(self, listener: socket.socket) -> None:
+        while not self.stopped.is_set():
+            try:
+                connection, _ = listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with connection:
+                connection.settimeout(10)
+                try:
+                    records = read_records(connection)
+                    params = {name.decode(): value.decode() for name, value in
+                              decode_pairs(b"".join(content for _, kind, _, content in records if kind == 4))}
+                    self.requests.append(params)
+                    connection.sendall(self.answer())
+                except OSError:
+                    continue
+
+    def answer(self) -> bytes:
+        settings = self.settings
+        path = str(self.host.cache)
+        with open(path, "rb") as stream:
+            config = var_export.parse(stream.read())
+        process = {"euid": WEB_UID, "user": WEB_USER, "egid": WEB_UID, "group": WEB_USER, "cwd": str(self.host.app),
+                   "umask": "0022"}
+        report = {"version": 1, "probe": "fpm-engine", "ok": True, "sapi": "fpm-fcgi", "pid": os.getpid(),
+                  **engine_report(config, path, {"server_uuid": self.host.target}, process),
+                  "opcache": dict(OPCACHE), "elapsed_ms": 4}
+        report = _changed(report, settings.get("changes", {}))
+        if "ok" not in settings.get("changes", {}):
+            report["ok"] = not report["problems"]
+        status = settings.get("status", 200 if report["ok"] else 500)
+        body = json.dumps(report).encode()
+        headers = f"Status: {status}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\r\n".encode()
+        return rec(6, headers + body) + rec(6) + end()
 
 
 class Crash(Exception):
@@ -274,7 +489,7 @@ class PrepareHost:
         test.addCleanup(shutil.rmtree, self.root, True)
         self.root.chmod(0o755)
         self.tag = uuid.uuid4().hex[:12]
-        for folder in ("state", "run", "ingress", "etc", "home", "database", "bin", "night", "log"):
+        for folder in ("state", "run", "ingress", "etc", "home", "database", "bin", "night", "log", "fpm"):
             (self.root / folder).mkdir(mode=0o755)
         for private in ("state", "run", "night"):
             (self.root / private).chmod(0o700)
@@ -309,6 +524,15 @@ class PrepareHost:
         test.addCleanup(patcher.stop)
         self.config = self._config()
         self._write_config()
+        self.write_wrappers(self.profiles())
+        # D11: FPM's pool for the FastCGI probe; a scripted host's gate.check (the fixture runs the real one).
+        self.fpm = FpmStandIn(self)
+        self.gate_answer = None
+        self.gate_check = None
+        if not fixture:
+            patcher = patch.object(gate, "check", side_effect=self._gate_check)
+            self.gate_check = patcher.start()
+            test.addCleanup(patcher.stop)
         self.state = None
         self.backup = None
 
@@ -342,9 +566,11 @@ class PrepareHost:
         self.php()
 
     def php(self, **settings):
-        """What the fake php does on its next runs (config_cache: ok, half-then-fail, other-route; answers)."""
+        """What the fake php does on its next runs (config_cache: ok, half-then-fail, other-route; answers, see
+        fake_artisan; server_uuid, smoke and token_accounts default to this host's)."""
         path = self.app / "fake-php.json"
-        path.write_text(json.dumps({"log": str(self.log), **settings}), encoding="utf-8")
+        defaults = {"server_uuid": self.target, "smoke": SMOKE_RECORDS, "token_accounts": [TOKEN_USER]}
+        path.write_text(json.dumps({"log": str(self.log), **defaults, **settings}), encoding="utf-8")
         path.chmod(0o644)
 
     def _program(self, name: str, text: str, **values) -> Path:
@@ -366,15 +592,18 @@ class PrepareHost:
         if self.fixture:
             self._program("mysql-probe", REAL_PROBE, probe=str(MYSQL_PROBE), config=str(self.probe_config))
         else:
-            self._program("mysql-probe", FAKE_PROBE, answers=str(self.answers), count=str(self.etc / "since-count"))
+            self._program("mysql-probe", FAKE_PROBE, answers=str(self.answers), count=str(self.etc / "since-count"),
+                          receipt=str(self.root / "state" / Path(example_config()["paths"]["receipt"]).name))
             self.answer(probe_reading(server_uuid=self.target))
         for name in ("stop", "start", "fpm-stop", "smoke-write", "telnyx-replay", "timer"):
             self._program(name, RECORD)
 
-    def answer(self, stdout, code: int = 0) -> None:
-        """The scripted MySQL probe's reading (no fixture): what it prints and exits with without --since."""
+    def answer(self, stdout, code: int = 0, *, arm: bool = True) -> None:
+        """The scripted MySQL probe's reading (no fixture): what it prints and exits with without --since. A reading
+        of a reachable server whose `receipt` is null names this run's receipt once it exists, unless `arm` is
+        false (a probe that did not arm on it)."""
         answers = json.loads(self.answers.read_text()) if self.answers.exists() else {"since": []}
-        answers["observe"] = {"code": code, "stdout": stdout}
+        answers["observe"] = {"code": code, "stdout": stdout, "arm": arm}
         self.answers.write_text(json.dumps(answers), encoding="utf-8")
 
     def since(self, *outputs) -> None:
@@ -419,7 +648,8 @@ class PrepareHost:
             "options": {"max_drain_seconds": 5, "separate_freeze_approval": False, "adopt_external_hold": False,
                         "require_long_job_predrain": True, "unattended_reopen": False},
         })
-        config["fpm"]["drain_seconds"] = 5
+        config["fpm"].update(drain_seconds=5, socket=str(root / "fpm" / "php-fpm.sock"),
+                             status_socket=str(root / "fpm" / "php-fpm-status.sock"))
         mysql = config["mysql"]
         mysql.update({
             "mode": self.mode, "offsite_waiver": self.waiver, "target_uuid": self.target, "socket": self.socket,
@@ -477,6 +707,13 @@ class PrepareHost:
                                   ("repro_token_check", "mysql-token-check.cnf")):
                 shutil.copyfile(self.fixture.directory / f"{account}.cnf", etc / name)
                 (etc / name).chmod(0o600)
+        else:
+            # The token check's defaults file (design 3.3; step 11 reads its account and password).
+            (etc / "mysql-token-check.cnf").write_text(f"[client]\nuser={TOKEN_USER}\npassword={FAKE_TOKEN_PASSWORD}\n",
+                                                       encoding="ascii")
+            (etc / "mysql-token-check.cnf").chmod(0o600)
+        self.token_password = re.search(r"^password=(.*)$", (etc / "mysql-token-check.cnf").read_text(),
+                                        re.MULTILINE).group(1)
         switch = {**config["mysql"]["switch"], "DB_PASSWORD": self.password}
         self.sqlite_pin = route_hash(env_settings(self.env.read_bytes()))
         self.mysql_pin = route_hash(switch)
@@ -581,9 +818,15 @@ class PrepareHost:
                       + [entry.name for entry in self.cache.parent.iterdir() if entry.name != "config.php"])
 
     def assert_prepared(self, error) -> None:
-        """Steps 1 to 10 passed and the runner then observed a frozen route on MySQL: only evidence() (D11) refused."""
-        self.test.assertEqual(production.NOT_SUPPORTED, str(error))
-        observed = self.host()[1].observe()
+        """Steps 1 to 12 passed, the runner observed a frozen route on MySQL, evidence() held and the run is `ready`
+        with the record of this run's evidence report (D11)."""
+        self.test.assertIsNone(error, f"prepare refused: {error}")
+        journal, adapter, _ = self.host()
+        state = journal.read()
+        self.test.assertEqual(("ready", None, False), (state["phase"], state["pending"], state["writes_possible"]))
+        self.test.assertEqual(hashlib.sha256(self.path("evidence_report").read_bytes()).hexdigest(),
+                              state["evidence"]["report_sha256"])
+        observed = adapter.observe()
         self.test.assertTrue(observed.frozen() and observed.engine == "mysql", observed)
 
     @contextmanager
@@ -713,7 +956,12 @@ class PrepareHost:
     def assert_markers(self, *, after: int, restarts: int | None = None) -> None:
         """The durable state a controller that stopped after step `after` leaves (README "prepare", for D12):
         the switch record from step 5 (switch_at from step 8), the switched .env from 7, the MySQL config from 8,
-        the FPM restart from 9 (`restarts` restarts in all), the receipt from 10."""
+        the FPM restart from 9 (`restarts` restarts in all), the receipt from 10, the evidence report from 12 (step 11
+        leaves nothing: its token-check folder is removed). `after=10` still means "the switch finished": the report
+        is checked only from 12, so a full prepare passes both."""
+        if after >= 12:
+            self.test.assertIsNotNone(self.record("evidence_report"), f"evidence report after step {after}")
+        self.test.assertEqual([], self.token_folders(), f"token-check folders after step {after}")
         test, record = self.test, self.record("switch_record")
         engine = live_config.measure(self.app)
         restarted = [entry for entry in self.effects() if entry[0] == "systemctl"]
@@ -725,6 +973,104 @@ class PrepareHost:
         expected = (1 if after >= 9 else 0) if restarts is None else restarts
         test.assertEqual([["systemctl", "restart", UNIT]] * expected, restarted, f"FPM restarts after step {after}")
         test.assertEqual(after >= 10, self.record("receipt") is not None, f"receipt after step {after}")
+
+    # D11: what step 11 runs against, and what it leaves.
+
+    def profiles(self) -> dict:
+        """wrappers.json's profiles (design 3.8) in this host's app root: five distinct contexts (user, group, cwd,
+        umask, environment), two shell scripts among them, one profile with its own environment."""
+        php, app = str(self.php_path), str(self.app)
+        artisan = f"{app}/artisan"
+
+        def profile(user, umask, argv, *, action="queue-worker", env=None, timeout=None) -> dict:
+            return {"action": action, "engine": "sqlite", "user": user, "group": WEB_USER, "cwd": app, "umask": umask,
+                    "env": env or {}, "timeout_seconds": timeout, "argv": argv}
+
+        return {
+            "laravel-worker": profile(WEB_USER, "0007", [php, artisan, "queue:work", "database", "--queue=mail,default"]),
+            "media-archives": profile(WEB_USER, "0007", [php, artisan, "queue:work", "database",
+                                                         "--queue=media-archives"]),
+            "studio": profile(DEPLOY_USER, "0002", [f"{app}/worker.sh"]),
+            "voice-realtime": profile(DEPLOY_USER, "0002", [php, artisan, "queue:work", "database",
+                                                            "--queue=voice-realtime"]),
+            "telnyx-replay": profile(WEB_USER, "0002", [php, artisan, "telnyx:replay-spool"], timeout=600),
+            "cutover-smoke": profile(WEB_USER, "0022", [php, artisan, "cutover:smoke", "--write", "--json"], timeout=300),
+            "scheduler": profile(DEPLOY_USER, "0002", [php, artisan, "schedule:run"], action="scheduler", timeout=3300),
+            "auth-prune": profile(DEPLOY_USER, "0002", [php, artisan, "auth:prune-security-limits", "--limit=1000"],
+                                  action="scheduler", env={"REPRO_PROFILE_MARK": "auth-prune"}, timeout=900),
+            "cubicasa-poll": profile(DEPLOY_USER, "0002", ["/bin/sh", "-c", f"exec {php} artisan cubicasa:refresh-deliveries"],
+                                     action="scheduler", timeout=1500),
+        }
+
+    def write_wrappers(self, profiles: dict) -> None:
+        """paths.wrappers (root 0644 in the root-only state folder): the live wrapper profiles step 11 probes."""
+        path = self.path("wrappers")
+        path.write_text(json.dumps({"version": 1, "profiles": profiles}, sort_keys=True), encoding="utf-8")
+        path.chmod(0o644)
+
+    def _gate_check(self, config: dict) -> tuple:
+        """gate.check on a scripted host: the closed gate and the gate account as accounts.sql makes it, unless
+        `gate(...)` set another answer."""
+        output = {"version": 1, "reachable": True, "gate": "closed", "open_privileges": {"repro_app@localhost": []},
+                  "sessions": [], "root_sql": None,
+                  "gate_account": {"current_user": "repro_cutover_gate@localhost", "problems": []}}
+        answer = self.gate_answer or {}
+        return {**output, **answer.get("changes", {})}, answer.get("code", 0), answer.get("message")
+
+    def gate(self, code: int = 0, message: str | None = None, **changes) -> None:
+        """What gate.check answers next on a scripted host (gate() with nothing: the default)."""
+        self.gate_answer = {"code": code, "message": message, "changes": changes}
+
+    def php_runs(self, command: str, *flags: str) -> list:
+        """The fake php's recorded runs of a D11 artisan command with these flags: [*arguments, context]."""
+        return [entry[2:] for entry in self.commands()
+                if entry[:2] == ["php", command] and all(flag in entry[2:-1] for flag in flags)]
+
+    def token_folders(self) -> list:
+        parent = getattr(production, "TOKEN_CHECK_PARENT", Path("/run"))
+        prefix = getattr(production, "TOKEN_CHECK_PREFIX", "repro-token-check-")
+        return sorted(entry.name for entry in Path(parent).iterdir() if entry.name.startswith(prefix))
+
+    def report(self) -> dict:
+        """paths.evidence_report, the evidence report step 12 wrote."""
+        return json.loads(self.path("evidence_report").read_text(encoding="utf-8"))
+
+    def write_night(self, change=None, *, folder: str = "night-files") -> Path:
+        """The night's input directory check-evidence reads (adapter.NIGHT_FILES, adapter.BACKUP_COORDINATE): the six
+        tool outputs of documents() and the backup coordinate ({file, position, gtid_executed}); `change(documents,
+        coordinate)` first. A document that is None is not written."""
+        documents, coordinate = self.documents(), dict(self.backup)
+        if change is not None:
+            change(documents, coordinate)
+        night = self.root / folder
+        night.mkdir(mode=0o700, exist_ok=True)
+        files = {**production.NIGHT_FILES, "backup": production.BACKUP_COORDINATE}
+        for name, filename in files.items():
+            document = coordinate if name == "backup" else documents[name]
+            path = night / filename
+            path.unlink(missing_ok=True)
+            if document is None:
+                continue
+            if isinstance(document, (str, bytes)):
+                raw = document.encode("utf-8") if isinstance(document, str) else document
+            elif isinstance(document, list):
+                raw = "".join(json.dumps(line) + "\n" for line in document).encode("utf-8")
+            else:
+                raw = (json.dumps(document) + "\n").encode("utf-8")
+            path.write_bytes(raw)
+            path.chmod(0o600)
+        return night
+
+    def tree(self) -> dict:
+        """Every file under the host's state, runtime, config, app and database folders (bytes, owner, mode), the
+        journal included, for "nothing else changed" checks; the command log is left out."""
+        found = {}
+        for folder in ("state", "run", "ingress", "etc", "app", "database"):
+            for path in sorted((self.root / folder).rglob("*")):
+                info = path.lstat()
+                content = path.read_bytes() if stat.S_ISREG(info.st_mode) else None
+                found[str(path.relative_to(self.root))] = (content, info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+        return found
 
 
 @unittest.skipUnless(LINUX_ROOT, "Needs Linux root: owners, ACLs, runuser and the guard's protected files")
@@ -744,10 +1090,10 @@ class PrepareTests(unittest.TestCase):
                 host.assert_markers(after=10)
                 measured = live_config.measure(host.app)
                 self.assertEqual((live_config.CACHE, host.mysql_pin), (measured.source, measured.live_config_sha256))
-                # The order of the host effects: config:cache (through runuser, as the deploy user), then the FPM
-                # restart.
+                # The order of the switch's host effects: config:cache (through runuser, as the deploy user), then the
+                # FPM restart; step 11's smokes and token check follow (EvidenceTests).
                 self.assertEqual([["runuser", "-u", DEPLOY_USER], ["php", "config:cache"], ["systemctl", "restart"]],
-                                 [entry[:3] if entry[0] == "runuser" else entry[:2] for entry in host.effects()])
+                                 [entry[:3] if entry[0] == "runuser" else entry[:2] for entry in host.effects()][:3])
 
     def test_input_mismatch_refused_without_change(self):
         host = self.frozen()
@@ -1007,7 +1353,9 @@ class PrepareTests(unittest.TestCase):
     def test_switch_record_bound_to_run_and_digest(self):
         host = self.frozen()
         original = host.env.read_bytes()
-        host.assert_prepared(host.prepare())
+        # The adapter's prepare, not the runner's: the run stays frozen, so a retry below can run (a prepare the runner
+        # finished is `ready`, D11).
+        host.adapter_prepare()
         record = host.record("switch_record")
         self.assertEqual(SWITCH_RECORD_KEYS, set(record))
         info = host.path("switch_record").lstat()
@@ -1058,7 +1406,7 @@ class PrepareTests(unittest.TestCase):
         self.assertIn("system.posix_acl_access", before[4])
         leftover = host.app / f".env.repro-{uuid.uuid4().hex}"
         leftover.write_bytes(b"DB_PASSWORD=left-by-a-crash\n")
-        host.assert_prepared(host.prepare())
+        host.adapter_prepare()  # the run stays frozen for the retry below (D11: the runner's prepare ends ready)
         after = metadata(host.env)
         # A new file renamed into place, with the owner, group, mode and every extended attribute kept.
         self.assertNotEqual(before[0], after[0])
@@ -1086,7 +1434,7 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(identity_probe.config_sha256(before, denylist), identity_probe.config_sha256(after, denylist))
         self.assertEqual(host.pinned.config_sha256, identity_probe.config_sha256(after, denylist))
         # The runner measures the identity again (the identity probe reads the live .env): it still matches.
-        self.assertEqual("frozen", host.runner().perform("tick")["phase"])
+        self.assertEqual("ready", host.runner().perform("tick")["phase"])
         # With a denylist that lacks DB_PASSWORD (identity.json changed after the config loaded), the switch would
         # move the digest: refused before .env changes.
         fresh = self.frozen()
@@ -1183,19 +1531,20 @@ class PrepareTests(unittest.TestCase):
 
     def test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step(self):
         steps = dict(production.PREPARE_STEPS)
-        self.assertEqual(list(range(1, 11)), sorted(steps))
-        for number in range(1, 11):
+        last = len(steps)
+        self.assertEqual(list(range(1, 13)), sorted(steps))
+        for number in range(1, last + 1):
             with self.subTest(crash_after=steps[number]):
                 host = self.frozen()
-                if number < 10:
+                if number < last:
                     host.crash_after(number)
                 else:
-                    host.assert_prepared(host.prepare())
+                    host.adapter_prepare()  # all steps; the run stays frozen for the second run (D11)
                 host.assert_markers(after=number)
                 # A second run from that state finishes the switch, whatever was done before; the runner's next
                 # action still finds the pinned identity (the .env digest did not move).
                 host.adapter_prepare()
-                host.assert_markers(after=10, restarts=2 if number >= 9 else 1)
+                host.assert_markers(after=last, restarts=2 if number >= 9 else 1)
                 self.assertEqual("frozen", host.runner().perform("tick")["phase"])
 
     def test_prepare_runs_only_in_a_frozen_journal_before_its_deadline(self):
@@ -1477,10 +1826,647 @@ class PrepareFixtureTests(unittest.TestCase):
         self.assertNotEqual(0, session.wait(timeout=30))
 
 
+def set_commands(host: PrepareHost, **commands) -> None:
+    """Change host.json's commands on disk only (rewrite_config would measure the pins again from a switched .env)."""
+    config = json.loads(host.config_path.read_text(encoding="utf-8"))
+    config["commands"].update(commands)
+    host.config_path.write_text(json.dumps(config), encoding="utf-8")
+
+
+@unittest.skipUnless(LINUX_ROOT, "Needs Linux root: owners, ACLs, runuser and the guard's protected files")
+class EvidenceTests(unittest.TestCase):
+    """prepare steps 11 and 12, evidence() and check-evidence --write (design 3.2 steps 11 and 12, 3.3, 5.3, 7.1;
+    build plan D11), with the scripted MySQL probe and gate.check."""
+
+    def frozen(self, **options) -> PrepareHost:
+        host = PrepareHost(self, **options)
+        host.freeze()
+        return host
+
+    def prepared(self, **options) -> PrepareHost:
+        host = self.frozen(**options)
+        host.assert_prepared(host.prepare())
+        return host
+
+    def refused_at_checks(self, host: PrepareHost, pattern: str) -> UnsafeCutover:
+        """adapter.prepare again (steps 1 to 10 keep the switch) is refused with `pattern` in step 11: no report is
+        written and no token-check folder is left."""
+        host.path("evidence_report").unlink(missing_ok=True)
+        with self.assertRaisesRegex(UnsafeCutover, pattern) as refused:
+            host.adapter_prepare()
+        self.assertIsNone(host.record("evidence_report"))
+        self.assertEqual([], host.token_folders())
+        return refused.exception
+
+    def test_profile_probes_follow_wrapper_contexts(self):
+        import admit
+        import grp
+        import pwd
+
+        host = self.prepared()
+        raw = host.path("wrappers").read_bytes()
+        profiles = json.loads(raw)["profiles"]
+        probes = host.report()["checks"]["profile_probes"]
+        runs = host.php_runs("cutover:smoke", "--engine-only")
+        # One probe per distinct context (user, group, cwd, umask, environment, php and artisan), every profile named
+        # once: nine profiles, five contexts, five probes.
+        self.assertEqual(sorted(profiles), sorted(name for probe in probes for name in probe["profiles"]))
+        self.assertEqual(5, len(probes))
+        self.assertEqual([["--engine-only", "--json"]] * 5, [run[:-1] for run in runs])
+        for probe in probes:
+            with self.subTest(probe["profiles"]):
+                profile = admit.load_profile(probe["profiles"][0], raw)
+                account = pwd.getpwnam(profile["user"])
+                group = grp.getgrnam(profile["group"]).gr_gid
+                # Exactly as admit.py starts that profile's writer: user, group and supplementary groups, cwd, umask
+                # and environment, with the controller's child tag.
+                expected = {"uid": account.pw_uid, "euid": account.pw_uid, "gid": group, "egid": group,
+                            "groups": sorted(os.getgrouplist(account.pw_name, group)), "cwd": profile["cwd"],
+                            "umask": profile["umask"],
+                            "env": {**admit.environment(profile, account), production.CHILD_TAG: "1"}}
+                self.assertIn(expected, [run[-1] for run in runs])
+                self.assertEqual({"user": profile["user"], "group": profile["group"], "cwd": profile["cwd"],
+                                  "umask": profile["umask"], "env": sorted(profile["env"]), "engine": "mysql",
+                                  "database": "repro_dashboard", "server_uuid": host.target,
+                                  "route_sha256": host.mysql_pin, "ok": True},
+                                 {key: probe[key] for key in ("user", "group", "cwd", "umask", "env", "engine",
+                                                              "database", "server_uuid", "route_sha256", "ok")})
+        # The shell-script profiles are probed for their user and cwd with the app's php and artisan, which is the
+        # context of the artisan profiles they share it with.
+        shared = next(probe for probe in probes if "studio" in probe["profiles"])
+        self.assertEqual((["cubicasa-poll", "scheduler", "studio", "voice-realtime"], ["cubicasa-poll", "studio"]),
+                         (shared["profiles"], shared["scripts"]))
+        self.assertEqual([], [name for probe in probes if probe is not shared for name in probe["scripts"]])
+        # A profile in another folder is probed there.
+        elsewhere = self.frozen()
+        other = elsewhere.root / "elsewhere"
+        other.mkdir(mode=0o755)
+        shutil.copyfile(elsewhere.app / "fake-php.json", other / "fake-php.json")
+        (other / "fake-php.json").chmod(0o644)
+        moved = elsewhere.profiles()
+        moved["telnyx-replay"]["cwd"] = str(other)
+        elsewhere.write_wrappers(moved)
+        elsewhere.adapter_prepare()
+        probe = next(probe for probe in elsewhere.report()["checks"]["profile_probes"]
+                     if "telnyx-replay" in probe["profiles"])
+        self.assertEqual((["telnyx-replay"], str(other)), (probe["profiles"], probe["cwd"]))
+        self.assertEqual(1, sum(run[-1]["cwd"] == str(other) for run in elsewhere.php_runs("cutover:smoke",
+                                                                                            "--engine-only")))
+        # A context whose processes would still read SQLite, or report another context, is refused by name.
+        stale = self.frozen()
+        line = "cutover:smoke --engine-only --json"
+        for name, answers, pattern in (
+            ("SQLite for the deploy user", {f"{line}@{DEPLOY_USER}": {"changes": {"engine": "sqlite"}}},
+             r"auth-prune .*engine sqlite"),
+            ("another route", {line: {"changes": {"route_values": {"database.default": "sqlite"}}}}, "route hash"),
+            ("another umask", {f"{line}@{WEB_USER}": {"changes": {"process": {"umask": "0077"}}}}, "umask 0077"),
+            ("its own problems", {line: {"changes": {"problems": ["database: SQLSTATE[HY000] [2002] No such file"]}}},
+             r"SQLSTATE\[HY000\] \[2002\]"),
+        ):
+            with self.subTest(name):
+                stale.php(answers=answers)
+                self.refused_at_checks(stale, pattern)
+        stale.php()
+        stale.adapter_prepare()
+
+    def test_fastcgi_probe_recorded(self):
+        host = self.prepared()
+        self.assertEqual({"socket": host.config["fpm"]["socket"], "engine": "mysql", "database": "repro_dashboard",
+                          "server_uuid": host.target, "route_sha256": host.mysql_pin, "sapi": "fpm-fcgi",
+                          "pid": os.getpid(), "opcache": OPCACHE, "ok": True}, host.report()["checks"]["fastcgi"])
+        # fpm-engine.php straight into the pool's own socket (design 5.3).
+        self.assertEqual(f"{host.app}/scripts/cutover/probe/fpm-engine.php", host.fpm.requests[-1]["SCRIPT_FILENAME"])
+        fresh = self.frozen()
+        for name, settings, pattern in (
+            ("an FPM still on the SQLite config", {"changes": {"engine": "sqlite"}}, "FastCGI.*engine sqlite"),
+            ("another route", {"changes": {"route_values": {"database.default": "sqlite"}}}, "FastCGI.*route hash"),
+            ("another server", {"changes": {"server_uuid": OTHER_UUID}}, "FastCGI.*server"),
+            ("its own problems", {"changes": {"problems": ["boot: the services manifest is missing"]}},
+             "services manifest is missing"),
+            ("an answer that is not its report", {"changes": {"probe": "other"}}, "FastCGI"),
+        ):
+            with self.subTest(name):
+                fresh.fpm.settings = settings
+                self.refused_at_checks(fresh, pattern)
+        fresh.fpm.settings = {}
+        # FPM started in step 9 may not listen yet: the probe waits for its socket, within FPM_SOCKET_SECONDS.
+        fresh.fpm.stop()
+        with patch.object(production, "FPM_SOCKET_SECONDS", 0.5):
+            self.refused_at_checks(fresh, "FPM socket .*not listening")
+        timer = threading.Timer(1.5, fresh.fpm.start)
+        self.addCleanup(timer.cancel)
+        with patch.object(production, "FPM_SOCKET_SECONDS", 30), \
+                patch.object(production.ProductionAdapter, "_prepare_fpm", lambda adapter, run: timer.start()):
+            fresh.adapter_prepare()
+        self.assertEqual("mysql", fresh.report()["checks"]["fastcgi"]["engine"])
+
+    def test_read_only_smoke_as_both_users(self):
+        host = self.prepared()
+        expected = {"engine": "mysql", "database": "repro_dashboard", "server_uuid": host.target,
+                    "route_sha256": host.mysql_pin, "client_id": SMOKE_RECORDS["client_id"],
+                    "shoot_id": SMOKE_RECORDS["shoot_id"], "client_read": True, "shoot_read": True,
+                    "encrypted_value_decrypts": True, "smoke_queue_pending": 0, "smoke_queue_paused": False, "ok": True}
+        self.assertEqual([{"user": WEB_USER, "group": WEB_USER, **expected},
+                          {"user": DEPLOY_USER, "group": WEB_USER, **expected}],
+                         host.report()["checks"]["readonly_smoke"])
+        # smoke_readonly's two commands, each through runuser as its user (design 3.1).
+        runs = host.php_runs("cutover:smoke", "--read-only")
+        self.assertEqual([(WEB_UID, WEB_UID, "0022"), (host.deploy, WEB_UID, "0002")],
+                         [(run[-1]["euid"], run[-1]["egid"], run[-1]["umask"]) for run in runs])
+        self.assertEqual([["-u", WEB_USER, "--"], ["-u", DEPLOY_USER, "-g"]],
+                         [entry[1:4] for entry in host.commands() if entry[0] == "runuser" and "--read-only" in entry[-2]])
+        fresh = self.frozen()
+        line = "cutover:smoke --read-only --json"
+        for name, answers, pattern in (
+            ("the test client unread", {line: {"changes": {"checks": {"client_read": False}}}}, "client_read"),
+            ("a value that does not decrypt", {line: {"changes": {"checks": {"encrypted_value_decrypts": False}}}},
+             "encrypted_value_decrypts"),
+            ("smoke jobs pending", {line: {"changes": {"checks": {"smoke_queue_pending": 2}}}}, "2 jobs .*cutover-smoke"),
+            ("another test client", {line: {"changes": {"checks": {"client_id": 7}}}}, "marked test client"),
+            ("SQLite", {line: {"changes": {"engine": "sqlite"}}}, "engine sqlite"),
+            ("its own problems", {line: {"changes": {"problems": ["the test shoot is missing"]}}},
+             "test shoot is missing"),
+            ("the deploy user's smoke from another user", {f"{line}@{DEPLOY_USER}": {"changes": {"process": {
+                "user": WEB_USER}}}}, f"ran as {WEB_USER}"),
+            ("the deploy user's smoke in another group than -g", {f"{line}@{DEPLOY_USER}": {"changes": {"process": {
+                "group": "nogroup"}}}}, "ran in group nogroup"),
+        ):
+            with self.subTest(name):
+                fresh.php(answers=answers)
+                self.refused_at_checks(fresh, pattern)
+        fresh.php()
+        # smoke_readonly itself: one command for each of the two users, through runuser, read-only; checked before
+        # step 11 runs anything.
+        web, deploy = fresh.config["commands"]["smoke_readonly"]
+        php, artisan, runuser = str(fresh.php_path), f"{fresh.app}/artisan", str(fresh.root / "bin" / "runuser")
+        for name, commands, pattern in (
+            ("only the web user", [web], f"once as {WEB_USER} and once as {DEPLOY_USER}"),
+            ("the web user twice", [web, web], f"once as {WEB_USER} and once as {DEPLOY_USER}"),
+            ("php with no runuser", [[php, artisan, "cutover:smoke", "--read-only", "--json"], deploy], "runuser"),
+            ("runuser as root", [[runuser, "-u", "root", "--", php, artisan, "cutover:smoke", "--read-only", "--json"],
+                                 deploy], "runuser"),
+            ("the write smoke", [[*web[:-2], web[-2].replace("--read-only", "--write"), web[-1]], deploy], "read-only"),
+        ):
+            with self.subTest(name):
+                set_commands(fresh, smoke_readonly=commands)
+                ran = len(fresh.php_runs("cutover:smoke"))
+                self.refused_at_checks(fresh, pattern)
+                self.assertEqual(ran, len(fresh.php_runs("cutover:smoke")))
+        set_commands(fresh, smoke_readonly=[web, deploy])
+        fresh.adapter_prepare()
+
+    def test_token_check_uses_private_cache_and_cleans_up(self):
+        host = self.prepared()
+        self.assertEqual({"account": f"{TOKEN_USER}@localhost", "user": WEB_USER, "engine": "mysql",
+                          "writer_policy": True, "token_acquired": True, "problems": [], "ok": True},
+                         host.report()["checks"]["token_check"])
+        # Step 8's build, then the token check's: as the web user, umask 0077, into a private folder under /run.
+        builds = [entry for entry in host.commands() if entry[:2] == ["php", "config:cache"]]
+        self.assertEqual(2, len(builds))
+        cache = Path(builds[1][2])
+        self.assertEqual((Path(production.TOKEN_CHECK_PARENT), True, "config.php"),
+                         (cache.parent.parent, cache.parent.name.startswith(production.TOKEN_CHECK_PREFIX), cache.name))
+        self.assertEqual([WEB_UID, WEB_UID, 0o077], builds[1][3:])
+        [check] = host.php_runs("db:writer-policy-check")
+        context = check[-1]
+        self.assertEqual((WEB_UID, str(cache)), (context["euid"], context["env"]["APP_CONFIG_CACHE"]))
+        # The cache names the check account with its password (the switched .env names the app account), in a 0700
+        # folder of the web user; the policy check itself gets no account or password in its environment.
+        self.assertEqual({"path": str(cache), "folder": [WEB_UID, WEB_UID, 0o700], "file": [WEB_UID, WEB_UID, 0o600],
+                          "username": TOKEN_USER,
+                          "password_sha256": hashlib.sha256(host.token_password.encode()).hexdigest()}, context["cache"])
+        self.assertFalse({"DB_USERNAME", "DB_PASSWORD"} & set(context["env"]))
+        runs = [entry for entry in host.commands() if entry[0] == "runuser" and entry[-1] == str(cache)]
+        self.assertEqual([["-u", WEB_USER, "--", "/bin/sh", "-c"]] * 2, [entry[1:6] for entry in runs])
+        self.assertEqual(["config:cache", "db:writer-policy-check"], [entry[6].split()[-1] for entry in runs])
+        # The password is never in a command line, the report or a record; the folder is gone.
+        for path in (host.log, host.path("evidence_report"), host.path("state") / "state.json"):
+            self.assertNotIn(host.token_password, path.read_text(encoding="utf-8"), path)
+        self.assertFalse(cache.parent.exists())
+        self.assertEqual([], host.token_folders())
+        # A failed check removes its folder too, and a folder a crash left is removed by the next check.
+        fresh = self.frozen()
+        leftover = Path(tempfile.mkdtemp(prefix=production.TOKEN_CHECK_PREFIX, dir=production.TOKEN_CHECK_PARENT))
+        self.addCleanup(shutil.rmtree, leftover, True)
+        (leftover / "config.php").write_text("<?php return array (\n);\n", encoding="ascii")
+        for name, answers, pattern in (
+            ("no token (the app account's grants)", {"db:writer-policy-check": {"changes": {"token": {
+                "acquired": False}}}}, "did not take the writer token"),
+            ("a problem", {"db:writer-policy-check": {"changes": {"problems": [
+                "The writer policy is off on the default MySQL connection."]}}}, "writer policy is off"),
+        ):
+            with self.subTest(name):
+                fresh.php(answers=answers)
+                self.refused_at_checks(fresh, pattern)
+                self.assertFalse(leftover.exists())
+        with self.subTest("a cache built without the check account"):
+            fresh.php(config_cache="ignore-env")
+            self.refused_at_checks(fresh, "does not name the check account")
+        fresh.php()
+        # The check account and its password come from mysql.token_check_defaults, root-only, exactly
+        # repro_token_check; anything else is refused before step 11 runs anything, the password never quoted.
+        cnf = fresh.etc / "mysql-token-check.cnf"
+        good = cnf.read_bytes()
+        for name, content, mode, pattern in (
+            ("another account", good.replace(b"user=repro_token_check", b"user=repro_app"), 0o600, TOKEN_USER),
+            ("readable by others", good, 0o644, "root only"),
+            ("no password", b"[client]\nuser=repro_token_check\n", 0o600, "password"),
+        ):
+            with self.subTest(name):
+                cnf.write_bytes(content)
+                cnf.chmod(mode)
+                ran = len(fresh.php_runs("cutover:smoke"))
+                error = self.refused_at_checks(fresh, pattern)
+                self.assertNotIn(fresh.token_password, str(error))
+                self.assertEqual(ran, len(fresh.php_runs("cutover:smoke")))
+        cnf.write_bytes(good)
+        cnf.chmod(0o600)
+        fresh.adapter_prepare()
+
+    def test_evidence_is_pure_and_equal_across_calls(self):
+        import evidence
+
+        host = self.prepared()
+        journal, adapter, runner = host.host()
+        state = journal.read()
+        before = host.tree()
+        first, second = adapter.evidence(), adapter.evidence()
+        self.assertEqual(first, second)
+        # The record prepare journalled, the one promote compares, and another controller's adapter reads the same.
+        self.assertEqual(state["evidence"], asdict(first))
+        self.assertEqual(first, host.host()[1].evidence())
+        self.assertEqual(before, host.tree())
+        receipt = host.record("receipt")
+        self.assertEqual((COPY_SNAPSHOT, hashlib.sha256(host.path("evidence_report").read_bytes()).hexdigest(),
+                          receipt["backup"]["file"], receipt["backup"]["position"], True, True, True, True, True),
+                         tuple(asdict(first).values()))
+        # It reads again what it binds: each refusal changes nothing, and the record is back with the file.
+        report_path, receipt_path = host.path("evidence_report"), host.path("receipt")
+        report = host.report()
+        for name, path, content, pattern in (
+            ("an input changed after prepare", host.root / "night" / "import",
+             (host.root / "night" / "import").read_bytes() + b"\n", "changed after check-evidence recorded it"),
+            # Refused by the report's own binding, before the probe (which would read another receipt digest too).
+            ("the receipt written again", receipt_path, json.dumps({**receipt, "armed_from": {
+                **receipt["armed_from"], "position": receipt["armed_from"]["position"] + 1}}).encode(),
+             "receipt changed after prepare wrote the evidence report"),
+            ("the report laid out again", report_path, json.dumps(report, indent=1).encode(), "not canonical"),
+            ("another run's report", report_path, evidence.encode({**report, "run_id": "earlier-run"}), "another run"),
+            ("a report naming another frozen snapshot", report_path,
+             evidence.encode({**report, "frozen_snapshot_sha256": "3" * 64}), "no longer bind"),
+            ("no report", report_path, None, "No evidence report"),
+            ("host.json in another mode", host.config_path, json.dumps({**host.config, "mysql": {
+                **host.config["mysql"], "mode": "cutover"}}).encode(), "another mode"),
+        ):
+            with self.subTest(name):
+                original, mode = path.read_bytes(), stat.S_IMODE(path.stat().st_mode)
+                try:
+                    if content is None:
+                        path.unlink()
+                    else:
+                        path.write_bytes(content)
+                    with self.assertRaisesRegex(UnsafeCutover, pattern):
+                        host.host()[1].evidence()  # a fresh adapter: host.json is read again
+                finally:
+                    path.write_bytes(original)
+                    path.chmod(mode)
+                self.assertEqual(first, adapter.evidence())
+        # A report written again, valid but a second later, is other evidence: promote refuses before writes_possible.
+        report_path.write_bytes(evidence.encode({**report, "written_at": report["written_at"] + 1}))
+        self.assertNotEqual(first.report_sha256, adapter.evidence().report_sha256)
+        with self.assertRaisesRegex(UnsafeCutover, "Verification evidence changed after approval"):
+            runner.perform("promote", runner.approval_request("promote"))
+        after = journal.read()
+        self.assertEqual(("ready", False, None), (after["phase"], after["writes_possible"], after["pending"]))
+
+    def test_evidence_raises_when_mysql_unreachable_or_gate_not_closed_or_foreign_activity(self):
+        host = self.prepared()
+        _, adapter, _ = host.host()
+        record = adapter.evidence()
+        reading = probe_reading(server_uuid=host.target)
+        cache = host.cache.read_bytes()
+        sqlite_cache = cache_text(config_for(env_settings(ENV.format(database=host.database).encode())))
+        other_route = cache_text(config_for({**host.config["mysql"]["switch"], "DB_PASSWORD": host.password,
+                                             "DB_COLLATION": "utf8mb4_general_ci"}))
+        locked = {"current_user": None, "problems": ["The gate account is locked (ERROR 3118 (HY000))"]}
+        cases = (
+            ("MySQL unreachable", lambda: host.answer({"version": 2, "reachable": False}, 3), "not reachable"),
+            ("an open gate", lambda: host.answer(probe_reading(gate="open", server_uuid=host.target)), "gate"),
+            ("a partial gate (exit 4)", lambda: host.answer({"gate": "partial", "problems": [
+                "The gate state is partial"]}, 4), r"exit 4\).*partial"),
+            ("foreign activity", lambda: host.answer({**reading, "foreign_activity": True}), "foreign activity"),
+            ("business activity", lambda: host.answer({**reading, "business_activity": True}), "business activity"),
+            ("another server", lambda: host.answer({**reading, "server_uuid": OTHER_UUID}), "another server"),
+            ("a probe not armed on this receipt", lambda: host.answer(reading, arm=False),
+             "not armed on this run's receipt"),
+            ("the gate account's self-check", lambda: host.gate(5, f"The gate account's self-check failed: "
+                                                                 f"{locked['problems'][0]}", gate_account=locked),
+             "gate account is locked"),
+            ("gate.check found nothing listening", lambda: host.gate(3, "The MySQL server is not listening; the gate "
+                                                                        "was not changed", reachable=False, gate=None,
+                                                                     gate_account=None), "not listening"),
+            ("the live config is the .env fallback", lambda: host.cache.write_bytes(cache[:40]), "fallback"),
+            ("the live config is SQLite", lambda: host.cache.write_bytes(sqlite_cache), "sqlite"),
+            ("the live config has another route", lambda: host.cache.write_bytes(other_route), "MySQL pin"),
+        )
+        with patch.object(production, "PROBE_RETRY_SECONDS", 0.05):
+            for name, change, pattern in cases:
+                with self.subTest(name):
+                    change()
+                    before = host.tree()
+                    with self.assertRaisesRegex(UnsafeCutover, pattern):
+                        adapter.evidence()
+                    self.assertEqual(before, host.tree())
+                    host.answer(reading)
+                    host.gate()
+                    host.cache.write_bytes(cache)
+                    self.assertEqual(record, adapter.evidence())
+
+    def test_drill_binds_copy_and_frozen_snapshots(self):
+        for options, forward in (({"mode": "drill"}, COPY_SNAPSHOT), ({"mode": "drill", "waiver": True}, COPY_SNAPSHOT),
+                                 ({"mode": "cutover"}, FROZEN_SNAPSHOT)):
+            with self.subTest(**options):
+                host = self.prepared(**options)
+                report = host.report()
+                # Design 7.1: forward parity binds the copy's S_copy in a drill, the frozen snapshot in a cutover; the
+                # SQLite publication binds S_frozen in both, and the report keeps both.
+                self.assertEqual((forward, FROZEN_SNAPSHOT), (report["snapshot_sha256"],
+                                                              report["frozen_snapshot_sha256"]))
+                waiver = options.get("waiver", False)
+                self.assertEqual((options["mode"], waiver, waiver), (report["mode"], report["offsite_waiver"],
+                                                                     report["inputs"]["backup_check"] is None))
+                record = host.host()[1].evidence()
+                self.assertEqual((forward, True, True), (record.snapshot_sha256, record.sqlite_backup_offsite,
+                                                         record.mysql_backup_offsite))
+                self.assertEqual(forward, host.host()[0].read()["evidence"]["snapshot_sha256"])
+
+    def test_check_evidence_write_creates_manifest_only(self):
+        host = self.frozen()
+        host.path("evidence_inputs").unlink()
+        night = host.write_night()
+        _, adapter, _ = host.host()
+        effects, before = host.effects(), host.tree()
+        result = adapter.check_evidence(night)
+        # Without --write it checks and changes nothing.
+        self.assertEqual(before, host.tree())
+        files = production.NIGHT_FILES
+        self.assertEqual({"version": 1, "run_id": RUN_ID, "mode": "drill", "backup": host.backup, "inputs": {
+            name: {"path": str(night / files[name]),
+                   "sha256": hashlib.sha256((night / files[name]).read_bytes()).hexdigest()} for name in INPUTS}},
+            result["manifest"])
+        self.assertEqual((COPY_SNAPSHOT, FROZEN_SNAPSHOT), (result["bound"]["snapshot_sha256"],
+                                                            result["bound"]["frozen_snapshot_sha256"]))
+        self.assertEqual(("closed", []), (result["gate"]["gate"], result["gate"]["gate_account"]["problems"]))
+        # With --write: paths.evidence_inputs, root 0600, the manifest D10's prepare reads; nothing else.
+        self.assertEqual(result["manifest"], adapter.check_evidence(night, write=True)["manifest"])
+        after = host.tree()
+        written = str(host.path("evidence_inputs").relative_to(host.root))
+        self.assertEqual({written}, set(after) - set(before))
+        self.assertEqual(before, {name: value for name, value in after.items() if name != written})
+        content, uid, gid, mode = after[written]
+        self.assertEqual((0, 0, 0o600, result["manifest"]), (uid, gid, mode, json.loads(content)))
+        self.assertEqual(effects, host.effects())
+        host.assert_prepared(host.prepare())
+        # What it refuses writes nothing.
+        refusing = self.frozen()
+        refusing.path("evidence_inputs").unlink()
+        _, adapter, _ = refusing.host()
+        nested = "[" * 100000 + "]" * 100000 + "\n"
+        for name, change, pattern in (
+            ("an import of another server", lambda d, c: d["import"].update(target_server_uuid=OTHER_UUID),
+             "import result names another MySQL server"),
+            ("a deeply nested import result (D10V-3)", lambda d, c: d.update({"import": nested}),
+             "import result is not one JSON object"),
+            ("a coordinate with a key too many", lambda d, c: c.update(note="after the copy load"), "backup coordinate"),
+            ("no backup check without the waiver", lambda d, c: d.update(backup_check=None),
+             "final backup check is required"),
+            ("a coordinate the backup check does not name", lambda d, c: c.update(position=c["position"] + 1),
+             "not the recorded backup coordinate"),
+            ("a coordinate that is not one", lambda d, c: c.update(position="1157"), "backup coordinate"),
+            ("an input missing", lambda d, c: d.update(complete_schema=None), "complete-schema output"),
+        ):
+            with self.subTest(name):
+                night = refusing.write_night(change)
+                with self.assertRaisesRegex(UnsafeCutover, pattern):
+                    adapter.check_evidence(night, write=True)
+                self.assertFalse(refusing.path("evidence_inputs").exists())
+        for name, night in (("a night path with NUL (D10V-3)", f"{refusing.root / 'night-files'}\0x"),
+                            ("a relative night path", "night-files")):
+            with self.subTest(name), self.assertRaisesRegex(UnsafeCutover, "night's input directory"):
+                adapter.check_evidence(night, write=True)
+        # Only in a frozen run in which MySQL was never opened for writes (design 3.10).
+        journal = refusing.host()[0]
+        state = journal.read()
+        for name, change in (("ready", {"phase": "ready"}), ("holding", {"phase": "holding"}),
+                             ("writes possible", {"writes_possible": True})):
+            with self.subTest(name):
+                journal.write({**state, **change})
+                with self.assertRaisesRegex(UnsafeCutover, "frozen"):
+                    adapter.check_evidence(refusing.write_night(), write=True)
+                self.assertFalse(refusing.path("evidence_inputs").exists())
+        journal.write(state)
+        # The waiver (drill only) replaces the final backup check: a night that has one is refused.
+        waived = self.frozen(waiver=True)
+        waived.path("evidence_inputs").unlink()
+        _, adapter, _ = waived.host()
+        with self.assertRaisesRegex(UnsafeCutover, "off-site waiver replaces the final backup check"):
+            adapter.check_evidence(waived.write_night(lambda d, c: d.update(
+                backup_check=PrepareTests.frozen_check(waived))), write=True)
+        self.assertFalse(waived.path("evidence_inputs").exists())
+        self.assertIsNone(adapter.check_evidence(waived.write_night(), write=True)["manifest"]["inputs"]["backup_check"])
+
+    def test_smokes_never_run_application_php_as_root(self):
+        # Wave 1: cutover:smoke refuses root only after artisan bootstrapped, which may already have written root-owned
+        # files where www-data writes. So no step 11 command reaches php as root: refused before anything runs.
+        host = self.frozen()
+        for name, change in (("a root profile", {"user": "root"}), ("a profile of group root", {"group": "root"})):
+            with self.subTest(name):
+                profiles = host.profiles()
+                profiles["laravel-worker"].update(change)
+                host.write_wrappers(profiles)
+                ran = len(host.php_runs("cutover:smoke"))
+                self.refused_at_checks(host, "never run as root")
+                self.assertEqual(ran, len(host.php_runs("cutover:smoke")))
+        host.write_wrappers(host.profiles())
+        web, deploy = host.config["commands"]["smoke_readonly"]
+        php, artisan, runuser = str(host.php_path), f"{host.app}/artisan", str(host.root / "bin" / "runuser")
+        for name, command in (("php as root", [php, artisan, "cutover:smoke", "--read-only", "--json"]),
+                              ("runuser -u root", [runuser, "-u", "root", "--", php, artisan, "cutover:smoke",
+                                                   "--read-only", "--json"])):
+            with self.subTest(name):
+                set_commands(host, smoke_readonly=[command, deploy])
+                ran = len(host.php_runs("cutover:smoke"))
+                self.refused_at_checks(host, "runuser")
+                self.assertEqual(ran, len(host.php_runs("cutover:smoke")))
+        set_commands(host, smoke_readonly=[web, deploy])
+        host.adapter_prepare()
+        self.assertEqual([], [run for command in ("cutover:smoke", "db:writer-policy-check")
+                              for run in host.php_runs(command) if 0 in (run[-1]["uid"], run[-1]["euid"])])
+        self.assertEqual([], [entry for entry in host.commands() if entry[:2] == ["php", "config:cache"] and
+                              entry[3] == 0])
+
+    def test_the_freeze_drain_record_is_part_of_the_evidence(self):
+        import evidence
+
+        host = self.prepared()
+        [freeze] = [entry for entry in host.host()[0].read()["history"] if entry["action"] == "freeze"]
+        self.assertEqual({"purpose": "freeze", "outcome": "drained", "active_processes": 0, "waited_seconds": 0.5,
+                          "polls": 2, "problem": None}, host.report()["fpm_drain"])
+        self.assertEqual(freeze["fpm_drain"], host.report()["fpm_drain"])
+        # evidence() reads it from the journal again.
+        path, report = host.path("evidence_report"), host.report()
+        original = path.read_bytes()
+        path.write_bytes(evidence.encode({**report, "fpm_drain": {**report["fpm_drain"], "waited_seconds": 9.5}}))
+        with self.assertRaisesRegex(UnsafeCutover, "FPM drain"):
+            host.host()[1].evidence()
+        path.write_bytes(original)
+        # A freeze journalled without a drain record gives no evidence: step 12 refuses.
+        bare = self.frozen()
+        journal = bare.host()[0]
+        state = journal.read()
+        for entry in state["history"]:
+            entry.pop("fpm_drain", None)
+        journal.write(state)
+        with self.assertRaisesRegex(UnsafeCutover, "FPM drain"):
+            bare.adapter_prepare()
+        self.assertIsNone(bare.record("evidence_report"))
+
+    def test_mysql_down_reads_false_but_evidence_refuses_promote(self):
+        # Review C2-7: with MySQL down and writes_possible false, observe() reads not writable and no business activity
+        # (design 1.2), so the run stays frozen-on-MySQL for the watchdog; evidence() needs a reachable, closed target,
+        # so promote refuses before writes_possible instead of ending in recovery_required (design 3.3).
+        with patch.object(production, "PROBE_RETRY_SECONDS", 0.05):
+            host = self.prepared(mode="cutover")
+            host.answer({"version": 2, "reachable": False}, 3)
+            journal, adapter, runner = host.host()
+            observed = adapter.observe()
+            self.assertTrue(observed.frozen() and observed.engine == "mysql", observed)
+            self.assertEqual("ready", runner.perform("tick")["phase"])
+            approval = runner.approval_request("promote")
+            with self.assertRaisesRegex(UnsafeCutover, "not reachable"):
+                runner.perform("promote", approval)
+            state = journal.read()
+            self.assertEqual(("ready", False, None), (state["phase"], state["writes_possible"], state["pending"]))
+            self.assertFalse(host.path("evidence").exists())
+            host.answer(probe_reading(server_uuid=host.target))
+            self.assertEqual(state["evidence"], asdict(adapter.evidence()))
+
+    def test_gate_account_self_check_is_part_of_check_evidence_and_evidence(self):
+        # Review B2-1: gate.check (the reading plus the gate account's read-only login) before the one-shot prepare,
+        # in step 11 and in every evidence(), so a gate account that cannot open the gate is found before Approval 2.
+        host = self.frozen()
+        host.path("evidence_inputs").unlink()
+        night = host.write_night()
+        _, adapter, _ = host.host()
+        locked = {"current_user": None, "problems": ["The gate account is locked (ERROR 3118 (HY000))"]}
+        message = f"The gate account's self-check failed: {locked['problems'][0]}"
+        host.gate(5, message, gate_account=locked)
+        with self.assertRaisesRegex(UnsafeCutover, "gate account is locked"):
+            adapter.check_evidence(night, write=True)
+        self.assertFalse(host.path("evidence_inputs").exists())
+        host.gate()
+        calls = host.gate_check.call_count
+        adapter.check_evidence(night, write=True)
+        self.assertEqual(calls + 1, host.gate_check.call_count)
+        host.assert_prepared(host.prepare())
+        self.assertEqual(calls + 3, host.gate_check.call_count)  # step 11 and the runner's evidence()
+        self.assertEqual({"current_user": "repro_cutover_gate@localhost", "problems": []},
+                         host.report()["checks"]["mysql"]["gate_account"])
+        host.gate(5, message, gate_account=locked)
+        with self.assertRaisesRegex(UnsafeCutover, "gate account is locked"):
+            host.host()[1].evidence()
+        stopped = self.frozen()
+        stopped.gate(5, message, gate_account=locked)
+        self.refused_at_checks(stopped, "gate account is locked")
+
+    def test_report_written_root_only_with_the_readme_keys(self):
+        import evidence
+
+        host = self.prepared()
+        path = host.path("evidence_report")
+        raw, info = path.read_bytes(), path.lstat()
+        self.assertEqual((0, 0, 0o600), (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)))
+        report = evidence.parse(raw)
+        self.assertEqual(evidence.REPORT_KEYS, set(report))
+        self.assertEqual(raw, evidence.encode(report))
+        receipt_raw, manifest = host.path("receipt").read_bytes(), host.record("evidence_inputs")
+        self.assertEqual({"run_id": RUN_ID, "mode": "drill", "offsite_waiver": False, "backup": manifest["backup"],
+                          "inputs": manifest["inputs"], "receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+                          "armed_from": json.loads(receipt_raw)["armed_from"],
+                          "switch_at": host.record("switch_record")["switch_at"]},
+                         {key: report[key] for key in ("run_id", "mode", "offsite_waiver", "backup", "inputs",
+                                                       "receipt_sha256", "armed_from", "switch_at")})
+        self.assertEqual(report["receipt_sha256"], report["checks"]["mysql"]["receipt"])
+        self.assertEqual({"forward_parity": True, "final_schema": True, "readonly_smoke": True,
+                          "sqlite_backup_offsite": True, "mysql_backup_offsite": True}, report["results"])
+
+
+@unittest.skipUnless(LINUX_ROOT and PROBE_FIXTURE, "Needs Linux root and the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
+class EvidenceFixtureTests(unittest.TestCase):
+    """evidence() and check-evidence against D04's MySQL 8.4.13 fixture: the real probe and the real gate.check with
+    the gate account's self-check (review B2-1)."""
+
+    GATE_ACCOUNT = "'repro_cutover_gate'@'localhost'"
+
+    setUpClass = classmethod(PrepareFixtureTests.setUpClass.__func__)
+    setUp = PrepareFixtureTests.setUp
+    assert_restored = PrepareFixtureTests.assert_restored
+    frozen = PrepareFixtureTests.frozen
+
+    def test_evidence_on_the_fixture_refuses_a_foreign_write(self):
+        from test_mysql_probe import FOREIGN_WRITE
+
+        host = self.frozen()
+        host.assert_prepared(host.prepare())
+        _, adapter, _ = host.host()
+        self.assertEqual({"current_user": "repro_cutover_gate@localhost", "problems": []},
+                         host.report()["checks"]["mysql"]["gate_account"])
+        adapter.evidence()
+        # An app-schema write after armed_from with no boundary before it: the copy changed (design 1.2).
+        account, statement = FOREIGN_WRITE
+        self.fixture.sql(statement, account=account)
+        with self.assertRaisesRegex(UnsafeCutover, "foreign activity"):
+            adapter.evidence()
+
+    def test_evidence_on_the_fixture_refuses_an_open_gate_and_a_locked_gate_account(self):
+        host = self.frozen()
+        host.assert_prepared(host.prepare())
+        _, adapter, _ = host.host()
+        record = adapter.evidence()
+        for name, change, undo, pattern in (
+            ("an open gate", OPEN_GATE, CLOSE_GATE, "gate"),
+            ("a locked gate account", f"ALTER USER {self.GATE_ACCOUNT} ACCOUNT LOCK",
+             f"ALTER USER {self.GATE_ACCOUNT} ACCOUNT UNLOCK", "locked"),
+        ):
+            with self.subTest(name):
+                self.fixture.sql(change)
+                with self.assertRaisesRegex(UnsafeCutover, pattern):
+                    adapter.evidence()
+                self.fixture.sql(undo)
+                self.assertEqual(record, adapter.evidence())
+
+    def test_check_evidence_runs_the_real_gate_check(self):
+        host = self.frozen()
+        host.path("evidence_inputs").unlink()
+        night = host.write_night()
+        _, adapter, _ = host.host()
+        self.fixture.sql(f"ALTER USER {self.GATE_ACCOUNT} ACCOUNT LOCK")
+        with self.assertRaisesRegex(UnsafeCutover, "locked"):
+            adapter.check_evidence(night, write=True)
+        self.assertFalse(host.path("evidence_inputs").exists())
+        self.fixture.sql(f"ALTER USER {self.GATE_ACCOUNT} ACCOUNT UNLOCK")
+        result = adapter.check_evidence(night, write=True)
+        self.assertEqual(("closed", []), (result["gate"]["gate"], result["gate"]["gate_account"]["problems"]))
+        host.assert_prepared(host.prepare())
+
+
 # The fixture tests: named before any suite when they would skip (as test_adapter.py's real-probe test).
 
+FIXTURE_CLASSES = (PrepareFixtureTests, EvidenceFixtureTests)
+
+
 def fixture_tests() -> list[str]:
-    return [f"{PrepareFixtureTests.__name__}.{name}" for name in unittest.TestLoader().getTestCaseNames(PrepareFixtureTests)]
+    return [f"{case.__name__}.{name}" for case in FIXTURE_CLASSES for name in unittest.TestLoader().getTestCaseNames(case)]
 
 
 def fixture_skips() -> list[str]:
@@ -1523,14 +2509,19 @@ class FixtureCheckTests(unittest.TestCase):
     def test_the_fixture_tests_are_the_fixture_class(self):
         self.assertEqual(["PrepareFixtureTests.test_app_sessions_are_killed_before_the_scan",
                           "PrepareFixtureTests.test_foreign_event_after_backup_coordinate_refused",
-                          "PrepareFixtureTests.test_receipt_has_backup_and_armed_from"], fixture_tests())
+                          "PrepareFixtureTests.test_receipt_has_backup_and_armed_from",
+                          "EvidenceFixtureTests.test_check_evidence_runs_the_real_gate_check",
+                          "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_a_foreign_write",
+                          "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_an_open_gate_and_a_locked_gate_account"],
+                         fixture_tests())
 
     def test_missing_fixture_prints_one_warning_line_naming_the_fixture_tests(self):
         result = self.check(without_fixture_environment())
         self.assertEqual((0, ""), (result.returncode, result.stderr))
         lines = result.stdout.splitlines()
         self.assertEqual(1, len(lines), result.stdout)
-        self.assertRegex(lines[0], r"^WARNING: 3 prepare tests against the MySQL probe fixture SKIPPED ")
+        self.assertRegex(lines[0], rf"^WARNING: {len(fixture_tests())} prepare tests against the MySQL probe fixture "
+                                   "SKIPPED ")
         for name in ("REPRO_MYSQL_PROBE_FIXTURE", *fixture_tests(), "run-probe-fixture-tests.sh --linux-suite"):
             self.assertIn(name, lines[0])
 
