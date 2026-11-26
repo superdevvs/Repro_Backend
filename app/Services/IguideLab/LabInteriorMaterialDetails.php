@@ -68,7 +68,7 @@ class LabInteriorMaterialDetails
     protected function execute(string $request,string $root): array
     {
         $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
-        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
+        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','PYTHONDONTWRITEBYTECODE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
         $p=new Process([(string)config('iguide-lab.pipeline_python_path'),resource_path('iguide-lab/interior_source_details.py'),'--request',$request,'--allowed-root',$root],null,$env,null,130);
         $p->run();$r=json_decode($p->getOutput(),true);abort_unless($p->isSuccessful()&&is_array($r),422,'Original material detail extraction failed.');return $r;
     }

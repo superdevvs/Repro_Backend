@@ -31,7 +31,7 @@ class LabAnalysisViews
             $disk->put($base.'/views-request.json', json_encode($request, JSON_THROW_ON_ERROR), ['visibility' => 'private']);
             $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
             // Explicit values must override inherited-variable removal, including PATH.
-            $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '2', 'OPENBLAS_NUM_THREADS' => '2']);
+            $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'PYTHONDONTWRITEBYTECODE' => '1', 'OMP_NUM_THREADS' => '2', 'OPENBLAS_NUM_THREADS' => '2']);
             $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/analysis_views.py'), '--request', $disk->path($base.'/views-request.json')], null, $env, null, 90);
             $process->run(); $result = json_decode($process->getOutput(), true);
             if (! $process->isSuccessful() || ($result['status'] ?? '') !== 'completed') throw new RuntimeException('Diagnostic view preparation failed.');

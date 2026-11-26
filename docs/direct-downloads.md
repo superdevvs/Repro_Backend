@@ -6,7 +6,7 @@ Cloudflare. Archives are still prepared asynchronously and served by Nginx.
 
 ## Provisioning and activation
 
-1. Review `python3 scripts/deploy/install-download-origin.py` (preview only).
+1. Review `python3 -B scripts/deploy/install-download-origin.py` (preview only).
 2. Run the same script with `sudo` and `--apply` on the origin. It installs a
    restricted vhost and certificate using the existing ACME account, tests the
    configuration, and rolls the vhost back on failure. Certificate renewal reloads
@@ -55,7 +55,7 @@ cannot recover between losses. Browsers also reuse one HTTP/2 connection per
 host, so simultaneous downloads, and the four ranges of **Parallel download**,
 share that single window rather than adding to it.
 
-`python3 scripts/deploy/install-download-tcp.py` previews the remedy: BBR
+`python3 -B scripts/deploy/install-download-tcp.py` previews the remedy: BBR
 congestion control and a 32 MiB send-buffer ceiling. Run it with `sudo` and
 `--apply`; `--restore` returns the saved previous values. It affects new
 connections only and reloads nothing. An emulation of the measured path

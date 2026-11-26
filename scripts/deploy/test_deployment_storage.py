@@ -1,4 +1,5 @@
 """Linux filesystem fixtures for destructive boundaries and deployment budgets."""
+import ast
 from contextlib import redirect_stdout, nullcontext
 from datetime import datetime, timedelta
 import importlib.util
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -301,6 +303,91 @@ class SpaceAndWorkflowTest(unittest.TestCase):
             result = subprocess.run(['bash', '-c', script, 'fixture', str(archive), str(marker)], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(marker.exists())
+
+
+class StandardLibraryOnlyTest(unittest.TestCase):
+    """deployment-storage.py imports nothing but the standard library (review W2V-5).
+
+    The retention line in the deploy user's crontab (CRON_JOB, GUARDED_CRON_JOB) runs it at 03:47 as
+    /usr/bin/python3 without -B, and it is an allow rule, so it keeps running through the database cutover
+    window; Deploy-App also runs it from stdin (python3 -). Python never caches the main script, but it caches
+    every module the script imports from its own folder or from a package beside it. Such an import would
+    write scripts/deploy/__pycache__ into the fingerprinted app tree, and the cutover runner would refuse
+    every action until it was removed.
+    """
+
+    SCRIPT = Path(__file__).with_name('deployment-storage.py')
+    # Standard-library modules that load other code by name or path.
+    LOADERS = {'importlib', 'imp', 'pkgutil', 'runpy', 'zipimport'}
+    WHY = ('deployment-storage.py runs without -B at 03:47 (the retention cron line stays in force through a '
+           'cutover window) and from stdin in Deploy-App: an import from outside the standard library or from '
+           'scripts/deploy would write scripts/deploy/__pycache__ into the fingerprinted tree and stall every '
+           'cutover action. Keep it to the standard library, or first change the cron line to python3 -B '
+           '(install-cron accepting both forms, the guarded line rewritten on the host, cron-rules updated).')
+
+    def problems(self, source, folder):
+        """Every import that is not a plain standard-library module, with its line."""
+        siblings = {path.stem for path in folder.iterdir() if path.suffix == '.py' or (path / '__init__.py').is_file()}
+        found = []
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    found.append(f'line {node.lineno}: relative import')
+                    continue
+                names = [node.module]
+            elif isinstance(node, (ast.Name, ast.Attribute)) and '__import__' in (getattr(node, 'id', None),
+                                                                                   getattr(node, 'attr', None)):
+                found.append(f'line {node.lineno}: __import__')
+                continue
+            else:
+                continue
+            for name in names:
+                top = name.split('.')[0]
+                if top in siblings:
+                    # A file beside the script shadows even a standard-library name (the script's folder is sys.path[0]).
+                    found.append(f'line {node.lineno}: {name} is a module in the script\'s own folder')
+                elif top not in sys.stdlib_module_names:
+                    found.append(f'line {node.lineno}: {name} is not in the standard library')
+                elif top in self.LOADERS:
+                    found.append(f'line {node.lineno}: {name} loads other code')
+        return found
+
+    def test_the_check_reports_every_kind_of_import_that_could_write_a_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / 'helper.py').write_text('VALUE = 1\n')
+            (folder / 'json.py').write_text('VALUE = 1\n')
+            (folder / 'package').mkdir()
+            (folder / 'package' / '__init__.py').write_text('')
+            source = '\n'.join([
+                'import os, sys', 'from pathlib import Path', 'import xml.etree.ElementTree',  # fine
+                'import helper',  # line 4
+                'from . import helper',
+                'from package import thing',
+                'import json',  # shadowed by json.py beside it
+                'import requests',
+                'import importlib.util',
+                'from importlib import import_module',
+                "module = __import__('helper')",
+                "module = builtins.__import__('helper')",
+            ])
+            self.assertEqual([
+                "line 4: helper is a module in the script's own folder",
+                'line 5: relative import',
+                "line 6: package is a module in the script's own folder",
+                "line 7: json is a module in the script's own folder",
+                'line 8: requests is not in the standard library',
+                'line 9: importlib.util loads other code',
+                'line 10: importlib loads other code',
+                'line 11: __import__',
+                'line 12: __import__',
+            ], sorted(self.problems(source, folder), key=lambda text: int(text.split(':')[0][5:])))
+
+    def test_deployment_storage_imports_only_the_standard_library(self):
+        problems = self.problems(self.SCRIPT.read_text(encoding='utf-8'), self.SCRIPT.parent)
+        self.assertEqual([], problems, self.WHY)
 
 
 if __name__ == '__main__':

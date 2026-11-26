@@ -19,9 +19,9 @@ are retained even if older. Unknown, incomplete, redirected or hardlinked
 bundles are preserved for review. Existing frontend release retention is unchanged.
 
 Run as maverick:
-  python3 /var/www/backend/scripts/deploy/deployment-storage.py retention
-  python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply
-  python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron
+  python3 -B /var/www/backend/scripts/deploy/deployment-storage.py retention
+  python3 -B /var/www/backend/scripts/deploy/deployment-storage.py retention --apply
+  python3 -B /var/www/backend/scripts/deploy/deployment-storage.py install-cron
 
 The first command is read-only. Scheduled output overwrites one bounded log:
   /home/maverick/.repro-deploy-retention/last-run.log
