@@ -286,6 +286,20 @@ class ReplaceTests(unittest.TestCase):
             self.assertEqual(before, (metadata(self.env), self.env.read_bytes(), self.env.lstat().st_ino))
             self.assertEqual([], self.others())
 
+    def test_a_copy_that_silently_loses_an_attribute_or_the_mode_is_refused_before_the_rename(self):
+        # The self-check after the copy: a setxattr or chmod that reports success but changes nothing (a file
+        # system without ACL support, say) never puts a .env without the backup account's ACL in place. Setting an
+        # access ACL also sets the mode's bits, so the silent chmod is shown on a file without one.
+        for name in ("setxattr", "fchmod"):
+            if name == "fchmod":
+                os.removexattr(self.env, "system.posix_acl_access")
+            before = metadata(self.env), self.env.read_bytes(), self.env.lstat().st_ino
+            with self.subTest(silent=name), patch.object(envfile.os, name, lambda *arguments, **keywords: None):
+                with self.assertRaisesRegex(envfile.Refused, "did not keep the owner, mode and extended attributes"):
+                    envfile.replace(self.env, envfile.assign(PRODUCTION, SWITCH), expected=PRODUCTION)
+            self.assertEqual(before, (metadata(self.env), self.env.read_bytes(), self.env.lstat().st_ino))
+            self.assertEqual([], self.others())
+
     def test_temporaries_an_interrupted_replace_left_are_removed(self):
         leftover = self.folder / f".env.repro-{uuid.uuid4().hex}"
         leftover.write_bytes(b"DB_PASSWORD=left-behind\n")

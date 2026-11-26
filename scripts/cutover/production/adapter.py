@@ -10,6 +10,10 @@ Every effect is idempotent and re-observable, as the runner requires:
   freeze refuses a pool the drain could not watch, a rollback always stops it;
 - freeze seals the SQLite file and records its SHA-256 for this run and hold
   (design 3.2 step 3); seal_sqlite restores its modes for rollback;
+- prepare (steps 1 to 10, design 3.2) switches the frozen host to MySQL behind the
+  closed gate: bound inputs, the sealed file unchanged, no app-schema event since
+  the verified backup, the switch record, the `.env` switch (envfile.py), the MySQL
+  config cache, a fresh FPM and the receipt;
 - publish_authority writes the boot-bound authority proof, measured: the live
   config's route hash, the identity probe's release, artifact and source, and
   for MySQL the server UUID the probe read (design 3.4);
@@ -22,24 +26,27 @@ publications and host_authority refuse the fallback. A MySQL probe that finds
 no server listening (exit 3) reads as not writable and without business
 activity only while the journal says no MySQL write is possible (design 1.2).
 
-It never makes MySQL writable: prepare, evidence and seal_mysql refuse.
+It never makes MySQL writable: prepare leaves the gate closed, and evidence() (D11) and
+seal_mysql (C02) refuse.
 Host commands are fixed argument lists from the root-owned host config, each
 run in its own process group, which a timeout or an interrupt kills whole.
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -48,15 +55,18 @@ try:
     from fence import guard  # Repository layout.
 except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
     import guard
+import binlog_scan  # noqa: E402
 import config_build  # noqa: E402
 import deploy_marker  # noqa: E402
+import envfile  # noqa: E402
 import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
 from runner import (  # noqa: E402
     DRAIN_PURPOSES, Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
+    is_sha256,
 )
 
-NOT_SUPPORTED = "This adapter supports the SQLite hold, freeze and rollback only"
+NOT_SUPPORTED = "This adapter does not verify MySQL evidence or open the MySQL gate yet: evidence() and seal_mysql refuse"
 CHILD_TAG = "REPRO_CUTOVER_CHILD"
 POLL_SECONDS = 0.25
 # The MySQL probe's exit status when nothing listens at the socket, and all it prints then (design 1.2).
@@ -92,7 +102,8 @@ HOST_KEYS = {"version", "paths", "app_root", "app_owner", "app_group", "web_user
              "long_job_processes", "scheduler_processes", "command_seconds", "options"}
 MYSQL_KEYS = {"mode", "database", "control_database", "target_uuid", "datadir", "client", "socket", "probe_defaults",
               "gate_defaults", "token_check_defaults", "gated_accounts", "lockable_accounts",
-              "activity_excluded_tables", "smoke_tables", "switch", "switch_secrets", "night_flags", "offsite_waiver"}
+              "activity_excluded_tables", "smoke_tables", "switch", "switch_secrets", "night_flags", "offsite_waiver",
+              "free_disk_floor_bytes"}
 FPM_KEYS = {"unit", "socket", "status_socket", "drain_seconds"}
 SMOKE_KEYS = {"client_id", "shoot_id"}
 # identity.json (design 1.1): the identity probe's own inputs.
@@ -123,6 +134,8 @@ QUEUE_PHP = "/usr/bin/php"
 SHELL_PATH = r"/[A-Za-z0-9_./-]*"
 # Longest single host command the config may allow (command_seconds).
 MAX_COMMAND_SECONDS = 300
+# mysql.free_disk_floor_bytes: prepare refuses unless / has more free bytes (design 3.2 step 2, critic HO-M12).
+MAX_FREE_DISK_FLOOR = 2 ** 50
 # The hold-time Telnyx capture (design 5.2) is its own php-fpm master and pool, repro-telnyx-capture.service,
 # and keeps answering while the freeze drains and stops the app's FPM. Its command lines in /proc: the unit's
 # ExecStart until FPM retitles itself, then the master and pool titles.
@@ -134,6 +147,36 @@ CAPTURE_COMMAND_LINES = (
 )
 # Process patterns, matched as substrings of /proc/<pid>/cmdline (ProductionAdapter.processes).
 PROCESS_PATTERNS = ("writer_processes", "long_job_processes", "scheduler_processes")
+# prepare, the switch half (design 3.2 steps 1 to 10). Each step is the method `_prepare_<name>`; D11 adds 11
+# and 12. A crash between two steps leaves the markers the README lists ("prepare"), which seal_sqlite (D12)
+# reads to undo any part of the switch.
+PREPARE_STEPS = ((1, "writers_drained"), (2, "inputs"), (3, "sqlite_frozen"), (4, "mysql_history"),
+                 (5, "switch_record"), (6, "mysql_env"), (7, "env_replaced"), (8, "config"), (9, "fpm"),
+                 (10, "receipt"))
+# The evidence inputs manifest that `check-evidence --write` (D11) writes and step 2 reads (README "prepare").
+EVIDENCE_INPUTS = {"snapshot": "frozen snapshot record", "import": "import result",
+                   "verify_fields": "verify-fields report", "migrate_status": "migrate:status --pending output",
+                   "complete_schema": "complete-schema output", "backup_check": "final backup check"}
+MANIFEST_KEYS = {"version", "run_id", "mode", "backup", "inputs"}
+INPUT_KEYS = {"path", "sha256"}
+BACKUP_KEYS = {"file", "position", "gtid_executed"}
+MAX_INPUT_BYTES = guard.MAX_RECORD_BYTES
+# `sha256sum <frozen snapshot>`: the digest, a space, a space or `*`, the path.
+SNAPSHOT_RECORD = re.compile(rb"([0-9a-f]{64}) [ *][^\n]+\n?")
+# Laravel 12's `migrate:status --pending` with nothing pending, whitespace collapsed.
+NO_PENDING = "INFO No pending migrations."
+BACKUP_VERIFIED = "frozen-base-publications-verified"
+UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+# Design 3.2 step 2: free bytes on / (the SQLite file, the MySQL datadir and its binary logs on this host).
+FREE_DISK_PATH = "/"
+SEALED_HASH_KEYS = {"version", "run_id", "hold_id", "started_at", "database", "sha256"}
+SWITCH_RECORD_KEYS = {"version", "run_id", "values", "env_sha256", "switch_at"}
+# A switch secret (mysql-app.env holds one `DB_PASSWORD=<password>` line): mysql/fixture.sh render's password
+# rule, nothing a .env line would need to quote.
+SECRET_VALUE = r"[A-Za-z0-9._~+/=-]{16,256}"
+# Bounded retries of a MySQL probe that finds nothing listening (design 3.2, critic HO-L6).
+PROBE_ATTEMPTS = 3
+PROBE_RETRY_SECONDS = 1.0
 
 
 def _argv(value) -> bool:
@@ -315,6 +358,9 @@ def _check_mysql(mysql) -> None:
                   "Host config switch values must match the mysql target and a gated account")
     guard.require(not mysql["offsite_waiver"] or mysql["mode"] == "drill",
                   "The off-site waiver is allowed only in drill mode")
+    guard.require(type(mysql["free_disk_floor_bytes"]) is int
+                  and 0 < mysql["free_disk_floor_bytes"] <= MAX_FREE_DISK_FLOOR,
+                  "Host config free_disk_floor_bytes must be a positive number of bytes")
 
 
 def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
@@ -466,6 +512,147 @@ def _remove(path: Path) -> None:
     if path.exists() or path.is_symlink():
         path.unlink()
         _sync_directory(path.parent)
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise UnsafeCutover(message)
+
+
+def _read_input(path: Path, label: str) -> bytes:
+    """A night input another account may own: a regular file, never through a final link, size bounded."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as error:
+        raise UnsafeCutover(f"The {label} cannot be read: {os.strerror(error.errno)}") from None
+    try:
+        _require(stat.S_ISREG(os.fstat(descriptor).st_mode), f"The {label} is not a regular file")
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            content = stream.read(MAX_INPUT_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    _require(len(content) <= MAX_INPUT_BYTES, f"The {label} is larger than {MAX_INPUT_BYTES} bytes")
+    return content
+
+
+def _input_json(raw: bytes, label: str) -> dict:
+    document = _json_object(raw.decode("utf-8", "replace"))
+    _require(document is not None, f"The {label} is not one JSON object")
+    return document
+
+
+def _gtid_set(text) -> binlog_scan.GtidSet | None:
+    try:
+        return binlog_scan.GtidSet.parse(text) if isinstance(text, str) else None
+    except binlog_scan.Unreadable:
+        return None
+
+
+def _coordinate(value, keys: set) -> bool:
+    return (isinstance(value, dict) and value.keys() == keys and guard.matches(binlog_scan.LOG_NAME, value["file"])
+            and type(value["position"]) is int and value["position"] >= 4
+            and ("gtid_executed" not in keys or _gtid_set(value["gtid_executed"]) is not None))
+
+
+def check_inputs(config: dict, pinned: Identity, policy: dict, started_at: int, manifest) -> dict:
+    """The night's inputs bound to one target, one database and this run's snapshots (design 3.2 step 2).
+
+    `manifest` is the evidence inputs manifest (README "prepare": the six inputs, each `{path, sha256}`, and the
+    verified backup's coordinate). Every input is read again and must still have the digest the manifest
+    records. `started_at` is the journal's hold. The first binding that differs refuses (UnsafeCutover), so
+    prepare refuses before any change; check-evidence (D11) runs the same function before it writes the
+    manifest. Returns the bound values: mode, both snapshots, the backup coordinate and the input digests.
+    """
+    mysql = config["mysql"]
+    mode, waiver, target, database = mysql["mode"], mysql["offsite_waiver"], mysql["target_uuid"], mysql["database"]
+    _require(isinstance(manifest, dict) and manifest.keys() == MANIFEST_KEYS and type(manifest["version"]) is int
+             and manifest["version"] == 1 and manifest["mode"] in MODES and isinstance(manifest["inputs"], dict)
+             and manifest["inputs"].keys() == EVIDENCE_INPUTS.keys(), "The evidence inputs manifest is malformed")
+    _require(manifest["run_id"] == pinned.run_id, "The evidence inputs belong to another run")
+    _require(manifest["mode"] == mode, f"The evidence inputs were checked for {manifest['mode']} mode, not {mode}")
+    backup = manifest["backup"]
+    _require(_coordinate(backup, BACKUP_KEYS), "The recorded backup coordinate is malformed")
+    entries = manifest["inputs"]
+    for name, entry in entries.items():
+        _require((name == "backup_check" and entry is None)
+                 or (isinstance(entry, dict) and entry.keys() == INPUT_KEYS and _absolute(entry["path"])
+                     and is_sha256(entry["sha256"])), "The evidence inputs manifest is malformed")
+    if waiver:
+        _require(entries["backup_check"] is None,
+                 "The off-site waiver replaces the final backup check: the manifest must name none")
+    else:
+        _require(entries["backup_check"] is not None, "Without the off-site waiver the final backup check is required")
+    raw = {}
+    for name, entry in entries.items():
+        if entry is not None:
+            raw[name] = _read_input(Path(entry["path"]), EVIDENCE_INPUTS[name])
+            _require(guard.sha256(raw[name]) == entry["sha256"],
+                     f"The {EVIDENCE_INPUTS[name]} changed after check-evidence recorded it")
+    record = SNAPSHOT_RECORD.fullmatch(raw["snapshot"])
+    _require(record is not None, "The frozen snapshot record is not one sha256sum line")
+    frozen = record.group(1).decode("ascii")
+    imported = _input_json(raw["import"], "import result")
+    _require(imported.get("mode") == "import-empty" and imported.get("import_verified") is True
+             and imported.get("source_changed") is False and is_sha256(imported.get("source_sha256")),
+             "The import result is not a verified import-empty run")
+    _require(imported.get("target_server_uuid") == target, "The import result names another MySQL server than the target")
+    _require(imported.get("target_database") == database, "The import result names another database")
+    snapshot = imported["source_sha256"]
+    lines = [_json_object(line) for line in raw["verify_fields"].decode("utf-8", "replace").splitlines() if line.strip()]
+    _require(bool(lines) and None not in lines, "The verify-fields report is not the tool's JSON lines")
+    report = lines[-1]
+    _require(report.get("result") == "all-fields-verified" and type(report.get("field_mismatches")) is int
+             and report["field_mismatches"] == 0, "The verify-fields report is not all-fields-verified with zero mismatches")
+    _require(report.get("source_sha256") == snapshot, "The verify-fields report checked another snapshot than the import")
+    _require(report.get("target_server_uuid") == target,
+             "The verify-fields report names another MySQL server than the target")
+    _require(report.get("target_database") == database, "The verify-fields report names another database")
+    _require(" ".join(raw["migrate_status"].decode("utf-8", "replace").split()) == NO_PENDING,
+             "The migrate:status --pending output does not say that no migration is pending")
+    schema = _input_json(raw["complete_schema"], "complete-schema output")
+    _require(schema.get("verified") is True and schema.get("migration_ledger_unchanged") is True,
+             "The complete-schema output is not verified with the migration ledger unchanged")
+    _require(schema.get("server_uuid") == target, "The complete-schema output names another MySQL server than the target")
+    if mode == "cutover":
+        _require(frozen == snapshot, "Cutover mode needs one snapshot: the frozen snapshot record, the import and "
+                                     "verify-fields differ")
+    if not waiver:
+        check = _input_json(raw["backup_check"], "final backup check")
+        _require(check.get("result") == BACKUP_VERIFIED, "The final backup check did not verify the frozen base publications")
+        _require(check.get("release") == pinned.release_sha, "The final backup check is for another release")
+        frozen_at, sqlite_base, mysql_base = check.get("frozen_at"), check.get("sqlite"), check.get("mysql")
+        _require(guard.matches(UTC_SECONDS, frozen_at) and isinstance(sqlite_base, dict)
+                 and isinstance(mysql_base, dict), "The final backup check is malformed")
+        _require(calendar.timegm(time.strptime(frozen_at, "%Y-%m-%dT%H:%M:%SZ")) >= started_at,
+                 "The final backup check names a freeze before this run's hold")
+        _require(sqlite_base.get("snapshot_sha256") == frozen, "The SQLite publication is not the frozen snapshot")
+        _require(mysql_base.get("identity") == target, "The MySQL base names another server than the target")
+        _require(mysql_base.get("database") == database, "The MySQL base names another database")
+        point = mysql_base.get("pitr")
+        _require(isinstance(point, dict) and (point.get("binlog_file"), point.get("binlog_position"))
+                 == (backup["file"], backup["position"]),
+                 "The MySQL base's coordinate is not the recorded backup coordinate")
+    _require(is_sha256(policy.get("mysql_live_config_sha256")),
+             "The policy pins no MySQL live config hash (mysql_live_config_sha256)")
+    disk = os.statvfs(FREE_DISK_PATH)
+    free, floor = disk.f_bavail * disk.f_frsize, mysql["free_disk_floor_bytes"]
+    _require(free > floor, f"Free disk on {FREE_DISK_PATH} is {free} bytes, below the floor of {floor} bytes")
+    return {"mode": mode, "offsite_waiver": waiver, "snapshot_sha256": snapshot, "frozen_snapshot_sha256": frozen,
+            "backup": {name: backup[name] for name in sorted(BACKUP_KEYS)},
+            "inputs": {name: entry for name, entry in sorted(entries.items())}}
+
+
+@dataclass
+class PrepareRun:
+    """What one prepare call carries from step to step, in memory only: a new call (a retry, or after a crash)
+    runs every step again from what is on disk."""
+
+    lease: Lease
+    deadline: float
+    inputs: dict | None = None
+    env: bytes | None = None
+    record: dict | None = None
+    switched: bytes | None = None
 
 
 class ProductionAdapter:
@@ -724,13 +911,16 @@ class ProductionAdapter:
         sqlite_seal.seal(self.database, self.paths["sqlite_seal_record"], proc=self.proc)
         self._record_sealed_hash(hold)
 
-    def _hold_binding(self) -> dict:
-        """The journal's hold that a sealed hash belongs to: its hold_id, or its started_at, whichever it has."""
+    def _journal_state(self) -> dict:
         try:
             state = self.journal.read()
         except (OSError, ValueError) as error:
             raise UnsafeCutover("The cutover journal cannot be read") from error
-        state = state if isinstance(state, dict) else {}
+        return state if isinstance(state, dict) else {}
+
+    def _hold_binding(self) -> dict:
+        """The journal's hold that a sealed hash belongs to: its hold_id, or its started_at, whichever it has."""
+        state = self._journal_state()
         hold = state.get("hold")
         hold_id = hold.get("hold_id") if isinstance(hold, dict) and isinstance(hold.get("hold_id"), str) else None
         started_at = state.get("started_at") if type(state.get("started_at")) is int else None
@@ -762,8 +952,262 @@ class ProductionAdapter:
             return
         _write_atomic(path, record, 0o600)
 
+    # prepare (design 3.2), steps 1 to 10: the switch half. D11 adds the checks (11) and the report (12).
+
     def prepare(self, lease: Lease, deadline: int) -> None:
-        raise UnsafeCutover(NOT_SUPPORTED)
+        """Switch the frozen host to MySQL, read-only behind the closed gate (design 3.2 steps 1 to 10).
+
+        Steps 1 to 4 refuse before any change (step 4 only ends app sessions, which hold no grant). From step 5
+        on a failure leaves the switch partly done, and seal_sqlite undoes any part of it (design 3.5, D12).
+        Every step is safe to run again: a retry, or a call after a controller that stopped between two steps,
+        redoes or keeps each step from what is on disk (README "prepare" lists the markers).
+        """
+        run = PrepareRun(lease, deadline)
+        for number, name in PREPARE_STEPS:
+            lease.require_current()
+            _require(self.clock() < deadline, f"prepare ran out of time before step {number} ({name.replace('_', ' ')})")
+            getattr(self, f"_prepare_{name}")(run)
+
+    def _prepare_writers_drained(self, run: PrepareRun) -> None:
+        """Step 1: admitted writers drained under this lease, in a frozen journal that never opened MySQL."""
+        run.lease.require_writers_drained()
+        state = self._journal_state()
+        _require(state.get("phase") == "frozen" and state.get("writes_possible") is False,
+                 "prepare runs only in a frozen journal in which MySQL was never opened for writes")
+
+    def _prepare_inputs(self, run: PrepareRun) -> None:
+        """Step 2: check-evidence's manifest, every input re-read and bound (check_inputs), the free disk floor."""
+        try:
+            raw = guard.read_protected(self.paths["evidence_inputs"])
+        except FileNotFoundError:
+            raise UnsafeCutover("The evidence inputs manifest is missing: run check-evidence --write first") from None
+        except (guard.Refused, OSError) as error:
+            raise UnsafeCutover(f"The evidence inputs manifest cannot be read: {error}") from None
+        manifest = _json_object(raw.decode("utf-8", "replace"))
+        _require(manifest is not None, "The evidence inputs manifest is not one JSON object")
+        started_at = self._journal_state().get("started_at")
+        _require(type(started_at) is int, "The cutover journal has no hold to bind the evidence inputs to")
+        run.inputs = check_inputs(self.config, self.pinned, self.policy, started_at, manifest)
+
+    def _prepare_sqlite_frozen(self, run: PrepareRun) -> None:
+        """Step 3: SQLite still sealed, its WAL empty, and the file the one freeze hashed for this run and hold."""
+        _require(not sqlite_seal.writable(self.database), "SQLite is writable: the freeze was lost")
+        wal = Path(f"{self.database}-wal")
+        _require(not (wal.exists() and wal.stat().st_size), "The SQLite WAL is not empty")
+        try:
+            record = guard.read_json(guard.read_protected(self.paths["sealed_hash"]))
+        except FileNotFoundError:
+            raise UnsafeCutover("No sealed SQLite hash: the freeze did not record one") from None
+        except (guard.Refused, OSError, ValueError) as error:
+            raise UnsafeCutover(f"The sealed SQLite hash record is malformed: {error}") from None
+        _require(record.keys() == SEALED_HASH_KEYS and is_sha256(record["sha256"]),
+                 "The sealed SQLite hash record is malformed")
+        binding = self._hold_binding()
+        _require((record["run_id"], record["hold_id"], record["started_at"])
+                 == (self.pinned.run_id, binding["hold_id"], binding["started_at"]),
+                 "The sealed SQLite hash belongs to another run or hold")
+        _require(record["database"] == str(self.database), "The sealed SQLite hash names another database")
+        _require(sqlite_seal.file_sha256(self.database) == record["sha256"],
+                 "The sealed SQLite file changed after the freeze hashed it")
+
+    def _prepare_mysql_history(self, run: PrepareRun) -> None:
+        """Step 4: the gate exactly closed, no app session left, no app-schema event since the verified backup."""
+        mysql = self.config["mysql"]
+        reading = self._probe(self.config["commands"]["mysql"], run.deadline)
+        _require((reading.get("server_uuid"), reading.get("database")) == (mysql["target_uuid"], mysql["database"]),
+                 "The MySQL probe read another server or database than the target")
+        _require(reading.get("gate") == "closed" and reading.get("writable") is False
+                 and reading.get("business_activity") is False,
+                 f"The MySQL gate is not exactly closed with no business activity (it reads {str(reading.get('gate'))[:20]})")
+        sessions = reading.get("gated_sessions")
+        _require(type(sessions) is int and sessions >= 0, "The MySQL probe reading has no app session count")
+        if sessions:
+            # Sessions hold the privileges they connected with: none may outlive armed_from (design 2.1, 3.2).
+            import gate
+
+            closed = gate.close_gate(self.config)
+            _require(closed["before"] == "closed", "The MySQL gate was not closed when its app sessions were ended; "
+                                                   "it is closed now, and prepare stops")
+        self._history(run)
+
+    def _prepare_switch_record(self, run: PrepareRun) -> None:
+        """Step 5: the switch keys' SQLite values for this run (verified on a retry), never a copy of .env."""
+        run.env = self._read_env()
+        keys = switch_keys(self.config)
+        night_flags = self.config["mysql"]["night_flags"]
+        record = self._switch_record()
+        if record is None:
+            try:
+                engine = live_config.env_values(run.env, ("DB_CONNECTION",)).get("DB_CONNECTION")
+                values = envfile.values(run.env, keys)
+            except (live_config.Unmeasurable, envfile.Refused) as error:
+                raise UnsafeCutover(f"The SQLite .env cannot be recorded: {error}") from None
+            _require(engine == "sqlite", "The .env does not read DB_CONNECTION=sqlite and there is no switch record: it "
+                                         "was switched by hand, and nothing could restore SQLite")
+            record = {"version": 1, "run_id": self.pinned.run_id, "values": values,
+                      "env_sha256": envfile.digest(run.env, night_flags), "switch_at": None}
+            _write_atomic(self.paths["switch_record"], record, 0o600)
+        else:
+            _require(record["run_id"] == self.pinned.run_id, "The switch record belongs to another run")
+            try:
+                restored = envfile.assign(run.env, record["values"])
+            except envfile.Refused as error:
+                raise UnsafeCutover(f"The switch record cannot be applied to the .env: {error}") from None
+            _require(envfile.digest(restored, night_flags) == record["env_sha256"],
+                     "The switch record does not match the .env (its digest differs)")
+        run.record = record
+
+    def _prepare_mysql_env(self, run: PrepareRun) -> None:
+        """Step 6: the MySQL .env in memory, the switch keys set and every other line byte for byte; its
+        config_sha256, with the denylist the identity probe reads, must equal the current file's."""
+        assignments = {**self.config["mysql"]["switch"], **self._switch_secrets()}
+        try:
+            run.switched = envfile.assign(run.env, assignments)
+        except envfile.Refused as error:
+            raise UnsafeCutover(f"The MySQL .env cannot be built: {error}") from None
+        import identity_probe
+
+        try:
+            denylist = load_identity_config(guard.read_protected(self.paths["identity_config"]))["env_denylist"]
+            same = (identity_probe.config_sha256(run.env, denylist)
+                    == identity_probe.config_sha256(run.switched, denylist))
+        except (guard.Refused, OSError, ValueError) as error:
+            raise UnsafeCutover(f"The switched .env cannot be measured as the identity probe measures it: {error}") \
+                from None
+        _require(same, "The switch would change config_sha256: a switch key is not on identity.json's env_denylist "
+                       "(critic RC-H1); nothing was written")
+
+    def _prepare_env_replaced(self, run: PrepareRun) -> None:
+        """Step 7: the .env replaced atomically, owner, mode and ACL kept (envfile.replace); once is enough."""
+        if run.env != run.switched:
+            try:
+                envfile.replace(self._env_path(), run.switched, expected=run.env)
+            except envfile.Refused as error:
+                raise UnsafeCutover(f"The .env was not replaced: {error}") from None
+        _require(self._read_env() == run.switched, "The .env does not hold the switch after its replacement")
+
+    def _prepare_config(self, run: PrepareRun) -> None:
+        """Step 8: the MySQL config cache built to the pin, measured again (the deploy user owns config.php), and
+        switch_at recorded."""
+        pin = self.policy["mysql_live_config_sha256"]
+        try:
+            config_build.build(self.config, expected_engine="mysql", expected_sha256=pin, deadline=run.deadline)
+        except config_build.BuildFailed as error:
+            raise UnsafeCutover(f"The MySQL config cache was not built: {error}") from None
+        live = self._live_config()
+        _require(live.engine == "mysql" and live.source == live_config.CACHE and live.live_config_sha256 == pin,
+                 "The live config after the build is not the MySQL pin from the cache; FPM was not started")
+        run.record = {**run.record, "switch_at": int(self.clock())}
+        _write_atomic(self.paths["switch_record"], run.record, 0o600)
+
+    def _prepare_fpm(self, run: PrepareRun) -> None:
+        """Step 9: fresh FPM workers on the MySQL config (the freeze's drain stopped FPM)."""
+        self._run(self.config["commands"]["fpm_start"], run.deadline)
+
+    def _prepare_receipt(self, run: PrepareRun) -> None:
+        """Step 10: the backup range scanned once more, then the latch removed and the receipt written."""
+        until = self._history(run)
+        _remove(self.paths["activity"])
+        mysql = self.config["mysql"]
+        _write_atomic(self.paths["receipt"], {
+            "version": 1, "run_id": self.pinned.run_id, "server_uuid": mysql["target_uuid"],
+            "database": mysql["database"], "backup": run.inputs["backup"],
+            "armed_from": {"file": until["file"], "position": until["position"]},
+        }, 0o600)
+
+    def _probe(self, argv: list[str], deadline: float) -> dict:
+        """One MySQL probe run for prepare: its exit-0 JSON object. Nothing listening (exit 3) is retried
+        PROBE_ATTEMPTS times in all, then refused; every other exit refuses with the probe's own problems."""
+        for attempt in range(1, PROBE_ATTEMPTS + 1):
+            code, output = self._execute(argv, deadline)
+            if code != MYSQL_UNREACHABLE:
+                break
+            if attempt < PROBE_ATTEMPTS and self.clock() + PROBE_RETRY_SECONDS < deadline:
+                time.sleep(PROBE_RETRY_SECONDS)
+        else:
+            raise UnsafeCutover(f"The MySQL target is not reachable (probe exit 3, {PROBE_ATTEMPTS} attempts): prepare "
+                                "needs a reachable, closed target")
+        if code != 0:
+            problems = _probe_problems(output) if code in MYSQL_REFUSALS else ""
+            refused = f"The MySQL probe refused prepare's reading (exit {code})"
+            raise UnsafeCutover(f"{refused}: {problems}" if problems else refused)
+        reading = _json_object(output)
+        _require(reading is not None and reading.get("reachable") is True,
+                 "The MySQL probe returned no reading of a reachable server")
+        return reading
+
+    def _history(self, run: PrepareRun) -> dict:
+        """mysql_probe.py --since <backup> --since-gtid <its gtid_executed> (design 3.2 steps 4 and 10, README
+        "--since contract"): no app-schema transaction since the backup, the backup's GTIDs still in the history.
+        Returns the coordinate the probe read before it scanned (`until`, with gtid_executed)."""
+        mysql, backup = self.config["mysql"], run.inputs["backup"]
+        start = f"{backup['file']}:{backup['position']}"
+        scan = self._probe(self.config["commands"]["mysql"] + ["--since", start, "--since-gtid",
+                                                               backup["gtid_executed"]], run.deadline)
+        _require((scan.get("server_uuid"), scan.get("database")) == (mysql["target_uuid"], mysql["database"]),
+                 "The MySQL history scan read another server or database than the target")
+        _require(scan.get("gate") == "closed", f"The MySQL gate reads {str(scan.get('gate'))[:20]}, not closed, in the "
+                                               "history scan")
+        _require(scan.get("since") == {"file": backup["file"], "position": backup["position"]},
+                 "The MySQL history scan started at another coordinate than the backup's")
+        until, transactions = scan.get("until"), scan.get("transactions")
+        _require(_coordinate(until, BACKUP_KEYS) and isinstance(transactions, list),
+                 "The MySQL history scan's output is malformed")
+        if transactions:
+            first = transactions[0] if isinstance(transactions[0], dict) else {}
+            names = [name for name in [*(first.get("tables") or []), *(first.get("statements") or [])]
+                     if isinstance(name, str)]
+            raise UnsafeCutover(f"The copy changed after the verified backup: {len(transactions)} app-schema "
+                                f"transaction(s) since {start}, the first {str(first.get('gtid'))[:80]} "
+                                f"({', '.join(names)[:200] or 'an app-schema event'})")
+        held, executed = _gtid_set(backup["gtid_executed"]), _gtid_set(until["gtid_executed"])
+        _require(held is not None and executed is not None and held.issubset(executed),
+                 "gtid_executed no longer holds the backup's GTIDs: the binary log history was reset")
+        return until
+
+    def _env_path(self) -> Path:
+        return Path(self.config["app_root"]) / ".env"
+
+    def _read_env(self) -> bytes:
+        try:
+            return envfile.read(self._env_path())
+        except (envfile.Refused, OSError) as error:
+            raise UnsafeCutover(f"The app's .env cannot be read: {error}") from None
+
+    def _switch_record(self) -> dict | None:
+        """This host's switch record (any run's), shape-checked; None when there is none."""
+        try:
+            record = guard.read_json(guard.read_protected(self.paths["switch_record"]))
+        except FileNotFoundError:
+            return None
+        except (guard.Refused, OSError, ValueError) as error:
+            raise UnsafeCutover(f"The switch record is malformed: {error}") from None
+        values = record.get("values")
+        _require(record.keys() == SWITCH_RECORD_KEYS and guard.matches(RUN_ID, record["run_id"])
+                 and isinstance(values, dict) and values.keys() == set(switch_keys(self.config))
+                 and all(value is None or isinstance(value, str) for value in values.values())
+                 and is_sha256(record["env_sha256"])
+                 and (record["switch_at"] is None or type(record["switch_at"]) is int),
+                 "The switch record is malformed")
+        return record
+
+    def _switch_secrets(self) -> dict:
+        """Each switch secret (DB_PASSWORD) from its root-only file of one `KEY=value` line; never printed."""
+        found = {}
+        for key, name in self.config["mysql"]["switch_secrets"].items():
+            path = Path(name)
+            try:
+                raw = guard.read_protected(path)
+                private = not stat.S_IMODE(path.lstat().st_mode) & 0o077
+            except FileNotFoundError:
+                raise UnsafeCutover(f"The secret file {path} for {key} is missing") from None
+            except (guard.Refused, OSError) as error:
+                raise UnsafeCutover(f"The secret file {path} for {key} is not root's: {error}") from None
+            _require(private, f"The secret file {path} must be readable by root only")
+            match = re.fullmatch(rf"{key}=({SECRET_VALUE})\n?", raw.decode("ascii", "replace"))
+            _require(match is not None, f"{path} must hold one line {key}=<16 to 256 characters of A-Z a-z 0-9 . _ ~ + / = ->")
+            found[key] = match.group(1)
+        return found
 
     def evidence(self) -> Evidence:
         raise UnsafeCutover(NOT_SUPPORTED)
