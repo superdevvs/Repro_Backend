@@ -377,6 +377,60 @@ slices) replay the spool through `admit.py telnyx-replay` (`www-data`, umask
 0002) before the queues resume and again after the marker; the replay waits
 for any capture still saving.
 
+## FastCGI client and FPM drain (design 5.3, 5.4)
+
+`fastcgi.py` and `fpm_drain.py` are installed with the controller in
+`/opt/repro-cutover-fence/production/` (W1). `php-fpm/repro-status.conf`
+goes to `/etc/php/8.3/fpm/pool.d/zz-repro-status.conf` (root 0644); then
+`php-fpm8.3 -t`, then one `systemctl reload php8.3-fpm.service` at a quiet
+hour. It reopens the `[www]` pool (php-fpm merges a repeated section) and adds
+`pm.status_path = /repro-fpm-status` on its own socket,
+`pm.status_listen = /run/php/php8.3-fpm-status.sock` (host.json
+`fpm.status_socket`). A USR2 reload keeps the master and adds the socket; a
+USR2 reload whose config fails the test stops FPM, so the test comes first.
+
+- **`fastcgi.request(socket, params, stdin=b"", timeout=10, max_output=1 MiB)`**
+  sends one request to a PHP-FPM Unix socket and returns `Response(status,
+  headers, body, stdout, stderr, app_status, protocol_status)`. Its record
+  handling is `../probe/test_fpm_engine.py`'s client (experiment E8's), made
+  strict: records of another version or request, of another type, a short or
+  incomplete end record, data after it, a stream that closes first, output
+  over the limit and the deadline (one bound for the whole exchange) refuse.
+  A missing socket, or one nothing listens on, raises `NotListening`.
+- **`fastcgi.engine_probe(socket, app_root)`** sends
+  `<app_root>/scripts/cutover/probe/fpm-engine.php` with a fixed request line
+  and nothing else (Laravel reads `$_SERVER` as environment, so a parameter
+  could stand in for the pool's own) and returns its report. The caller
+  compares `engine` and `live_config.route_sha256(report["route_values"])`
+  with the pin. For P8: `/usr/bin/python3 -I -S fastcgi.py --socket
+  /run/php/php8.3-fpm.sock --app-root /var/www/backend` prints `{"version",
+  "report", "route_sha256"}` (exit 0 ok, 2 not ok, 1 no report).
+- **`fpm_drain.py --config host.json`**, the first command of `drain_fpm`,
+  polls the status page every 0.25 s for at most `fpm.drain_seconds` (90 s).
+  Idle is two readings in a row with no active process, an empty listen queue
+  and the same accepted count: PHP-FPM never counts the listen queue of a Unix
+  socket, so a request taken from the backlog shows only as a moved count. It
+  prints one JSON report and exits 0 for `drained`, `timed_out` (the stop
+  that follows ends what is still running) and `stopped` (nothing listens at
+  the status socket nor at `fpm.socket`). It exits 1, so the stop does not
+  run, when `fpm.socket` listens without the status socket (the snippet is
+  missing), when the status page answers anything but its JSON document, when
+  `fpm.status_socket` is `fpm.socket` (every status request there is an active
+  process), and when `fpm.drain_seconds` plus 12 s does not fit in
+  `command_seconds` (the adapter would kill the drain first).
+
+`test_fastcgi.py` and `test_fpm_drain.py` test the protocol and the drain's
+decisions against scripted servers on any POSIX system. With Linux root,
+`php-fpm` and `www-data` they also run private PHP-FPM masters laid out as
+Debian's, with the snippet in `pool.d`: a request in flight and one queued
+behind it are waited for, the limit is kept and reported, a stopped pool is
+`stopped`. `test_route_hash_vectors` also needs `php`, `runuser`, `nobody`
+and a `vendor/` that `www-data` can read (the docstring has the command): it
+sends `fpm-engine.php` into the pool for every vector of
+`testdata/route-hash-vectors.json`, with every path moved under a private
+folder, and checks the printed values, their hash against the vector's pin
+and `live_config.measure` of the same live file.
+
 ## Owner options (the safe value for each)
 
 Every option must be written in `host.json`; none is filled in.
