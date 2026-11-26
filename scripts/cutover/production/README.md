@@ -905,10 +905,13 @@ Not yet here (later slices):
   which this adapter still refuses, leads the runner to a MySQL publication.
 
 Not yet here:
-- `drain` does not check that the runner's deadline leaves
-  `fpm.drain_seconds` plus 12 s for `fpm_drain.py` (load_config now checks it
-  against `command_seconds`, and refuses `fpm.status_socket` equal to
-  `fpm.socket` and a `config_build` command other than design 1.3's).
+- D12 (rollback timing): `drain` does not check that the runner's deadline
+  leaves `fpm.drain_seconds` plus 12 s for `fpm_drain.py`. With less left,
+  `_run` kills `fpm_drain.py` at the deadline, the FPM stop never runs, and
+  the rollback retries on the next tick. `load_config` checks the same
+  margin against `command_seconds` only (and refuses `fpm.status_socket`
+  equal to `fpm.socket` and a `config_build` command other than design
+  1.3's); the behaviour is unchanged here.
 - Review C2-4: measured publication makes correct pins a precondition of the
   W1 drill init sequence (marker, `init`, `rehold`, `refresh`, reopen). D14's
   W1 sequence must refuse before `rehold` unless `live_config.py --app-root`
