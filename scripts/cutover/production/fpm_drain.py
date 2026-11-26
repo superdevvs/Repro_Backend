@@ -17,14 +17,25 @@ Outcomes, printed as one JSON object, each with exit 0 so that the stop runs:
 - drained: the pool was idle;
 - timed_out: the limit passed with requests still active (or without a reading). The stop ends them and
   SQLite rolls back their transactions; the report keeps the last counters;
-- stopped: nothing listens at the status socket nor at the pool's socket (`fpm.socket`): FPM is stopped.
+- stopped: nothing listens at the status socket nor at the pool's socket (`fpm.socket`): FPM is stopped;
+- unmonitored: the drain cannot see the pool's requests, because the pool's socket listens and nothing
+  answers at the status socket on the first reading (the snippet is missing; "stopped" would hide
+  in-flight requests), or because the status page answered with anything but its JSON document. The
+  report's `problem` says which, in fixed words. The adapter refuses a freeze on it (design 5.4); a
+  rollback, where nginx already holds every request, records it and stops FPM anyway (review A2-2).
 
-It refuses (exit 1: the stop does not run, the freeze fails and the hold stays) when the pool's socket
-listens and the status socket does not (the snippet is missing, and "stopped" would let the stop end
-in-flight requests unseen), when the status page answers with anything but its JSON document, when
-`fpm.status_socket` is `fpm.socket` (there every status request is an active process), and when
-`fpm.drain_seconds` leaves no room inside `command_seconds`, after which the adapter would kill the
-drain and never run the stop. Transient errors (a timeout, a reset) are retried until the limit.
+The report always has the keys version, outcome, limit_seconds, waited_seconds, polls, pool,
+accepted_conn, active_processes, idle_processes, total_processes, listen_queue and problem. The pool and
+its counters are those of the last status reading, null when there was none; problem is null, the last
+transient error of a timed_out drain, or the fixed text of an unmonitored one. Transient errors (a
+timeout, a reset) are retried until the limit.
+
+It refuses (exit 1, nothing on stdout: the stop does not run) when it cannot run as configured: not
+root, a protected file or a host config that load_config refuses, `fpm.status_socket` equal to
+`fpm.socket` (there every status request is an active process), `fpm.drain_seconds` leaving no room
+inside `command_seconds` (the adapter would kill the drain and never run the stop), and a `fpm.socket`
+whose connect fails other than by no socket, nothing listening or a full backlog (a path through a
+file, say), so that the drain cannot tell stopped from unmonitored.
 
 Standard library only.
 """
@@ -51,8 +62,12 @@ POLL_SECONDS = 0.25
 REQUEST_SECONDS = 2.0
 # What adapter._run needs beyond the drain's own limit: the last status request, start-up, the report.
 MARGIN_SECONDS = 10
-DRAINED, TIMED_OUT, STOPPED = "drained", "timed_out", "stopped"
+DRAINED, TIMED_OUT, STOPPED, UNMONITORED = "drained", "timed_out", "stopped", "unmonitored"
 SNIPPET = "production/php-fpm/repro-status.conf"
+# The problem of an unmonitored drain: fixed words, no path, nothing the status socket answered.
+NO_STATUS_SOCKET = ("the pool listens but nothing answers at its status socket: the status snippet is not "
+                    "installed or not loaded (host proof P8)")
+NOT_A_STATUS_DOCUMENT = "the status socket answered, but not with the pool's JSON status document"
 # The request experiment E8 proved against PHP-FPM 8.3's pm.status_listen.
 STATUS_PARAMS = {"SCRIPT_NAME": STATUS_PATH, "SCRIPT_FILENAME": STATUS_PATH, "QUERY_STRING": "json",
                  "REQUEST_METHOD": "GET", "SERVER_PROTOCOL": "HTTP/1.1"}
@@ -61,11 +76,11 @@ COUNTERS = {"accepted": "accepted conn", "active": "active processes", "idle": "
 
 
 class Refused(Exception):
-    """The drain cannot tell whether requests are in flight: the stop must not follow."""
+    """The drain cannot run as configured: the stop must not follow."""
 
 
-class StatusError(Refused):
-    """The status socket answered, but not with the pool's status document."""
+class StatusError(Exception):
+    """The status socket answered, but not with the pool's status document: the drain is unmonitored."""
 
 
 @dataclass(frozen=True)
@@ -80,12 +95,12 @@ class PoolStatus:
 
 @dataclass(frozen=True)
 class Drain:
-    outcome: str                  # drained, timed_out or stopped
+    outcome: str                  # drained, timed_out, stopped or unmonitored
     limit_seconds: float
     waited_seconds: float
     polls: int                    # status readings
     status: PoolStatus | None     # the last reading
-    problem: str | None           # the last transient error after it
+    problem: str | None           # the last transient error after it, or why the drain is unmonitored
 
     def report(self) -> dict:
         last = self.status
@@ -146,11 +161,10 @@ def drain(status_socket, limit_seconds, *, main_socket, read=read_status, listen
             if not listening(main_socket):
                 return Drain(STOPPED, limit_seconds, clock() - started, polls, last, None)
             if polls == 0:
-                raise Refused(f"the pool listens at {main_socket} but nothing answers at {status_socket} "
-                              f"({error}): install {SNIPPET} and reload FPM (host proof P8)") from None
+                return Drain(UNMONITORED, limit_seconds, clock() - started, polls, last, NO_STATUS_SOCKET)
             quiet, problem = None, str(error)
         except StatusError:
-            raise
+            return Drain(UNMONITORED, limit_seconds, clock() - started, polls, last, NOT_A_STATUS_DOCUMENT)
         except fastcgi.FastCgiError as error:
             quiet, problem = None, str(error)
         else:
@@ -192,6 +206,10 @@ def main(argv: list[str] | None = None) -> int:
         active = "an unknown number of" if result.status is None else result.status.active
         print(f"FPM drain: {active} request(s) still active after {fpm['drain_seconds']} s; the stop ends them",
               file=sys.stderr)
+    elif result.outcome == UNMONITORED:
+        hint = f"install {SNIPPET} and reload FPM" if result.problem == NO_STATUS_SOCKET else \
+            f"pm.status_path must be {STATUS_PATH}"
+        print(f"FPM drain unmonitored: {result.problem}; {hint}", file=sys.stderr)
     return 0
 
 

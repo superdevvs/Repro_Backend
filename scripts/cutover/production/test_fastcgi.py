@@ -176,6 +176,27 @@ def cgi(body: bytes, headers: str = "Content-type: text/html; charset=UTF-8") ->
     return headers.encode("latin-1") + b"\r\n\r\n" + body
 
 
+def full_backlog(path: Path) -> tuple[socket.socket, list[socket.socket]]:
+    """A Unix socket that listens with listen(0) and never accepts, its backlog filled by idle clients."""
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.listen(0)
+    clients = []
+    for _ in range(64):
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.setblocking(False)
+        try:
+            client.connect(str(path))
+        except BlockingIOError:
+            client.close()
+            return listener, clients
+        clients.append(client)
+    for client in clients:
+        client.close()
+    listener.close()
+    raise AssertionError("the backlog of a listen(0) socket never filled")
+
+
 @unittest.skipUnless(os.name == "posix", "FastCGI over Unix sockets")
 class EncodingTests(unittest.TestCase):
     def test_name_value_lengths_use_one_or_four_bytes(self):
@@ -313,6 +334,18 @@ class ProtocolTests(unittest.TestCase):
         server = self.serve()
         self.assertTrue(fastcgi.listening(server.path))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux refuses a connect to a full Unix backlog with EAGAIN")
+    def test_a_full_backlog_counts_as_listening(self):
+        # A pool whose backlog is full listens: connect(2) fails with EAGAIN, not ECONNREFUSED (review A2-12).
+        listener, clients = full_backlog(self.work / "busy.sock")
+        self.addCleanup(listener.close)
+        for client in clients:
+            self.addCleanup(client.close)
+        self.assertTrue(fastcgi.listening(listener.getsockname()))
+        with self.assertRaises(fastcgi.FastCgiError) as caught:
+            fastcgi.request(listener.getsockname(), {"SCRIPT_FILENAME": "/x.php"}, timeout=1)
+        self.assertNotIsInstance(caught.exception, fastcgi.NotListening)
+
     def test_engine_probe_sends_the_fixed_request_and_reads_the_report(self):
         report = {"version": 1, "probe": "fpm-engine", "ok": True, "engine": "sqlite", "problems": []}
         server = self.serve(rec(6, cgi(json.dumps(report).encode(), "Content-Type: application/json")), end())
@@ -337,6 +370,11 @@ class ProtocolTests(unittest.TestCase):
             "ok with status 500": cgi(json.dumps({**good, "ok": True}).encode(), json_head),
             "not ok with status 200": cgi(json.dumps(good).encode(), "Content-Type: application/json"),
             "a status of 502": cgi(json.dumps(good).encode(), "Status: 502\r\nContent-Type: application/json"),
+            # The report's own body, but not served as JSON (review A2-12): not the probe's answer.
+            "an ok report as text/html": cgi(json.dumps({**good, "ok": True}).encode(),
+                                             "Content-Type: text/html; charset=UTF-8"),
+            "an ok report without a content type": cgi(json.dumps({**good, "ok": True}).encode(),
+                                                       "X-Powered-By: PHP/8.3"),
         }
         for label, stdout in cases.items():
             with self.subTest(label):

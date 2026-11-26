@@ -1,7 +1,9 @@
 """FPM drain through the pool's status socket (design v2, 5.4; build plan D08; experiment E8 as tests).
 
 - StatusDocumentTests, DrainLogicTests, SnippetTests and CliTests run on any POSIX system as any user:
-  the drain's decisions against scripted status readings and a fake clock.
+  the drain's decisions against scripted status readings and a fake clock. DrainLogicTests prove the
+  two-reading rule. StatusSocketTests run the drain through the real client and clock against scripted
+  sockets: the last status request ends at the limit, and a pool socket with a full backlog listens.
 - FpmDrainTests need Linux root, php-fpm and the www-data account (the pinned QA image): a private
   PHP-FPM master laid out as Debian's (a [www] pool in pool.d/www.conf) with production/php-fpm/
   repro-status.conf added as pool.d/zz-repro-status.conf, its socket path moved to a private folder.
@@ -34,7 +36,8 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE)]
 import fastcgi  # noqa: E402
 import fpm_drain  # noqa: E402
-from test_fastcgi import FpmPool, ScriptedServer, can_run_fpm, cgi, end, rec, script_params  # noqa: E402
+from test_fastcgi import (FpmPool, ScriptedServer, can_run_fpm, cgi, end, full_backlog, read_records,  # noqa: E402
+                          rec, script_params)
 
 SNIPPET = HERE / "php-fpm" / "repro-status.conf"
 PRODUCTION_STATUS_SOCKET = "/run/php/php8.3-fpm-status.sock"
@@ -45,6 +48,10 @@ IDLE_DOCUMENT = (b'{"pool":"www","process manager":"static","start time":1795660
                  b'"idle processes":1,"active processes":0,"total processes":1,"max active processes":0,'
                  b'"max children reached":0,"slow requests":0}')
 JSON_HEAD = "Expires: Thu, 01 Jan 1970 00:00:00 GMT\r\nContent-Type: application/json"
+NOT_FOUND_HEAD = "Status: 404 Not Found\r\nContent-type: text/html; charset=UTF-8"
+# The keys of fpm_drain's report, for every outcome (A2-3).
+REPORT_KEYS = {"version", "outcome", "limit_seconds", "waited_seconds", "polls", "pool", "accepted_conn",
+               "active_processes", "idle_processes", "total_processes", "listen_queue", "problem"}
 
 
 def response(body: bytes = IDLE_DOCUMENT, status: int = 200, content_type: str = "application/json"):
@@ -172,11 +179,14 @@ class DrainLogicTests(unittest.TestCase):
         result = fake.drain()
         self.assertEqual((result.outcome, result.polls), ("stopped", 2))
 
-    def test_missing_status_socket_while_the_pool_listens_refuses(self):
-        # A pool without the snippet (P8 not done): "stopped" would let the stop kill in-flight requests.
-        fake = Scripted(fastcgi.NotListening("nothing listens"), listening=True)
-        with self.assertRaisesRegex(fpm_drain.Refused, "repro-status.conf"):
-            fake.drain()
+    def test_missing_status_socket_while_the_pool_listens_is_unmonitored(self):
+        # A pool without the snippet (P8 not done): "stopped" would hide in-flight requests. The drain says
+        # so and exits 0; the adapter refuses a freeze on it, and a rollback stops FPM anyway (A2-2).
+        fake = Scripted(fastcgi.NotListening("nothing listens at /run/php/status.sock"), listening=True)
+        result = fake.drain()
+        self.assertEqual((result.outcome, result.polls, result.status, result.problem),
+                         ("unmonitored", 0, None, fpm_drain.NO_STATUS_SOCKET))
+        self.assertEqual((fake.reads, fake.sleeps), (1, []))
 
     def test_status_socket_gone_mid_drain_while_the_pool_listens_keeps_waiting(self):
         fake = Scripted(status(active=1), fastcgi.NotListening("gone"), status(), status(), listening=True)
@@ -195,10 +205,28 @@ class DrainLogicTests(unittest.TestCase):
         result = fake.drain()
         self.assertEqual((result.outcome, result.polls), ("drained", 3))
 
-    def test_status_document_errors_refuse(self):
-        fake = Scripted(status(active=1), fpm_drain.StatusError("the status page answered 404"))
-        with self.assertRaisesRegex(fpm_drain.Refused, "404"):
-            fake.drain()
+    def test_a_status_page_that_is_not_its_document_is_unmonitored(self):
+        # Another pm.status_path answers 404: no reading can be trusted, so the drain stops polling at once.
+        fake = Scripted(status(active=1), fpm_drain.StatusError("the status page answered 404 text/html"))
+        result = fake.drain()
+        self.assertEqual((result.outcome, result.polls, result.status, result.problem),
+                         ("unmonitored", 1, status(active=1), fpm_drain.NOT_A_STATUS_DOCUMENT))
+        self.assertEqual(fake.reads, 2)
+        first = Scripted(fpm_drain.StatusError("the status page is not JSON"), listening=True)
+        result = first.drain()
+        self.assertEqual((result.outcome, result.polls, result.status, result.problem),
+                         ("unmonitored", 0, None, fpm_drain.NOT_A_STATUS_DOCUMENT))
+        self.assertEqual((first.reads, first.sleeps), (1, []))
+
+    def test_unmonitored_problems_are_fixed_texts(self):
+        # The adapter records the problem in the journal: no path, no response text, nothing from the error.
+        for problem in (fpm_drain.NO_STATUS_SOCKET, fpm_drain.NOT_A_STATUS_DOCUMENT):
+            with self.subTest(problem=problem):
+                self.assertIsInstance(problem, str)
+                self.assertTrue(0 < len(problem) <= 160)
+                self.assertNotIn("/", problem)
+        result = Scripted(fpm_drain.StatusError("answered 404 <html>secret-body</html>")).drain()
+        self.assertEqual(result.problem, fpm_drain.NOT_A_STATUS_DOCUMENT)
 
     def test_limit_must_be_positive_seconds(self):
         for limit in (0, -1, True, "90", float("nan")):
@@ -216,6 +244,122 @@ class DrainLogicTests(unittest.TestCase):
         stopped = Scripted(fastcgi.NotListening("gone")).drain().report()
         self.assertEqual({key: stopped[key] for key in ("outcome", "pool", "active_processes", "polls")},
                          {"outcome": "stopped", "pool": None, "active_processes": None, "polls": 0})
+
+    def test_report_shape_for_every_outcome(self):
+        # The adapter records outcome, active_processes, waited_seconds and problem from this report (A2-3).
+        # Every key is always there; the pool's counters are null only when no status reading exists.
+        gone, timeout = fastcgi.NotListening("gone"), fastcgi.FastCgiError("the request timed out")
+        not_status = fpm_drain.StatusError("the status page answered 404 text/html")
+        cases = [  # label, the fake, limit, outcome, active count of the last reading, problem
+            ("drained", Scripted(status(active=1), status(), status()), 90, "drained", 0, None),
+            ("timed_out", Scripted(status(active=1)), 2, "timed_out", 1, None),
+            ("timed_out, a transient error last", Scripted(status(active=2), timeout), 1, "timed_out", 2,
+             "the request timed out"),
+            ("timed_out without a reading", Scripted(timeout), 1, "timed_out", None, "the request timed out"),
+            ("stopped", Scripted(gone), 90, "stopped", None, None),
+            ("stopped after a reading", Scripted(status(active=1), gone), 90, "stopped", 1, None),
+            ("unmonitored", Scripted(gone, listening=True), 90, "unmonitored", None, fpm_drain.NO_STATUS_SOCKET),
+            ("unmonitored after a reading", Scripted(status(active=1), not_status), 30, "unmonitored", 1,
+             fpm_drain.NOT_A_STATUS_DOCUMENT),
+        ]
+        for label, fake, limit, outcome, active, problem in cases:
+            with self.subTest(label):
+                report = fake.drain(limit=limit).report()
+                self.assertEqual(set(report), REPORT_KEYS)
+                self.assertEqual((report["version"], report["outcome"], report["limit_seconds"]), (1, outcome, limit))
+                self.assertEqual(report["waited_seconds"], round(fake.now - 1000.0, 3))
+                self.assertIs(type(report["waited_seconds"]), float)
+                self.assertEqual((report["active_processes"], report["problem"]), (active, problem))
+                read = active is not None
+                self.assertEqual(report["pool"], "www" if read else None)
+                for counter in ("accepted_conn", "idle_processes", "total_processes", "listen_queue"):
+                    self.assertIs(type(report[counter]), int if read else type(None), counter)
+                self.assertEqual(json.loads(json.dumps(report)), report)
+
+
+class StatusServer:
+    """A scripted status socket: each connection reads the request, waits, then answers one document.
+
+    `answers` is a list of (seconds to wait, active processes); the last one repeats. A wait ends early
+    when the server closes, so a hanging answer never outlives the test.
+    """
+
+    def __init__(self, path: Path, answers: list[tuple[float, int]]):
+        self.path, self.answers = path, list(answers)
+        self.stopped = threading.Event()
+        self.served = 0
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(path))
+        self.listener.listen(8)
+        self.listener.settimeout(0.05)
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while not self.stopped.is_set():
+            try:
+                connection, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            wait, active = self.answers[min(self.served, len(self.answers) - 1)]
+            self.served += 1
+            threading.Thread(target=self.answer, args=(connection, wait, active), daemon=True).start()
+
+    def answer(self, connection: socket.socket, wait: float, active: int):
+        document = json.loads(IDLE_DOCUMENT)
+        document.update({"active processes": active, "idle processes": max(0, 1 - active)})
+        with connection:
+            try:
+                connection.settimeout(10)
+                read_records(connection)
+                if self.stopped.wait(wait):
+                    return
+                connection.sendall(rec(6, cgi(json.dumps(document).encode(), JSON_HEAD)) + end())
+            except OSError:
+                return
+
+    def close(self):
+        self.stopped.set()
+        self.thread.join(5)
+        self.listener.close()
+
+
+@unittest.skipUnless(UNIX, "FastCGI over Unix sockets")
+class StatusSocketTests(unittest.TestCase):
+    """The drain through the real FastCGI client and clock, against scripted sockets (review A2-12)."""
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp(prefix="fpm-drain-status-"))
+        self.addCleanup(shutil.rmtree, self.work, True)
+
+    def test_the_last_status_request_ends_at_the_limit(self):
+        # One busy reading, then the status socket answers only after 30 s. The status request is bounded by
+        # what is left of the limit, not by REQUEST_SECONDS, so the drain returns at the limit.
+        limit, margin = 1.0, 0.5
+        self.assertGreater(fpm_drain.REQUEST_SECONDS, limit + margin)
+        server = StatusServer(self.work / "status.sock", [(0, 1), (30, 1)])
+        self.addCleanup(server.close)
+        started = time.monotonic()
+        result = fpm_drain.drain(server.path, limit, main_socket=self.work / "main.sock")
+        elapsed = time.monotonic() - started
+        self.assertEqual((result.outcome, result.polls, result.status.active), ("timed_out", 1, 1), result.report())
+        self.assertIn("timed out", result.problem)
+        self.assertGreaterEqual(result.waited_seconds, limit)
+        self.assertLess(result.waited_seconds, limit + margin)
+        self.assertLess(elapsed, limit + margin)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux refuses a connect to a full Unix backlog with EAGAIN")
+    def test_a_pool_socket_with_a_full_backlog_is_not_stopped(self):
+        # A pool that listens with a full backlog is running: without its status socket the drain is
+        # unmonitored, never "stopped" (which would let the stop end requests unseen).
+        listener, clients = full_backlog(self.work / "main.sock")
+        self.addCleanup(listener.close)
+        for client in clients:
+            self.addCleanup(client.close)
+        result = fpm_drain.drain(self.work / "status.sock", 5, main_socket=Path(listener.getsockname()))
+        self.assertEqual((result.outcome, result.problem), ("unmonitored", fpm_drain.NO_STATUS_SOCKET))
 
 
 class SnippetTests(unittest.TestCase):
@@ -281,14 +425,55 @@ class CliTests(unittest.TestCase):
         report = json.loads(stdout)
         self.assertEqual((report["outcome"], report["limit_seconds"]), ("stopped", 90))
 
-    def test_cli_exits_1_when_the_pool_listens_without_its_status_socket(self):
+    def assert_unmonitored(self, code: int, stdout: str, stderr: str, problem: str) -> dict:
+        """Exit 0 (the stop after the drain runs), the report on stdout, one summary line on stderr."""
+        self.assertEqual(code, 0, stderr)
+        report = json.loads(stdout)
+        self.assertEqual(set(report), REPORT_KEYS)
+        self.assertEqual((report["outcome"], report["problem"], report["limit_seconds"]),
+                         ("unmonitored", problem, self.config["fpm"]["drain_seconds"]))
+        self.assertEqual(len(stderr.splitlines()), 1, stderr)
+        self.assertIn("unmonitored", stderr)
+        self.assertNotIn(str(self.work), stdout + stderr)
+        return report
+
+    def test_cli_reports_unmonitored_and_exits_0_when_the_pool_listens_without_its_status_socket(self):
         main = ScriptedServer(self.work, [])
         self.addCleanup(main.close)
         self.config["fpm"]["socket"] = str(main.path)
         with as_root_with(self.config):
             code, stdout, stderr = run_main(self.argv)
+        report = self.assert_unmonitored(code, stdout, stderr, fpm_drain.NO_STATUS_SOCKET)
+        self.assertEqual((report["polls"], report["active_processes"]), (0, None))
+
+    def test_cli_reports_unmonitored_and_exits_0_when_the_status_page_is_not_json(self):
+        folder = self.work / "status"
+        folder.mkdir()
+        server = ScriptedServer(folder, [rec(6, cgi(b"File not found.\n", NOT_FOUND_HEAD)), end()])
+        self.addCleanup(server.close)
+        self.config["fpm"]["status_socket"] = str(server.path)
+        with as_root_with(self.config):
+            code, stdout, stderr = run_main(self.argv)
+        report = self.assert_unmonitored(code, stdout, stderr, fpm_drain.NOT_A_STATUS_DOCUMENT)
+        self.assertEqual((report["polls"], report["active_processes"]), (0, None))
+        self.assertNotIn("File not found", stdout + stderr)
+
+    def test_cli_refuses_when_it_cannot_tell_whether_the_pool_listens(self):
+        # fpm.socket runs through a regular file (ENOTDIR): neither stopped nor unmonitored can be told.
+        (self.work / "file").write_text("")
+        self.config["fpm"]["socket"] = str(self.work / "file" / "main.sock")
+        with as_root_with(self.config):
+            code, stdout, stderr = run_main(self.argv)
         self.assertEqual((code, stdout), (1, ""))
-        self.assertIn("repro-status.conf", stderr)
+        self.assertIn("cannot tell whether", stderr)
+
+    def test_cli_refuses_an_unreadable_protected_config(self):
+        refused = fpm_drain.guard.Refused("host.json is group-writable")
+        with patch.object(fpm_drain.os, "geteuid", return_value=0), patch.object(fpm_drain.sys, "platform", "linux"), \
+                patch.object(fpm_drain.guard, "read_protected", side_effect=refused):
+            code, stdout, stderr = run_main(self.argv)
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertIn("group-writable", stderr)
 
     def test_cli_refuses_a_limit_the_adapter_would_cut_short(self):
         # adapter._run kills a host command after command_seconds; the stop after the drain must still run.
@@ -434,6 +619,46 @@ class FpmDrainTests(unittest.TestCase):
             self.assertLessEqual(request.finished_at, returned)
         self.assertGreater(result.waited_seconds, 2.5)
 
+    def test_drain_waits_while_short_requests_keep_being_accepted(self):
+        # Review A2-4. A request queued behind the busy child is taken as soon as the last one ends, so no
+        # reading lands in between, and test_drain_waits_for_a_queued_request passes without the
+        # accepted-count rule too (the scripted DrainLogicTests prove that rule). Short requests one after
+        # another make the gap the common case: most readings find the pool idle with nothing queued, and only
+        # the moving accepted count shows that requests are still being taken.
+        pool = self.pool(children=1)
+        quick = pool.script("quick.php", "<?php echo 'q';\n")
+        answered: list[float] = []
+        errors: list[BaseException] = []
+        stop_at = time.monotonic() + 2.0
+
+        def one_after_another():
+            try:
+                while time.monotonic() < stop_at:
+                    fastcgi.request(pool.socket, script_params(quick), timeout=10)
+                    answered.append(time.monotonic())
+                    time.sleep(0.005)
+            except BaseException as error:  # Reported by the test.
+                errors.append(error)
+
+        sender = threading.Thread(target=one_after_another, daemon=True)
+        sender.start()
+        time.sleep(0.1)
+        readings = []
+        for _ in range(10):
+            readings.append(fpm_drain.read_status(pool.status_socket, 2))
+            time.sleep(0.02)
+        result = self.drain(pool, 30)
+        returned = time.monotonic()
+        sender.join(15)
+        self.assertEqual(errors, [])
+        idle = [reading for reading in readings if reading.active == 0 and reading.listen_queue == 0]
+        self.assertGreaterEqual(len(idle), 3, readings)  # The gap is the common case here.
+        self.assertGreater(readings[-1].accepted, readings[0].accepted)
+        self.assertEqual(result.outcome, "drained", result.report())
+        self.assertGreater(len(answered), 50)
+        self.assertGreaterEqual(returned, answered[-1], "the drain returned while requests were still taken")
+        self.assertGreater(result.waited_seconds, 1.0)
+
     def test_drain_stops_waiting_at_limit_and_reports(self):
         pool = self.pool(graceful_stop=False)
         slow = SlowRequest(pool, 8000)
@@ -459,11 +684,30 @@ class FpmDrainTests(unittest.TestCase):
         self.assertFalse(pool.status_socket.exists())
         self.assertEqual(self.drain(pool, 30).outcome, "stopped")
 
-    def test_pool_without_the_status_socket_refuses(self):
+    def test_pool_without_the_status_socket_is_unmonitored(self):
         pool = self.pool(snippet=False)
         self.assertFalse(pool.status_socket.exists())
-        with self.assertRaisesRegex(fpm_drain.Refused, "repro-status.conf"):
-            self.drain(pool, 30)
+        result = self.drain(pool, 30)
+        self.assertEqual((result.outcome, result.polls, result.status, result.problem),
+                         ("unmonitored", 0, None, fpm_drain.NO_STATUS_SOCKET))
+        self.assertLess(result.waited_seconds, 1)
+
+    def test_status_page_on_another_path_is_unmonitored(self):
+        # The status socket is there, but pm.status_path is not /repro-fpm-status: what answers is not the
+        # status document, so no reading can be trusted.
+        pool = FpmPool(self.work / "other-path", children=1)
+        text = snippet_for(pool)
+        other = text.replace(f"pm.status_path = {fpm_drain.STATUS_PATH}", "pm.status_path = /other-status")
+        self.assertNotEqual(other, text)
+        (pool.work / "pool.d" / "zz-repro-status.conf").write_text(other)
+        self.addCleanup(pool.stop)
+        pool.start(pool.socket, pool.status_socket)
+        with self.assertRaises(fpm_drain.StatusError):
+            fpm_drain.read_status(pool.status_socket, 2)
+        result = self.drain(pool, 30)
+        self.assertEqual((result.outcome, result.polls, result.status, result.problem),
+                         ("unmonitored", 0, None, fpm_drain.NOT_A_STATUS_DOCUMENT))
+        self.assertLess(result.waited_seconds, 2)
 
     def test_cli_drains_and_prints_the_report(self):
         from test_adapter import example_config
@@ -492,6 +736,21 @@ class FpmDrainTests(unittest.TestCase):
         report = json.loads(stdout)
         self.assertEqual((report["outcome"], report["active_processes"], report["limit_seconds"]), ("timed_out", 1, 1))
         self.assertIn("1 request(s) still active after 1 s", stderr)
+
+    def test_cli_unmonitored_pool_still_exits_0_so_the_stop_runs(self):
+        # A rollback must stop FPM even when the snippet is missing; only the adapter refuses a freeze on it.
+        from test_adapter import example_config
+
+        pool = self.pool(snippet=False)
+        config = example_config()
+        config["fpm"].update(socket=str(pool.socket), status_socket=str(pool.status_socket))
+        with as_root_with(config):
+            code, stdout, stderr = run_main(["--config", "/etc/repro-cutover-fence/host.json"])
+        self.assertEqual(code, 0, stderr)
+        report = json.loads(stdout)
+        self.assertEqual((report["outcome"], report["problem"], report["polls"]),
+                         ("unmonitored", fpm_drain.NO_STATUS_SOCKET, 0))
+        self.assertEqual(len(stderr.splitlines()), 1, stderr)
 
 
 def pool_uid() -> int:
