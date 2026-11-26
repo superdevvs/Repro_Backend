@@ -6,6 +6,10 @@ use App\Http\Middleware\CaptureTelnyxDuringMaintenance;
 use App\Http\Middleware\HoldProducerIngress;
 use App\Models\Message;
 use App\Support\TelnyxMaintenanceSpool;
+use ArrayObject;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Contracts\Cache\Store;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance;
@@ -103,7 +107,9 @@ class TelnyxCaptureProducerHoldOrderTest extends TestCase
         // The order rests on the hold reading only config and the path (review C7): with the hold on and
         // the app down, neither a held producer request nor a text on its way to the capture may reach the
         // database, or the cache (L2), before the capture has answered. Every cache event counts: CacheHit,
-        // CacheMissed, KeyWritten, RetrievingKey and their peers in Illuminate\Cache\Events.
+        // CacheMissed, KeyWritten, RetrievingKey and their peers in Illuminate\Cache\Events. So does every
+        // call on a cache store, which a lock or a store reached past its repository makes without an event
+        // (review C2-10): each configured store is swapped for one that records every call.
         $queries = [];
         DB::listen(function (QueryExecuted $query) use (&$queries) {
             $queries[] = $query->sql;
@@ -112,15 +118,22 @@ class TelnyxCaptureProducerHoldOrderTest extends TestCase
         Event::listen('Illuminate\Cache\Events\*', function (string $event) use (&$cacheEvents) {
             $cacheEvents[] = class_basename($event);
         });
+        $storeCalls = $this->recordEveryCacheStoreCall();
         $this->assertProducerHeld();
 
         $this->postText('evt_c', 'msg_c')->assertOk()->assertExactJson(['status' => 'captured']);
 
         $this->assertSame([], $queries, 'A query ran before the capture answered');
         $this->assertSame([], $cacheEvents, 'The cache was used before the capture answered');
-        // The recorder does see the cache, so the empty list above is not a store that dispatches nothing.
+        $this->assertSame([], $storeCalls->getArrayCopy(), 'A cache store was called before the capture answered');
+        // The recorders do see the cache, so the empty lists above are not a store that dispatches or records
+        // nothing: a read through the repository, a lock, and a named store reached past its repository.
         Cache::get('telnyx-hold-order-probe');
+        Cache::lock('telnyx-hold-order-probe', 5)->get();
+        Cache::store('file')->getStore()->get('telnyx-hold-order-probe');
         $this->assertSame(['RetrievingKey', 'CacheMissed'], $cacheEvents);
+        $default = config('cache.default');
+        $this->assertSame(["{$default}:get", "{$default}:lock", 'file:get'], $storeCalls->getArrayCopy());
         $this->assertCount(1, $this->spoolEntries());
         $this->assertSame(0, Message::count());
         $this->upAndReplay();
@@ -141,6 +154,108 @@ class TelnyxCaptureProducerHoldOrderTest extends TestCase
 
         $this->assertDirectoryDoesNotExist($this->spool);
         $this->assertSame(0, Message::count());
+    }
+
+    /**
+     * Swap every configured cache store for an array store that records each call made on it, as
+     * "<store>:<method>": get, put, lock, forget and the rest, whether or not the repository dispatches an
+     * event for it, and whether it comes through the repository or straight to the store.
+     */
+    private function recordEveryCacheStoreCall(): ArrayObject
+    {
+        $calls = new ArrayObject;
+        Cache::extend('telnyx-hold-order-recorder', function ($app, array $config) use ($calls) {
+            return Cache::repository(new class($config['store'], $calls) implements LockProvider, Store
+            {
+                private ArrayStore $store;
+
+                public function __construct(private string $name, private ArrayObject $calls)
+                {
+                    $this->store = new ArrayStore;
+                }
+
+                public function get($key)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function many(array $keys)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function put($key, $value, $seconds)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function putMany(array $values, $seconds)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function increment($key, $value = 1)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function decrement($key, $value = 1)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function forever($key, $value)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function forget($key)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function flush()
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function getPrefix()
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function lock($name, $seconds = 0, $owner = null)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                public function restoreLock($name, $owner)
+                {
+                    return $this->record(__FUNCTION__, func_get_args());
+                }
+
+                /** Anything else the repository forwards to its store (touch, tags, ...). */
+                public function __call(string $method, array $arguments): mixed
+                {
+                    return $this->record($method, $arguments);
+                }
+
+                private function record(string $method, array $arguments): mixed
+                {
+                    $this->calls[] = "{$this->name}:{$method}";
+
+                    return $this->store->{$method}(...$arguments);
+                }
+            }, $config);
+        });
+        $stores = array_keys(config('cache.stores'));
+        config(['cache.stores' => array_fill_keys($stores, ['driver' => 'telnyx-hold-order-recorder'])]);
+        // Stores resolved before the swap (the default one is) and the container's default repository, in
+        // case something resolved it already, are built again from the recorder.
+        Cache::forgetDriver($stores);
+        $this->app->forgetInstance('cache.store');
+
+        return $calls;
     }
 
     private function assertProducerHeld(): void
