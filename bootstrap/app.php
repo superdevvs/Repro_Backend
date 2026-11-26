@@ -106,6 +106,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(\App\Http\Middleware\ServerMonitorTiming::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
         $middleware->prepend(\App\Http\Middleware\ListingStudioAdmissionCors::class);
+        // Must stay first: it answers Telnyx during maintenance before the
+        // maintenance check and before any middleware that touches the database.
+        $middleware->prepend(\App\Http\Middleware\CaptureTelnyxDuringMaintenance::class);
         $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustConfiguredProxies::class);
         $middleware->trustProxies(
             headers: Request::HEADER_X_FORWARDED_TRAEFIK,

@@ -12,11 +12,13 @@ use App\Models\MessageThread;
 use App\Models\SmsNumber;
 use App\Services\Messaging\SmsDeliveryFailure;
 use App\Support\LockedWrite;
+use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 
 class TelnyxWebhookController extends Controller
 {
@@ -30,18 +32,7 @@ class TelnyxWebhookController extends Controller
             return response()->json(['message' => 'Invalid Telnyx signature.'], 403);
         }
 
-        $payload = $request->json()->all();
-        $eventType = (string) data_get($payload, 'data.event_type', '');
-
-        if ($group = app(\App\Services\Messaging\SharedMmsService::class)->webhook($payload)) {
-            return response()->json($group);
-        }
-
-        return match ($eventType) {
-            'message.received' => $this->handleInbound($payload),
-            'message.sent', 'message.finalized', 'message.failed' => $this->handleStatus($payload, $eventType),
-            default => $this->ignored($eventType),
-        };
+        return $this->routeMessaging($request->json()->all(), null);
     }
 
     /**
@@ -53,7 +44,50 @@ class TelnyxWebhookController extends Controller
             return response()->json(['message' => 'Invalid Telnyx signature.'], 403);
         }
 
-        $payload = $request->json()->all();
+        return $this->routeStatus($request->json()->all(), null);
+    }
+
+    /**
+     * Handles a text event that the maintenance spool verified when Telnyx
+     * delivered it. No route points here; only telnyx:replay-spool calls it.
+     * $receivedAt is the original arrival time, not the replay time.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function replayVerified(string $route, ?string $sharedMessage, array $payload, CarbonInterface $receivedAt): JsonResponse
+    {
+        return match ($route) {
+            'messaging' => $this->routeMessaging($payload, $receivedAt),
+            'status' => $this->routeStatus($payload, $receivedAt),
+            'shared-mms' => response()->json(app(\App\Services\Messaging\SharedMmsService::class)->webhook($payload, $sharedMessage) ?? ['status' => 'ignored']),
+            default => throw new InvalidArgumentException('Only Telnyx text routes can be replayed.'),
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  CarbonInterface|null  $receivedAt  The arrival time of a replayed event; null when live.
+     */
+    private function routeMessaging(array $payload, ?CarbonInterface $receivedAt): JsonResponse
+    {
+        $eventType = (string) data_get($payload, 'data.event_type', '');
+
+        if ($group = app(\App\Services\Messaging\SharedMmsService::class)->webhook($payload)) {
+            return response()->json($group);
+        }
+
+        return match ($eventType) {
+            'message.received' => $this->handleInbound($payload, $receivedAt),
+            'message.sent', 'message.finalized', 'message.failed' => $this->handleStatus($payload, $eventType, $receivedAt),
+            default => $this->ignored($eventType),
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function routeStatus(array $payload, ?CarbonInterface $receivedAt): JsonResponse
+    {
         $eventType = (string) data_get($payload, 'data.event_type', '');
 
         if ($group = app(\App\Services\Messaging\SharedMmsService::class)->webhook($payload)) {
@@ -64,7 +98,7 @@ class TelnyxWebhookController extends Controller
             return $this->ignored($eventType);
         }
 
-        return $this->handleStatus($payload, $eventType);
+        return $this->handleStatus($payload, $eventType, $receivedAt);
     }
 
     public function sharedStatus(Request $request, string $message): JsonResponse
@@ -78,8 +112,9 @@ class TelnyxWebhookController extends Controller
     /**
      * @param  array<string, mixed>  $payload
      */
-    protected function handleInbound(array $payload): JsonResponse
+    protected function handleInbound(array $payload, ?CarbonInterface $receivedAt = null): JsonResponse
     {
+        $at = $receivedAt ?? now();
         $messageId = (string) data_get($payload, 'data.payload.id', '');
         $from = (string) data_get($payload, 'data.payload.from.phone_number', '');
         $to = (string) data_get($payload, 'data.payload.to.0.phone_number', '');
@@ -98,7 +133,14 @@ class TelnyxWebhookController extends Controller
 
         $knownThread = app(\App\Services\Messaging\SmsInboxPolicy::class)->threadForPair($from, $to);
         $knownContact = $knownThread?->contact ?? $this->findContactByPhone($this->normalizePhoneNumber($from));
-        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact): int {
+        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, $at, $receivedAt): ?int {
+            // Checked again inside the write: a live delivery and a replay of
+            // the same text can both pass the check above. On SQLite a copy
+            // committed meanwhile makes this write fail as locked, and the
+            // LockedWrite retry then finds it here.
+            if (Message::where('provider_message_id', $messageId)->exists()) {
+                return null;
+            }
             $contactPhone = $this->normalizePhoneNumber($from);
             $thread = $knownThread?->fresh();
             $contact = $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
@@ -112,9 +154,9 @@ class TelnyxWebhookController extends Controller
                 $contact->update(['phone' => $contactPhone]);
             }
 
-            $thread ??= MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => now()]);
+            $thread ??= MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => $at]);
 
-            $message = Message::create([
+            $message = new Message([
                 'channel' => 'SMS',
                 'direction' => 'INBOUND',
                 'provider' => 'TELNYX',
@@ -123,27 +165,51 @@ class TelnyxWebhookController extends Controller
                 'to_address' => $to,
                 'body_text' => $text,
                 'status' => 'DELIVERED',
-                'sent_at' => now(),
-                'delivered_at' => now(),
+                'sent_at' => $at,
+                'delivered_at' => $at,
                 'thread_id' => $thread->id,
                 'metadata' => [
                     'telnyx_event_id' => data_get($payload, 'data.id'),
                     'telnyx_event_type' => data_get($payload, 'data.event_type'),
                 ],
             ]);
+            if ($receivedAt !== null) {
+                // Clients show and order texts by created_at (sentAt, the
+                // history and the thread preview), so a replayed text keeps
+                // its arrival time there too, as a live one would have.
+                $message->created_at = $at;
+            }
+            $message->save();
+            if ($receivedAt !== null) {
+                // Saving marked the thread as needing a reply; a newer staff
+                // reply must keep it answered.
+                app(\App\Services\Messaging\SmsInboxPolicy::class)->recordBackdated($message);
+            }
 
             app(\App\Services\Messaging\MessageMediaService::class)->incoming('sms', (string) $message->id, (array) data_get($payload, 'data.payload.media', []));
-            $thread->update([
-                'last_message_at' => now(),
-                'last_direction' => 'INBOUND',
-                'last_snippet' => Str::limit($text, 200),
-            ]);
+            // A replayed text keeps its arrival time, so it must not move the
+            // thread's latest-message summary back past a newer message.
+            if ($receivedAt === null || $thread->last_message_at === null || $thread->last_message_at->lte($at)) {
+                $thread->update([
+                    'last_message_at' => $at,
+                    'last_direction' => 'INBOUND',
+                    'last_snippet' => Str::limit($text, 200),
+                ]);
+            }
 
             if (app(\App\Services\Messaging\SmsInboxPolicy::class)->kind($message) === 'incoming') {
                 $thread->markUnreadForStaff();
             }
             return $message->id;
         }), 'sms.inbound.persist');
+
+        if ($createdMessageId === null) {
+            if ($existing = Message::where('provider_message_id', $messageId)->first()) {
+                app(\App\Services\Messaging\GroundwireSmsPushService::class)->queueIncoming($existing->id);
+            }
+
+            return response()->json(['status' => 'duplicate']);
+        }
 
         if ($createdMessageId !== null) {
             $message = Message::with('thread.contact', 'thread.assignedTo')->findOrFail($createdMessageId);
@@ -172,7 +238,7 @@ class TelnyxWebhookController extends Controller
     /**
      * @param  array<string, mixed>  $payload
      */
-    protected function handleStatus(array $payload, string $eventType): JsonResponse
+    protected function handleStatus(array $payload, string $eventType, ?CarbonInterface $receivedAt = null): JsonResponse
     {
         $messageId = (string) data_get($payload, 'data.payload.id', '');
 
@@ -196,7 +262,7 @@ class TelnyxWebhookController extends Controller
             return response()->json(['status' => 'unknown_message']);
         }
 
-        $updates = $this->mapStatusUpdate($eventType, $payload);
+        $updates = $this->mapStatusUpdate($eventType, $payload, $receivedAt);
         \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($message, $updates, $eventType, $payload): void {
             $message->refresh();
             if ($updates === [] && in_array($message->status, ['DELIVERED', 'FAILED'], true)) {
@@ -314,27 +380,28 @@ class TelnyxWebhookController extends Controller
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    protected function mapStatusUpdate(string $eventType, array $payload): array
+    protected function mapStatusUpdate(string $eventType, array $payload, ?CarbonInterface $receivedAt = null): array
     {
         // Telnyx event_type → internal status mapping. message.finalized carries final state in data.payload.to[0].status.
         $finalState = strtolower((string) data_get($payload, 'data.payload.to.0.status', ''));
+        $at = $receivedAt ?? now();
 
         return match ($eventType) {
             'message.sent' => [
                 'status' => 'SENT',
-                'sent_at' => now(),
+                'sent_at' => $at,
                 'error_message' => null,
             ],
             'message.finalized' => match ($finalState) {
                 'delivered' => [
                     'status' => 'DELIVERED',
-                    'delivered_at' => now(),
+                    'delivered_at' => $at,
                     'failed_at' => null,
                     'error_message' => null,
                 ],
                 'sending_failed', 'delivery_failed', 'failed' => [
                     'status' => 'FAILED',
-                    'failed_at' => now(),
+                    'failed_at' => $at,
                     'delivered_at' => null,
                     'error_message' => SmsDeliveryFailure::message(SmsDeliveryFailure::codes($payload)),
                 ],
@@ -344,7 +411,7 @@ class TelnyxWebhookController extends Controller
             },
             'message.failed' => [
                 'status' => 'FAILED',
-                'failed_at' => now(),
+                'failed_at' => $at,
                 'delivered_at' => null,
                 'error_message' => SmsDeliveryFailure::message(SmsDeliveryFailure::codes($payload)),
             ],

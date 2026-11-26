@@ -152,6 +152,30 @@ class SmsInboxPolicy
         ]), 'sms.inbox.record');
     }
 
+    /**
+     * For a message stored after newer ones (a replayed text keeps its arrival
+     * time). record() has just set the reply state from it; the newest
+     * incoming or manual message decides instead, as in backfill().
+     */
+    public function recordBackdated(Message $message): void
+    {
+        if (! $message->thread_id || ! $message->created_at || ! in_array($this->kind($message), ['incoming', 'manual'], true)) {
+            return;
+        }
+        $latestKind = null;
+        foreach (Message::query()->where('thread_id', $message->thread_id)->where('channel', 'SMS')
+            ->where('created_at', '>', $message->created_at)->orderByDesc('created_at')->orderByDesc('id')->cursor() as $newer) {
+            if (in_array($kind = $this->kind($newer), ['incoming', 'manual'], true)) {
+                $latestKind = $kind;
+                break;
+            }
+        }
+        if ($latestKind !== null) {
+            LockedWrite::run(fn () => DB::table('message_threads')->where('id', $message->thread_id)->where('channel', 'SMS')
+                ->update(['sms_needs_reply' => $latestKind === 'incoming']), 'sms.inbox.record');
+        }
+    }
+
     /** Shared by HTTP, realtime and badges; editing managers retain broad access. */
     public function scope(Builder $query, string $scope = 'inbox'): Builder
     {

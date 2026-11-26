@@ -29,6 +29,9 @@ jobs:
       - name: Test download TCP installer
         run: python3 scripts/deploy/test_install_download_tcp.py
 
+      - name: Test deploy maintenance window (scheduler hold, Telnyx replay)
+        run: python3 scripts/deploy/test_deploy_maintenance_window.py
+
       - name: Setup PHP
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
