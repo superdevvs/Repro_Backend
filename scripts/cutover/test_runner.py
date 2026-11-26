@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -41,6 +42,10 @@ class FaultAdapter(FixtureAdapter):
         self.sqlite_restores = 0
         self.close_calls = 0
         self.last_lease = None
+        # What each drain was for, a refusal it may raise, and the FPM drain record it returns.
+        self.drain_purposes = []
+        self.drain_refusal = lambda purpose: None
+        self.drain_report = lambda purpose: None
 
     def close_admissions(self, lease, deadline):
         self.close_calls += 1
@@ -48,9 +53,12 @@ class FaultAdapter(FixtureAdapter):
         super().close_admissions(lease, deadline)
         self.after_close()
 
-    def drain(self, lease, deadline):
+    def drain(self, lease, deadline, *, purpose):
         self.before_drain()
-        super().drain(lease, deadline)
+        self.drain_purposes.append(purpose)
+        self.drain_refusal(purpose)
+        super().drain(lease, deadline, purpose=purpose)
+        return self.drain_report(purpose)
 
     def long_jobs_drained(self):
         return self.long_jobs
@@ -224,6 +232,41 @@ class CutoverTest(unittest.TestCase):
             with self.assertRaisesRegex(UnsafeCutover, "identity differs"):
                 self.new_runner().perform("hold", approval)
         self.assertTrue(self.adapter.observe().sqlite_live())
+
+    def test_identity_refusal_names_the_fields_that_differ_and_no_value(self):
+        approval = self.runner.approval_request("hold")
+        changes = {
+            "run": {"run_id": "other-run"}, "release": {"release_sha": "9" * 40},
+            "artifact": {"artifact_sha256": "a" * 64}, "source": {"source_sha256": "b" * 64},
+            "configuration": {"config_sha256": "c" * 64}, "target": {"target_uuid": "a6a22173-806c-4d38-90ee-07bde9aa5ecd"},
+        }
+        pinned = list(asdict(self.identity).values())
+
+        def refusal(**change):
+            self.adapter._identity = replace(self.identity, **change)
+            with self.assertRaises(UnsafeCutover) as refused:
+                self.new_runner().perform("hold", approval)
+            message = str(refused.exception)
+            for value in [*change.values(), *pinned]:
+                self.assertNotIn(value, message, "an identity value in the refusal")
+            named = re.fullmatch(r"Observed identity differs from the pin in: ([a-z, ]+)\.(?: (.*))?", message)
+            self.assertIsNotNone(named, message)
+            return named.group(1).split(", "), named.group(2)
+
+        for name, change in changes.items():
+            with self.subTest(name):
+                fields, advice = refusal(**change)
+                self.assertEqual([name], fields)
+                if name == "artifact":
+                    # The runbook's bytecode rule (A2-1): repository Python without -B writes __pycache__.
+                    self.assertRegex(advice, r"__pycache__.*python3 -B.*runbook|runbook.*python3 -B.*__pycache__")
+                else:
+                    self.assertIsNone(advice)
+        fields, advice = refusal(source_sha256="b" * 64, artifact_sha256="a" * 64)
+        self.assertEqual(["artifact", "source"], fields)
+        self.assertIn("__pycache__", advice)
+        self.assertTrue(self.adapter.observe().sqlite_live())
+        self.assertEqual(0, self.adapter.close_calls)
 
     def test_approval_binds_run_gate_phase_and_expiry(self):
         approval = self.runner.approval_request("hold")
@@ -497,6 +540,52 @@ class CutoverTest(unittest.TestCase):
         with self.assertRaisesRegex(UnsafeCutover, "could not be verified"):
             self.new_runner().perform("tick")
         self.assertEqual("recovery_required", self.journal.read()["phase"])
+
+    def test_freeze_drains_for_the_freeze_and_the_abort_for_the_rollback(self):
+        report = {"outcome": "drained", "active_processes": 0, "waited_seconds": 0.5}
+        self.adapter.drain_report = lambda purpose: {"purpose": purpose, **report}
+        frozen = self.freeze()
+        self.assertEqual(["freeze"], self.adapter.drain_purposes)
+        # The adapter's FPM drain record is journalled with the action it belongs to.
+        self.assertEqual(("freeze", {"purpose": "freeze", **report}),
+                         (frozen["history"][-1]["action"], frozen["history"][-1]["fpm_drain"]))
+        aborted = self.runner.perform("abort")
+        self.assertEqual(["freeze", "rollback"], self.adapter.drain_purposes)
+        self.assertEqual(("abort", {"purpose": "rollback", **report}),
+                         (aborted["history"][-1]["action"], aborted["history"][-1]["fpm_drain"]))
+        self.assertEqual(aborted, self.journal.read())
+
+    def test_refused_freeze_drain_still_lets_the_rollback_drain(self):
+        def refuse(purpose):
+            if purpose == "freeze":
+                raise UnsafeCutover("The FPM drain could not watch the pool")
+
+        self.adapter.drain_refusal = refuse
+        self.adapter.drain_report = lambda purpose: {"purpose": purpose, "outcome": "unmonitored",
+                                                     "problem": "no status page"}
+        self.hold()
+        with self.assertRaisesRegex(UnsafeCutover, "could not watch the pool"):
+            self.runner.perform("freeze")
+        state = self.journal.read()
+        self.assertEqual(("holding", "freeze"), (state["phase"], state["pending"]["action"]))
+        self.assertNotIn("fpm_drain", state["pending"])
+        aborted = self.new_runner().perform("abort")
+        self.assertEqual("sqlite_authoritative", aborted["phase"])
+        self.assertEqual(["freeze", "rollback"], self.adapter.drain_purposes)
+        self.assertEqual({"purpose": "rollback", "outcome": "unmonitored", "problem": "no status page"},
+                         aborted["history"][-1]["fpm_drain"])
+
+    def test_drain_takes_a_freeze_or_rollback_purpose(self):
+        # An adapter without FPM returns no record, and the runner journals none.
+        frozen = self.freeze()
+        self.assertNotIn("fpm_drain", frozen["history"][-1])
+        with self.journal.acquire() as (state, lease):
+            self.journal.write(state | {"generation": lease.generation})
+            with self.assertRaises(TypeError):
+                FixtureAdapter.drain(self.adapter, lease, 0)
+            for purpose in ("", "Freeze", "reopen", None):
+                with self.subTest(purpose=purpose), self.assertRaisesRegex(UnsafeCutover, "purpose"):
+                    FixtureAdapter.drain(self.adapter, lease, 0, purpose=purpose)
 
     def test_drain_timeout_keeps_admissions_closed(self):
         hold_at = self.hold()["started_at"]

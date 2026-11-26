@@ -6,11 +6,21 @@ Every effect is idempotent and re-observable, as the runner requires:
   once), publishes the deployment fence under both deploy locks and pauses
   every queue;
 - drain stops the worker groups, drains PHP-FPM and waits until no writer
-  process remains;
-- freeze seals the SQLite file; seal_sqlite restores its modes for rollback;
-- publish_authority writes the boot-bound SQLite authority proof;
+  process remains, and returns the drain report's record for the journal; a
+  freeze refuses a pool the drain could not watch, a rollback always stops it;
+- freeze seals the SQLite file and records its SHA-256 for this run and hold
+  (design 3.2 step 3); seal_sqlite restores its modes for rollback;
+- publish_authority writes the boot-bound authority proof, measured: the live
+  config's route hash, the identity probe's release, artifact and source, and
+  for MySQL the server UUID the probe read (design 3.4);
 - reopen verifies that proof through the guard, then resumes queues, starts
   workers, recreates the open marker and lifts the deployment fence.
+
+observe() takes the engine from the live config (live_config.measure, design
+1.3), accepting its .env fallback so that a rollback can run; both
+publications and host_authority refuse the fallback. A MySQL probe that finds
+no server listening (exit 3) reads as not writable and without business
+activity only while the journal says no MySQL write is possible (design 1.2).
 
 It never makes MySQL writable: prepare, evidence and seal_mysql refuse.
 Host commands are fixed argument lists from the root-owned host config, each
@@ -20,6 +30,7 @@ run in its own process group, which a timeout or an interrupt kills whole.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -38,14 +49,25 @@ try:
 except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
     import guard
 import deploy_marker  # noqa: E402
+import live_config  # noqa: E402
 import sqlite_seal  # noqa: E402
 from runner import (  # noqa: E402
-    Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
+    DRAIN_PURPOSES, Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest,
 )
 
 NOT_SUPPORTED = "This adapter supports the SQLite hold, freeze and rollback only"
 CHILD_TAG = "REPRO_CUTOVER_CHILD"
 POLL_SECONDS = 0.25
+# The MySQL probe's exit status when nothing listens at the socket, and all it prints then (design 1.2).
+MYSQL_UNREACHABLE = 3
+# Its refusals that hold the site until a person acts (design 4.7): stdout carries a "problems" list of texts
+# that never hold a secret, quoted in the refusal up to this many characters.
+MYSQL_REFUSALS = (4, 5, 6)
+PROBLEM_CHARACTERS = 500
+# fpm_drain.py's outcomes (design 5.4). A freeze goes on after these; any other refuses it, "unmonitored"
+# (the pool listens, but its status page cannot be read) included. A rollback records any outcome and stops FPM.
+FREEZE_DRAIN_OUTCOMES = ("drained", "timed_out", "stopped")
+ENGINE_NAMES = {"sqlite": "SQLite", "mysql": "MySQL"}
 PATHS = {"state", "policy", "evidence", "activation", "machine_id", "boot_id", "ingress_open", "deploy_marker",
          "scheduler_hold", "sqlite_seal_record", "identity_config", "switch_record", "sealed_hash", "receipt",
          "activity", "activated", "smoke_window", "evidence_inputs", "evidence_report", "unseal_proof",
@@ -162,6 +184,75 @@ def _spares_capture(pattern: str) -> bool:
     """A process pattern that matches neither php-fpm by name nor the Telnyx capture's master or pool."""
     return (CAPTURE_NAME not in pattern and "php-fpm" not in pattern
             and not any(pattern in line for line in CAPTURE_COMMAND_LINES))
+
+
+def _json_object(text: str) -> dict | None:
+    """The one JSON object in a host command's output, or None: no NaN or Infinity, no repeated key."""
+    def unique(pairs: list) -> dict:
+        record = dict(pairs)
+        if len(record) != len(pairs):
+            raise ValueError("repeated key")
+        return record
+
+    def constant(name: str):
+        raise ValueError(f"{name} is not JSON")
+
+    try:
+        value = json.loads(text, object_pairs_hook=unique, parse_constant=constant)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _probe_problems(output: str) -> str:
+    """A refused MySQL probe reading's own "problems" texts, joined and cut to PROBLEM_CHARACTERS, or ""."""
+    document = _json_object(output)
+    problems = None if document is None else document.get("problems")
+    if not (isinstance(problems, list) and problems and all(isinstance(item, str) for item in problems)):
+        return ""
+    text = "; ".join(problems)
+    return text if len(text) <= PROBLEM_CHARACTERS else text[:PROBLEM_CHARACTERS - 3] + "..."
+
+
+def _count(value) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _seconds(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+# The report keys the journal keeps besides the outcome, each when the report has it: a count, seconds or text.
+DRAIN_FIELDS = {"active_processes": _count, "waited_seconds": _seconds, "problem": lambda value: isinstance(value, str)}
+
+
+def _drain_record(output: str, purpose: str) -> dict:
+    """What the journal keeps of fpm_drain.py's report: purpose, outcome, active processes, wait and problem.
+
+    The report is the one JSON object fpm_drain.py prints on stdout. Anything else raises, whatever the purpose;
+    texts are cut to PROBLEM_CHARACTERS so the journal stays within what the guard reads.
+    """
+    report = _json_object(output)
+    if report is None or not isinstance(report.get("outcome"), str):
+        raise UnsafeCutover("The FPM drain report is not one JSON object with an outcome")
+    record = {"purpose": purpose, "outcome": report["outcome"][:PROBLEM_CHARACTERS]}
+    for key, valid in DRAIN_FIELDS.items():
+        if key in report:
+            if not (report[key] is None or valid(report[key])):
+                raise UnsafeCutover(f"The FPM drain report has a malformed {key}")
+            record[key] = report[key]
+    if isinstance(record.get("problem"), str):
+        record["problem"] = record["problem"][:PROBLEM_CHARACTERS]
+    return record
+
+
+def _require_freeze_drain(record: dict) -> None:
+    """A freeze goes on only after an outcome it knows; an FPM pool the drain could not watch keeps the hold."""
+    if record["outcome"] == "unmonitored":
+        raise UnsafeCutover(f"The FPM drain could not watch the pool ({record.get('problem') or 'no problem given'}); "
+                            "the freeze stops before the FPM stop and the hold stays")
+    if record["outcome"] not in FREEZE_DRAIN_OUTCOMES:
+        raise UnsafeCutover(f"The FPM drain report's outcome {record['outcome']!r} is not one the freeze knows")
 
 
 def load_identity_config(raw: bytes) -> dict:
@@ -368,8 +459,8 @@ class ProductionAdapter:
 
     # Host commands and process observation.
 
-    def _run(self, argv: list[str], deadline: float | None = None) -> str:
-        """Run one host command and return its standard output.
+    def _execute(self, argv: list[str], deadline: float | None = None) -> tuple[int, str]:
+        """Run one host command and return its exit status and standard output.
 
         The command runs in its own session and process group. runuser does not pass SIGKILL on to the
         command it started, so a timeout, or anything else that ends the wait (an interrupt), kills the
@@ -392,8 +483,13 @@ class ProductionAdapter:
                 if isinstance(stopped, subprocess.TimeoutExpired):
                     raise UnsafeCutover(f"Host command timed out: {Path(argv[0]).name}") from None
                 raise
-        if child.returncode != 0:
-            raise UnsafeCutover(f"Host command failed: {Path(argv[0]).name} exited {child.returncode}")
+        return child.returncode, output
+
+    def _run(self, argv: list[str], deadline: float | None = None) -> str:
+        """Run one host command (as _execute) and return its standard output; any exit but 0 raises."""
+        code, output = self._execute(argv, deadline)
+        if code != 0:
+            raise UnsafeCutover(f"Host command failed: {Path(argv[0]).name} exited {code}")
         return output
 
     def _pids(self, predicate) -> list[int]:
@@ -429,20 +525,57 @@ class ProductionAdapter:
         except (TypeError, ValueError) as error:
             raise UnsafeCutover("The host identity probe returned an invalid identity") from error
 
-    def _mysql(self) -> dict:
+    def _writes_impossible(self) -> bool:
+        """No journal, or one whose writes_possible is exactly false: MySQL has never been opened for writes."""
         try:
-            observed = json.loads(self._run(self.config["commands"]["mysql"]))
+            state = self.journal.read()
+        except (OSError, ValueError) as error:
+            raise UnsafeCutover("The cutover journal cannot be read") from error
+        return state is None or (isinstance(state, dict) and state.get("writes_possible") is False)
+
+    def _mysql(self) -> dict:
+        """One MySQL probe reading (design 1.2).
+
+        Exit 0 is the reading as printed. Exit 3 means nothing listens at the socket and prints exactly
+        {"version": 2, "reachable": false}. The gate lives in the grant tables, so a server that is down
+        cannot be written: that reads as not writable and no business activity, but only while there is no
+        journal or its writes_possible is false; otherwise it raises, as every other exit does.
+        """
+        code, output = self._execute(self.config["commands"]["mysql"])
+        if code not in (0, MYSQL_UNREACHABLE):
+            refused = f"The MySQL target probe refused the reading (exit {code})"
+            problems = _probe_problems(output) if code in MYSQL_REFUSALS else ""
+            raise UnsafeCutover(f"{refused}: {problems}" if problems else refused)
+        try:
+            observed = json.loads(output)
         except ValueError as error:
             raise UnsafeCutover("The MySQL target probe returned invalid JSON") from error
+        if code == MYSQL_UNREACHABLE:
+            if not (isinstance(observed, dict) and observed.keys() == {"version", "reachable"}
+                    and type(observed["version"]) is int and observed["version"] == 2
+                    and observed["reachable"] is False):
+                raise UnsafeCutover("The MySQL target probe exited 3 without reporting an unreachable server")
+            if not self._writes_impossible():
+                raise UnsafeCutover("The MySQL target is unreachable while MySQL writes may be possible")
+            return {**observed, "writable": False, "business_activity": False}
         if not (isinstance(observed, dict) and type(observed.get("writable")) is bool
                 and type(observed.get("business_activity")) is bool):
             raise UnsafeCutover("The MySQL target probe must report writable and business_activity")
         return observed
 
-    def observe(self) -> Observation:
+    def _live_config(self) -> live_config.LiveConfig:
+        """The app's live config (design 1.3): the cache, or the .env fallback; unmeasurable raises."""
+        try:
+            return live_config.measure(self.config["app_root"])
+        except (live_config.Unmeasurable, OSError) as error:
+            raise UnsafeCutover(f"The live config cannot be measured: {error}") from None
+
+    def _observed(self) -> tuple[Observation, dict, live_config.LiveConfig]:
+        """The observation with the MySQL reading and the live config it was made from."""
         mysql = self._mysql()
-        return Observation(
-            engine="sqlite",
+        live = self._live_config()
+        observation = Observation(
+            engine=live.engine,
             admissions_open=self.paths["ingress_open"].exists(),
             workers_stopped=not self.processes(self.config["writer_processes"]),
             sqlite_writable=sqlite_seal.writable(self.database),
@@ -450,6 +583,32 @@ class ProductionAdapter:
             mysql_business_activity=mysql["business_activity"],
             deployment_fenced=deploy_marker.published(self.paths["deploy_marker"], self.pinned.run_id),
         )
+        return observation, mysql, live
+
+    def observe(self) -> Observation:
+        return self._observed()[0]
+
+    def _measured_authority(self, observed: Observation, mysql: dict, live: live_config.LiveConfig) -> dict:
+        """What an authority proof says about the observed engine, every value measured now (design 3.4).
+
+        The guard compares these with the pins: the route hash with `<engine>_live_config_sha256`, the
+        database identity with the source identity (SQLite) or the target UUID (MySQL), release and
+        artifact with the pinned identity. A fallback config has no route hash, so nothing is published.
+        """
+        if live.source != live_config.CACHE or live.live_config_sha256 is None:
+            raise UnsafeCutover(f"The live config is the .env fallback ({live.problem}), not a parsed config "
+                                "cache; no authority is published from it")
+        identity = self.identity()
+        if observed.engine == "sqlite":
+            database_identity = identity.source_sha256
+        elif observed.engine == "mysql":
+            database_identity = mysql.get("server_uuid")
+            if database_identity != self.config["mysql"]["target_uuid"]:
+                raise UnsafeCutover("The MySQL probe did not read the target's server UUID")
+        else:
+            raise UnsafeCutover("The live engine is neither sqlite nor mysql")
+        return {"database_identity": database_identity, "live_config_sha256": live.live_config_sha256,
+                "release_sha": identity.release_sha, "artifact_sha256": identity.artifact_sha256}
 
     def require_quiescent(self) -> None:
         def tagged(entry: Path) -> bool:
@@ -477,11 +636,33 @@ class ProductionAdapter:
         for queue in self.config["queues"]:
             self._run(self.config["commands"]["queue_pause"] + [queue], deadline)
 
-    def drain(self, lease: Lease, deadline: int) -> None:
+    def drain(self, lease: Lease, deadline: int, *, purpose: str) -> dict | None:
+        """Stop the worker groups, drain and stop PHP-FPM, then wait until no writer process remains.
+
+        drain_fpm is fpm_drain.py, then the FPM stop (design 5.4). The first command's stdout is fpm_drain's
+        report; its record (_drain_record) is returned for the runner to journal with the action. A freeze goes
+        on after drained, timed_out (the stop ends what still runs) or stopped, and refuses before any further
+        drain_fpm command on any other outcome, "unmonitored" included. A rollback records any outcome and
+        always runs the stop: nginx holds every request by then, so a pool it cannot watch protects nothing
+        (review A2-2). With no drain_fpm command a rollback returns None and a freeze refuses.
+        """
+        if purpose not in DRAIN_PURPOSES:
+            raise UnsafeCutover("The drain purpose must be freeze or rollback")
         lease.require_current()
-        for argv in self.config["commands"]["stop_workers"] + self.config["commands"]["drain_fpm"]:
+        commands = self.config["commands"]
+        if purpose == "freeze" and not commands["drain_fpm"]:
+            raise UnsafeCutover("The freeze needs drain_fpm: fpm_drain.py, then the FPM stop (design 5.4)")
+        for argv in commands["stop_workers"]:
             self._run(argv, deadline)
+        record = None
+        for index, argv in enumerate(commands["drain_fpm"]):
+            output = self._run(argv, deadline)
+            if index == 0:
+                record = _drain_record(output, purpose)
+                if purpose == "freeze":
+                    _require_freeze_drain(record)
         self._wait_absent(self.config["writer_processes"], deadline, "Writers are still running after the stop")
+        return record
 
     def _scheduler_closed(self) -> bool:
         state = self.journal.read()
@@ -511,7 +692,47 @@ class ProductionAdapter:
 
     def freeze(self, lease: Lease, deadline: int) -> None:
         lease.require_writers_drained()
+        hold = self._hold_binding()
         sqlite_seal.seal(self.database, self.paths["sqlite_seal_record"], proc=self.proc)
+        self._record_sealed_hash(hold)
+
+    def _hold_binding(self) -> dict:
+        """The journal's hold that a sealed hash belongs to: its hold_id, or its started_at, whichever it has."""
+        try:
+            state = self.journal.read()
+        except (OSError, ValueError) as error:
+            raise UnsafeCutover("The cutover journal cannot be read") from error
+        state = state if isinstance(state, dict) else {}
+        hold = state.get("hold")
+        hold_id = hold.get("hold_id") if isinstance(hold, dict) and isinstance(hold.get("hold_id"), str) else None
+        started_at = state.get("started_at") if type(state.get("started_at")) is int else None
+        if hold_id is None and started_at is None:
+            raise UnsafeCutover("The sealed SQLite hash is bound to the journal's hold, and the journal has no hold")
+        return {"hold_id": hold_id, "started_at": started_at}
+
+    def _record_sealed_hash(self, hold: dict) -> None:
+        """The sealed file's SHA-256 for this run and hold, right after the seal (design 3.2 step 3).
+
+        `prepare` (the file still frozen), the rollback's unseal proof and the short way back compare the
+        file with it; retire keeps it for the way back. A record for this run and hold is never re-pinned: a
+        repeated freeze of a file that changed since refuses. Another run's or another hold's record (a journal
+        reset by hand and held again under the same run ID) is replaced.
+        """
+        path = self.paths["sealed_hash"]
+        record = {"version": 1, "run_id": self.pinned.run_id, **hold, "database": str(self.database),
+                  "sha256": sqlite_seal.file_sha256(self.database)}
+        try:
+            earlier = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            earlier = None
+        except (OSError, ValueError) as error:
+            raise UnsafeCutover("The sealed SQLite hash record cannot be read") from error
+        if isinstance(earlier, dict) and all(earlier.get(key) == record[key]
+                                             for key in ("run_id", "hold_id", "started_at")):
+            if earlier != record:
+                raise UnsafeCutover("The sealed SQLite file changed after the freeze hashed it")
+            return
+        _write_atomic(path, record, 0o600)
 
     def prepare(self, lease: Lease, deadline: int) -> None:
         raise UnsafeCutover(NOT_SUPPORTED)
@@ -533,17 +754,21 @@ class ProductionAdapter:
         return guard.sha256(self.paths["machine_id"].read_bytes())
 
     def publish_authority(self, lease: Lease, engine: str, candidate: bytes, deadline: int) -> None:
+        """The boot-bound proof for the candidate journal bytes, for either engine (design 3.4).
+
+        The route must be sealed for `engine` and the live config a parsed cache; the route hash, the
+        database identity, release and artifact are measured now, so guard.verify compares measurements
+        with the pins. Only seal_mysql (which this adapter refuses) leads the runner to a MySQL publication.
+        """
         lease.require_writers_drained()
-        if engine != "sqlite" or not self.observe().sealed("sqlite") or self.clock() >= deadline:
-            raise UnsafeCutover("SQLite authority is not sealed for publication")
-        observed = self.identity()
+        observed, mysql, live = self._observed()
+        if engine not in ENGINE_NAMES or not observed.sealed(engine) or self.clock() >= deadline:
+            raise UnsafeCutover(f"{ENGINE_NAMES.get(engine, 'The')} authority is not sealed for publication")
+        measured = self._measured_authority(observed, mysql, live)
         writers = self.processes(self.config["writer_processes"] + self.config["scheduler_processes"])
         _write_atomic(self.paths["evidence"], {
             "version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
-            "journal_sha256": guard.sha256(candidate), "engine": "sqlite",
-            "database_identity": observed.source_sha256,
-            "live_config_sha256": self.policy["sqlite_live_config_sha256"],
-            "release_sha": observed.release_sha, "artifact_sha256": observed.artifact_sha256,
+            "journal_sha256": guard.sha256(candidate), "engine": engine, **measured,
             "competing_writer_detected": bool(writers),
         }, 0o600)
 
@@ -562,13 +787,14 @@ class ProductionAdapter:
 
         Deploys count as fenced only when the marker that Deploy-App checks exists;
         the journal's own deploy refusal is not enforced by any deploy script.
+        Every value is measured, as in publish_authority: the observed engine, its
+        database identity (the source file, or the MySQL server UUID the probe
+        read), the live route hash (a fallback config refuses), release and artifact.
         """
-        observed = self.observe()
-        identity = self.identity()
+        observed, mysql, live = self._observed()
+        measured = self._measured_authority(observed, mysql, live)
         return guard.HostAuthority(
-            engine=observed.engine, database_identity=identity.source_sha256,
-            live_config_sha256=self.policy[f"{observed.engine}_live_config_sha256"],
-            release_sha=identity.release_sha, artifact_sha256=identity.artifact_sha256,
+            engine=observed.engine, **measured,
             competing_writer_detected=bool(self.processes(self.config["writer_processes"]
                                                          + self.config["scheduler_processes"])),
             admissions_open=observed.admissions_open, workers_stopped=observed.workers_stopped,
