@@ -169,7 +169,8 @@ function Test-DeploymentSpace {
 function Invoke-DeploymentRetention {
     # Both remote deployment wrappers have returned, closing their flock FDs.
     # The retention helper can now acquire backend then frontend without a cycle.
-    Invoke-Ssh -Command 'set -eu; python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
+    # Compression is opt-in (settings.json) and never fails a finished deploy.
+    Invoke-Ssh -Command 'set -eu; python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 /var/www/backend/scripts/deploy/deployment-storage.py compress-backup || echo "deployment-storage: compression did not finish; the uncompressed copy is kept." >&2; python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
 }
 
 function Deploy-Backend {
