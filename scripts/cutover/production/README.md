@@ -721,9 +721,10 @@ copy beside it, and a missing copy is an error.
   enum, a large file), so **the fallback engine is advisory**: it may let a
   rollback proceed, but it never proves which engine is live, and `prepare`,
   both publications and both reopens refuse it. Anything other than a plain
-  `sqlite` or `mysql`, or a `DB_URL`, raises `Unmeasurable`. CLI:
-  `/usr/bin/python3 -I -S live_config.py --app-root /var/www/backend` prints
-  the same as JSON (exit 1 when unmeasurable).
+  `sqlite` or `mysql`, or a `DB_URL`, raises `Unmeasurable`. CLI (the installed
+  copy, with `-B` like every Python on the host):
+  `/usr/bin/python3 -I -S -B /opt/repro-cutover-fence/production/live_config.py --app-root /var/www/backend`
+  prints the same as JSON (exit 1 when unmeasurable).
 - **`config_build.build(config, expected_engine=..., expected_sha256=None,
   deadline=None)`** first checks that `commands.config_build` is exactly
   design 1.3's command (`config_build.check_command`); another command (as
