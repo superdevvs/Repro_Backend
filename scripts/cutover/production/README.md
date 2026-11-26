@@ -850,7 +850,8 @@ Not yet here (later slices):
   that differ (`run`, `release`, `artifact`, `source`, `configuration`,
   `target`), never a value. When `artifact` is among them it adds one sentence
   pointing at the runbook's bytecode rule: a `__pycache__` folder under the
-  app's `scripts/` changes the artifact (review A2-1).
+  app's `scripts/` or `resources/iguide-lab/` (the folders the rule names)
+  changes the artifact (review A2-1).
 - **Publication** (`publish_authority`, both engines) and **`host_authority`**
   (what `refresh` publishes) measure every value. The route must be sealed for
   the engine asked for, and the live config must be a parsed cache: a
