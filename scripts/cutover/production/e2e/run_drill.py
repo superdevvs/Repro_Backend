@@ -598,6 +598,8 @@ def locked_vendor_identity(lock_path: Path, installed_path: Path) -> dict:
 
 
 class Outer:
+    mode = "drill"
+
     def __init__(self, args):
         self.args = args
         self.src = Path(args.src)
@@ -860,7 +862,7 @@ catch_workers_output = yes
         argv = [PY, "-I", "-S", "-B", SANDBOX / "make_config.py", "--root", paths.root, "--controller", self.cutover,
                 "--app-root", paths.app, "--run-id", self.run_ids[n], "--mysql-datadir", paths.root / "mysql" / "data",
                 "--smoke-client-id", client, "--smoke-shoot-id", shoot, "--deploy-owner", DEPLOY_OWNER,
-                "--mode", "drill", "--mysql-client", "/usr/local/bin/mysql",
+                "--mode", self.mode, "--mysql-client", "/usr/local/bin/mysql",
                 "--wrappers", paths.e2e / "wrappers.template.json"]
         if measured:
             argv += ["--measured", paths.e2e / "measured.json"]

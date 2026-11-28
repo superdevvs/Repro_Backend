@@ -282,8 +282,22 @@ Alignment with the contract slices:
   `ROOT/bin/timer` and a watchdog loop inside the sandbox. The build plan's
   D14 tests (`test_arm_deadline_builds_transient_timer`,
   `test_run_wrapper_argv`) assume a direct `systemd-run`; the lead decides.
-- C11 (W2c): the cutover mode refuses `offsite_waiver`, and the sandbox has
-  no network for real uploads; W2c needs an off-site stand-in.
+
+## Local cutover and rollback drill
+
+Run `scripts/cutover/production/e2e/run-drill.sh --w2c` with the candidate's
+locked Composer vendor volume. The launcher uses a Git archive of the current
+commit and gives each case a separate socket-only MySQL fixture. Use
+`--w2c --case short` or `--w2c --case export` for a single case.
+
+Both cases import the frozen synthetic SQLite file, check field parity, and
+exercise the release's frozen-backup publication verifier. An in-memory fixture
+implements object upload and readback for this disconnected test. The short case
+forces a replay failure after the ORM smoke and checks the audit before the
+original SQLite inode can be admitted. The export case writes on MySQL, restarts
+the sandbox, verifies the held ingress, refreshes authority and reopens. It then
+reverse-exports and checks the business row through SQLite. Each case prints a
+redacted result after the restored SQLite application answers.
 
 ## Tests
 

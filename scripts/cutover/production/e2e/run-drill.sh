@@ -17,6 +17,16 @@
 # come up.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
+entry=e2e/run_drill.py
+if [[ ${1:-} == --w2c ]]; then
+    entry=sandbox/w2c.py
+    shift
+    if [[ $# -eq 0 ]]; then
+        # Each recovery path gets its own empty MySQL datadir, grants, and fresh server UUID.
+        /bin/bash "$0" --w2c --case short
+        exec /bin/bash "$0" --w2c --case export
+    fi
+fi
 
 die() { printf 'run-drill: %s\n' "$*" >&2; exit 2; }
 
@@ -43,6 +53,9 @@ done
 source_mount="type=bind,source=$checkout,target=/src,readonly"
 mysql_mount="type=bind,source=$checkout/scripts/cutover/production/mysql,target=/src,readonly"
 archive_ref=${REPRO_DRILL_ARCHIVE_REF:-}
+if [[ $entry == sandbox/w2c.py ]]; then
+    archive_ref=${archive_ref:-HEAD}
+fi
 if [ -n "$archive_ref" ]; then
     release=$(git -C "$checkout" rev-parse --verify --end-of-options "${archive_ref}^{commit}") || die "invalid archive commit"
 fi
@@ -98,6 +111,6 @@ docker run --rm --pull never --name "$prefix-qa" --privileged --network none --c
     --mount "type=volume,source=$prefix-srv,target=/srv" \
     --tmpfs /tmp:rw,exec,size=512m,mode=1777 \
     --entrypoint /usr/bin/python3 "$qa_image" \
-    -I -S -B /src/scripts/cutover/production/e2e/run_drill.py run --release-sha "$release" "$@" || status=$?
+    -I -S -B "/src/scripts/cutover/production/$entry" run --release-sha "$release" "$@" || status=$?
 echo "run-drill: run_drill.py exited $status"
 exit "$status"
