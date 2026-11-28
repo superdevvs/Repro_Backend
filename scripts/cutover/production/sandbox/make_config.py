@@ -342,11 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         # D01's contract only: a controller whose load_config takes no `read` would check nothing of
         # identity.json, and the TypeError below refuses it.
         loaded = adapter.load_config(_encode(config), read=read)
-        guard = adapter.guard
-        installed = (guard.STATE, guard.POLICY, guard.EVIDENCE, guard.ACTIVATION, guard.MACHINE_ID, guard.BOOT_ID)
-        require(all(Path(loaded["paths"][name]) == path for name, path in zip(cli.GUARD_PATHS, installed))
-                and Path(loaded["paths"]["ingress_open"]) == cli.INGRESS_OPEN
-                and Path(loaded["paths"]["deploy_marker"]) == cli.DEPLOY_MARKER,
+        require(all(Path(loaded["paths"][key]) == path for key, path in cli.FIXED_PATHS.items()),
                 "host.json would be refused by the sandbox controller's fixed-path checks")
         files = {"host.json": config, "identity.json": identity_config(config, args.run_id)}
         if args.measured is not None:
