@@ -504,8 +504,8 @@ filled. The probe account reads only the columns it needs (never
 ## MySQL probe: business activity from the receipt (design 1.2, 4.3)
 
 `binlog_scan.py` installs next to `mysql_probe.py` in
-`/opt/repro-cutover-fence/production/` (the probe imports it). There is no
-`mysqlbinlog` on the host: the probe reads `SHOW BINARY LOG STATUS; SHOW BINARY
+`/opt/repro-cutover-fence/production/` (the probe imports it). The general activity scan
+uses the SQL client to read `SHOW BINARY LOG STATUS; SHOW BINARY
 LOGS` and `SHOW BINLOG EVENTS IN '<file>' [FROM <position>] LIMIT <offset>, 500`
 as the probe account (it has `REPLICATION CLIENT` and `REPLICATION SLAVE`),
 without `--raw`: the client's batch mode escapes backslash, tab, newline and
@@ -606,12 +606,19 @@ failed attempt requires a fresh marked edit and job. The short rollback audit cu
 window. Multiple verified windows or an older version 2 record without boot binding require the full reverse
 export and independent verification.
 
-The audit credits the verified attempt only when its GTID difference contains the expected application writes
-in order. The fixture update touches `users`, `shoots` and `aryeo_changes` in one transaction. The database
-queue then inserts, reserves and deletes its no-op job in three separate `jobs` transactions. Additional
-application transactions, a different table sequence or DDL leave the writes classified as business. Legacy
-version 1 windows and incomplete attempts also leave their business transactions in the audit. Verify the complete
-sequence on the pinned application and MySQL configuration during W2c before relying on the short rollback.
+The short rollback requires `smoke_row_scope_verified: true` in the audit. The probe decodes the four
+consecutive GTIDs from the same binary log using the existing private probe account over its Unix socket.
+It compares each full before/after row image against the verified marked client, shoot and job. It also
+checks the associated Aryeo change and the exact column layout of the reviewed schema, using the existing
+token-check account to read column metadata. The audit exposes an aggregate boolean and keeps decoded rows
+in private process memory. The candidate binary log range is limited to 128 KiB and decoded output to 2 MiB.
+
+This optional path requires the reviewed Oracle MySQL 8.4.13 Linux x86_64 `mysqlbinlog` next to the configured
+`mysql` client, in a root-owned non-writable chain. The decoder SHA-256 is
+`1087ee9d26ea42f396a1a7f302eb2cc549b2e05c32c62f8125f9d1b40bc08048`. An absent decoder,
+unrecognized row layout, other transactions, rotated log window or incomplete row proof leaves the
+transactions classified as business. Use the full reverse export and verify the new SQLite file in those cases.
+Demonstrate the short path on the approved host layout at W2c.
 
 `--since <file>:<position>`
 (for `prepare`, 3.2 steps 4 and 10) needs no receipt: it reads the coordinate

@@ -710,8 +710,17 @@ def audit(config: dict) -> dict:
     if window is not None and not any(item["class"] in {"smoke", "business"} for item in listed):
         raise _refused(EXIT_UNRECOGNISED, "The verified application smoke has no corresponding business writes "
                        "in the binary log audit", base)
+    row_scope_verified = False
+    if window is not None and any(item["class"] == "smoke" for item in listed):
+        import smoke_row_source
+
+        row_scope_verified = smoke_row_source.verified(config, window, listed)
+        if not row_scope_verified:
+            for item in listed:
+                if item["class"] == "smoke":
+                    item["class"] = "business"
     return {**_listing(base), "receipt": receipt.sha256, "armed_from": receipt.armed_from.record(),
-            "boundary": result.boundary,
+            "boundary": result.boundary, "smoke_row_scope_verified": row_scope_verified,
             "smoke_window": None if window is None else {name: window[2][name] for name in ("gtid_before",
                                                                                             "gtid_after")},
             "transactions": listed,

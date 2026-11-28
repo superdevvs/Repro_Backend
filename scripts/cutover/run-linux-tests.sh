@@ -53,7 +53,7 @@ python3 -B -m unittest discover -s "$cutover/fence" -p test_guard.py
 python3 -B -m unittest discover -s "$cutover" -p test_process_contract.py -v
 for production in test_admit.py test_fences.py test_adapter.py test_nginx_hold.py test_queue_flag.py test_capture.py \
                   test_cross_slice.py test_cli.py test_live_config.py test_retire.py test_wayback.py test_wayback_policy.py \
-                  test_mysql_reopen.py test_mysql_reopen_smoke.py test_worker_start.py; do
+                  test_mysql_reopen.py test_mysql_reopen_smoke.py test_worker_start.py test_smoke_row_source.py test_smoke_rows.py; do
     python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p "$production"
 done
 python3 -W ignore::ResourceWarning -B -m unittest discover -s "$cutover/production" -p test_envfile.py

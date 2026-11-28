@@ -11,6 +11,8 @@ Build one archive at the selected cutover commit. Verify the release SHA, applic
 | `mysql_reopen.py` | `/opt/repro-cutover-fence/production/mysql_reopen.py` | 0644 |
 | `mysql_reopen_smoke.py` | `/opt/repro-cutover-fence/production/mysql_reopen_smoke.py` | 0644 |
 | `retire.py` | `/opt/repro-cutover-fence/production/retire.py` | 0644 |
+| `smoke_row_source.py` | `/opt/repro-cutover-fence/production/smoke_row_source.py` | 0644 |
+| `smoke_rows.py` | `/opt/repro-cutover-fence/production/smoke_rows.py` | 0644 |
 | `wayback_policy.py` | `/opt/repro-cutover-fence/production/wayback_policy.py` | 0644 |
 | `wayback.py` | `/opt/repro-cutover-fence/production/wayback.py` | 0644 |
 | `../../mysql/verify-fields.php` | `/opt/repro-cutover-fence/production/verify-fields.php` | 0644 |

@@ -465,10 +465,11 @@ class GtidSet:
 
 def audit(result: Result, smoke_tables: frozenset, window: tuple[GtidSet, GtidSet] | None, *,
           server_uuid: str | None = None) -> list[dict]:
-    """Discount only the complete sequence of app-schema writes produced by the pinned smoke.
+    """Identify candidate smoke transactions from the server's table-level event listing.
 
     Laravel commits its fixture edits together, then enqueues, reserves and deletes the no-op job.
     An additional transaction, even on one of those tables, makes attribution ambiguous.
+    mysql_probe.audit verifies the individual native row images before publishing a smoke classification.
     """
     listed = [transaction.record() for transaction in result.transactions]
     if window is None or server_uuid is None:
