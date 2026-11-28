@@ -200,6 +200,18 @@ class RetirementTests(unittest.TestCase):
         reading = {"reachable": True, "gate": "closed", "writable": False, "gated_sessions": 0,
                    "server_uuid": IDENTITY.target_uuid, "database": self.host.config["mysql"]["database"]}
         self.host._observed.return_value = closed, reading, self.host._live_config.return_value
+        with self.assertRaises(FileNotFoundError):
+            retire.retire(self.host, p, i)
+        installed = {"version": 1, "run_id": self.run, "server_uuid": IDENTITY.target_uuid, "method": "verified-export",
+                     "database": str(self.host.database), "writers_held": True, "source_sha256": "7" * 64,
+                     "installed_sha256": guard.sha256(self.host.database.read_bytes()), "review_sha256": "2" * 64,
+                     "verification_sha256": "3" * 64, "sqlite_live_config_sha256": self.host.policy["sqlite_live_config_sha256"],
+                     "close_sha256": guard.sha256((self.journal.directory / "way-back.json").read_bytes())}
+        self.journal.write_record("wayback-installed.json", installed)
+        self.host.identity.return_value.source_sha256 = "9" * 64
+        with self.assertRaisesRegex(guard.Refused, "installation receipt"):
+            retire.retire(self.host, p, i)
+        self.host.identity.return_value.source_sha256 = installed["source_sha256"]
         pointer = self.journal.directory / retire.NEXT_RUN
         original_write = retire.host._write_atomic
         def crash(path, obj, mode):
@@ -217,6 +229,7 @@ class RetirementTests(unittest.TestCase):
                           "archive": answer["archive"], "policy_sha256": guard.sha256(p.read_bytes())}, json.loads(original))
         self.assertEqual(0o600, stat.S_IMODE(pointer.stat().st_mode))
         self.assertEqual(close, json.loads((Path(answer["archive"]) / "way-back.json").read_bytes()))
+        self.assertEqual(installed, json.loads((Path(answer["archive"]) / "wayback-installed.json").read_bytes()))
         self.assertEqual(4, len(list((self.host.paths["keep"] / self.run).iterdir())))
         self.assertFalse(self.host.paths["retired"].exists())
 

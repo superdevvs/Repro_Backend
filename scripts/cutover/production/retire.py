@@ -182,12 +182,25 @@ def _engine(adapter, state, pair):
     if state["phase"] == "recovery_required":
         guard.require(pair is not None and state.get("pending") is None and state.get("writes_possible") is True,
                       "Recovery retirement requires a reviewed next policy and a completed way-back close")
-        closed = _record(guard.read_protected(adapter.paths["state"] / "way-back.json"))
+        closed_raw = guard.read_protected(adapter.paths["state"] / "way-back.json")
+        closed = _record(closed_raw)
         guard.require(closed.get("run_id") == state["identity"]["run_id"] and closed.get("server_uuid") ==
                       state["identity"]["target_uuid"] and closed.get("gate") == "closed"
                       and isinstance(closed.get("coordinate"), dict)
                       and host.evidence._coordinate(closed["coordinate"], host.evidence.BACKUP_KEYS),
                       "No matching way-back close coordinate")
+        installed = _record(guard.read_protected(adapter.paths["state"] / "wayback-installed.json"))
+        guard.require(installed.get("run_id") == state["identity"]["run_id"] and installed.get("server_uuid") ==
+                      state["identity"]["target_uuid"] and installed.get("writers_held") is True
+                      and installed.get("database") == str(adapter.database)
+                      and installed.get("method") in ("verified-export", "verified-prewrite")
+                      and installed.get("sqlite_live_config_sha256") == adapter.policy["sqlite_live_config_sha256"]
+                      and installed.get("close_sha256") == guard.sha256(closed_raw)
+                      and all(host.is_sha256(installed.get(k)) for k in
+                              ("source_sha256", "installed_sha256", "review_sha256", "verification_sha256"))
+                      and installed["source_sha256"] == adapter.identity().source_sha256
+                      and installed["installed_sha256"] == host.sqlite_seal.file_sha256(adapter.database),
+                      "Way-back retirement requires the final verified SQLite installation receipt")
         observed, reading, live = adapter._observed()
         guard.require(observed.admissions_open is False and observed.workers_stopped is True
                       and observed.deployment_fenced is True and reading.get("reachable") is True
