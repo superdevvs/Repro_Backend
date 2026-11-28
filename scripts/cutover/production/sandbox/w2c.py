@@ -26,6 +26,11 @@ SOURCE = Path("/src")
 FIXTURE = Path("/fixture")
 SOCKET = str(FIXTURE / drill.FIXTURE_SOCKET)
 CASES = {"short": 1, "export": 2}
+NATIVE_TOOLS = {
+    "bin/mysqlbinlog": "1087ee9d26ea42f396a1a7f302eb2cc549b2e05c32c62f8125f9d1b40bc08048",
+    "lib/private/libssl.so.3": "78ae74e4cc70d4e19478065ee00c5b1864cf8528c725eb6230ce0e6ec0d9feb5",
+    "lib/private/libcrypto.so.3": "a087e2cafe703f8417ded60f57949dfde4b0ec99a112a9b421a3ca44c7cea514",
+}
 require = drill.require
 
 
@@ -43,6 +48,22 @@ def coordinate_hash(value):
 
 class Outer(drill.Outer):
     mode = "cutover"
+
+    def prepare_container(self):
+        super().prepare_container()
+        for name, digest in NATIVE_TOOLS.items():
+            target = Path("/usr/local") / name
+            if not target.exists():
+                source = Path("/w2c-tools") / name
+                require(source.is_file() and drill.sha256_file(source) == digest,
+                        f"Supply the pinned {name} in REPRO_W2C_MYSQL_TOOLS")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                drill.write(target, source.read_bytes(), 0o755 if name.startswith("bin/") else 0o644)
+            require(not target.is_symlink() and target.stat().st_uid == 0
+                    and not target.stat().st_mode & 0o022 and drill.sha256_file(target) == digest,
+                    f"Unexpected installed native decoder component {name}")
+        version = drill.run(["/usr/local/bin/mysqlbinlog", "--version"]).stdout.decode()
+        require("8.4.13" in version, "Native row decoder version differs")
 
     def controller_copy(self, paths):
         super().controller_copy(paths)

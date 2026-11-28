@@ -107,9 +107,18 @@ fi
 echo "run-drill: MySQL fixture ready: $prefix-mysql"
 
 containers+=("$prefix-qa")
+decoder_mounts=()
+if [[ $entry == sandbox/w2c.py && -n ${REPRO_W2C_MYSQL_TOOLS:-} ]]; then
+    decoder_source=$(cd "$REPRO_W2C_MYSQL_TOOLS" && { pwd -W 2>/dev/null || pwd; }) || die "missing W2c native tools"
+    for part in bin/mysqlbinlog lib/private/libssl.so.3 lib/private/libcrypto.so.3; do
+        [[ -f "$decoder_source/$part" ]] || die "missing W2c native tool component $part"
+        decoder_mounts+=(--mount "type=bind,source=$decoder_source/$part,target=/w2c-tools/$part,readonly")
+    done
+fi
 status=0
 docker run --rm --pull never --name "$prefix-qa" --privileged --network none --cpus 4 --memory 4g \
     --mount "$source_mount" \
+    ${decoder_mounts[@]+"${decoder_mounts[@]}"} \
     --mount "type=volume,source=$vendor_volume,target=/vendor-src,volume-subpath=vendor,readonly" \
     --mount "type=volume,source=$prefix-mysql,target=/fixture" \
     --mount "type=volume,source=$prefix-srv,target=/srv" \

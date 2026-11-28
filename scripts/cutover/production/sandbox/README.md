@@ -295,6 +295,10 @@ Run `scripts/cutover/production/e2e/run-drill.sh --w2c` with the candidate's
 locked Composer vendor volume. The launcher uses a Git archive of the current
 commit and gives each case a separate socket-only MySQL fixture. Use
 `--w2c --case short` or `--w2c --case export` for a single case.
+For an image without the native row decoder, set `REPRO_W2C_MYSQL_TOOLS` to the
+reviewed Oracle 8.4.13 bundle containing `bin/mysqlbinlog`,
+`lib/private/libssl.so.3`, and `lib/private/libcrypto.so.3`. The launcher
+mounts those three files read-only and verifies their hashes before use.
 
 Both cases import the frozen synthetic SQLite file, check field parity, and
 exercise the release's frozen-backup publication verifier. An in-memory fixture
