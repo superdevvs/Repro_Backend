@@ -60,10 +60,9 @@ from pathlib import Path
 # where design 6.1/6.2/3.x gives no figure), what it proves, and (for --stand-ins only) the stand-in.
 # --------------------------------------------------------------------------------------------------
 
-# Slices merged into the lane at this harness's base (3b0c734f). A slice adds itself here when it lands;
-# the steps that need it then run for real.
+# Only integrated slices may satisfy step prerequisites.
 LANDED = frozenset({"D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09",
-                    "D15", "D16", "D17", "D20"})
+                    "D10", "D11", "D12", "D14", "D15", "D16", "D17", "D19", "D20"})
 SLICES = {
     "D10": "prepare steps 1 to 10 (switch record, .env switch, MySQL config build, fpm_start, receipt)",
     "D11": "prepare checks and evidence (step 11 probes, token check, evidence_report, check-evidence --write)",
