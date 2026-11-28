@@ -11,6 +11,7 @@ import tempfile
 
 import adapter as host
 import binlog_scan
+import config_build
 import gate
 import mysql_probe
 import sqlite_seal
@@ -281,6 +282,28 @@ def frozen_intent(adapter, method, digest, review_hash, close_hash):
     return intent
 
 
+def staged_smoke(adapter, source, deadline):
+    """The application reads the export at its normal path in a private Linux mount namespace."""
+    expected = {"engine": "sqlite", "database": str(adapter.database), "server_uuid": None,
+                "route_sha256": adapter._sqlite_pin()}
+    commands = [row for row in adapter._smoke_commands() if row[1] == adapter.config["app_owner"]]
+    need(len(commands) == 1, "Missing app-owner read-only smoke for the staged SQLite export")
+    argv, user, group = commands[0]
+
+    def probe(cache, measured):
+        need(measured.live_config_sha256 == expected["route_sha256"], "Staged SQLite route differs from its pin")
+        command = ["/usr/bin/unshare", "--mount", "--propagation", "private", "--", "/bin/sh", "-ec",
+                   '/usr/bin/mount -o bind,ro -- "$1" "$2"; export APP_CONFIG_CACHE="$3"; shift 3; exec "$@"',
+                   "repro-wayback-smoke", str(source), str(adapter.database), str(cache), *argv]
+        code, output = adapter._execute(command, deadline)
+        host.evidence.readonly_check(output, code, user, group, adapter.config["smoke"], expected)
+
+    with tempfile.TemporaryDirectory(dir=adapter.paths["evidence"].parent, prefix="wayback-smoke-") as parent:
+        os.chmod(parent, 0o711)
+        config_build.stage(adapter.config, parent=parent, expected_engine="sqlite", expected_sha256=expected["route_sha256"],
+                           deadline=deadline, inspect_cache=probe)
+
+
 def install_file(adapter, candidate, intent):
     """Hard-link the frozen inode before the atomic replacement. No retry may overwrite the frozen backup."""
     db, original = adapter.database, intent["original"]
@@ -309,6 +332,7 @@ def install_file(adapter, candidate, intent):
     if not same:
         need(sqlite_seal.file_sha256(db) == intent["installed_sha256"],
              "The post-crash destination is neither the frozen inode nor the verified export")
+        staged_smoke(adapter, db, adapter.clock() + adapter.config["command_seconds"])
         return
     sqlite_seal._refuse_open_writers(db, adapter.proc)
     for companion in sqlite_seal.companions(db)[1:]:
@@ -329,6 +353,9 @@ def install_file(adapter, candidate, intent):
             os.fchmod(output.fileno(), original["mode"] & ~0o222)
             os.fsync(output.fileno())
         need(sqlite_seal.file_sha256(Path(temp)) == intent["installed_sha256"], "Staged export checksum differs")
+        staged_smoke(adapter, Path(temp), adapter.clock() + adapter.config["command_seconds"])
+        need(sqlite_seal.file_sha256(Path(temp)) == intent["installed_sha256"], "Staged SQLite smoke changed the export")
+        verify_close(adapter)
         os.replace(temp, db)
         host._sync_directory(db.parent)
         host._sync_directory(archive)
@@ -355,10 +382,13 @@ def install(adapter, *, candidate, digest, review_path):
             verification = verify_export(adapter, candidate, digest, review)
         verify_close(adapter)
         intent = frozen_intent(adapter, method, digest, review_hash, close_hash)
-        install_file(adapter, candidate, intent)
         now = adapter.clock()
         run = host.SealRun(lease=lease, deadline=now + adapter.config["command_seconds"])
         adapter._seal_sqlite_env(run)
+        # The staged config builds from the restored switch keys. The live cache is
+        # replaced only after a verified SQLite export passed the staged application smoke.
+        install_file(adapter, candidate, intent)
+        run.deadline = adapter.clock() + adapter.config["command_seconds"]
         adapter._seal_sqlite_config(run)
         adapter._seal_sqlite_verify(run)
         expected = {"engine": "sqlite", "database": str(adapter.database), "server_uuid": None,

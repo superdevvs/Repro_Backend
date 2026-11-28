@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import asdict, replace
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -299,6 +300,7 @@ class WayBackTest(unittest.TestCase):
 
     def test_new_export_survives_worker_crash_after_atomic_install(self):
         candidate, digest, _, process = self.export()
+        preview = self.enterContext(patch.object(wb, "staged_smoke"))
         self.add_transaction("business")
         old_inode = self.a.database.stat().st_ino
         self.a._seal_sqlite_config.side_effect = UnsafeCutover("crash after swap")
@@ -322,6 +324,56 @@ class WayBackTest(unittest.TestCase):
         self.assertTrue(self.a.paths["sqlite_seal_record"].is_file())
         self.assertFalse(any(self.a.paths[k].exists() for k in REVOKED))
         self.assertEqual(result, self.run_install(candidate, digest))
+        self.assertEqual(3, preview.call_count, "every retry revalidates the installed file under a private read-only mount")
+
+    def test_failed_staged_smoke_preserves_frozen_sqlite_and_live_cache(self):
+        candidate, digest, _, _ = self.export()
+        with patch.object(wb, "staged_smoke", side_effect=UnsafeCutover("staged smoke failed")):
+            with self.assertRaisesRegex(UnsafeCutover, "staged smoke failed"):
+                self.run_install(candidate, digest)
+        self.assertEqual(self.initial, wb.sqlite_seal.file_sha256(self.a.database))
+        self.a._seal_sqlite_config.assert_not_called()
+        self.assertFalse((self.a.journal.directory / wb.INSTALLED).exists())
+
+    def test_native_staged_mount_is_private_readonly_or_fails_closed_without_capability(self):
+        self.root.chmod(0o711)
+        hidden = self.root / "root-only"
+        hidden.mkdir(mode=0o700)
+        source = hidden / "new.sqlite"
+        self.make_sqlite(source, "the verified replacement")
+        source.chmod(0o444)
+        expected = "the verified replacement"
+        self.a.config.update(app_owner="www-data", smoke={})
+        code = ("import os,sqlite3,sys; "
+                "assert os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY; "
+                "assert os.path.isfile(os.environ['APP_CONFIG_CACHE']); "
+                "print(sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True).execute('SELECT entry FROM ledger').fetchone()[0])")
+        argv = ["/usr/sbin/runuser", "-u", "www-data", "--", "/usr/bin/python3", "-c", code, str(self.a.database)]
+        self.a._smoke_commands.return_value = [(argv, "www-data", None)]
+
+        def execute(argv, deadline):
+            proc = subprocess.run(argv, cwd="/", capture_output=True, text=True, timeout=10)
+            return proc.returncode, proc.stdout.strip()
+
+        def stage(config, *, parent, inspect_cache, expected_sha256, **options):
+            cache = Path(parent) / "config.php"
+            cache.write_text("fixture")
+            cache.chmod(0o444)
+            inspect_cache(cache, SimpleNamespace(live_config_sha256=expected_sha256))
+
+        def read_only(output, returncode, *args):
+            wb.need(returncode == 0 and output == expected, "staged application smoke refused")
+
+        self.a._execute.side_effect = execute
+        capabilities = next(line.split()[1] for line in Path("/proc/self/status").read_text().splitlines() if line.startswith("CapEff:"))
+        with patch.object(wb.config_build, "stage", side_effect=stage), patch.object(wb.host.evidence, "readonly_check", side_effect=read_only):
+            if int(capabilities, 16) & (1 << 21):  # CAP_SYS_ADMIN may mount, but only in the throwaway namespace.
+                wb.staged_smoke(self.a, source, 100)
+            else:
+                with self.assertRaisesRegex(UnsafeCutover, "staged application smoke refused"):
+                    wb.staged_smoke(self.a, source, 100)
+        self.assertEqual(self.initial, wb.sqlite_seal.file_sha256(self.a.database))
+        self.assertEqual([], list(self.root.glob("wayback-smoke-*")))
 
     def test_unexpected_sqlite_sidecar_stops_before_swap(self):
         candidate, digest, _, _ = self.export()

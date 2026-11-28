@@ -289,7 +289,7 @@ def _private_parent(parent, group: int) -> tuple[str, int]:
 
 
 def stage(config: dict, *, parent, expected_engine: str, environment: dict | None = None,
-          expected_sha256: str | None = None, deadline: float | None = None) -> live_config.LiveConfig:
+          expected_sha256: str | None = None, deadline: float | None = None, inspect_cache=None) -> live_config.LiveConfig:
     """Build the cache with the controller's exact command into a private folder; rename nothing, keep nothing.
 
     `parent` is required: a root-owned folder no other account can write that the deploy user can pass
@@ -308,7 +308,11 @@ def stage(config: dict, *, parent, expected_engine: str, environment: dict | Non
                 os.fchown(folder, owner, -1)
                 run_command(command + [str(path / LIVE_NAME)], _seconds(config, deadline), environment)
                 descriptor, _, measured = _checked(folder, LIVE_NAME, owner, expected_engine, expected_sha256)
-                os.close(descriptor)
+                try:
+                    if inspect_cache is not None:
+                        inspect_cache(path / LIVE_NAME, measured)
+                finally:
+                    os.close(descriptor)
             finally:
                 os.close(folder)
         finally:
