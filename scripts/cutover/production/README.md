@@ -606,6 +606,14 @@ failed attempt requires a fresh marked edit and job. The short rollback audit cu
 window. Multiple verified windows or an older version 2 record without boot binding require the full reverse
 export and independent verification.
 
+After capturing the starting GTID set and before executing the smoke, the recorder verifies the four
+InnoDB table layouts and reads the global InnoDB foreign-key dictionary using the probe's existing
+`PROCESS` privilege. It checks incoming references from every schema. An update cascade or set-null
+on an edited key, a delete cascade or set-null on a job, or incomplete dictionary evidence requires
+full reverse export. MySQL's row logs omit these engine-driven changes. The protected attempt records
+the verdict at write time so a later constraint change cannot erase it. Older attempts without this
+proof also require full export.
+
 The short rollback requires `smoke_row_scope_verified: true` in the audit. The probe decodes the four
 consecutive GTIDs from the same binary log using the existing private probe account over its Unix socket.
 It compares each full before/after row image against the verified marked client, shoot and job. It also

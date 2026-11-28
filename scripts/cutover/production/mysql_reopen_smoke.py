@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -108,9 +109,10 @@ def verified_attempts(record, bound, profile, app_root):
     markers = set()
     reuses = 0
     for attempt in attempts:
-        require(isinstance(attempt, dict) and attempt.keys() == {
+        require(isinstance(attempt, dict) and attempt.keys() - {"schema_verified_before_write"} == {
             "boot_id", "authority_sha256", "gtid_before", "gtid_after", "started_at", "finished_at", "report", "reuses"
-        }, "Malformed write-smoke attempt or missing boot and authority binding")
+        } and type(attempt.get("schema_verified_before_write", False)) is bool,
+                "Malformed write-smoke attempt or missing boot and authority binding")
         require(host.guard.valid_uuid(attempt["boot_id"]) and host.guard.matches(r"[0-9a-f]{64}", attempt["authority_sha256"])
                 and type(attempt["reuses"]) is int and attempt["reuses"] >= 0, "Malformed write-smoke authority or reuse count")
         reuses += attempt["reuses"]
@@ -192,7 +194,16 @@ def run(adapter, expected, receipt_sha256, deadline, read_gtid):
             _save(path, record)
             return {**last, "reused": True}
 
+    # A later audit alone cannot recover a cross-schema FK removed after the smoke.
+    # The four consecutive GTIDs must subsequently prove no DDL intervened after start.
+    try:
+        from smoke_row_source import safe_schema_at_smoke
+    except ImportError:
+        safe_schema = False
+    else:
+        safe_schema = safe_schema_at_smoke(config, time.monotonic() + (deadline - adapter.clock()))
     attempt = {"boot_id": authority[0], "authority_sha256": authority[1], "reuses": 0,
+               "schema_verified_before_write": safe_schema,
                "gtid_before": start, "gtid_after": None, "started_at": int(adapter.clock()), "finished_at": None,
                "report": None}
     record["attempts"].append(attempt)

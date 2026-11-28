@@ -84,7 +84,7 @@ def coordinates(config, window, listed):
     raise Unavailable("The smoke transaction has no verified end")
 
 
-def layout(config):
+def layout(config, *, deadline=None):
     import gate
 
     mysql = config["mysql"]
@@ -92,9 +92,12 @@ def layout(config):
     tables = ", ".join(probe._literal(name) for name in TABLES)
     sql = ("SELECT JSON_ARRAY(CURRENT_USER(), @@server_uuid, VERSION(), @@GLOBAL.skip_networking,"
            " @@GLOBAL.binlog_row_image, @@GLOBAL.binlog_format); "
-           "SELECT JSON_ARRAY(TABLE_NAME, ORDINAL_POSITION, COLUMN_NAME) FROM information_schema.COLUMNS "
-           f"WHERE TABLE_SCHEMA = {database} AND TABLE_NAME IN ({tables}) ORDER BY TABLE_NAME, ORDINAL_POSITION")
-    result = gate._client(config, "token_check_defaults", [sql])
+           "SELECT JSON_ARRAY(c.TABLE_NAME, c.ORDINAL_POSITION, c.COLUMN_NAME) FROM information_schema.COLUMNS c "
+           "JOIN information_schema.TABLES t USING (TABLE_SCHEMA,TABLE_NAME) "
+           f"WHERE c.TABLE_SCHEMA = {database} AND c.TABLE_NAME IN ({tables}) "
+           "AND t.ENGINE='InnoDB' AND t.TABLE_TYPE='BASE TABLE' AND c.GENERATION_EXPRESSION='' "
+           "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION")
+    result = gate._client(config, "token_check_defaults", [sql], deadline=deadline)
     require(result.returncode == 0 and len(result.stdout) < 65536)
     lines = result.stdout.splitlines()
     require(lines and json.loads(lines[0]) == ["repro_token_check@localhost", mysql["target_uuid"],
@@ -106,6 +109,58 @@ def layout(config):
                 and isinstance(column, str) and re.fullmatch(r"[a-z0-9_]+", column))
         names[table].append(column)
     return names
+
+
+def safe_schema_at_smoke(config, deadline):
+    """Measure after the starting GTID read, before the first smoke write. Return only an aggregate verdict."""
+    import gate
+    try:
+        import smoke_rows
+
+        smoke_rows.verified_layout(layout(config, deadline=deadline))
+        mysql = config["mysql"]
+        db = probe._literal(mysql["database"])
+        # InnoDB executes cascades internally. FULL row images show only the originating
+        # write. Its PROCESS-only dictionary exposes incoming FKs even from other schemas.
+        # A known release FK independently witnesses that both dictionary views have rows.
+        sql = f"""
+            WITH incoming AS (
+                SELECT f.ID, f.FOR_NAME, f.REF_NAME, f.TYPE, f.N_COLS,
+                       COUNT(c.POS) AS positions, COUNT(DISTINCT c.POS) AS distinct_positions,
+                       MIN(c.POS) AS first_pos, MAX(c.POS) AS last_pos,
+                       COUNT(c.REF_COL_NAME) AS ref_names, COUNT(c.FOR_COL_NAME) AS child_names,
+                       MAX(LOWER(c.REF_COL_NAME) IN ('attempts','reserved_at')) AS job_edit,
+                       MAX(LOWER(c.REF_COL_NAME)='company_notes') AS note_edit,
+                       MAX(c.FOR_COL_NAME='client_id' AND c.REF_COL_NAME='id') AS known_columns
+                FROM information_schema.INNODB_FOREIGN f
+                LEFT JOIN information_schema.INNODB_FOREIGN_COLS c ON BINARY c.ID=BINARY f.ID
+                WHERE f.REF_NAME IN (CONCAT({db},'/users'),CONCAT({db},'/shoots'),CONCAT({db},'/jobs'))
+                GROUP BY f.ID,f.FOR_NAME,f.REF_NAME,f.TYPE,f.N_COLS
+            )
+            SELECT JSON_ARRAY(CURRENT_USER(),@@server_uuid,VERSION(),@@GLOBAL.skip_networking,
+                   @@GLOBAL.lower_case_table_names,
+                   (SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
+                    WHERE GRANTEE='''repro_cutover_probe''@''localhost''' AND PRIVILEGE_TYPE='PROCESS'),
+                   COUNT(CASE WHEN FOR_NAME=CONCAT({db},'/shoots') AND REF_NAME=CONCAT({db},'/users')
+                                  AND N_COLS=1 AND known_columns=1 THEN 1 END),
+                   COUNT(CASE WHEN TYPE IS NULL OR TYPE NOT BETWEEN 0 AND 63
+                                OR (TYPE & 19) NOT IN (0,1,2,16) OR (TYPE & 44) NOT IN (0,4,8,32)
+                                OR N_COLS IS NULL OR N_COLS < 1 OR positions <> N_COLS
+                                OR distinct_positions <> N_COLS OR ref_names <> N_COLS OR child_names <> N_COLS
+                                OR first_pos NOT IN (0,1) OR last_pos-first_pos+1 <> N_COLS
+                                OR (REF_NAME=CONCAT({db},'/jobs') AND ((TYPE & 3)<>0 OR ((TYPE & 12)<>0 AND job_edit)))
+                                OR (REF_NAME IN (CONCAT({db},'/users'),CONCAT({db},'/shoots'))
+                                    AND (TYPE & 12)<>0 AND note_edit)
+                              THEN 1 END)) FROM incoming
+        """
+        result = gate._client(config, "probe_defaults", [sql], deadline=deadline)
+        require(result.returncode == 0 and len(result.stdout) < 1024)
+        actual = json.loads(result.stdout)
+        expected = [probe.PROBE_ACCOUNT, mysql["target_uuid"], binlog_scan.SERVER_VERSION, 1, 0, 1, 1, 0]
+        return actual == expected and all(type(value) is int for value in actual[3:])
+    except (ImportError, OSError, ValueError, TypeError, KeyError, guard.Refused, UnsafeCutover,
+            subprocess.SubprocessError):
+        return False
 
 
 def check_digest(path, expected):
@@ -180,6 +235,7 @@ def verified(config, window, listed):
     try:
         import smoke_rows
 
+        require(window[2].get("schema_verified_before_write") is True)
         gtids, name, start, stop = coordinates(config, window, listed)
         names = layout(config)
         smoke_rows.verified_layout(names)

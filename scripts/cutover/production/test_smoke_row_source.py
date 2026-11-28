@@ -76,6 +76,28 @@ class RowSourceTests(unittest.TestCase):
                 with self.assertRaises(source.Unavailable):
                     source.layout(self.config)
 
+    def test_foreign_key_evidence_needs_real_probe_target_visibility_canary_and_zero_danger(self):
+        expected = [mysql_probe.PROBE_ACCOUNT, UUID, "8.4.13", 1, 0, 1, 1, 0]
+        with patch.object(source, "layout") as get_layout, patch("smoke_rows.verified_layout"):
+            variants = [(expected, True), (expected[:7], False)]
+            for i, changed in enumerate(["guest@localhost", "other", "8.4.12", 0, 1, 0, 0, 2]):
+                variants.append(([*expected[:i], changed, *expected[i+1:]], False))
+            variants.append(([*expected[:-1], False], False))
+            for response, valid in variants:
+                out = SimpleNamespace(returncode=0, stdout=json.dumps(response))
+                with self.subTest(response=response), patch.object(gate, "_client", return_value=out) as query:
+                    self.assertIs(valid, source.safe_schema_at_smoke(self.config, 123))
+                    get_layout.assert_called_with(self.config, deadline=123)
+                    self.assertEqual("probe_defaults", query.call_args.args[1])
+                    self.assertEqual({"deadline": 123}, query.call_args.kwargs)
+
+    def test_a_later_clean_catalog_cannot_replace_the_proof_at_write_time(self):
+        for assessment in ({}, {"schema_verified_before_write": False}, {"schema_verified_before_write": 1}):
+            window = (*self.window[:2], {**self.window[2], **assessment})
+            with self.subTest(assessment=assessment), patch.object(source, "coordinates") as bounds:
+                self.assertFalse(source.verified(self.config, window, self.listed))
+                bounds.assert_not_called()
+
     @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Protected Linux fixture")
     def test_decoder_is_pinned_bounded_and_cannot_leak_errors(self):
         with tempfile.TemporaryDirectory(dir="/var/lib") as folder:
