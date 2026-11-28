@@ -8,6 +8,21 @@ use Tests\TestCase;
 
 class TemplateRendererTest extends TestCase
 {
+    public function test_section_email_preserves_its_opening_greeting_in_the_plain_text_part(): void
+    {
+        $template = new MessageTemplate([
+            'channel' => 'EMAIL', 'subject' => 'A short note',
+            'editor_document_json' => ['version' => 2, 'format' => 'sections'],
+            'body_html' => '<p>Hi {{recipient_first_name}},</p><p>Thanks for your help.</p>',
+            'body_text' => "Hi {{recipient_first_name}},\n\nThanks for your help.",
+        ]);
+        $template->workspaceBodyOverride = true;
+
+        $rendered = app(TemplateRenderer::class)->render($template, ['recipient_first_name' => 'Jamie']);
+        $this->assertStringStartsWith('Hi Jamie,', $rendered['text']);
+        $this->assertStringContainsString('Hi Jamie,', $rendered['html']);
+    }
+
     public function test_receipt_formats_money_and_does_not_repeat_the_personalized_greeting(): void
     {
         $template = new MessageTemplate([

@@ -286,17 +286,12 @@ class EmailMessagingController extends Controller
         }
         $data['cc'] = $this->mergeShootCcEmails($data);
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
-        $data = $this->applyTemplateIfNeeded(array_merge($data, $this->extractUploadedAttachments($request)));
+        $data = array_merge($data, $this->extractUploadedAttachments($request));
         $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
         if (count($addresses) > 1) {
             return $this->composeMany($user, $data, $addresses);
         }
-        $data['to'] = $addresses[0];
-        $message = $this->messaging->sendEmail(array_merge($data, [
-            'user_id' => $user->id, 'send_source' => 'MANUAL', 'sender_user_id' => $user->id,
-            'sender_account_id' => null, 'sender_role' => $user->role, 'sender_display_name' => $user->name ?: $user->email,
-            'contact_email' => $data['to'],
-        ]));
+        $message = $this->messaging->sendEmail($this->outboundPayloadFor($user, $data, $addresses[0]));
 
         return response()->json($message);
     }
@@ -333,27 +328,13 @@ class EmailMessagingController extends Controller
         $data['cc'] = $this->mergeShootCcEmails($data);
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
         $data = array_merge($data, $this->extractUploadedAttachments($request));
-        $data = $this->applyTemplateIfNeeded($data);
         $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
         if (count($addresses) > 1) {
             return $this->scheduleMany($user, $data, $addresses);
         }
-        if (count($addresses) === 1) {
-            $data['to'] = $addresses[0];
-        }
-
         $scheduledAt = \Carbon\Carbon::parse($data['scheduled_at']);
-
-        $senderDisplayName = $user->name ?: $user->email;
         $message = $this->messaging->scheduleEmail(
-            array_merge($data, [
-                'user_id' => $user->id,
-                'send_source' => 'MANUAL',
-                'sender_user_id' => $user->id,
-                'sender_role' => $user->role,
-                'sender_display_name' => $senderDisplayName,
-                'contact_email' => $data['to'],
-            ]),
+            $this->outboundPayloadFor($user, $data, $addresses[0]),
             $scheduledAt
         );
 
@@ -585,6 +566,7 @@ class EmailMessagingController extends Controller
             'user_id' => $user->id,
             'send_source' => 'MANUAL',
             'sender_user_id' => $user->id,
+            'sender_account_id' => null,
             'sender_role' => $user->role,
             'sender_display_name' => $user->name ?: $user->email,
             'contact_email' => $address,
@@ -599,7 +581,9 @@ class EmailMessagingController extends Controller
             }
         }
 
-        return $payload;
+        // Render from the original draft for every destination. Rendering before
+        // fan-out permanently replaces the tokens with the first/shared name.
+        return $this->applyTemplateIfNeeded($payload, $recipient);
     }
 
     /**
@@ -668,10 +652,10 @@ class EmailMessagingController extends Controller
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function applyTemplateIfNeeded(array $data): array
+    private function applyTemplateIfNeeded(array $data, ?User $recipient): array
     {
         if (empty($data['template_id'])) {
-            return $data;
+            return $this->personalizeDraftRecipient($data, $recipient);
         }
 
         $template = MessageTemplate::find($data['template_id']);
@@ -686,6 +670,25 @@ class EmailMessagingController extends Controller
             'account_id' => $data['related_account_id'] ?? null,
             'invoice_id' => $data['related_invoice_id'] ?? null,
         ], fn ($value) => $value !== null));
+        // Recipient identity belongs to the delivery address, never shared draft
+        // variables or a linked shoot's client. Keep those related contexts intact.
+        foreach (['recipient', 'recipient_id', 'recipient_name', 'recipient_first_name', 'recipient_last_name', 'recipient_email', 'recipient_company', 'recipient_phone', 'recipient_type', 'recipient_role', 'greeting'] as $key) {
+            unset($context[$key]);
+        }
+        $context['recipient'] = [
+            'id' => $recipient?->id,
+            'name' => trim((string) $recipient?->name) ?: 'there',
+            'email' => $data['to'],
+            'company_name' => $recipient?->company_name ?? '',
+            'phone' => $recipient?->phonenumber ?: ($recipient?->phone ?? ''),
+        ];
+        $context['recipient_type'] = match (strtolower((string) $recipient?->role)) {
+            'salesrep', 'sales_rep' => 'rep',
+            '' => 'other',
+            default => strtolower((string) $recipient->role),
+        };
+        $context['recipient_role'] = $recipient?->role ?? 'other';
+        $context['recipient_id'] = $recipient?->id ?? '';
         $variables = $resolver->resolve($context);
         $renderTemplate = clone $template;
 
@@ -711,6 +714,36 @@ class EmailMessagingController extends Controller
         $data['subject'] = $rendered['subject'] ?? $data['subject'] ?? $template->subject;
         $data['body_html'] = $rendered['body_html'] ?? $data['body_html'] ?? $template->body_html;
         $data['body_text'] = $rendered['body_text'] ?? $data['body_text'] ?? $template->body_text;
+
+        return $data;
+    }
+
+    /**
+     * Resolve the supported salutation fields without wrapping ordinary emails
+     * or interpreting their unrelated braces, content, or template variables.
+     */
+    private function personalizeDraftRecipient(array $data, ?User $recipient): array
+    {
+        $name = trim((string) $recipient?->name) ?: 'there';
+        $parts = preg_split('/\s+/', $name) ?: [$name];
+        $firstName = array_shift($parts);
+        $values = [
+            'recipient_name' => $name,
+            'recipient_first_name' => $firstName,
+            'recipient_last_name' => implode(' ', $parts),
+            'greeting' => 'Hi '.$firstName,
+        ];
+        $keys = implode('|', array_keys($values));
+        $pattern = '/\{\{\s*('.$keys.')\s*\}\}|\[('.$keys.')\]/';
+        foreach (['subject', 'body_html', 'body_text'] as $field) {
+            if (isset($data[$field]) && is_string($data[$field])) {
+                $data[$field] = preg_replace_callback($pattern, function (array $match) use ($values, $field): string {
+                    $value = $values[$match[1] !== '' ? $match[1] : $match[2]];
+
+                    return $field === 'body_html' ? e($value) : $value;
+                }, $data[$field]);
+            }
+        }
 
         return $data;
     }
