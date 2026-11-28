@@ -38,7 +38,9 @@ def arguments(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=CONFIG)
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("init", "tick", "refresh", "release-scheduler", "rehold", "prepare",
+    commands.add_parser("init").add_argument("--from-held", action="store_true")
+    commands.add_parser("draft-policy").add_argument("--run-id", required=True)
+    for name in ("tick", "refresh", "release-scheduler", "rehold", "prepare",
                  "pin-config", "gate-check", "gate-normalise", "retired-open"):
         commands.add_parser(name)
     retirement = commands.add_parser("retire")
@@ -121,6 +123,8 @@ def issue(runner, adapter, phase):
 
 def dispatch(args, runner, adapter):
     action = args.action
+    if action not in ("init", "status", "retire") and os.path.lexists(runner.journal.directory / retire.NEXT_RUN):
+        raise UnsafeCutover("Finish held initialization before issuing another controller action")
     if action == "retire":
         return retire.retire(adapter, args.next_policy, args.next_identity)
     if action == "retired-open":
@@ -161,7 +165,11 @@ def dispatch(args, runner, adapter):
                 raise UnsafeCutover("Gate normalization requires a partial gate")
             return gate.close_gate(adapter.config)
     if action == "init":
-        state = retire.initialize(runner, adapter)
+        if args.from_held:
+            import wayback_policy
+            state = wayback_policy.initialize_held(runner, adapter)
+        else:
+            state = retire.initialize(runner, adapter)
     elif action == "status":
         state = runner.status()
     elif action in ("refresh", "rehold", "release-scheduler"):
@@ -210,6 +218,9 @@ def main(argv=None):
             raise UnsafeCutover("Host config differs from installed guard paths or marker paths")
         if args.action == "pin-config":
             result = pin_config(config)
+        elif args.action == "draft-policy":
+            import wayback_policy
+            result = wayback_policy.draft(config, args.run_id, pin_config)
         elif args.action == "gate-check":
             result, code, message = gate.check(config)
             print(json.dumps(result, sort_keys=True))

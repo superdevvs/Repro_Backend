@@ -437,7 +437,8 @@ class Runner:
         self.after_unattended_rollback = after_unattended_rollback
 
     def initialize(self, fence_deploys: Callable[[], None] | None = None,
-                   after_commit: Callable[[], None] | None = None) -> dict:
+                   after_commit: Callable[[], None] | None = None,
+                   held_preflight: Callable[[Lease], None] | None = None) -> dict:
         """Commit a planned run.
 
         fence_deploys runs under the controller lock before the journal is
@@ -451,7 +452,12 @@ class Runner:
             self._verify_identity()
             self.adapter.require_quiescent()
             preflight = self.adapter.preflight_sha256()
-            if not is_sha256(preflight) or not self.adapter.observe().sqlite_live():
+            if held_preflight is not None:
+                held_preflight(lease)
+                route_verified = self.adapter.observe().sealed("sqlite")
+            else:
+                route_verified = self.adapter.observe().sqlite_live()
+            if not is_sha256(preflight) or not route_verified:
                 raise UnsafeCutover("SQLite preflight is incomplete")
             if fence_deploys is not None:
                 fence_deploys()
