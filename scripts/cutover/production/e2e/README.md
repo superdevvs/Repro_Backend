@@ -14,6 +14,24 @@ action that needs the owner's approval and its own recipe.
 | `run_drill.py` | The drill: the step list, the outer half (container, sandbox roots, config, launches), the inside half (the steps, the harness-local copy load), and the sandbox services the host commands reach (private Supervisor, FPM control, `timer`, `timer-stop`, watchdog loop) |
 | `run-drill.sh` | Starts the MySQL 8.4.13 fixture and the privileged QA container, runs `run_drill.py run`, removes every container and volume it made |
 
+## Prepare the offline QA image
+
+Use Git Bash on Windows. Set `REPRO_DRILL_ARCHIVE_REF` to the reviewed commit for acceptance.
+The runner streams its tracked files once into a disposable Docker volume, preserving LF line endings
+and avoiding per-file Windows bind-mount overhead. The fixture and QA containers mount that volume read-only.
+The local QA base image and MySQL image must already be present on this machine.
+Supply the approved PyMySQL 1.1.2 wheel. The script checks the same SHA-256 used by
+the nightly runner and builds a local derivative with the wheel available read-only
+to the import process. Neither drill container has an external network.
+
+```sh
+bash scripts/cutover/production/e2e/prepare-drill-image.sh /path/to/pymysql-1.1.2-py3-none-any.whl
+REPRO_DRILL_ARCHIVE_REF=HEAD bash scripts/cutover/production/e2e/run-drill.sh --a3-only
+```
+
+The second command exercises only the real and reference copy loads and compares
+their receipts. Use the default full run for drill acceptance.
+
 ## What it does
 
 The run is the test (design 6.2 for the drill, 7.1 drill mode, 7.3 the
@@ -149,8 +167,7 @@ logs), 3 stopped at a pending step, 4 a stand-in run, 2 usage or a fixture
 that did not come up.
 
 Once D10 to D14 have landed, `--through r2.reopen` is the drill and must be
-green; the full run stays red (exit 3) at `r2.a3-copy-load` until D19 and an
-image with PyMySQL exist.
+green. The full run adds the independent A3 recipe on the pinned PyMySQL image.
 
 Expected output today (lane base `3b0c734f`), `--through r1.init-live-config`,
 exit 0 (the pins, run IDs and release differ every run):
@@ -270,11 +287,14 @@ host allows trigger creation, the production copy, its size and the nightly
 snapshot method, `ANALYZE`, when the coordinate is taken on the host); the
 off-site upload (the waiver); real timing.
 
-`r2.a3-copy-load` (D19, PyMySQL) is the step for the real recipe, last in
-the run so no night step waits on it: on a fresh empty target it must run
-D19's commands, `migrate.py import-empty` as `repro_maint` included, write
-the same night inputs, and match the harness-local load's table set and row
-counts. Its body is not written yet; it follows D19.
+The separate `r2.a3-copy-load` step reuses that exact snapshot and reviewed synthetic plan,
+confirms the maintenance identity and closed write gate and resets only the disposable
+fixture target. The real `migrate.py import-empty` uses the pinned wheel and socket-only
+`repro_maint` account. It must report zero warnings and the same receipt identities,
+table, row and trigger totals. The verification and completion path runs independently
+again, saves its real binary-log coordinate, and compares each table's row and field
+counts with the earlier load. Its outputs live in the root-private `e2e/a3` directory;
+the temporary maintenance and verification credential files are removed after use.
 
 `verify-fields.php` requires its credentials' socket to equal `@@socket`,
 which is the fixture container's path, so it connects at
@@ -361,7 +381,7 @@ lock is busy (see D18R-11 below).
   with the adapter's own content.
 - The pins are measured by the harness until D14 lands; `r1.pin-config` then
   checks that `cli.py pin-config` reproduces them.
-- The copy load is the harness's own (above) until D19.
+- The night uses the harness-local copy; the last step separately runs the real importer against that snapshot.
 - The route hash of a profile probe is computed by the harness from the raw
   route values PHP prints, by the shared contract
   (`testdata/route-hash-vectors.json`); the harness checks its function
@@ -371,7 +391,7 @@ lock is busy (see D18R-11 below).
 
 Not added yet: it is red until every pending step has landed. When the last
 of D10 to D14 lands, D14 or the lead makes `--through r2.reopen` part of the
-lane's merge check (and the full run once D19 and the PyMySQL image exist).
+lane's merge check (and the full run using the offline PyMySQL image).
 The simplest is to run `e2e/run-drill.sh` beside
 `run-probe-fixture-tests.sh --linux-suite`. To put it into
 `../run-linux-tests.sh` instead, that container must also be `--privileged`

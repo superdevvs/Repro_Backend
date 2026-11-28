@@ -84,6 +84,11 @@ service is outside this migration. The actual target host, its administrator
 preparation, backup destination/retention, and maintenance window must be
 confirmed before cutover. Local success does not substitute for that acceptance.
 
+
+Use the [W1 installation manifest and A3 copy-load checklist](../scripts/cutover/production/INSTALL-W1.md)
+for the isolated drill while the primary runs on SQLite. The copy-load fixture is independently
+runnable from the [local drill guide](../scripts/cutover/production/e2e/README.md).
+
 ## Sales CRM on SQLite before cutover
 
 The CRM release adds ten migrations (nine dated 24 November and `2026_11_25_140000_add_replay_identity_to_recruit_application_receipts`, which adds two nullable columns) and 37 tables with the `crm_` or `recruit_` prefix or the name `email_suppressions`. Production conversion must start with a SQLite online backup taken **after** those migrations and the client import. The MySQL schema dump is a clean-install baseline. It includes the migration ledger, eight system event types and three unpublished starter drips with their 30 steps. It contains no contacts, applicants, quotes, messages, tokens or provider credentials.

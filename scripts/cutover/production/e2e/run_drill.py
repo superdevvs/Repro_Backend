@@ -71,7 +71,6 @@ SLICES = {
     "D13": "SQLite reopen (replay passes, FastCGI probe, --hold-scheduler), scheduler release, rehold, refresh",
     "D14": "CLI actions, timers, issued approvals, run wrapper",
     "D19": "the drill runbook: the real A3 copy-load recipe and its recorded coordinate",
-    "PYMYSQL": "PyMySQL in the test image for scripts/mysql/migrate.py import-empty (not in the QA image)",
 }
 
 
@@ -186,12 +185,12 @@ STEPS = [
     Step("r2.unseal-proof", ("D12",), None, "unseal_proof equals sealed_hash"),
     Step("r2.reopen", ("D13", "D14"), 120, "cli.py reopen --hold-scheduler (FastCGI on SQLite), then "
          "release-scheduler", stand_in="cli.py reopen"),
-    # Last, so no night step waits on it: the real A3 recipe, D19's, which the harness-local copy load stands
-    # in for until D19 and an image with PyMySQL exist.
-    Step("r2.a3-copy-load", ("D19", "PYMYSQL"), None, "the real A3 copy-load recipe (D19 runbook: migrate.py "
+    # The final independent importer comparison reuses the same immutable synthetic copy.
+    Step("r2.a3-copy-load", (), None, "the real A3 copy-load recipe (D19 runbook: migrate.py "
          "import-empty as repro_maint, verify-fields, complete-schema, the recorded coordinate) on a fresh "
          "empty target, against the harness-local load"),
 ]
+A3_STEPS = {f"r2.{name}" for name in (*HOST_STEPS, "sandbox", "services", "copy-load", "a3-copy-load")}
 NAMES = [step.name for step in STEPS]
 BY_NAME = {step.name: step for step in STEPS}
 assert len(set(NAMES)) == len(NAMES)
@@ -904,7 +903,7 @@ catch_workers_output = yes
         argv = ["/bin/sh", SANDBOX / "run-sandbox.sh", *(["--reboot"] if reboot else []), root, "--",
                 PY, "-I", "-S", "-B", HARNESS, "inside", "--root", root, "--from", first, "--through", through,
                 "--launched-at", f"{time.time():.3f}", *(["--stand-ins"] if self.args.stand_ins else []),
-                *(["--relaunch"] if reboot else [])]
+                *(["--relaunch"] if reboot else []), *(["--a3-only"] if self.args.a3_only else [])]
         log = root / "e2e" / "logs" / f"launch-{int(time.time())}.log"
         with open(log, "ab") as stream:
             done = subprocess.run([str(part) for part in argv], env=CLEAN_ENV, stdin=subprocess.DEVNULL,
@@ -1278,7 +1277,31 @@ class Inside:
         tables = int(self.mysql(maint, "-e", f"SELECT COUNT(*) FROM information_schema.TABLES WHERE "
                                              f"TABLE_SCHEMA = '{database}'").stdout.decode().strip())
         require(tables == generated["tables"], f"{tables} tables loaded, the plan has {generated['tables']}")
+        verified, coordinate = self.verify_copy(night, plan, copy, s_copy, scripts, database, target)
+        # The import result D10 binds (adapter.check_inputs): what migrate.py import-empty would print, written by
+        # the harness, import_verified only on verify-fields' all-fields-verified, and labelled as this load.
+        imported = {
+            "mode": "import-empty", "source_sha256": s_copy, "tables": planned["tables"],
+            "legacy_exception_relationships": planned["legacy_exception_relationships"],
+            "schema_sha256": planned["schema_sha256"], "type_policy_sha256": planned["type_policy_sha256"],
+            "source_changed": False, "application_configuration_changed": False, "cutover_ready": False,
+            "import_verified": True, "original_rows": verified["rows"], "triggers": generated["triggers"],
+            "mysql_warning_count": None, "redundant_mysql_indexes": generated["redundant_indexes"],
+            "target_database": database, "target_server_uuid": target,
+            "loader": "e2e/run_drill.py harness-local copy load (D18): the statements conversion.apply and "
+                      "migrate.install_triggers generate, run by the mysql client as repro_maint; "
+                      "migrate.py import-empty did not run (no PyMySQL in the QA image); verified by verify-fields.php",
+        }
+        write(night / NIGHT_FILES["import"], json.dumps(imported, sort_keys=True) + "\n", 0o600)
+        return (f"S_copy {s_copy[:12]}: {tables} tables, {verified['rows']} rows, {generated['triggers']} triggers "
+                f"as repro_maint; verify-fields {verified['fields']} fields; complete-schema verified; no pending "
+                f"migration; coordinate {coordinate['file']}:{coordinate['position']}"
+                + ("; run 1's copy dropped first" if reset else ""))
+
+    def verify_copy(self, night, plan, copy, s_copy, scripts, database, target):
+        """Collect the same independent receipts for both copy loaders."""
         # verify-fields.php: every field of S_copy against the copy, as the read-only parity account.
+        fixture = Path(self.args.fixture)
         schema_plan = plan / "schema-plan.json"
         credentials = night / "parity-reader.json"
         write(credentials, json.dumps({"unix_socket": str(fixture / FIXTURE_SOCKET), "user": "repro_parity_reader",
@@ -1321,30 +1344,74 @@ class Inside:
         require(re.fullmatch(r"binlog\.[0-9]{6}", coordinate["file"]) is not None and coordinate["position"] >= 4
                 and coordinate["gtid_executed"].startswith(f"{target}:"), f"unexpected coordinate {coordinate}")
         write(night / BACKUP_COORDINATE, json.dumps(coordinate, sort_keys=True) + "\n", 0o600)
-        # The import result D10 binds (adapter.check_inputs): what migrate.py import-empty would print, written by
-        # the harness, import_verified only on verify-fields' all-fields-verified, and labelled as this load.
-        imported = {
-            "mode": "import-empty", "source_sha256": s_copy, "tables": planned["tables"],
-            "legacy_exception_relationships": planned["legacy_exception_relationships"],
-            "schema_sha256": planned["schema_sha256"], "type_policy_sha256": planned["type_policy_sha256"],
-            "source_changed": False, "application_configuration_changed": False, "cutover_ready": False,
-            "import_verified": True, "original_rows": verified["rows"], "triggers": generated["triggers"],
-            "mysql_warning_count": None, "redundant_mysql_indexes": generated["redundant_indexes"],
-            "target_database": database, "target_server_uuid": target,
-            "loader": "e2e/run_drill.py harness-local copy load (D18): the statements conversion.apply and "
-                      "migrate.install_triggers generate, run by the mysql client as repro_maint; "
-                      "migrate.py import-empty did not run (no PyMySQL in the QA image); verified by verify-fields.php",
-        }
-        write(night / NIGHT_FILES["import"], json.dumps(imported, sort_keys=True) + "\n", 0o600)
-        return (f"S_copy {s_copy[:12]}: {tables} tables, {verified['rows']} rows, {generated['triggers']} triggers "
-                f"as repro_maint; verify-fields {verified['fields']} fields; complete-schema verified; no pending "
-                f"migration; coordinate {coordinate['file']}:{coordinate['position']}"
-                + ("; run 1's copy dropped first" if reset else ""))
+        return verified, coordinate
 
     def step_a3_copy_load(self) -> str:
-        raise StepFailed("not written yet: D19's A3 recipe (migrate.py import-empty as repro_maint with PyMySQL, then "
-                         "verify-fields.php, complete-schema.php, the coordinate after it) on a fresh empty target, "
-                         "compared with the harness-local load (e2e/README.md)")
+        """Repeat the afternoon load with the release importer, against the same immutable synthetic S_copy."""
+        require(sandbox_refusal(self.root) is None, "A3 fixture load requires the private drill sandbox")
+        fixture = Path(self.args.fixture)
+        night = self.paths.e2e / "night"
+        evidence = private_dir(self.paths.e2e / "a3")
+        require(not any(evidence.iterdir()), "A3 output directory is not empty")
+        scripts = self.app / "scripts/mysql"
+        copy = night / "copy.sqlite"
+        plan = night / "plan"
+        expected = read_json(night / NIGHT_FILES["import"])
+        planned = read_json(plan / "result.json")
+        digest = sha256_file(copy)
+        require(digest == expected["source_sha256"] == planned["source_sha256"], "A3 copy changed")
+        require(read_json(plan / "exceptions-private.json") == [], "unreviewed synthetic exceptions")
+        wheel = Path("/opt/repro-drill-tools/pymysql-1.1.2-py3-none-any.whl")
+        wheel_pin = read_json(self.app / "scripts/cutover/nightly/nightly-config.json")["pymysql_wheel"]["sha256"]
+        require(wheel.is_file() and sha256_file(wheel) == wheel_pin, "prepare the pinned offline PyMySQL drill image")
+        database, target = self.host["mysql"]["database"], self.host["mysql"]["target_uuid"]
+        maint = fixture / "repro_maint.cnf"
+        identity = self.mysql(maint, "-e", "SELECT CURRENT_USER(),@@server_uuid").stdout.decode().strip().split("\t")
+        require(database == "repro_dashboard" and identity == ["repro_maint@localhost", target]
+                and expected["target_database"] == database and expected["target_server_uuid"] == target,
+                "wrong A3 fixture identity")
+        gate = json.loads(run(self.host["commands"]["mysql"]).stdout)
+        require(gate.get("gate") == "closed", "A3 requires a closed application write gate")
+        # Only the fixture can be reset. The operator recipe always requires an already-empty target.
+        require(self.empty_target(maint, database), "expected the earlier populated synthetic fixture")
+        credentials = evidence / "maintenance.json"
+        root_cnf = fixture / "root.cnf"
+        setting = int(self.mysql(root_cnf, "-e", "SELECT @@GLOBAL.log_bin_trust_function_creators").stdout)
+        self.mysql(root_cnf, "-e", "SET GLOBAL log_bin_trust_function_creators = ON")
+        try:
+            write(credentials, json.dumps({"unix_socket": str(fixture / FIXTURE_SOCKET), "user": "repro_maint",
+                                          "password": self.fixture_password("maint")}), 0o600)
+            try:
+                done = run([PY, "-B", "-s", "-S", scripts / "migrate.py", "import-empty",
+                            "--snapshot", copy, "--snapshot-sha256", digest, "--credentials", credentials,
+                            "--database", database, "--expected-server-uuid", target, "--approved-exceptions",
+                            plan / "exceptions-private.json", "--exceptions-file-sha256",
+                            sha256_file(plan / "exceptions-private.json"), "--schema-sha256", planned["schema_sha256"],
+                            "--output", evidence / "import"], cwd=evidence, env={**CLEAN_ENV, "PYTHONPATH": str(wheel)},
+                           timeout=1800)
+            finally:
+                credentials.unlink(missing_ok=True)
+            imported = json.loads(done.stdout.decode().splitlines()[-1])
+            require(imported.get("import_verified") is True and imported.get("mysql_warning_count") == 0,
+                    "real importer refused or reported warnings")
+            for key in ("mode", "source_sha256", "schema_sha256", "type_policy_sha256", "target_database",
+                        "target_server_uuid", "tables", "original_rows", "triggers", "legacy_exception_relationships"):
+                require(imported[key] == expected[key], f"A3 and harness copy disagree on {key}")
+            write(evidence / NIGHT_FILES["import"], done.stdout, 0o600)
+            write(evidence / COPY_RECORD, f"{digest}  {copy}\n", 0o600)
+            verified, coordinate = self.verify_copy(evidence, plan, copy, digest, scripts, database, target)
+        finally:
+            self.mysql(root_cnf, "-e", f"SET GLOBAL log_bin_trust_function_creators = {setting}")
+
+        def table_results(directory):
+            results = [json.loads(line) for line in (directory / NIGHT_FILES["verify_fields"]).read_text().splitlines()]
+            return [(row["table"], row["rows"], row["fields"]) for row in results if row.get("event") == "table-verified"]
+        baseline, actual = table_results(night), table_results(evidence)
+        require(len(actual) == imported["tables"] and baseline == actual,
+                "A3's independent table, row or field counts differ from the harness copy")
+        return (f"real import-empty as repro_maint, zero warnings; {len(actual)} tables, {verified['rows']} rows, "
+                f"{verified['fields']} fields, {imported['triggers']} triggers; all table counts agree; "
+                f"S_copy {digest[:12]}, coordinate {coordinate['file']}:{coordinate['position']}")
 
     def step_predrain(self) -> str:
         run([PY, "-I", "-S", "-B", HARNESS, "ctl", "--root", self.root, "stop", "media-archives"], timeout=120)
@@ -1808,6 +1875,9 @@ def inside_main(args) -> int:
     paths = inside.paths
     first, through = NAMES.index(args.first), NAMES.index(args.through)
     selected = [step for step in STEPS[first:through + 1] if not step.host]
+
+    if args.a3_only:
+        selected = [step for step in selected if step.name in A3_STEPS]
 
     def record(name, status, seconds, detail, budget=None):
         with open(paths.results, "a", encoding="utf-8") as stream:
@@ -2445,6 +2515,9 @@ def outer_main(args) -> int:
     if not 0 < args.time_scale <= 3600:
         print("run_drill: --time-scale must be above 0 and at most 3600", file=sys.stderr)
         return 2
+    if args.a3_only and (args.runs or args.through or args.stand_ins):
+        print("run_drill: --a3-only is a separate fixture check", file=sys.stderr)
+        return 2
     outer = Outer(args)
     try:
         outer.prepare_container()
@@ -2453,6 +2526,8 @@ def outer_main(args) -> int:
         return 2
     last = args.through or [name for name in NAMES if int(name[1]) <= (args.runs or 2)][-1]
     plan = STEPS[:NAMES.index(last) + 1]
+    if args.a3_only:
+        plan = [step for step in plan if step.name in A3_STEPS]
     rows: list[dict] = []
 
     def finish(code: int, verdict: str) -> int:
@@ -2514,6 +2589,8 @@ def outer_main(args) -> int:
         return finish(STAND_IN_EXIT, "RED: stand-in run (development only): "
                       f"{sum(row['status'] == 'stand-in' for row in rows)} stood in, "
                       f"{sum(row['status'] == 'skipped' for row in rows)} skipped; this is not the drill")
+    if args.a3_only:
+        return finish(0, "GREEN: isolated A3 copy-load check only")
     return finish(0, f"GREEN: every step through {last} ran for real and passed")
 
 
@@ -2538,6 +2615,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="role", required=True)
     sub.add_parser("list")
     outer = sub.add_parser("run")
+    outer.add_argument("--a3-only", action="store_true", help="run only the synthetic copy loads and compare their receipts")
     outer.add_argument("--through", help="stop after this step (see list)")
     outer.add_argument("--runs", type=int, choices=(1, 2), help="1 stops after run 1 (default: both runs)")
     outer.add_argument("--stand-ins", action="store_true", help="development only; never green")
@@ -2549,6 +2627,7 @@ def main(argv: list[str] | None = None) -> int:
     outer.add_argument("--vendor", default="/vendor-src")
     inside = sub.add_parser("inside")
     inside.add_argument("--root", required=True)
+    inside.add_argument("--a3-only", action="store_true")
     inside.add_argument("--from", dest="first", required=True)
     inside.add_argument("--through", required=True)
     inside.add_argument("--launched-at", type=float, required=True)
