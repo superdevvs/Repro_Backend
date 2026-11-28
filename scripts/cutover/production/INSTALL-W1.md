@@ -33,7 +33,7 @@ Source paths are relative to this directory. Root owns installed code, configs a
 | `capture/php-fpm.conf` | `/etc/repro-telnyx-capture/php-fpm.conf` | 0644 |
 | `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` | render |
 | `identity.example.json` | `/etc/repro-cutover-fence/identity.json` | render |
-| `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.mysql.json` | render |
+| `wrappers.mysql.example.json` | `/etc/repro-cutover-fence/wrappers.mysql.json` | render |
 | `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | render |
 | `cron-rules.example.json` | `/etc/repro-cutover-fence/cron-rules.json` | review |
 | `nginx/repro-cutover-gate.conf` | `/etc/nginx/conf.d/repro-cutover-gate.conf` | 0644 |
@@ -51,7 +51,7 @@ Source paths are relative to this directory. Root owns installed code, configs a
 | `sbin/repro-queue-flag` | `/usr/local/sbin/repro-queue-flag` | 0755 |
 | `sbin/repro-cutover-run` | `/usr/local/sbin/repro-cutover-run` | 0755 |
 
-Render both engine-specific wrapper files from the complete, reviewed host profile set, including the smoke and replay profiles. Set every profile to its intended engine and initially publish the exact SQLite wrapper bytes.
+Render the two engine-specific examples with the reviewed host paths and accounts. Confirm that the profile sets include `cutover-smoke` and `telnyx-replay` and that only `engine` differs between corresponding profiles. Initially publish the exact rendered SQLite bytes as `wrappers.json`. The older `wrappers.example.json` is a repository reference for the pre-rehearsal writer inventory.
 
 Generate the drill-mode `host.json`, `policy.json` and active SQLite `wrappers.json` under `/etc/repro-cutover-fence/`. Validate the database UUID, source fingerprint and both cached configuration hashes with the installed probes. Keep the probe defaults file root-owned, mode 0600. Session A1 supplies the eight restricted accounts from `mysql/accounts.sql`. W2a separately stages the launcher and shims documented in [the sandbox guide](sandbox/README.md).
 

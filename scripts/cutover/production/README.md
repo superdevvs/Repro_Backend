@@ -13,7 +13,7 @@ approval for each action (handoff item W1).
 | `cli.py`, `adapter.py`, `admit.py`, `deploy_marker.py`, `sqlite_seal.py`, `mysql_probe.py`, `envfile.py` | `/opt/repro-cutover-fence/production/` | Controller, host adapter, writer wrapper, fences, MySQL probe, the `.env` switch |
 | `mysql/accounts.sql`, `mysql/fixture.sh` | run once by the administrator (session A1): `fixture.sh render` fills the passwords | The eight MySQL accounts; the probe account's defaults file goes to `/etc/repro-cutover-fence/mysql-probe.cnf` (root 0600) |
 | `testdata/route-hash-vectors.json` | not installed (test data) | The route-hash contract and vectors shared by the PHP probes (`../probe/`), the live config module (D03) and its tests (D08) |
-| `wrappers.example.json` | `/etc/repro-cutover-fence/wrappers.json` | Writer profiles: user, command, action, engine |
+| Exact copy of the selected rendered engine profile file | `/etc/repro-cutover-fence/wrappers.json` | Active writer profiles, initially SQLite |
 | host config (see below) | `/etc/repro-cutover-fence/host.json` | Paths, queues, host commands, owner options |
 | `identity.example.json` | `/etc/repro-cutover-fence/identity.json` (root 0644, with the run's policy) | The identity probe's inputs and the `.env` denylist |
 | `systemd/repro-cutover-watchdog.{service,timer}` | `/etc/systemd/system/` | Watchdog tick every minute from boot |
@@ -29,7 +29,8 @@ approval for each action (handoff item W1).
 | `capture/php-fpm.conf` | `/etc/repro-telnyx-capture/php-fpm.conf` (root 0644) | The capture's own PHP-FPM master and pool |
 | `capture/capture.example.json` | `/etc/repro-telnyx-capture/capture.json` (root 0644) | Release path and open marker |
 | `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/` (enabled) | Runs the capture's PHP-FPM at all times; makes `/run/repro-telnyx-capture` itself (`ExecStartPre`) if tmpfiles has not yet |
-| `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | `wrappers.example.json` plus `telnyx-replay` and `cutover-smoke` (design 3.8) |
+| `wrappers.sqlite.example.json` | `/etc/repro-cutover-fence/wrappers.sqlite.json` | SQLite writer profiles, including `telnyx-replay` and `cutover-smoke` |
+| `wrappers.mysql.example.json` | `/etc/repro-cutover-fence/wrappers.mysql.json` | The same commands pinned to MySQL |
 | `sandbox/` (`run-sandbox.sh`, `sandbox_check.py`, `make_config.py`, `shims/refuse`) | `/opt/repro-cutover-sandbox/` for a sandbox run only (W2a, W2c; owner approval each time), removed after it; never part of W1 | Namespace sandbox for on-host rehearsals and its host config (`sandbox/README.md`) |
 | `crontab.py`, `cron-rules.example.json` | run once by the operator | Rewrites application cron lines to the wrapper, keeping the storage guard; `--reverse` restores them (below) |
 
@@ -131,7 +132,7 @@ names were read on 25 November). A live line that differs is refused, and
 the rule is corrected, not the line.
 
 The `cubicasa-poll` line keeps the cron guard in front of the wrapper, and
-its profile in `wrappers.example.json` runs
+its profile in both engine-specific wrapper files runs
 `/usr/local/sbin/repro-storage-guard --live` again before the command. The
 guard is installed by hand on production and its source is not in this
 repository, so this checkout cannot show that a second run is harmless (a

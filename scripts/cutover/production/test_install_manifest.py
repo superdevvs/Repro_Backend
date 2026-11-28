@@ -14,13 +14,17 @@ class InstallManifestTest(unittest.TestCase):
         entries = FILE_ROW.findall(MANIFEST.read_text(encoding="utf-8"))
         listed = {source for source, _, _ in entries}
         expected = {p.name for p in ROOT.glob("*.py") if not p.name.startswith("test_")}
-        expected.update(p.name for p in ROOT.glob("*.example.json"))
+        # The historical writer inventory predates the smoke and replay profiles.
+        expected.update(p.name for p in ROOT.glob("*.example.json") if p.name != "wrappers.example.json")
         expected.update({"../fence/guard.py", "../runner.py"})
         for folder in ("capture", "sbin", "sudoers", "systemd", "tmpfiles.d", "supervisor", "nginx", "php-fpm"):
             expected.update(p.relative_to(ROOT).as_posix() for p in (ROOT / folder).rglob("*") if p.is_file())
         self.assertEqual(expected, listed)
         self.assertEqual(len(entries), len(listed), "duplicate source")
         self.assertEqual(len(entries), len({dest for _, dest, _ in entries}), "duplicate destination")
+        for engine in ("sqlite", "mysql"):
+            self.assertIn((f"wrappers.{engine}.example.json", f"/etc/repro-cutover-fence/wrappers.{engine}.json",
+                           "render"), entries)
         for source, dest, mode in entries:
             with self.subTest(source=source):
                 self.assertTrue((ROOT / source).is_file())

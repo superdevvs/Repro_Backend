@@ -49,6 +49,32 @@ def child_main(directory, profile):
         return admit.run(profile, wrappers=directory / "wrappers.json")
 
 
+class WrapperExampleTests(unittest.TestCase):
+    def test_wrapper_files_differ_only_in_engine(self):
+        directory = Path(__file__).resolve().parent
+        sqlite = json.loads((directory / "wrappers.sqlite.example.json").read_bytes())
+        mysql = json.loads((directory / "wrappers.mysql.example.json").read_bytes())
+        self.assertTrue({"telnyx-replay", "cutover-smoke"} <= sqlite["profiles"].keys())
+        for profile in sqlite["profiles"].values():
+            self.assertEqual("sqlite", profile["engine"])
+            profile["engine"] = "mysql"
+        self.assertEqual(sqlite, mysql)
+
+    @unittest.skipUnless(sys.platform == "linux", "The host profiles use Linux accounts")
+    def test_every_profile_loads(self):
+        import admit
+
+        directory = Path(__file__).resolve().parent
+        # The synthetic host uses nobody for the deploy user and the real www-data group.
+        users = {"maverick": admit.pwd.getpwnam("nobody"), "www-data": admit.pwd.getpwnam("www-data")}
+        with patch.object(admit.pwd, "getpwnam", side_effect=users.__getitem__):
+            for engine in ("sqlite", "mysql"):
+                raw = (directory / f"wrappers.{engine}.example.json").read_bytes()
+                for name in json.loads(raw)["profiles"]:
+                    with self.subTest(engine=engine, name=name):
+                        self.assertEqual(engine, admit.load_profile(name, raw)["engine"])
+
+
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires Linux root to drop privileges")
 class AdmissionWrapperTests(unittest.TestCase):
     def setUp(self):
@@ -100,6 +126,24 @@ class AdmissionWrapperTests(unittest.TestCase):
             except UnsafeCutover:
                 return False
         return True
+
+    def test_guard_refuses_sqlite_profile_in_mysql_authority(self):
+        import admit
+
+        self.runner.perform("hold", self.runner.approval_request("hold"))
+        self.runner.perform("freeze")
+        self.runner.perform("prepare")
+        self.runner.perform("promote", self.runner.approval_request("promote"))
+        directory = Path(__file__).resolve().parent
+        with fixture_guard(self.journal.directory):
+            for engine in ("mysql", "sqlite"):
+                raw = (directory / f"wrappers.{engine}.example.json").read_bytes()
+                profile = admit.load_profile("cutover-smoke", raw)
+                if engine == "mysql":
+                    guard.check(profile["action"], profile["engine"])
+                else:
+                    with self.assertRaisesRegex(guard.Refused, "not authoritative"):
+                        guard.check(profile["action"], profile["engine"])
 
     def test_planned_journal_runs_the_profile_as_its_user_and_holds_the_lease(self):
         self.profiles(worker={"argv": ["/bin/sh", "-c",
