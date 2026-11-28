@@ -103,6 +103,9 @@ def build(journal: Path, boot_id: str, now: int, *, retired: Path = RETIRED) -> 
         with open(journal, "rb") as stream:
             raw = stream.read(MAX_JOURNAL_BYTES + 1)
     except FileNotFoundError:
+        pending = journal.with_name("retire-pending.json")
+        if os.path.lexists(journal) or os.path.lexists(pending):
+            return record | {"journal": "unreadable"}
         try:
             authority = retired_authority(retired)
         except FileNotFoundError:
@@ -110,7 +113,7 @@ def build(journal: Path, boot_id: str, now: int, *, retired: Path = RETIRED) -> 
         except (OSError, ValueError, RecursionError):
             authority = {"journal": "unreadable"}
         # A dangling journal or an initialization racing the read cannot establish retired authority.
-        if os.path.lexists(journal) or os.path.lexists(journal.with_name("retire-pending.json")):
+        if os.path.lexists(journal) or os.path.lexists(pending):
             authority = {"journal": "unreadable"}
         return record | authority
     except OSError:
