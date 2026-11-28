@@ -11,7 +11,12 @@ FILE_ROW = re.compile(r"^\| `([^`]+)` \| `([^`]+)` \| (\w+) \|$", re.MULTILINE)
 
 class InstallManifestTest(unittest.TestCase):
     def test_install_manifest_lists_every_production_file_and_only_those(self):
-        entries = FILE_ROW.findall(MANIFEST.read_text(encoding="utf-8"))
+        base = FILE_ROW.findall(MANIFEST.read_text(encoding="utf-8"))
+        cutover = FILE_ROW.findall((ROOT / "INSTALL-cutover.md").read_text(encoding="utf-8"))
+        self.assertTrue(base)
+        self.assertTrue(cutover)
+        self.assertTrue({"retire.py", "wayback_policy.py", "mysql_reopen.py"} <= {row[0] for row in cutover})
+        entries = base + cutover
         listed = {source for source, _, _ in entries}
         expected = {p.name for p in ROOT.glob("*.py") if not p.name.startswith("test_")}
         # The historical writer inventory predates the smoke and replay profiles.

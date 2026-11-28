@@ -1,6 +1,6 @@
 # Drill installation and copy-load runbook
 
-Use this checklist at the separately approved administrator sessions against a pinned, independently verified release. The local fixture can exercise the copy-loading procedure before those sessions.
+Use this manifest with the exact reviewed drill release. The cutover controller has additional imports and services. An administrator staging a cutover build must use both manifests from that same cutover commit. [Cutover package and schedule](INSTALL-cutover.md)
 
 ## W1 file manifest
 
@@ -25,9 +25,6 @@ Source paths are relative to this directory. Root owns installed code, configs a
 | `gate.py` | `/opt/repro-cutover-fence/production/gate.py` | 0644 |
 | `identity_probe.py` | `/opt/repro-cutover-fence/production/identity_probe.py` | 0644 |
 | `live_config.py` | `/opt/repro-cutover-fence/production/live_config.py` | 0644 |
-| `mysql_reopen.py` | `/opt/repro-cutover-fence/production/mysql_reopen.py` | 0644 |
-| `mysql_reopen_smoke.py` | `/opt/repro-cutover-fence/production/mysql_reopen_smoke.py` | 0644 |
-| `worker_start.py` | `/opt/repro-cutover-fence/production/worker_start.py` | 0644 |
 | `mysql_probe.py` | `/opt/repro-cutover-fence/production/mysql_probe.py` | 0644 |
 | `sqlite_seal.py` | `/opt/repro-cutover-fence/production/sqlite_seal.py` | 0644 |
 | `timers.py` | `/opt/repro-cutover-fence/production/timers.py` | 0644 |

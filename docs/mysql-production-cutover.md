@@ -15,68 +15,9 @@ controller refuses on the artifact field after no deploy, run
 `cd <app_root> && find app bootstrap config resources routes scripts public database -name __pycache__`
 (every tree the fingerprint covers) and remove what it prints.
 
-> **What this candidate can do on the night.** It can hold, freeze, abort
-> and reopen production on SQLite. It cannot reach MySQL:
->
-> - `cli.py` has no `prepare` or `promote` action (`ACTIONS` in
->   `scripts/cutover/production/cli.py`).
-> - `cli.py approval-template` accepts only `--phase hold` or
->   `--phase freeze`, so no "reopen on MySQL" approval can be issued.
-> - The host adapter's `prepare` (D10) switches `.env`, `config.php` and
->   FPM to MySQL read-only behind the closed gate, but no `cli.py` action
->   runs it. The adapter checks the prepared evidence against the closed
->   MySQL gate. Its pre-write rollback restores the SQLite configuration and
->   verifies the seal before reopening. MySQL promotion still requires the
->   gate-opening operation and CLI actions described below.
-> - Every writer profile in `scripts/cutover/production/wrappers.example.json`
->   is pinned to `"engine": "sqlite"`. The guard admits MySQL writers only in
->   `mysql_authoritative`, which only `promote` reaches.
-> - The watchdog rolls back to SQLite 45 minutes after the hold
->   (`Runner.DECISION_SECONDS`), whatever the import shows.
->
-> Until the [MySQL adapter lane](#mysql-adapter-lane-not-built) is built,
-> any run at this candidate is a SQLite dress rehearsal that ends in
-> `cli.py abort` and `cli.py reopen`. Even that needs W1, and W1 waits for
-> these ([Release and target preparation](#release-and-target-preparation)
-> step 10):
->
-> - The host identity and MySQL probes and the `drain_fpm` command. None is
->   written.
-> - The lab-tour queue. At `4e4a262d` the host-config check refuses
->   `iguide-lab-tour:iguide-lab-tour`. The code-fix lane (`71f7db04`)
->   accepts it, so a host with the `repro-lab-tour` program needs that
->   change before `cli.py init`.
-> - Queue commands as `www-data`, with an explicit umask. `queue_pause`
->   and `queue_resume` in `host.json` must run through `runuser -u
->   www-data` and set `umask 0022` themselves, in exactly the form the
->   adapter lane's `load_config` accepts (Release step 10); it refuses
->   any other umask. The pause flags' cache
->   folders on production are `www-data` 755, so the deploy user cannot
->   write them: the hold, every abort and every watchdog rollback would
->   fail at `close_admissions` and leave the site held. Run as root, they
->   create root-owned folders where none existed, and later cache writes
->   into those fail. `runuser` keeps the caller's umask, and the watchdog
->   runs with `UMask=0077`, so without its own umask a flag the watchdog
->   creates is 0600 and the workers that run as `maverick` cannot read it:
->   for them the queue is not paused. The deploy user's own pauses and
->   resumes (the 9:20 pm step and the called-off undo list) go through
->   `sudo -n /usr/local/sbin/repro-queue-flag`, which the adapter lane
->   adds and W1 installs.
-> - The storage guard on cron lines. On production all but one of the
->   deploy user's cron lines run through
->   `/usr/local/sbin/repro-storage-guard` (25 November). The adapter
->   lane's `crontab.py` (D20) carries that exact prefix over in front of
->   the wrapper and refuses any other prefix, so W1 keeps the guard on the
->   `scheduler` and `auth-prune` lines. Its rules name the exact command
->   each profile replaces; check them against the live crontab before W1
->   (Release step 10).
->
-> The cache store no longer blocks the abort. Production keeps the queue
-> pause flags in the `file` cache store (measured 25 November). So an abort
-> after the seal (from `frozen`, or from `holding` after a freeze that
-> failed once SQLite was sealed) runs `queue_pause` against
-> `storage/framework/cache`, not the sealed SQLite file, before
-> `seal_sqlite` unseals it.
+**Cutover remains on hold.** The isolated drill exercises hold, freeze, read-only preparation, timer rollback, replay and SQLite reopening. MySQL write-open requires the cutover build, a current owner approval and both host rehearsals. The operator should use the current package, timetable and recovery decisions for the selected release. [Cutover decision sheet](../scripts/cutover/production/INSTALL-cutover.md)
+
+Check the deployed scheduler and workers, queue cache ownership, storage-guard cron prefix, FPM socket and both engine profiles against the actual host before arming. The deployment marker stays in place through retirement. [Installation and host checks](../scripts/cutover/production/INSTALL-W1.md)
 
 Use the separate native **MySQL 8.4.13** target from
 [`scripts/mysql/native`](../scripts/mysql/native/README.md). The existing 8.0.46
@@ -1601,11 +1542,7 @@ undo list no longer needs it.
    of received/retried provider events. Keep this protected evidence outside
    the release archive. Preserve the original environment file separately.
 9. Data steps as in [Import into the empty target](#import-into-the-empty-target).
-   Not a path to MySQL at this candidate: `cli.py` has no `prepare` or
-   `promote` action. The adapter verifies read-only evidence and can undo
-   a prepare before business writes. The CLI run covers the hold, the
-   freeze and the pre-write rollback. A SQLite dress
-   rehearsal goes from step 8 to `cli.py abort` and the undo list.
+   A drill prepares the read-only route and ends in verified SQLite rollback. The cutover additionally requires current promotion approval, verified database grants and a separately rehearsed MySQL reopening.
 
    In the SQLite phases (`planned`, `holding`, `frozen`, `ready` and
    `sqlite_authoritative`), that is from `cli.py init` until `promote`
@@ -1632,117 +1569,15 @@ count from the hold, so the drain uses the same 60-minute outage budget. The
 service allows a tick 25 minutes, enough for the controller-lock wait and a
 whole rollback; while a tick runs, an operator command is refused with
 "Another host operator holds the cutover lock" and can be retried. The
-watchdog does not reopen: run `cli.py reopen` and the undo list after it.
+watchdog can reopen SQLite after unattended pre-write rollback when the owner authorized that option before the hold. The default requires verified manual reopening. A write-capable MySQL state requires explicit recovery.
 
-**Timing on the night.** The outage clock starts at the approved hold
-(`started_at`), not at `FREEZE_AT`. Expected minutes from the hold for a
-MySQL night, from the ordering review; every row after the freeze assumes
-the MySQL adapter lane exists:
+**Timing and approvals.** Measure from the first business write held anywhere, including a producer stopped before the application hold. Record the actual hold, checkpoints, owner decisions and verified write admission. The 20-minute import deadline, five-minute approval validity and 45-minute watchdog decision each protect a different step. Issuing a promotion approval arms a conditional abort tied to its phase and challenge. [Host rehearsal timeline](../scripts/cutover/production/INSTALL-cutover.md#window-measured-from-the-first-held-business-write)
 
-| Step | Budget in the plan | Expected |
-| --- | --- | --- |
-| Approval 1 and `cli.py hold` | approval valid 5 min | 1 |
-| Producer edge hold | none | 1-2 |
-| `cli.py freeze` | at most 10 | 3 |
-| Step 8 evidence; frozen online backup (about 21 s), SHA-256, integrity | none | 3 |
-| `schema-drift`, `migrate.py plan`, exception review | none | 3-5 |
-| `import-empty` plus `verify-fields` (measured 593 to 754 s) | 12, hard limit 20 | 12 |
-| Migrations, `complete-schema`, final schema check | none | 3-5 |
-| Final SQLite and MySQL backups off-site (both required by `Evidence`) | none | 5 |
-| `cli.py prepare`: `.env` switch with the write gate closed, `config:cache`, `systemctl try-reload-or-restart php8.3-fpm` | none | 2 |
-| Still inside `prepare`: read-only smoke on the switched config and the writer-policy check (lane item 7), then `evidence()` (`Runner._prepare` collects it after `adapter.prepare`) | none | 5 |
-| Approval 2, accepted before 0:45 | 5 | 2-5 |
-| Promote (`seal_mysql` opens the gate), reopen, queues, workers, scheduler | none (not built) | 3 |
+**Undo and reopening.** A pre-write abort re-fences admissions, restores the SQLite route and verifies the frozen file. Refresh current-boot authority after restart, reopen in stages, verify replay and release the scheduler after reconciliation. The retirement operation preserves the original journal, rollback material and writer locks.
 
-- Expected total: about 43 to 50 minutes. The go point falls at about 0:40
-  to 0:47, marginal against the 0:45 watchdog. With the stated maximums
-  (drain 10, import 20) it is past 0:55, and the watchdog rolls back first.
-  In practice the import has about 15 minutes.
-- Rollback: the watchdog fires between 45:00 and 46:50 (next minute tick
-  plus up to 50 s for the lock), the rollback takes about 2 to 3 minutes
-  and `cli.py reopen` about 1 to 2. SQLite is open by about 0:50 to 0:53.
-- Producers stay held until CRM step 6, so they see more than 60 minutes
-  of 503s.
-- A SQLite dress rehearsal at this candidate (hold, edge hold, freeze,
-  step 8, abort, reopen) should take about 11 to 14 minutes: the first
-  four rows plus the rollback and reopen figures. That is an estimate; it
-  has not been measured on the host.
+For `recovery_required`, keep writers held. Possible business writes require an independently verified export into a new SQLite file and reconciliation of external effects before reopening. [Recovery decision and private handoff](../scripts/cutover/production/INSTALL-cutover.md#recovery-decision)
 
-Checkpoints. If one is missed, run `cli.py abort` at once:
-
-| Checkpoint | By (from the hold) |
-| --- | --- |
-| Freeze done (`cli.py status` shows `frozen`) | 0:12 |
-| Import started | 0:15 |
-| Import plus verification done | 0:27; abort at 0:30 at the latest |
-| Off-site backups done | 0:35 |
-| Go decision | 0:40 |
-| Approval 2 accepted | 0:44 |
-
-**Approvals that run out.** An approval is valid for 5 minutes
-(`Runner.APPROVAL_SECONDS`). The runner undoes nothing when one expires.
-
-- Approval 1 expires before `cli.py hold`: nothing has changed on the
-  runner's side. Issue a new template if the owner still wants to go. If
-  the owner does not answer, call the night off and run the pre-hold undo
-  list below; the pre-hold holds have no deadline of their own.
-- Approval 2 (MySQL lane, not built) expires: run `cli.py abort` at once.
-  Its `seal_sqlite` restores the SQLite configuration that `prepare`
-  switched (MySQL adapter lane item 10), with the write gate still
-  closed. Then `cli.py reopen` and the undo list. Do not leave the site
-  held until the watchdog, which would do the same at 0:45.
-
-**Undo.** `cli.py abort` (or the watchdog) re-closes admissions, drains,
-unseals SQLite and publishes boot-bound SQLite authority. From that moment
-the guard admits the cron scheduler again, before `cli.py reopen` and while
-ingress is still closed, so scheduled commands write SQLite from then on.
-`crm:calendar-sync` stays held by `CRM_CALENDAR_SYNC_HOLD` until CRM step
-10, and `crm:website-intake` completes intake receipts already saved in the
-Dashboard. At this candidate neither `abort` nor `reopen` touches `.env`
-or the config cache, and nothing switches them. Once the adapter lane
-exists, `abort` restores them through `seal_sqlite` (MySQL adapter lane
-item 10). `cli.py reopen` verifies that authority through the guard, checks
-the live host again
-(SQLite the only writable engine), resumes the queues, starts the workers,
-recreates the open marker, writes the activation receipt and lifts the
-deploy fence. If its check after opening fails, it closes ingress, pauses
-the queues and stops the workers again. After any reboot, run
-`cli.py refresh` first, then `cli.py reopen`; `tmpfiles.d` recreates the
-`/run` directories at boot. `refresh` refuses while the open marker exists,
-because the guard revokes the current proof before it measures the host; it
-checks that and publishes the deploy fence inside the guard's locks. Deploys
-stay held by the marker from `init` until `reopen` lifts it after a
-completed rollback. The watchdog keeps the completed SQLite rollback as it
-is after such a reboot; it does not escalate to recovery. After an aborted
-and reopened cutover the policy still pins the old release, so retire the
-installed fences or start a new run before the next deploy. Neither is
-written yet. A new run cannot simply `init`: the journal lives at the
-guard's fixed state path (`/var/lib/repro-cutover-fence/state.json`), and
-`init` refuses with "A run already exists in this directory" while it is
-there (`Runner.initialize`). Open: a reviewed retire step that moves the
-old journal and its records, whole and unchanged, to a root-only archive,
-retires the old policy, and only then lets a new `init` run. Moving the
-journal aside is not editing it; keep the copy as evidence.
-
-If `abort` or a tick prints "MySQL writes may exist. Use separately verified
-recovery", the journal is `recovery_required`. From there neither `abort`
-nor the watchdog rolls back, the site stays held, and `site_held` pages.
-Open: no runbook path covers `recovery_required`, including the case where
-the only MySQL writes came from the import (see the
-[MySQL adapter lane](#mysql-adapter-lane-not-built) item 3). Do not edit
-the journal; call the owner.
-
-**Undo list, after an abort or a reopen.** Every hold the night sets, in the
-order to undo it. It applies after `cli.py abort` or the watchdog on
-SQLite. Once the adapter lane exists it also applies to a MySQL reopen:
-step 3 then runs before that reopen too, step 1 expects
-`mysql_authoritative` after it, and steps 2 and 4 do not apply, because
-the MySQL reopen resumes the queues and starts the workers itself. Step 3
-comes before any reopen because Studio's `worker.sh` refuses to start
-while the pause file exists (`scripts/install-studio-runtime.sh`; the
-lab-tour worker checks the same file). If that makes a `start_workers`
-command exit non-zero, the reopen fails: adapter `reopen` raises at the
-first host command that does.
+**External holds after rollback or reopen.** Reconcile the following inventory against the current controller journal. The controller removes its Studio pause flags, restores queues and verifies workers as part of reopening. Record external holds and releases separately. An unexpected worker, failed route check or uncertain send keeps the affected producer held.
 
 1. `cli.py status` shows `sqlite_authoritative` (after an abort) or
    `mysql_authoritative` (after a MySQL reopen). If it shows
@@ -1750,8 +1585,7 @@ first host command that does.
 2. Database settings, after an abort on the MySQL path: `seal_sqlite` has
    restored them (MySQL adapter lane item 10). Check before `cli.py
    reopen` that `php artisan config:show database.default` prints
-   `sqlite`. If it does not, stop and call the owner. Nothing to do at
-   this candidate, which never switches them.
+   `sqlite`. A different measured route requires owner review before reopening.
 3. Studio pause file, before any reopen (SQLite or MySQL), as `maverick`:
    `rm ~/.local/share/repro-studio/paused` (and `paused-lab-tour` if set),
    so the Studio program starts with the others. If it already went FATAL:
@@ -1811,11 +1645,11 @@ no-go before 10 pm), undo the pre-hold steps:
 6. Start the backup timers and the kit path unit, and run the kit once
    (step 10 above).
 
-## MySQL adapter lane (not built)
+<a id="mysql-adapter-lane-not-built"></a>
 
-This candidate stops at the SQLite hold, freeze and pre-write rollback. The
-next lane must build and test everything below before a night can reach
-MySQL. The list comes from the two runbook reviews of 25 November
+## MySQL adapter requirements from the November 25 review
+
+These numbered items preserve the design and review record. The [current cutover package and acceptance gates](../scripts/cutover/production/INSTALL-cutover.md) govern the selected release. The list comes from the two runbook reviews of 25 November
 (executability findings 1, 2, 3, 13 and 15; ordering findings H1 to H4, M2
 to M4 and M8), the verifier rounds after them and the production facts
 measured that day. Each item is a requirement for that lane, not a step to
