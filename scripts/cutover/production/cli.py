@@ -129,6 +129,10 @@ def dispatch(args, runner, adapter):
         return retire.retire(adapter, args.next_policy, args.next_identity)
     if action == "retired-open":
         return retire.retired_open(adapter)
+    if action == "tick":
+        recover = getattr(adapter, "recover_interrupted_mysql_reopen", None)
+        if recover is not None:
+            recover()
     if action == "approval-template":
         return issue(runner, adapter, args.phase)
     if action == "status" and args.evidence:

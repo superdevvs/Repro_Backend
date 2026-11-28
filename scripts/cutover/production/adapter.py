@@ -2214,6 +2214,11 @@ class ProductionAdapter:
         _require(callable(mysql_reopen_smoke.run) and callable(worker_start.verify), "MySQL reopen helpers are incomplete")
         mysql_reopen.profiles(self)
 
+    def recover_interrupted_mysql_reopen(self) -> bool:
+        import mysql_reopen
+
+        return mysql_reopen.recover_interrupted(self)
+
     def reopen_mysql(self, *, hold_scheduler: bool = False) -> None:
         import mysql_reopen
 
@@ -2232,7 +2237,10 @@ class ProductionAdapter:
             if engine == "mysql":
                 import mysql_reopen
 
-                expected, receipt, _ = mysql_reopen.live(self, state, opened=True)
+                import worker_start
+
+                expected, receipt, switch_at = mysql_reopen.live(self, state, opened=True)
+                worker_start.verify(self.proc, self.config["writer_processes"], switch_at)
                 _require(self._protected(self.paths["wrappers"], "active profiles") == mysql_reopen.profiles(self)
                          and guard.read_json(self._protected(self.paths["activated"], "MySQL activation"))
                          == mysql_reopen.activated(self, expected, receipt), "The MySQL activation or profiles changed")

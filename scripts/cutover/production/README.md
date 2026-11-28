@@ -10,6 +10,8 @@ In `mysql.mode=cutover`, the issued promotion approval moves a verified, read-on
 
 The combined promotion checks its installed MySQL reopen helpers and both wrapper files before recording write intent. After promotion, the same operator service drains earlier workers, verifies the route and FPM status, checks the app account’s writer token, and runs the marked write smoke. The controller removes the Studio pause files, replays captured messages, resumes queues, verifies worker start times and probes FPM before opening ingress. A second replay and live checks precede activation. The scheduler releases last unless the operator selected `--hold-scheduler`. The deploy fence stays published.
 
+A per-run `*.mysql-reopen-pending.json` file binds the attempt to its committed journal. If the operator process dies, the next watchdog tick reholds the writers after confirming the controller lock is free. It also withdraws ingress if the process died between opening it and finishing the second replay. MySQL stays authoritative.
+
 After a failed reopen, inspect the private smoke receipt and worker status. Use `refresh` on the held host, followed by `reopen`. Refresh verifies exclusive MySQL authority and publishes proof for this boot. A completed, verified smoke can be reused. An interrupted smoke keeps its uncertain writes outside any rollback exemption. W2c still needs to demonstrate the approved host service groups, exact worker counts, PHP-FPM pool, marked Laravel records and full replay on the host layout.
 
 ## Layout on the host
@@ -518,7 +520,7 @@ another run's record is ignored):
 | `paths.receipt` | `prepare` step 10 (D10) | `version` 1, `run_id`, `server_uuid`, `database`, `backup` (`file`, `position`, `gtid_executed`), `armed_from` (`file`, `position`) |
 | `paths.activity` | this probe, at the first business hit (0600) | `version`, `run_id`, `receipt_sha256`, `gtid`, `file`, `position`, `tables`, `statements`, `boundary`, `foreign_activity` |
 | `paths.activated` | the MySQL reopen, step 16 (C03) | `version` 1, `run_id`, `server_uuid`, `database`, `receipt_sha256` |
-| `paths.smoke_window` | the MySQL reopen, step 7 (C03) | `version` 1, `run_id`, `receipt_sha256`, `gtid_before`, `gtid_after`, `report` (the smoke's JSON object) |
+| `paths.smoke_window` | the MySQL reopen, step 7 (C03) | `version` 2, `binding`, `attempts`, `reuses`. Each attempt records GTIDs, timestamps and its validated application report when available. |
 
 A receipt or activation record of this run that names another server or
 database is exit 4; a malformed or unsafe record is exit 1. `prepare` must

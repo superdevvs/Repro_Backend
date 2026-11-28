@@ -14,7 +14,7 @@ import gate
 import live_config
 import mysql_probe
 from adapter import _remove, _require, _runtime_directory, _write_atomic, _write_raw_atomic, guard
-from runner import UnsafeCutover
+from runner import ControllerBusy, UnsafeCutover
 
 ADMIT_COMMAND = ["/usr/bin/python3", "-I", "-S", "/opt/repro-cutover-fence/production/admit.py"]
 
@@ -103,16 +103,57 @@ def activated(adapter, expected: dict, receipt: str) -> dict:
             "database": expected["database"], "receipt_sha256": receipt}
 
 
+def intent_path(adapter) -> Path:
+    return adapter.journal.directory / f"{adapter.pinned.run_id}.mysql-reopen-pending.json"
+
+
+def intent(adapter, journal: bytes) -> dict:
+    return {"version": 1, "run_id": adapter.pinned.run_id, "policy_sha256": guard.sha256(adapter.policy_raw),
+            "journal_sha256": guard.sha256(journal)}
+
+
+def finish_hold(adapter, lease, path: Path) -> None:
+    adapter._close_reopened(engine="mysql")
+    if lease.writers is None:
+        adapter.journal.drain_writers(lease, adapter.config["command_seconds"])
+    _remove(path)
+
+
+def recover_interrupted(adapter) -> bool:
+    """A dead reopen can leave ingress or workers live. The watchdog reholds only after the controller exits."""
+    path = intent_path(adapter)
+    if not path.exists() and not path.is_symlink():
+        return False
+    try:
+        with adapter.journal.acquire() as (state, lease):
+            if not path.exists() and not path.is_symlink():
+                return False
+            # Refuse to change a subsequent operator's run or a different authoritative engine.
+            _require(guard.authority(adapter.policy, state or {}, "web-writer") == "mysql"
+                     and guard.read_json(adapter._protected(path, "MySQL reopen intent"))
+                     == intent(adapter, adapter.journal.path.read_bytes()),
+                     "The interrupted MySQL reopen does not match this journal")
+            finish_hold(adapter, lease, path)
+            return True
+    except ControllerBusy:
+        return False
+
+
 def reopen(adapter, *, hold_scheduler: bool) -> None:
     import mysql_reopen_smoke
     import worker_start
 
+    if recover_interrupted(adapter):
+        raise UnsafeCutover("Interrupted MySQL reopen was held. Refresh authority, then reopen")
     with adapter.journal.acquire() as (state, lease):
         _require(guard.authority(adapter.policy, state or {}, "web-writer") == "mysql"
                  and adapter.config["mysql"]["mode"] == "cutover", "MySQL reopen requires committed cutover authority")
         adapter._refuse_open_ingress()
         deadline = adapter.clock() + adapter.config["command_seconds"]
         commands = adapter.config["commands"]
+        pending = intent_path(adapter)
+        _require(not pending.exists() and not pending.is_symlink(), "An earlier MySQL reopen still requires a hold")
+        _write_atomic(pending, intent(adapter, adapter.journal.path.read_bytes()), 0o600)
         _remove(adapter.paths["scheduler_release"])
         _remove(adapter.paths["activation"])
         try:
@@ -154,12 +195,14 @@ def reopen(adapter, *, hold_scheduler: bool) -> None:
             _write_atomic(adapter.paths["ingress_open"], {"version": 1, "engine": "mysql"}, 0o644)
             adapter._run(commands["telnyx_replay"], deadline)
             live(adapter, state, opened=True)
+            worker_start.verify(adapter.proc, adapter.config["writer_processes"], switch_at)
             _require(adapter._verify_authority("mysql") == (journal, proof), "MySQL authority changed during replay")
             adapter._remaining(deadline, "MySQL reopening reached its deadline")
             _write_atomic(adapter.paths["activated"], activated(adapter, expected, receipt), 0o600)
             _write_atomic(adapter.paths["activation"], adapter._activation_record(journal, proof, "mysql"), 0o600)
             if not hold_scheduler:
                 _write_atomic(adapter.paths["scheduler_release"], {"version": 1, "engine": "mysql"}, 0o600)
+            _remove(pending)
         except BaseException:
-            adapter._close_reopened(engine="mysql")
+            finish_hold(adapter, lease, pending)
             raise

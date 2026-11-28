@@ -1,6 +1,8 @@
 """C03/C05 operator tests on the socket-free Linux host fixture."""
 import json
 import os
+import signal
+import time
 import sys
 import unittest
 from pathlib import Path
@@ -55,7 +57,8 @@ class MysqlReopenTests(unittest.TestCase):
                                ACTIVATION=p("activation"), MACHINE_ID=p("machine_id"), BOOT_ID=self.host.boot,
                                _require_root_installation=lambda: None))
         self.enterContext(patch.object(mysql_reopen.fpm_drain, "read_status", side_effect=lambda *_: self.step("status") or SimpleNamespace(pool="www")))
-        self.enterContext(patch.object(worker_start, "verify", side_effect=lambda *_: self.step("workers fresh")))
+        self.enterContext(patch.object(worker_start, "verify", side_effect=lambda *_: self.step(
+            "workers after replay" if self.host.path("ingress_open").exists() else "workers fresh")))
         import mysql_reopen_smoke
 
         self.enterContext(patch.object(mysql_reopen_smoke, "run", side_effect=self.smoke))
@@ -133,8 +136,9 @@ class MysqlReopenTests(unittest.TestCase):
         state = cli.dispatch(cli.arguments(["reopen"]), self.runner, self.adapter)
         self.assertEqual("mysql_authoritative", state["state"]["phase"])
         self.assertEqual(["status", "token", "smoke", "replay1", "resume", "resume", "start", "workers fresh",
-                          "fastcgi", "ingress_open", "replay2", "activated", "activation", "scheduler_release"], self.events)
+                          "fastcgi", "ingress_open", "replay2", "workers after replay", "activated", "activation", "scheduler_release"], self.events)
         self.assertTrue(self.adapter.observe().mysql_live())
+        self.assertFalse((mysql_reopen.intent_path(self.adapter)).exists())
         self.assertTrue(self.host.path("deploy_marker").exists())
         self.assertEqual(self.host.target, self.host.record("activated")["server_uuid"])
         self.assertEqual(self.host.record("activated")["receipt_sha256"], guard.sha256(self.host.path("receipt").read_bytes()))
@@ -144,7 +148,7 @@ class MysqlReopenTests(unittest.TestCase):
 
     def test_failure_at_each_step_closes_again_with_sqlite_wrappers(self):
         for fail in ("status", "token", "smoke", "replay1", "resume", "start", "workers fresh", "fastcgi",
-                     "ingress_open", "replay2", "activated", "activation", "scheduler_release"):
+                     "ingress_open", "replay2", "workers after replay", "activated", "activation", "scheduler_release"):
             with self.subTest(step=fail):
                 self.reset_host()
                 self.failure = fail
@@ -167,6 +171,47 @@ class MysqlReopenTests(unittest.TestCase):
             self.assertFalse(self.host.path("scheduler_release").exists())
         finally:
             path.write_bytes(self.sqlite)
+
+    def test_watchdog_reholds_after_sigkill_between_ingress_open_and_second_replay(self):
+        replay = self.adapter.config["commands"]["telnyx_replay"]
+        original = self.adapter._run
+        pending = mysql_reopen.intent_path(self.adapter)
+
+        def die_after_open(argv, *args, **kwargs):
+            if argv == replay and self.host.path("ingress_open").exists():
+                os.kill(os.getpid(), signal.SIGKILL)
+            return original(argv, *args, **kwargs)
+
+        child = os.fork()
+        if child == 0:
+            try:
+                with patch.object(self.adapter, "_run", side_effect=die_after_open):
+                    self.adapter.reopen_mysql()
+            finally:
+                os._exit(2)
+        end = time.monotonic() + 25
+        while True:
+            took, result = os.waitpid(child, os.WNOHANG)
+            if took:
+                break
+            if time.monotonic() >= end:
+                os.kill(child, signal.SIGKILL)
+                os.waitpid(child, 0)
+                self.fail("The isolated reopen did not reach the second replay")
+            time.sleep(0.05)
+        self.assertEqual(signal.SIGKILL, os.WTERMSIG(result))
+        self.assertTrue(pending.exists())
+        self.assertTrue(self.host.path("ingress_open").exists())
+        with self.journal.acquire():
+            self.assertFalse(self.adapter.recover_interrupted_mysql_reopen(), "A live operator still owns the lock")
+        state = cli.dispatch(cli.arguments(["tick"]), self.runner, self.adapter)["state"]
+        self.assertEqual("mysql_authoritative", state["phase"])
+        self.assertFalse(pending.exists())
+        self.assertFalse(self.host.path("ingress_open").exists())
+        self.assertFalse(self.host.path("evidence").exists())
+        self.assertFalse(self.host.path("scheduler_release").exists())
+        self.assertEqual(self.sqlite, self.host.path("wrappers").read_bytes())
+        self.assertTrue(self.adapter.observe().mysql_held())
 
     def test_stale_mysql_phase_hint_cannot_change_another_phase(self):
         committed = self.journal.read()
