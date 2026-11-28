@@ -611,8 +611,8 @@ InnoDB table layouts and reads the global InnoDB foreign-key dictionary using th
 `PROCESS` privilege. It checks incoming references from every schema. An update cascade or set-null
 on an edited key, a delete cascade or set-null on a job, or incomplete dictionary evidence requires
 full reverse export. MySQL's row logs omit these engine-driven changes. The protected attempt records
-the verdict at write time so a later constraint change cannot erase it. Older attempts without this
-proof also require full export.
+the complete typed catalog's digest only after this check succeeds. Recovery must measure the same
+reviewed layout before decoding the row images. Older attempts without this digest require full export.
 
 The short rollback requires `smoke_row_scope_verified: true` in the audit. The probe decodes the four
 consecutive GTIDs from the same binary log using the existing private probe account over its Unix socket.

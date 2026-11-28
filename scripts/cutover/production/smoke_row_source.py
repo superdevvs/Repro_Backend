@@ -130,12 +130,13 @@ def layout(config, *, deadline=None):
 
 
 def safe_schema_at_smoke(config, deadline):
-    """Measure after the starting GTID read, before the first smoke write. Return only an aggregate verdict."""
+    """Return the prewrite catalog digest only after ruling out hidden InnoDB cascade effects."""
     import gate
     try:
         import smoke_rows
 
-        smoke_rows.verified_layout(layout(config, deadline=deadline))
+        names, digest = measured_catalog(config, deadline=deadline)
+        smoke_rows.verified_layout(names)
         mysql = config["mysql"]
         db = probe._literal(mysql["database"])
         # InnoDB executes cascades internally. FULL row images show only the originating
@@ -175,10 +176,11 @@ def safe_schema_at_smoke(config, deadline):
         require(result.returncode == 0 and len(result.stdout) < 1024)
         actual = json.loads(result.stdout)
         expected = [probe.PROBE_ACCOUNT, mysql["target_uuid"], binlog_scan.SERVER_VERSION, 1, 0, 1, 1, 0]
-        return actual == expected and all(type(value) is int for value in actual[3:])
+        require(actual == expected and all(type(value) is int for value in actual[3:]))
+        return digest
     except (ImportError, OSError, ValueError, TypeError, KeyError, guard.Refused, UnsafeCutover,
             subprocess.SubprocessError):
-        return False
+        return None
 
 
 def check_digest(path, expected):
@@ -253,9 +255,11 @@ def verified(config, window, listed):
     try:
         import smoke_rows
 
-        require(window[2].get("schema_verified_before_write") is True)
+        before = window[2].get("prewrite_catalog_sha256")
+        require(isinstance(before, str) and before in CATALOG_SHA256)
         gtids, name, start, stop = coordinates(config, window, listed)
-        names = layout(config)
+        names, digest = measured_catalog(config)
+        require(digest == before)
         smoke_rows.verified_layout(names)
         raw = decode(config, name, start, stop)
         checked = window[2]["report"]["checks"]

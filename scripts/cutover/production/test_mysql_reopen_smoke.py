@@ -118,14 +118,15 @@ class WindowTests(unittest.TestCase):
     def test_prewrite_schema_verdict_is_saved_with_intent_and_older_records_stay_readable(self):
         def examine(config, deadline):
             self.assertEqual(0, self.adapter._execute.call_count)
-            return True
+            return SHA
         with patch("smoke_row_source.safe_schema_at_smoke", side_effect=examine):
             self.attempt(gtid(10), gtid(14))
-        self.assertIs(self.audited()[2]["schema_verified_before_write"], True)
+        self.assertEqual(self.audited()[2]["prewrite_catalog_sha256"], SHA)
         older = self.record()
-        del older["attempts"][0]["schema_verified_before_write"]
+        del older["attempts"][0]["prewrite_catalog_sha256"]
+        older["attempts"][0]["schema_verified_before_write"] = True
         smoke._save(self.paths["smoke_window"], older)
-        self.assertNotIn("schema_verified_before_write", self.audited()[2])
+        self.assertNotIn("prewrite_catalog_sha256", self.audited()[2])
 
     def test_verified_smoke_is_reused_on_same_boot_and_same_authority_and_recognized_by_the_audit(self):
         original = self.attempt(gtid(10), gtid(14))
