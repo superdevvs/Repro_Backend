@@ -2,6 +2,7 @@
 import json
 import os
 import signal
+import sqlite3
 import time
 import sys
 import unittest
@@ -19,6 +20,25 @@ from fence import guard
 from runner import UnsafeCutover
 from test_adapter import probe_reading
 from test_adapter_mysql import PrepareHost
+
+
+class GtidMeasurementTests(unittest.TestCase):
+    def test_native_query_returns_guard_record(self):
+        adapter = SimpleNamespace(config={}, pinned=SimpleNamespace(target_uuid="sandbox"),
+                                  _remaining=lambda deadline, message: 10)
+
+        def client(config, account, statements, *, deadline):
+            self.assertEqual(account, "probe_defaults")
+            query, = statements
+            # Evaluate the exact JSON_OBJECT projection with fixed fixture variables.
+            with sqlite3.connect(":memory:") as connection:
+                connection.create_function("CURRENT_USER", 0, lambda: mysql_reopen.mysql_probe.PROBE_ACCOUNT)
+                query = query.replace("@@server_uuid", "'sandbox'").replace("@@GLOBAL.gtid_executed", "'measured'")
+                result = connection.execute(query).fetchone()[0]
+            return SimpleNamespace(returncode=0, stdout=result)
+
+        with patch.object(gate, "_client", side_effect=client):
+            self.assertEqual(mysql_reopen.read_gtid(adapter, time.monotonic() + 10), "measured")
 
 
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Private root-owned Linux test host")

@@ -75,7 +75,7 @@ def live(adapter, state, *, opened: bool) -> tuple[dict, str, int]:
 def read_gtid(adapter, deadline: float) -> str:
     remaining = adapter._remaining(deadline, "The smoke GTID read reached its deadline")
     result = gate._client(adapter.config, "probe_defaults", [
-        "SELECT JSON_OBJECT('uuid', @@server_uuid, 'account', CURRENT_USER(), 'gtid', @@GLOBAL.gtid_executed)"
+        "SELECT JSON_OBJECT('version', 1, 'uuid', @@server_uuid, 'account', CURRENT_USER(), 'gtid', @@GLOBAL.gtid_executed)"
     ], deadline=time.monotonic() + remaining)
     _require(result.returncode == 0, "The probe account could not read the smoke GTID on the target")
     try:
