@@ -789,6 +789,11 @@ class ProductionAdapter:
 
     # Host commands and process observation.
 
+    def _remaining(self, deadline: float, refusal: str) -> float:
+        remaining = deadline - self.clock()
+        _require(remaining > 0, refusal)
+        return remaining
+
     def _execute(self, argv: list[str], deadline: float | None = None, *, environment: dict | None = None,
                  **process) -> tuple[int, str]:
         """Run one host command and return its exit status and standard output.
@@ -803,11 +808,14 @@ class ProductionAdapter:
         """
         seconds = self.config["command_seconds"]
         if deadline is not None:
-            seconds = max(1.0, min(seconds, deadline - self.clock()))
+            refusal = f"Host command reached its deadline: {Path(argv[0]).name}"
+            seconds = min(seconds, self._remaining(deadline, refusal))
         environment = {**(HOST_ENVIRONMENT if environment is None else environment), CHILD_TAG: "1"}
         with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, env=environment, start_new_session=True, **process) as child:
             try:
+                if deadline is not None:
+                    seconds = min(seconds, self._remaining(deadline, refusal))
                 output, _ = child.communicate(timeout=seconds)
             except BaseException as stopped:
                 try:
@@ -818,6 +826,8 @@ class ProductionAdapter:
                 if isinstance(stopped, subprocess.TimeoutExpired):
                     raise UnsafeCutover(f"Host command timed out: {Path(argv[0]).name}") from None
                 raise
+        if deadline is not None:
+            self._remaining(deadline, refusal)
         return child.returncode, output
 
     def _run(self, argv: list[str], deadline: float | None = None) -> str:
@@ -1005,7 +1015,10 @@ class ProductionAdapter:
                                  f"fpm.drain_seconds plus {FPM_DRAIN_MARGIN_SECONDS} s: FPM was stopped without the "
                                  "drain"}
             for argv in commands["drain_fpm"][1:]:
-                self._run(argv, deadline)
+                # The mandatory rollback stop must still start if draining workers
+                # consumed the budget. Keep its existing one-second minimum here,
+                # without extending a freeze, evidence check or admission decision.
+                self._run(argv, max(deadline, self.clock() + 1.0))
             self._wait_absent(self.config["writer_processes"], deadline, "Writers are still running after the stop")
             return record
         for index, argv in enumerate(commands["drain_fpm"]):
@@ -1373,21 +1386,23 @@ class ProductionAdapter:
         FPM_SOCKET_SECONDS: step 9 does not wait for it)."""
         socket_path = self.config["fpm"]["socket"]
         limit = min(deadline, self.clock() + FPM_SOCKET_SECONDS)
+        not_listening = f"The FPM socket {socket_path} is still not listening before the step 9 deadline"
         while True:
             try:
-                if fastcgi.listening(socket_path):
+                if fastcgi.listening(socket_path, timeout=min(2.0, self._remaining(limit, not_listening))):
                     break
             except fastcgi.FastCgiError as error:
                 raise UnsafeCutover(f"The FPM socket {socket_path} cannot be checked: {error}") from None
-            _require(self.clock() < limit, f"The FPM socket {socket_path} is still not listening {FPM_SOCKET_SECONDS} s "
-                                           "after the FPM start (step 9)")
-            time.sleep(POLL_SECONDS)
+            time.sleep(min(POLL_SECONDS, self._remaining(limit, not_listening)))
+        refusal = "The FastCGI engine probe reached its deadline"
         try:
             report = fastcgi.engine_probe(socket_path, self.config["app_root"],
-                                          timeout=max(1.0, min(30.0, deadline - self.clock())))
+                                          timeout=min(30.0, self._remaining(deadline, refusal)))
         except fastcgi.FastCgiError as error:
             raise UnsafeCutover(f"The FastCGI probe of FPM failed: {error}") from None
-        return evidence.fastcgi_check(report, expected, socket_path)
+        checked = evidence.fastcgi_check(report, expected, socket_path)
+        self._remaining(deadline, refusal)
+        return checked
 
     def _smoke_commands(self) -> list[tuple]:
         """commands.smoke_readonly checked before anything runs: each `runuser -u <user> ...` with the web user or the
@@ -1542,12 +1557,14 @@ class ProductionAdapter:
         self-check (a login, CURRENT_USER() and SHOW GRANTS). Returns its (output, exit code, message)."""
         import gate
 
-        remaining = min(self.config["command_seconds"], deadline - self.clock())
-        _require(remaining > 0, "The gate check reached its deadline")
+        refusal = "The gate check reached its deadline"
+        remaining = min(self.config["command_seconds"], self._remaining(deadline, refusal))
         try:
-            return gate.check(self.config, deadline=time.monotonic() + remaining)
+            result = gate.check(self.config, deadline=time.monotonic() + remaining)
         except (UnsafeCutover, guard.Refused, OSError, ValueError, subprocess.SubprocessError) as error:
             raise UnsafeCutover(f"gate.check failed: {str(error)[:PROBLEM_CHARACTERS]}") from None
+        self._remaining(deadline, refusal)
+        return result
 
     def _freeze_drain(self, state: dict) -> dict:
         """The freeze's FPM drain record from the journal history (design 5.4, D07/D08), one the freeze went on
@@ -1708,6 +1725,7 @@ class ProductionAdapter:
         pin = self.policy["mysql_live_config_sha256"]
         _require(live.engine == "mysql" and live.source == live_config.CACHE and live.live_config_sha256 == pin,
                  f"The live config is not the MySQL pin from the cache (engine {live.engine}, source {live.source})")
+        self._remaining(deadline, "The live evidence check reached its deadline")
 
     def check_evidence(self, night, *, write: bool = False) -> dict:
         """`cli.py check-evidence [--write]` (design 3.2, 3.10), before the one-shot prepare: in a frozen run that
@@ -1721,10 +1739,14 @@ class ProductionAdapter:
                  "check-evidence runs only in a frozen run in which MySQL was never opened for writes")
         started_at = state.get("started_at")
         _require(type(started_at) is int, "The cutover journal has no hold to bind the evidence inputs to")
+        deadline = started_at + Runner.DECISION_SECONDS
+        refusal = "The evidence manifest check reached its deadline"
+        self._remaining(deadline, refusal)
         manifest = night_manifest(night, self.pinned.run_id, self.config["mysql"]["mode"])
         bound = check_inputs(self.config, self.pinned, self.policy, started_at, manifest)
-        output, code, message = self._gate_check(started_at + Runner.DECISION_SECONDS)
+        output, code, message = self._gate_check(deadline)
         evidence.gate_result((output, code, message))
+        self._remaining(deadline, refusal)
         if write:
             _write_atomic(self.paths["evidence_inputs"], manifest, 0o600)
         return {"version": 1, "manifest": manifest, "bound": bound, "gate": output, "written": write}

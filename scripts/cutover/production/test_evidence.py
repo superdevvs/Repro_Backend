@@ -498,6 +498,54 @@ class HostEvidenceTests(unittest.TestCase):
             read.assert_called_once_with(self.adapter.config, deadline=101)
             account.assert_called_once_with(self.adapter.config, deadline=101)
 
+    def test_expired_commands_never_start_and_near_deadline_commands_keep_only_the_remaining_fraction(self):
+        command = [sys.executable, "-c", "pass"]
+        self.adapter.clock = mock.Mock(return_value=10.0)
+        child = mock.MagicMock(returncode=0)
+        child.communicate.return_value = ("ok", "")
+        with mock.patch.object(production.subprocess, "Popen") as spawn:
+            spawn.return_value.__enter__.return_value = child
+            with self.assertRaisesRegex(UnsafeCutover, "deadline"):
+                self.adapter._execute(command, 10)
+            spawn.assert_not_called()
+            self.adapter.clock.side_effect = [10, 10.125, 10.2]
+            self.assertEqual((0, "ok"), self.adapter._execute(command, 10.25))
+            child.communicate.assert_called_once_with(timeout=.125)
+            self.adapter.clock.side_effect = [10, 10.125, 10.25]
+            with self.assertRaisesRegex(UnsafeCutover, "deadline"):
+                self.adapter._execute(command, 10.25)
+
+    def test_expiry_during_the_final_config_measurement_refuses_the_evidence(self):
+        self.adapter.clock = mock.Mock(side_effect=[100, 101])
+        self.adapter.policy = {"mysql_live_config_sha256": PIN}
+        self.adapter._probe = mock.Mock(return_value={})
+        self.adapter._gate_check = mock.Mock(return_value=({}, 0, None))
+        self.adapter._live_config = lambda: SimpleNamespace(engine="mysql", source=production.live_config.CACHE,
+                                                            live_config_sha256=PIN)
+        with mock.patch.object(evidence, "mysql_check"), self.assertRaisesRegex(UnsafeCutover, "live evidence.*deadline"):
+            self.adapter._require_live_target("a" * 64, 101)
+
+    def test_expiry_during_the_manifest_check_leaves_the_current_manifest_untouched(self):
+        self.adapter._journal_state = lambda: {"phase": "frozen", "writes_possible": False, "started_at": 100}
+        self.adapter._gate_check = mock.Mock(return_value=({}, 0, None))
+        self.adapter.policy = {}
+        deadline = 100 + production.Runner.DECISION_SECONDS
+        self.adapter.clock = mock.Mock(side_effect=[deadline - .25, deadline])
+        with mock.patch.object(production, "night_manifest"), mock.patch.object(production, "check_inputs"), \
+                mock.patch.object(evidence, "gate_result"), mock.patch.object(production, "_write_atomic") as write:
+            with self.assertRaisesRegex(UnsafeCutover, "manifest.*deadline"):
+                self.adapter.check_evidence("synthetic-night", write=True)
+            write.assert_not_called()
+
+    def test_fastcgi_readiness_and_probe_share_the_remaining_fraction(self):
+        self.adapter.clock = mock.Mock(side_effect=[100, 100, 100.125, 100.25])
+        with mock.patch.object(production.fastcgi, "listening", return_value=True) as listening, \
+                mock.patch.object(production.fastcgi, "engine_probe", return_value={}) as probe, \
+                mock.patch.object(evidence, "fastcgi_check"), self.assertRaisesRegex(UnsafeCutover, "FastCGI.*deadline"):
+            self.adapter._fastcgi_probe({}, 100.25)
+        listening.assert_called_once_with(self.adapter.config["fpm"]["socket"], timeout=.25)
+        probe.assert_called_once_with(self.adapter.config["fpm"]["socket"], self.adapter.config["app_root"], timeout=.125)
+
     def test_token_cache_cleanup_warns_without_disclosing_exception_contents(self):
         import io
 
