@@ -14,8 +14,6 @@ from adapter import guard
 
 # Oracle mysqlbinlog 8.4.13 Linux x86_64, verified by the isolated native PITR rehearsal.
 DECODER_SHA256 = "1087ee9d26ea42f396a1a7f302eb2cc549b2e05c32c62f8125f9d1b40bc08048"
-# Sorted table names and ordinal column-name arrays in database/schema/mysql-schema.sql at the reviewed release.
-LAYOUT_SHA256 = "06023313b2563a1152159193e6677e9bebbdd3683f5d08463ea417724aabf0cc"
 MAX_BINLOG_BYTES = 128 * 1024
 MAX_DECODED_BYTES = 2 * 1024 * 1024
 TABLES = ("aryeo_changes", "jobs", "shoots", "users")
@@ -96,8 +94,6 @@ def layout(config):
         require(table in names and type(ordinal) is int and ordinal == len(names[table]) + 1
                 and isinstance(column, str) and re.fullmatch(r"[a-z0-9_]+", column))
         names[table].append(column)
-    raw = json.dumps(names, sort_keys=True, separators=(",", ":")).encode()
-    require(hashlib.sha256(raw).hexdigest() == LAYOUT_SHA256)
     return names
 
 
@@ -139,6 +135,7 @@ def verified(config, window, listed):
 
         gtids, name, start, stop = coordinates(config, window, listed)
         names = layout(config)
+        smoke_rows.verified_layout(names)
         raw = decode(config, name, start, stop)
         checked = window[2]["report"]["checks"]
         fixture = {"client_id": checked["client_id"], "shoot_id": checked["shoot_id"], "marker": checked["value"]}

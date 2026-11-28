@@ -50,19 +50,18 @@ class RowSourceTests(unittest.TestCase):
                 with self.assertRaises(source.Unavailable):
                     source.coordinates(self.config, window, listed)
 
-    def test_layout_is_bound_to_target_release_ordinal_names_and_full_images(self):
+    def test_layout_query_is_bound_to_target_account_ordinal_sequence_and_full_images(self):
         header = ["repro_token_check@localhost", UUID, "8.4.13", 1, "FULL", "ROW"]
         rows = [[name, index, value] for name in source.TABLES for index, value in enumerate(["id", "value"], 1)]
         def output(first, columns):
             return SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(row) for row in [first, *columns]))
 
         names = {name: ["id", "value"] for name in source.TABLES}
-        pin = hashlib.sha256(json.dumps(names, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        with patch.object(source, "LAYOUT_SHA256", pin), patch.object(gate, "_client", return_value=output(header, rows)):
+        with patch.object(gate, "_client", return_value=output(header, rows)):
             self.assertEqual(names, source.layout(self.config))
         for first, columns in (([*header[:4], "MINIMAL", "ROW"], rows), ([*header[:1], "other", *header[2:]], rows),
-                               (header, [*rows[:-1], [rows[-1][0], 2, "other"]]), (header, rows[:-1])):
-            with (self.subTest(first=first, columns=columns), patch.object(source, "LAYOUT_SHA256", pin),
+                               (header, [*rows[:-1], [rows[-1][0], 3, "other"]]), (header, [[None, 1, "id"]])):
+            with (self.subTest(first=first, columns=columns),
                   patch.object(gate, "_client", return_value=output(first, columns))):
                 with self.assertRaises(source.Unavailable):
                     source.layout(self.config)
