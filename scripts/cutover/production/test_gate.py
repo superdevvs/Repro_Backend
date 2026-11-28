@@ -911,8 +911,8 @@ class GateProcedureTests(unittest.TestCase):
         gone, live = sorted(sessions)
         readings, real_read = [], self.gate.read
 
-        def read(config):
-            reading = real_read(config)
+        def read(config, *, deadline=None):
+            reading = real_read(config, deadline=deadline)
             readings.append(reading)
             if len(readings) == 2:  # The reading after the revoke lists both; then the first one leaves.
                 sessions[gone].close()
@@ -951,8 +951,8 @@ class GateProcedureTests(unittest.TestCase):
         _, identity = self.bulk_session()
         readings, real_read = [], self.gate.read
 
-        def read(config):
-            reading = real_read(config)
+        def read(config, *, deadline=None):
+            reading = real_read(config, deadline=deadline)
             readings.append(reading)
             return reading
 
