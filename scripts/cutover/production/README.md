@@ -12,7 +12,9 @@ The combined promotion checks its installed MySQL reopen helpers and both wrappe
 
 A per-run `*.mysql-reopen-pending.json` file binds the attempt to its committed journal. If the operator process dies, the next watchdog tick reholds the writers after confirming the controller lock is free. It also withdraws ingress if the process died between opening it and finishing the second replay. MySQL stays authoritative.
 
-After a failed reopen, inspect the private smoke receipt and worker status. Use `refresh` on the held host, followed by `reopen`. Refresh verifies exclusive MySQL authority and publishes proof for this boot. A completed, verified smoke can be reused. An interrupted smoke keeps its uncertain writes outside any rollback exemption. W2c still needs to demonstrate the approved host service groups, exact worker counts, PHP-FPM pool, marked Laravel records and full replay on the host layout.
+After a failed reopen, inspect the private smoke receipt and worker status. Use `refresh` on the held host, followed by `reopen`. Refresh verifies exclusive MySQL authority and publishes proof for this boot. Reopen can reuse a verified write smoke on the same boot while the exact authority proof still matches. A new boot or a changed proof requires a fresh write smoke. The receipt keeps every attempt. An interrupted smoke gives no rollback exemption for uncertain writes. Multiple completed smoke windows require the full recovery path because the short rollback audit recognizes a single verified window.
+
+The W2c host rehearsal must demonstrate the approved service groups and expected worker counts, the PHP-FPM pool, the marked Laravel records, complete replay, and the time between controller failure and the watchdog closing ingress. Reconcile any work admitted during that interval.
 
 ## Layout on the host
 
