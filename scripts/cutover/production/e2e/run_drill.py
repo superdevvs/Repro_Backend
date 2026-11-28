@@ -37,6 +37,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import pwd
 import grp
@@ -578,6 +579,23 @@ class StepLock:
 # Outer half: container preparation and the host-namespace steps.
 # --------------------------------------------------------------------------------------------------
 
+def locked_vendor_identity(lock_path: Path, installed_path: Path) -> dict:
+    lock_bytes, installed_bytes = lock_path.read_bytes(), installed_path.read_bytes()
+    lock, installed = json.loads(lock_bytes), json.loads(installed_bytes)
+
+    def packages(rows):
+        entries = {p["name"]: (p["version"], (p.get("source") or {}).get("reference"),
+                               (p.get("dist") or {}).get("reference")) for p in rows}
+        require(len(entries) == len(rows), "duplicate package in Composer metadata")
+        return entries
+
+    expected = packages(lock["packages"] + lock["packages-dev"])
+    require(expected and expected == packages(installed["packages"]),
+            "vendor package versions or references differ from the candidate composer.lock")
+    return {"composer_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+            "installed_json_sha256": hashlib.sha256(installed_bytes).hexdigest(), "packages": len(expected)}
+
+
 class Outer:
     def __init__(self, args):
         self.args = args
@@ -595,6 +613,8 @@ class Outer:
         require(Path("/.dockerenv").exists(), "the drill runs only in a disposable container (no /.dockerenv)")
         for path in (self.cutover / "runner.py", self.fixture / "ready", Path(self.args.vendor) / "autoload.php"):
             require(path.exists(), f"missing {path}")
+        identity = locked_vendor_identity(self.src / "composer.lock", Path(self.args.vendor) / "composer/installed.json")
+        print("run-drill: locked vendor " + json.dumps(identity, sort_keys=True), flush=True)
         # The launcher and this harness, installed as sandbox/README.md shows, read by root only from here.
         sandbox = self.cutover / "production" / "sandbox"
         private_dir(SANDBOX, 0o755)
@@ -2461,10 +2481,35 @@ def copy_sql_main(args) -> int:
 
 def read_results(path: Path, offset: int) -> tuple[list[dict], int]:
     if not path.exists():
-        return [], offset
+        raise StepFailed("the sandbox produced no results.jsonl")
     data = path.read_bytes()
+    require(len(data) > offset and data.endswith(b"\n"), "missing or incomplete receipt records")
     lines = data[offset:].decode("utf-8").splitlines()
-    return [json.loads(line) for line in lines if line.strip()], len(data)
+    rows = [json.loads(line) for line in lines]
+    for row in rows:
+        require(isinstance(row, dict) and isinstance(row.get("step"), str)
+                and row.get("status") in ("passed", "failed", "pending", "skipped", "stand-in")
+                and isinstance(row.get("detail"), str), "invalid step receipt")
+        for key in ("seconds", "ended_at", "budget"):
+            value = row.get(key)
+            if key == "budget" and value is None:
+                continue
+            require(type(value) in (float, int) and math.isfinite(value) and value >= 0,
+                    f"invalid {key} in step receipt")
+    return rows, len(data)
+
+
+def verify_receipts(expected: list[str], rows: list[dict], stand_ins: bool) -> None:
+    observed = [row["step"] for row in rows]
+    if observed != expected:
+        position = next((i for i, (a, b) in enumerate(zip(expected, observed)) if a != b),
+                        min(len(expected), len(observed)))
+        wanted = expected[position] if position < len(expected) else "<end>"
+        found = observed[position] if position < len(observed) else "<end>"
+        raise StepFailed(f"receipt {position + 1}: expected {wanted}, found {found}")
+    for row in rows:
+        if row["status"] != "passed" and not (stand_ins and row["status"] in ("stand-in", "skipped")):
+            raise StepFailed(f"{row['step']} has status {row['status']}")
 
 
 def report(rows: list[dict], verdict: str, scale: float) -> str:
@@ -2529,13 +2574,17 @@ def outer_main(args) -> int:
     outer = Outer(args)
     try:
         outer.prepare_container()
-    except (StepFailed, OSError) as error:
+    except (StepFailed, OSError, KeyError, ValueError) as error:
         print(f"run_drill: refused: {error}", file=sys.stderr)
         return 2
     last = args.through or [name for name in NAMES if int(name[1]) <= (args.runs or 2)][-1]
     plan = STEPS[:NAMES.index(last) + 1]
     if args.a3_only:
         plan = [step for step in plan if step.name in A3_STEPS]
+    if (args.a3_only or (args.through is None and args.runs != 1)) and (
+            not plan or plan[-1].name != "r2.a3-copy-load"):
+        print("run_drill: the final A3 copy-load is missing from the drill plan", file=sys.stderr)
+        return FAILED_EXIT
     rows: list[dict] = []
 
     def finish(code: int, verdict: str) -> int:
@@ -2556,6 +2605,8 @@ def outer_main(args) -> int:
 
     for n in sorted({step.run for step in plan}):
         steps = [step for step in plan if step.run == n]
+        start = len(rows)
+        expected = [step.name for step in steps]
         for step in (step for step in steps if step.host):
             began = time.monotonic()
             try:
@@ -2574,10 +2625,28 @@ def outer_main(args) -> int:
         offset, first, reboot = 0, inside[0].name, False
         while True:
             code = outer.launch(n, first, inside[-1].name, reboot)
-            new, offset = read_results(results, offset)
+            try:
+                new, offset = read_results(results, offset)
+            except (StepFailed, OSError, ValueError) as error:
+                if code and outer.launch_log.is_file():
+                    print(_tail(outer.launch_log.read_bytes(), 800), file=sys.stderr)
+                return finish(FAILED_EXIT, f"RED: r{n} invalid receipts: {error}")
             rows.extend(new)
-            if code == REBOOT_EXIT and new:
-                first = NAMES[NAMES.index(new[-1]["step"]) + 1]
+            if code == REBOOT_EXIT:
+                rehold = f"r{n}.rehold"
+                if (not args.stand_ins or reboot or rehold not in expected or new[-1]["step"] != rehold
+                        or new[-1]["status"] != "stand-in"):
+                    return finish(FAILED_EXIT, f"RED: r{n} unexpected reboot receipt")
+                index = expected.index(rehold) + 1
+                try:
+                    verify_receipts(expected[:index], rows[start:], args.stand_ins)
+                except StepFailed as error:
+                    return finish(FAILED_EXIT, f"RED: r{n} invalid receipts: {error}")
+                if inside[-1].name == rehold:
+                    code = 0
+                    break
+                first = expected[index]
+                expected[index:index] = [f"r{n}.sandbox (relaunch)", f"r{n}.services (relaunch)"]
                 reboot = True
                 continue
             break
@@ -2590,10 +2659,14 @@ def outer_main(args) -> int:
                 rows.append({"step": f"r{n}.sandbox", "status": "failed", "seconds": 0, "budget": None,
                              "detail": f"launcher exited {code}: {tail}", "ended_at": time.time()})
             return finish(FAILED_EXIT, f"RED: {rows[-1]['step']} failed")
+        try:
+            verify_receipts(expected, rows[start:], args.stand_ins)
+        except StepFailed as error:
+            return finish(FAILED_EXIT, f"RED: r{n} invalid receipts: {error}")
         outage = outage_row(rows, n)
         if outage is not None:
             rows.append(outage)
-    if any(row["status"] in ("stand-in", "skipped") for row in rows):
+    if args.stand_ins:
         return finish(STAND_IN_EXIT, "RED: stand-in run (development only): "
                       f"{sum(row['status'] == 'stand-in' for row in rows)} stood in, "
                       f"{sum(row['status'] == 'skipped' for row in rows)} skipped; this is not the drill")

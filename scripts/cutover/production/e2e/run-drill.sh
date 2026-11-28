@@ -33,6 +33,9 @@ checkout=$(cd "$here/../../../.." && { pwd -W 2>/dev/null || pwd; })
 [ -f "$checkout/scripts/cutover/production/e2e/run_drill.py" ] || die "not a checkout: $checkout"
 release=$(git -C "$checkout" rev-parse HEAD 2>/dev/null || printf '%040d' 0)
 docker volume inspect "$vendor_volume" >/dev/null 2>&1 || die "vendor volume $vendor_volume is missing"
+mysql_image=$(docker image inspect --format '{{.Id}}' "$mysql_image") || die "MySQL image missing"
+qa_image=$(docker image inspect --format '{{.Id}}' "$qa_image") || die "QA image missing"
+printf 'run-drill: mysql_image_id=%s qa_image_id=%s vendor_volume=%s\n' "$mysql_image" "$qa_image" "$vendor_volume"
 
 for name in "$prefix-mysql" "$prefix-qa"; do
     ! docker container inspect "$name" >/dev/null 2>&1 || die "container $name already exists"

@@ -27,6 +27,7 @@ Source paths are relative to this directory. Root owns installed code, configs a
 | `live_config.py` | `/opt/repro-cutover-fence/production/live_config.py` | 0644 |
 | `mysql_probe.py` | `/opt/repro-cutover-fence/production/mysql_probe.py` | 0644 |
 | `sqlite_seal.py` | `/opt/repro-cutover-fence/production/sqlite_seal.py` | 0644 |
+| `timers.py` | `/opt/repro-cutover-fence/production/timers.py` | 0644 |
 | `var_export.py` | `/opt/repro-cutover-fence/production/var_export.py` | 0644 |
 | `capture/capture.php` | `/opt/repro-telnyx-capture/capture.php` | 0644 |
 | `capture/php-fpm.conf` | `/etc/repro-telnyx-capture/php-fpm.conf` | 0644 |
@@ -45,8 +46,10 @@ Source paths are relative to this directory. Root owns installed code, configs a
 | `systemd/repro-telnyx-capture.service` | `/etc/systemd/system/repro-telnyx-capture.service` | 0644 |
 | `tmpfiles.d/repro-cutover-fence.conf` | `/etc/tmpfiles.d/repro-cutover-fence.conf` | 0644 |
 | `sudoers/repro-cutover-admit` | `/etc/sudoers.d/repro-cutover-admit` | 0440 |
+| `sudoers/repro-cutover-operator` | `/etc/sudoers.d/repro-cutover-operator` | 0440 |
 | `sudoers/repro-queue-flag` | `/etc/sudoers.d/repro-queue-flag` | 0440 |
 | `sbin/repro-queue-flag` | `/usr/local/sbin/repro-queue-flag` | 0755 |
+| `sbin/repro-cutover-run` | `/usr/local/sbin/repro-cutover-run` | 0755 |
 
 Render both engine-specific wrapper files from the complete, reviewed host profile set, including the smoke and replay profiles. Set every profile to its intended engine and initially publish the exact SQLite wrapper bytes.
 

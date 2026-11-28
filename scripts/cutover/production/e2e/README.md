@@ -32,6 +32,13 @@ REPRO_DRILL_ARCHIVE_REF=HEAD bash scripts/cutover/production/e2e/run-drill.sh --
 The second command exercises only the real and reference copy loads and compares
 their receipts. Use the default full run for drill acceptance.
 
+Save the console report from the pinned archive with the evidence. The launcher
+prints and runs both immutable image IDs. The harness compares every installed
+Composer package version and source/distribution reference to the archive's lock,
+then records both the lock and installed-manifest SHA-256 values and package count.
+The verdict checks receipt count, ordering and status against the selected steps.
+Both the full and A3-only runs require the last A3 comparison receipt.
+
 ## What it does
 
 The run is the test (design 6.2 for the drill, 7.1 drill mode, 7.3 the
