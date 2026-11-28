@@ -193,6 +193,19 @@ class Inside(drill.Inside):
                 done = drill.run(command, check=False)
                 require(done.returncode == 0, "Initial empty replay failed: " + drill._tail(done.stderr or done.stdout))
             self.note(getattr(self, "step_" + name)())
+        config = r"""$config = require $argv[1];
+$name = $config['database']['default'];
+$db = $config['database']['connections'][$name];
+echo json_encode([$db['driver'], $db['database'], $db['journal_mode']], JSON_THROW_ON_ERROR);"""
+        staged = drill.run(["/usr/bin/php", "-r", config, self.app / "bootstrap/cache/config.php"],
+                           user=drill.WEB_USER, group=drill.APP_GROUP, cwd=self.app)
+        driver, path, journal = json.loads(staged.stdout)
+        observed = self.sqlite_query("PRAGMA journal_mode")
+        require(driver == "sqlite" and path == str(self.paths.sqlite) and isinstance(journal, str)
+                and journal.lower() in ("wal", "delete") and observed == [[journal.lower()]]
+                and self.live_config()["live_config_sha256"] == self.policy["sqlite_live_config_sha256"],
+                "The measured SQLite journal mode differs from its pinned app configuration")
+        record(self.paths.e2e / "sqlite-journal.json", {"mode": journal.lower()})
         self.cli("hold", "--issued-approval")
         self.require_held("after approved hold")
         self.note(self.step_freeze())
@@ -287,6 +300,7 @@ class Inside(drill.Inside):
         try:
             drill.run([drill.PY, "-s", "-S", "-B", SOURCE / "scripts/mysql/export-sqlite.py", "--writers-stopped",
                        "--schema-template", frozen, "--schema-template-sha256", drill.sha256_file(frozen),
+                       "--sqlite-journal-mode", drill.read_json(self.paths.e2e / "sqlite-journal.json")["mode"],
                        "--approved-exceptions", exceptions, "--exceptions-file-sha256", drill.sha256_file(exceptions),
                        "--credentials", access, "--database", self.host["mysql"]["database"],
                        "--expected-server-uuid", self.host["mysql"]["target_uuid"], "--output", out],
