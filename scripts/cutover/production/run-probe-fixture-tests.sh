@@ -18,7 +18,8 @@
 # (default repro-probe-fixture-<pid>; names that already exist are refused, not
 # reused); REPRO_MYSQL_IMAGE and REPRO_QA_IMAGE override the pinned images.
 # Exit status: the tests' status; 2 for a usage error or a fixture that does not
-# come up.
+# come up. Set REPRO_DRILL_ARCHIVE_REF to test committed bytes on a Linux volume.
+# REPRO_DRILL_VENDOR_VOLUME optionally supplies its vendor subdirectory to Laravel tests.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
@@ -41,6 +42,20 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 checkout=$(cd "$here/../../.." && { pwd -W 2>/dev/null || pwd; })
 [ -f "$checkout/scripts/cutover/production/test_mysql_probe.py" ] || die "not a checkout: $checkout"
 
+source_mount="type=bind,source=$checkout,target=/src,readonly"
+mysql_mount="type=bind,source=$checkout/scripts/cutover/production/mysql,target=/src,readonly"
+archive_ref=${REPRO_DRILL_ARCHIVE_REF:-}
+vendor_volume=${REPRO_DRILL_VENDOR_VOLUME:-}
+vendor_mount=()
+if [ -n "$vendor_volume" ]; then
+    docker volume inspect "$vendor_volume" >/dev/null 2>&1 || die "vendor volume is missing"
+    vendor_mount=(--mount "type=volume,source=$vendor_volume,target=/src/vendor,volume-subpath=vendor,readonly")
+fi
+if [ -n "$archive_ref" ]; then
+    release=$(git -C "$checkout" rev-parse --verify --end-of-options "${archive_ref}^{commit}") || die "invalid archive commit"
+    ! docker volume inspect "$prefix-src" >/dev/null 2>&1 || die "volume $prefix-src already exists"
+fi
+
 variants=(socket networking skip-grant-tables)
 for variant in "${variants[@]}" qa; do
     ! docker container inspect "$prefix-$variant" >/dev/null 2>&1 || die "container $prefix-$variant already exists"
@@ -57,6 +72,16 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+if [ -n "$archive_ref" ]; then
+    volumes+=("$prefix-src")
+    docker volume create "$prefix-src" >/dev/null
+    git -C "$checkout" archive --format=tar "$release" | docker run --rm -i --pull never --network none \
+        --mount "type=volume,source=$prefix-src,target=/snapshot" --entrypoint /bin/sh "$qa_image" \
+        -ec 'tar -xf - -C /snapshot && mkdir -p /snapshot/vendor'
+    source_mount="type=volume,source=$prefix-src,target=/src,readonly"
+    mysql_mount="type=volume,source=$prefix-src,target=/src,volume-subpath=scripts/cutover/production/mysql,readonly"
+    echo "run-probe-fixture-tests: testing archive $release"
+fi
 
 for variant in "${variants[@]}"; do
     name=$prefix-$variant
@@ -67,7 +92,7 @@ for variant in "${variants[@]}"; do
     containers+=("$name")
     docker run -d --pull never --name "$name" --network none --cpus 2 --memory 2g \
         --mount "type=volume,source=$name,target=/fixture" \
-        --mount "type=bind,source=$checkout/scripts/cutover/production/mysql,target=/src,readonly" \
+        --mount "$mysql_mount" \
         --tmpfs /var/lib/mysql:rw,exec,size=1500m --tmpfs /tmp:rw,size=256m,mode=1777 \
         --entrypoint /bin/bash "$mysql_image" /src/fixture.sh serve /fixture ${argument[@]+"${argument[@]}"} >/dev/null
 done
@@ -92,7 +117,7 @@ fi
 containers+=("$prefix-qa")
 status=0
 docker run --rm --pull never --name "$prefix-qa" --network none --cpus 2 --memory 2g \
-    --mount "type=bind,source=$checkout,target=/src,readonly" \
+    --mount "$source_mount" "${vendor_mount[@]}" \
     --mount "type=volume,source=$prefix-socket,target=/fixture/socket" \
     --mount "type=volume,source=$prefix-networking,target=/fixture/networking" \
     --mount "type=volume,source=$prefix-skip-grant-tables,target=/fixture/skip-grant-tables" \
