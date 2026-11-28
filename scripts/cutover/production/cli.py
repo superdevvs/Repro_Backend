@@ -61,6 +61,15 @@ def arguments(argv):
     check = commands.add_parser("check-evidence")
     check.add_argument("--inputs", type=Path, required=True)
     check.add_argument("--write", action="store_true")
+    recovery = commands.add_parser("way-back").add_subparsers(dest="recovery_action", required=True)
+    recovery.add_parser("close")
+    recovery.add_parser("audit")
+    install = recovery.add_parser("install-sqlite")
+    source = install.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", type=Path)
+    source.add_argument("--keep-frozen", action="store_true")
+    install.add_argument("--sha256", required=True)
+    install.add_argument("--review", type=Path, required=True)
     abort = commands.add_parser("abort")
     abort.add_argument("--if-phase", choices=("ready", "frozen", "holding"))
     abort.add_argument("--if-challenge")
@@ -133,6 +142,17 @@ def dispatch(args, runner, adapter):
         recover = getattr(adapter, "recover_interrupted_mysql_reopen", None)
         if recover is not None:
             recover()
+    if action == "way-back":
+        import wayback
+        try:
+            if args.recovery_action == "close":
+                return wayback.close(adapter)
+            if args.recovery_action == "audit":
+                return wayback.audit(adapter)
+            return wayback.install(adapter, candidate=args.file, digest=args.sha256, review_path=args.review)
+        except (wayback.mysql_probe.Refusal, wayback.mysql_probe.Purged,
+                wayback.binlog_scan.Unreadable, wayback.binlog_scan.WrongServer):
+            raise UnsafeCutover("MySQL recovery evidence is unavailable or its history has expired") from None
     if action == "approval-template":
         return issue(runner, adapter, args.phase)
     if action == "status" and args.evidence:
