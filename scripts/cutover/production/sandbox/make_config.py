@@ -182,7 +182,7 @@ def host_config(args, root: Path, app: Path, datadir: Path, server_uuid: str, ad
     return {
         "version": 1,
         "paths": _contract(PATHS, adapter.PATHS, "path"),
-        "commands": _contract(_commands(args, app, root), adapter.COMMANDS, "command"),
+        "commands": _contract(_commands(args, app, root), adapter.COMMANDS | {"timer_stop"}, "command"),
         "options": _contract(OPTIONS, adapter.OPTIONS, "option"),
         "sqlite": str(app / "database" / "database.sqlite"),
         "deploy_locks": [str(root / "locks" / ".repro-backend-deploy.lock"),

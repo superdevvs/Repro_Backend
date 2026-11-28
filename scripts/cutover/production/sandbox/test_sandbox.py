@@ -955,6 +955,7 @@ class MakeConfigTests(unittest.TestCase):
         # D01's contract: load_config reads identity.json through `read`; here, the file make_config wrote.
         identity = (self.out / "identity.json").read_bytes()
         config = adapter.load_config(raw, read=lambda path: identity if str(path) == IDENTITY_CONFIG else None)
+        self.assertEqual([str(self.root / "bin" / "timer-stop")], config["commands"]["timer_stop"])
         for name, path in cli.FIXED_PATHS.items():
             self.assertEqual(str(path), config["paths"][name])
         self.assertEqual(str(cli.INGRESS_OPEN), config["paths"]["ingress_open"])
