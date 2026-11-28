@@ -39,6 +39,16 @@ class RowSourceTests(unittest.TestCase):
         self.assertEqual(tuple(item["gtid"] for item in self.listed), ids)
         self.assertIn("FROM 779 LIMIT 32", query.call_args.args[1])
 
+    def test_audit_scope_preserves_prior_foreign_writes_and_later_business_writes_but_refuses_later_ddl(self):
+        prior = {"class": "foreign", "gtid": f"{UUID}:9", "statements": [], "tables": ["users"]}
+        later = {"class": "business", "gtid": f"{UUID}:17", "statements": [], "tables": ["users"]}
+        with patch.object(mysql_probe, "_show", return_value=self.events):
+            ids, name, start, stop = source.coordinates(self.config, self.window, [prior, *self.listed, later])
+            self.assertEqual((tuple(item["gtid"] for item in self.listed), NAME, 456, 920), (ids, name, start, stop))
+            self.assertEqual("business", later["class"])
+            with self.assertRaises(source.Unavailable):
+                source.coordinates(self.config, self.window, [*self.listed, {**later, "statements": ["ALTER TABLE"]}])
+
     def test_unknown_extra_gtid_rotated_file_position_gaps_and_partial_last_commit_refuse(self):
         extra = (self.window[0], binlog_scan.GtidSet.parse(f"{UUID}:1-17"), self.window[2])
         other = [*self.listed[:-1], {**self.listed[-1], "file": "binlog.000014"}]
@@ -77,7 +87,8 @@ class RowSourceTests(unittest.TestCase):
             for key in libraries:
                 (private / key).write_bytes(key.encode())
             defaults = Path(folder) / "probe.cnf"
-            defaults.write_text("[client]\n")
+            credentials = "[client]\nuser=repro_cutover_probe\npassword=synthetic-probe-password\n"
+            defaults.write_text(credentials)
             defaults.chmod(0o600)
             self.config["mysql"].update(client=str(path.with_name("mysql")), probe_defaults=str(defaults), socket="/unused")
             for command, success in (("print('decoded privately')", True), ("print('x' * 12000)", False),
@@ -90,6 +101,12 @@ class RowSourceTests(unittest.TestCase):
                       patch.object(source, "MAX_DECODED_BYTES", 2048)):
                     if success:
                         self.assertEqual(b"decoded privately\n", source.decode(self.config, NAME, 10, 50))
+                        for extra in ("[mysqlbinlog]\nresult-file=/private/bypass\n", "!include /private/extra.cnf\n",
+                                      "!includedir /private/other\n", "plugin-dir=/private/plugin\n"):
+                            defaults.write_text(credentials + extra)
+                            with self.assertRaises(source.Unavailable):
+                                source.decode(self.config, NAME, 10, 50)
+                        defaults.write_text(credentials)
                         shadow = private / "libc.so.6"
                         shadow.symlink_to("missing")
                         with self.assertRaises(source.Unavailable):

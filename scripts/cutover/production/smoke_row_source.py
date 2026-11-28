@@ -10,7 +10,8 @@ from pathlib import Path
 
 import binlog_scan
 import mysql_probe as probe
-from adapter import guard
+from adapter import SECRET_VALUE, guard
+from runner import UnsafeCutover
 
 # Oracle mysqlbinlog 8.4.13 Linux x86_64, verified by the isolated native PITR rehearsal.
 DECODER_SHA256 = "1087ee9d26ea42f396a1a7f302eb2cc549b2e05c32c62f8125f9d1b40bc08048"
@@ -43,9 +44,17 @@ def _size(gtid_set):
 
 def coordinates(config, window, listed):
     uuid = config["mysql"]["target_uuid"]
-    require(len(listed) == 4 and all(item["class"] == "smoke" for item in listed))
+    # Earlier reviewed foreign activity and later business rows retain their own
+    # classifications. A later DDL/unknown statement may have changed ordinal layout.
+    candidates = []
+    for item in listed:
+        if item["class"] == "smoke":
+            candidates.append(item)
+        elif candidates:
+            require(not item["statements"])
+    require(len(candidates) == 4)
     before, after = window[:2]
-    gtids = tuple(item["gtid"] for item in listed)
+    gtids = tuple(item["gtid"] for item in candidates)
     pattern = re.compile(re.escape(uuid) + r":([1-9][0-9]{0,18})")
     numbers = []
     for gtid in gtids:
@@ -54,9 +63,9 @@ def coordinates(config, window, listed):
         numbers.append(int(match[1]))
     require(numbers == list(range(numbers[0], numbers[0] + 4))
             and before.issubset(after) and _size(after) - _size(before) == 4)
-    name = listed[0]["file"]
-    positions = [item["position"] for item in listed]
-    require(re.fullmatch(binlog_scan.LOG_NAME, name) and all(item["file"] == name for item in listed)
+    name = candidates[0]["file"]
+    positions = [item["position"] for item in candidates]
+    require(re.fullmatch(binlog_scan.LOG_NAME, name) and all(item["file"] == name for item in candidates)
             and all(type(pos) is int and pos >= 4 for pos in positions)
             and positions == sorted(set(positions)))
     # SQL's transaction records carry the start of each GTID. Stop at the fourth commit,
@@ -108,9 +117,26 @@ def check_digest(path, expected):
     require(digest.hexdigest() == expected)
 
 
+def decoder_credentials(path):
+    probe._protected(path, secret=True)
+    lines = [line.strip() for line in guard.read_protected(path).decode("ascii").splitlines()]
+    lines = [line for line in lines if line and not line.startswith(("#", ";"))]
+    require(len(lines) == 3 and lines[0] == "[client]")
+    values = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition("=")
+        require(sep == "=" and key.strip() in {"user", "password"} and key.strip() not in values)
+        values[key.strip()] = value.strip()
+    require(values.get("user") == "repro_cutover_probe" and guard.matches(SECRET_VALUE, values.get("password")))
+    return ("[client]\nuser=repro_cutover_probe\npassword=" + values["password"] + "\n").encode("ascii")
+
+
 def decode(config, name, start, stop):
     import resource
 
+    # This probe keeps private before/after images in Python and decoder process memory.
+    _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
     mysql = config["mysql"]
     path = Path(mysql["client"]).with_name("mysqlbinlog")
     check_digest(path, DECODER_SHA256)
@@ -121,20 +147,29 @@ def decode(config, name, start, stop):
     require({entry.name for entry in private.iterdir()} == OPENSSL_SHA256.keys())
     for lib, digest in OPENSSL_SHA256.items():
         check_digest(private / lib, digest)
-    probe._protected(Path(mysql["probe_defaults"]), secret=True)
-    argv = [str(path), f"--defaults-file={mysql['probe_defaults']}", "--no-login-paths",
-            "--read-from-remote-server", "--protocol=SOCKET", f"--socket={mysql['socket']}",
-            "--verify-binlog-checksum", "--base64-output=DECODE-ROWS", "--verbose", "--verbose",
-            f"--start-position={start}", f"--stop-position={stop}", name]
+    credentials = decoder_credentials(Path(mysql["probe_defaults"]))
 
     def limit_output():
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_DECODED_BYTES, MAX_DECODED_BYTES))
 
     # Row images can contain private columns. Use anonymous Linux memory and never print
     # or persist the decoder output or stderr. Enforce the limit in the child as it writes.
-    with os.fdopen(os.memfd_create("cutover-smoke-rows", os.MFD_CLOEXEC), "w+b") as output:
+    with (os.fdopen(os.memfd_create("cutover-smoke-rows", os.MFD_CLOEXEC), "w+b") as output,
+          os.fdopen(os.memfd_create("cutover-probe-login", os.MFD_CLOEXEC), "w+b") as login):
+        os.fchmod(login.fileno(), 0o600)
+        login.write(credentials)
+        login.flush()
+        login.seek(0)
+        # Give the decoder only the account and password. A shared defaults file can contain
+        # decoder-only output or plugin options that would bypass our private stdout.
+        argv = [str(path), f"--defaults-file=/proc/self/fd/{login.fileno()}", "--no-login-paths",
+                "--read-from-remote-server", "--protocol=SOCKET", f"--socket={mysql['socket']}",
+                "--verify-binlog-checksum", "--base64-output=DECODE-ROWS", "--verbose", "--verbose",
+                f"--start-position={start}", f"--stop-position={stop}", name]
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
-                                env=probe.CLIENT_ENVIRONMENT, timeout=probe.CLIENT_SECONDS, preexec_fn=limit_output)
+                                env=probe.CLIENT_ENVIRONMENT, timeout=probe.CLIENT_SECONDS, preexec_fn=limit_output,
+                                pass_fds=(login.fileno(),))
         require(result.returncode == 0 and 0 < output.tell() < MAX_DECODED_BYTES)
         output.seek(0)
         return output.read(MAX_DECODED_BYTES)
@@ -142,7 +177,6 @@ def decode(config, name, start, stop):
 
 def verified(config, window, listed):
     """Return one aggregate boolean. Missing tools, unsupported layouts and row ambiguity have no exemption."""
-    import gate
     try:
         import smoke_rows
 
@@ -155,6 +189,6 @@ def verified(config, window, listed):
         return smoke_rows.verify_rows(raw, database=config["mysql"]["database"],
                                       server_uuid=config["mysql"]["target_uuid"], expected_gtids=gtids,
                                       fixture=fixture, layout=names) is True
-    except (ImportError, OSError, ValueError, TypeError, KeyError, guard.Refused, gate.GateRefused,
+    except (ImportError, OSError, ValueError, TypeError, KeyError, guard.Refused, UnsafeCutover,
             subprocess.SubprocessError):
         return False

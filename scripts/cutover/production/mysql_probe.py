@@ -712,9 +712,12 @@ def audit(config: dict) -> dict:
                        "in the binary log audit", base)
     row_scope_verified = False
     if window is not None and any(item["class"] == "smoke" for item in listed):
-        import smoke_row_source
-
-        row_scope_verified = smoke_row_source.verified(config, window, listed)
+        try:
+            import smoke_row_source
+        except ImportError:
+            pass  # An incomplete optional decoder installation gives no smoke exemption.
+        else:
+            row_scope_verified = smoke_row_source.verified(config, window, listed)
         if not row_scope_verified:
             for item in listed:
                 if item["class"] == "smoke":

@@ -618,8 +618,9 @@ This optional path requires the reviewed Oracle MySQL 8.4.13 Linux x86_64 `mysql
 `1087ee9d26ea42f396a1a7f302eb2cc549b2e05c32c62f8125f9d1b40bc08048`. The probe also verifies both bundled
 OpenSSL libraries in the decoder's private library directory. That directory must contain exactly the two
 reviewed files, so an alternative library or hardware-specific loader directory cannot override them.
-An absent decoder,
-unrecognized row layout, other transactions, rotated log window or incomplete row proof leaves the
+The protected probe option file must contain a single `[client]` section with the probe user and its password.
+Only these two credentials reach the decoder. A missing decoder, unrecognized row layout, additional transactions
+inside the smoke window, a rotated log or incomplete row proof leaves the
 transactions classified as business. Use the full reverse export and verify the new SQLite file in those cases.
 Demonstrate the short path on the approved host layout at W2c.
 
