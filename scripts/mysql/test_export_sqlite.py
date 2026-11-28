@@ -132,10 +132,16 @@ class ReverseExportTest(unittest.TestCase):
             reverse.verify_source_triggers(reverse.IGUIDE_PROJECT_TABLES, {reverse.IGUIDE_PROJECT_TRIGGER: ""}, [])
 
     def test_exports_rows_and_sqlite_trigger_without_copying_native_only_trigger(self):
+        for template_mode, output_mode in (("delete", None), ("wal", None), ("wal", "wal"), ("delete", "wal")):
+            with self.subTest(template=template_mode, output=output_mode):
+                self.check_export_in_frozen_journal_mode(template_mode, output_mode)
+
+    def check_export_in_frozen_journal_mode(self, journal, output_mode):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template.sqlite"
             with contextlib.closing(sqlite3.connect(template)) as sqlite:
+                self.assertEqual(journal, sqlite.execute("PRAGMA journal_mode=" + journal).fetchone()[0])
                 for table in sorted(reverse.IGUIDE_PROJECT_TABLES):
                     sqlite.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
                 sqlite.execute(
@@ -150,6 +156,8 @@ class ReverseExportTest(unittest.TestCase):
                 exceptions_file_sha256=reverse.migrate.file_hash(exceptions),
                 expected_server_uuid="ec219d68-61fd-4a9e-ba98-43ddb4008383",
             )
+            if output_mode:
+                options.sqlite_journal_mode = output_mode
             metadata = {table: {"id": False} for table in reverse.IGUIDE_PROJECT_TABLES}
             state = metadata, [project_trigger(), {"TRIGGER_NAME": "fixture_project_update"}], {}
             with (
@@ -161,13 +169,23 @@ class ReverseExportTest(unittest.TestCase):
             ):
                 reverse.export(options)
 
-            self.assertTrue(json.loads((options.output / "result.json").read_text())["verified"])
-            with contextlib.closing(sqlite3.connect(options.output / "database.sqlite")) as sqlite:
+            result = json.loads((options.output / "result.json").read_text())
+            self.assertTrue(result["verified"])
+            self.assertEqual(output_mode or "delete", result["sqlite_journal_mode"])
+            artifact = options.output / "database.sqlite"
+            self.assertEqual(reverse.migrate.file_hash(artifact), result["database_sha256"])
+            self.assertEqual(journal, reverse.journal_mode_from_header(template))
+            self.assertEqual(result["sqlite_journal_mode"], reverse.journal_mode_from_header(artifact))
+            for suffix in ("-wal", "-shm", "-journal"):
+                self.assertFalse(Path(str(artifact) + suffix).exists())
+            with contextlib.closing(sqlite3.connect(artifact.as_uri() + "?mode=ro", uri=True)) as sqlite:
+                self.assertEqual(result["sqlite_journal_mode"], sqlite.execute("PRAGMA journal_mode=" + result["sqlite_journal_mode"]).fetchone()[0])
                 self.assertEqual([(7,)], sqlite.execute("SELECT id FROM iguide_lab_projects").fetchall())
                 self.assertEqual(
                     [("fixture_project_update",)],
                     sqlite.execute("SELECT name FROM sqlite_schema WHERE type='trigger'").fetchall(),
                 )
+            self.assertEqual(reverse.migrate.file_hash(artifact), result["database_sha256"])
 
 
 if __name__ == "__main__":

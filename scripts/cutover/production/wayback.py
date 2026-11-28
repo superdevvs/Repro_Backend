@@ -299,9 +299,20 @@ def staged_smoke(adapter, source, deadline):
 
     def probe(cache, measured):
         need(measured.live_config_sha256 == expected["route_sha256"], "Staged SQLite route differs from its pin")
-        command = ["/usr/bin/unshare", "--mount", "--propagation", "private", "--", "/bin/sh", "-ec",
-                   '/usr/bin/mount -o bind,ro -- "$1" "$2"; export APP_CONFIG_CACHE="$3"; shift 3; exec "$@"',
-                   "repro-wayback-smoke", str(source), str(adapter.database), str(cache), *argv]
+        route = measured.values
+        configured = route["database.connections"][route["database.default"]].get("journal_mode")
+        if configured:
+            mode = str(configured).lower()
+            need(mode in ("wal", "delete", "truncate", "persist", "memory", "off"), "Unknown pinned SQLite journal mode")
+            with source.open("rb") as stream:
+                header = stream.read(20)
+            versions = b"\x02\x02" if mode == "wal" else b"\x01\x01"
+            need(len(header) == 20 and header.startswith(b"SQLite format 3\0") and header[18:20] == versions,
+                 "Export journal format differs from the pinned SQLite cache; create a new export using "
+                 f"--sqlite-journal-mode {'wal' if mode == 'wal' else 'delete'} and verify its new checksum")
+        command = ["/usr/bin/unshare", "--mount", "--propagation", "private", "--", "/usr/bin/python3", "-I", "-S",
+                   "-B", str(Path(__file__).with_name("wayback_mount.py")), str(source), str(adapter.database),
+                   str(cache), str(parent), user, *argv]
         code, output = adapter._execute(command, deadline)
         host.evidence.readonly_check(output, code, user, group, adapter.config["smoke"], expected)
 
@@ -342,14 +353,7 @@ def install_file(adapter, candidate, intent):
         staged_smoke(adapter, db, adapter.clock() + adapter.config["command_seconds"])
         return
     sqlite_seal._refuse_open_writers(db, adapter.proc)
-    for companion in sqlite_seal.companions(db)[1:]:
-        if os.path.lexists(companion):
-            cs = companion.lstat()
-            need(stat.S_ISREG(cs.st_mode) and (companion.name.endswith("-shm") or cs.st_size == 0)
-                 and not os.path.lexists(archive / companion.name), "The frozen SQLite sidecar requires review")
-            os.rename(companion, archive / companion.name)
-            host._sync_directory(archive)
-            host._sync_directory(db.parent)
+    frozen_sidecars(db, archive)
     fd, temp = tempfile.mkstemp(dir=archive, prefix=".verified-export-")
     try:
         with os.fdopen(fd, "wb") as output, guard.open_protected(candidate) as source:
@@ -363,11 +367,24 @@ def install_file(adapter, candidate, intent):
         staged_smoke(adapter, Path(temp), adapter.clock() + adapter.config["command_seconds"])
         need(sqlite_seal.file_sha256(Path(temp)) == intent["installed_sha256"], "Staged SQLite smoke changed the export")
         verify_close(adapter)
+        for companion in frozen_sidecars(db, archive):
+            os.rename(companion, archive / companion.name)
+            host._sync_directory(archive)
+            host._sync_directory(db.parent)
         os.replace(temp, db)
         host._sync_directory(db.parent)
         host._sync_directory(archive)
     finally:
         Path(temp).unlink(missing_ok=True)
+
+
+def frozen_sidecars(db, archive):
+    paths = [p for p in sqlite_seal.companions(db)[1:] if os.path.lexists(p)]
+    for p in paths:
+        info = p.lstat()
+        need(stat.S_ISREG(info.st_mode) and (p.name.endswith("-shm") or info.st_size == 0)
+             and not os.path.lexists(archive / p.name), "The frozen SQLite sidecar requires review")
+    return paths
 
 
 def install(adapter, *, candidate, digest, review_path):

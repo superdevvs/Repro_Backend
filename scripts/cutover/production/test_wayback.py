@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -328,27 +329,80 @@ class WayBackTest(unittest.TestCase):
 
     def test_failed_staged_smoke_preserves_frozen_sqlite_and_live_cache(self):
         candidate, digest, _, _ = self.export()
+        shm = Path(str(self.a.database) + "-shm")
+        shm.write_bytes(b"original-checkpointed-index")
+        wal = Path(str(self.a.database) + "-wal")
+        wal.touch()
+        old_sidecars = [(p.stat().st_ino, p.read_bytes()) for p in (shm, wal)]
         with patch.object(wb, "staged_smoke", side_effect=UnsafeCutover("staged smoke failed")):
             with self.assertRaisesRegex(UnsafeCutover, "staged smoke failed"):
                 self.run_install(candidate, digest)
         self.assertEqual(self.initial, wb.sqlite_seal.file_sha256(self.a.database))
+        self.assertEqual(old_sidecars, [(p.stat().st_ino, p.read_bytes()) for p in (shm, wal)])
         self.a._seal_sqlite_config.assert_not_called()
         self.assertFalse((self.a.journal.directory / wb.INSTALLED).exists())
 
     def test_native_staged_mount_is_private_readonly_or_fails_closed_without_capability(self):
         self.root.chmod(0o711)
-        hidden = self.root / "root-only"
+        live = self.root / "app-db"
+        live.mkdir()
+        self.a.database = live / "database.sqlite"
+        self.make_sqlite(self.a.database, "original")
+        conn = sqlite3.connect(self.a.database)
+        self.addCleanup(conn.close)
+        self.assertEqual("wal", conn.execute("PRAGMA journal_mode=WAL").fetchone()[0])
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("INSERT INTO ledger VALUES (2, 'confirmed transaction only in original WAL')")
+        conn.commit()
+        def original_files():
+            return {p.name: (p.stat().st_ino, p.read_bytes()) for p in wb.sqlite_seal.companions(self.a.database) if p.exists()}
+        before = original_files()
+        self.assertGreater(len(before["database.sqlite-wal"][1]), 32)
+        self.assertIn("database.sqlite-shm", before)
+        hidden = live / "root-only"
         hidden.mkdir(mode=0o700)
         source = hidden / "new.sqlite"
         self.make_sqlite(source, "the verified replacement")
+        conn_new = sqlite3.connect(source)
+        self.assertEqual("wal", conn_new.execute("PRAGMA journal_mode=WAL").fetchone()[0])
+        conn_new.close()
         source.chmod(0o444)
         expected = "the verified replacement"
         self.a.config.update(app_owner="www-data", smoke={})
         code = ("import os,sqlite3,sys; "
                 "assert os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY; "
                 "assert os.path.isfile(os.environ['APP_CONFIG_CACHE']); "
-                "print(sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True).execute('SELECT entry FROM ledger').fetchone()[0])")
+                "db=sqlite3.connect(sys.argv[1]); assert db.execute('pragma journal_mode=wal').fetchone()[0]=='wal'; "
+                "assert db.execute('select count(*) from ledger').fetchone()[0]==1; "
+                "print(db.execute('SELECT entry FROM ledger').fetchone()[0])")
         argv = ["/usr/sbin/runuser", "-u", "www-data", "--", "/usr/bin/python3", "-c", code, str(self.a.database)]
+        vendor = os.environ.get("REPRO_WAYBACK_LARAVEL_VENDOR")
+        if vendor:
+            lib = self.root / "framework"
+            lib.mkdir(mode=0o755)
+            for name in ("DetectsLostConnections", "Connectors/ConnectorInterface", "Connectors/Connector", "Connectors/SQLiteConnector"):
+                dest = lib / (Path(name).name + ".php")
+                shutil.copyfile(Path(vendor) / "laravel/framework/src/Illuminate/Database" / (name + ".php"), dest)
+                dest.chmod(0o444)
+            php = r"""foreach (['DetectsLostConnections', 'ConnectorInterface', 'Connector', 'SQLiteConnector'] as $name) {
+                require $argv[2].'/'.$name.'.php';
+            }
+            $pdo = (new Illuminate\Database\Connectors\SQLiteConnector)->connect([
+                'database' => $argv[1], 'journal_mode' => 'wal', 'busy_timeout' => 5000,
+                'synchronous' => 'normal', 'foreign_key_constraints' => true
+            ]);
+            try {
+                $pdo->exec("INSERT INTO ledger VALUES (90, 'must fail on read-only mount')");
+                exit(4);
+            } catch (PDOException $error) {
+                if (($error->errorInfo[1] ?? 0) !== 8) exit(5);
+            }
+            $pdo->exec('PRAGMA query_only=ON');
+            $rows = $pdo->query('SELECT entry FROM ledger')->fetchAll(PDO::FETCH_COLUMN);
+            if (count($rows) !== 1) exit(6);
+            echo $rows[0];"""
+            argv = ["/usr/sbin/runuser", "-u", "www-data", "--", "/usr/local/bin/php", "-r", php,
+                    str(self.a.database), str(lib)]
         self.a._smoke_commands.return_value = [(argv, "www-data", None)]
 
         def execute(argv, deadline):
@@ -359,7 +413,8 @@ class WayBackTest(unittest.TestCase):
             cache = Path(parent) / "config.php"
             cache.write_text("fixture")
             cache.chmod(0o444)
-            inspect_cache(cache, SimpleNamespace(live_config_sha256=expected_sha256))
+            values = {"database.default": "sqlite", "database.connections": {"sqlite": {"journal_mode": "wal"}}}
+            inspect_cache(cache, SimpleNamespace(live_config_sha256=expected_sha256, values=values))
 
         def read_only(output, returncode, *args):
             wb.need(returncode == 0 and output == expected, "staged application smoke refused")
@@ -372,7 +427,12 @@ class WayBackTest(unittest.TestCase):
             else:
                 with self.assertRaisesRegex(UnsafeCutover, "staged application smoke refused"):
                     wb.staged_smoke(self.a, source, 100)
-        self.assertEqual(self.initial, wb.sqlite_seal.file_sha256(self.a.database))
+            mismatched = hidden / "delete-format.sqlite"
+            self.make_sqlite(mismatched, "different format")
+            with self.assertRaisesRegex(UnsafeCutover, "--sqlite-journal-mode wal"):
+                wb.staged_smoke(self.a, mismatched, 100)
+        self.assertEqual(before, original_files(), "staged SQLite must never see or modify original WAL/SHM")
+        self.assertEqual(2, conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0])
         self.assertEqual([], list(self.root.glob("wayback-smoke-*")))
 
     def test_unexpected_sqlite_sidecar_stops_before_swap(self):

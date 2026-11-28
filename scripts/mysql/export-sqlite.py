@@ -24,6 +24,16 @@ CASCADE_TRIGGER_MANIFEST = pathlib.Path(__file__).resolve().parents[2] / 'databa
 class ReverseInputError(RuntimeError):
     pass
 
+
+def journal_mode_from_header(path):
+    # The immutable reader deliberately ignores WAL sidecars and reports DELETE even
+    # for a checkpointed WAL file. Bytes 18/19 are SQLite's persistent read/write versions.
+    with path.open('rb') as stream:
+        header = stream.read(20)
+    if not header.startswith(b'SQLite format 3\0') or header[18:20] not in (b'\x01\x01', b'\x02\x02'):
+        raise ReverseInputError('Invalid or unsupported SQLite journal format in the database header.')
+    return 'wal' if header[18:20] == b'\x02\x02' else 'delete'
+
 def portable(value):
     if isinstance(value,(datetime.date,datetime.time,datetime.datetime,decimal.Decimal)):return str(value)
     if isinstance(value,datetime.timedelta):
@@ -129,6 +139,9 @@ def prepare_reverse_inputs(options):
 
 def export(options):
     started=time.monotonic()
+    final_mode = getattr(options, 'sqlite_journal_mode', 'delete')
+    if final_mode not in ('delete', 'wal'):
+        raise ReverseInputError('Reviewed SQLite journal mode must be delete or wal.')
     if not options.writers_stopped:raise RuntimeError('Externally drain/stop all writers and explicitly attest the freeze.')
     if options.output.exists():raise RuntimeError('Output must be a new private directory; existing files are never replaced.')
     template_path, approved, definitions, schema, sqlite_triggers, expected = prepare_reverse_inputs(options)
@@ -197,9 +210,20 @@ def export(options):
     finally:
         out.close();db.close()
     if migrate.file_hash(template_path)!=options.schema_template_sha256:raise RuntimeError('Schema template changed during export.')
+    # Prepare the reviewed format before hashing. Use a fresh connection after all
+    # export cursors have closed so no statement from field verification holds a lock.
+    if final_mode == 'wal':
+        with closing(sqlite3.connect(destination, isolation_level=None)) as finish:
+            if finish.execute('PRAGMA journal_mode=WAL').fetchall() != [('wal',)]:
+                raise ReverseInputError('The new SQLite file could not enter the reviewed WAL journal mode.')
+            if finish.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall() != [(0, 0, 0)]:
+                raise ReverseInputError('The new SQLite WAL could not be fully checkpointed.')
+    if (journal_mode_from_header(destination) != final_mode or
+            any(os.path.lexists(str(destination) + suffix) for suffix in ('-wal', '-shm', '-journal'))):
+        raise ReverseInputError('The reverse SQLite file must be standalone in the reviewed journal format.')
     result={'verified':True,'tables':len(verified),'rows':sum(row['rows'] for row in verified),'field_mismatches':0,
         'sqlite_triggers':len(sqlite_triggers),'exception_relationships':len(exceptions),'foreign_keys_enabled':True,
-        'database_sha256':migrate.file_hash(destination),'source_server_uuid':options.expected_server_uuid,
+        'database_sha256':migrate.file_hash(destination),'sqlite_journal_mode':final_mode,'source_server_uuid':options.expected_server_uuid,
         'schema_template_sha256':options.schema_template_sha256,'seconds':round(time.monotonic()-started,1),
         'application_configuration_changed':False,'cutover_ready':False,
         'next_step':'Independently validate the new SQLite artifact and external-side-effect reconciliation before the approved connection switch.'}
@@ -212,6 +236,8 @@ def main():
     parser.add_argument('--schema-template-sha256',required=True);parser.add_argument('--approved-exceptions',type=pathlib.Path,required=True)
     parser.add_argument('--exceptions-file-sha256',required=True);parser.add_argument('--output',type=pathlib.Path)
     parser.add_argument('--writers-stopped',action='store_true')
+    parser.add_argument('--sqlite-journal-mode', choices=('delete', 'wal'), default='delete',
+                        help='persistent format of the verified export; select the reviewed SQLite runtime mode')
     parser.add_argument('--check-inputs-only', action='store_true')
     options = parser.parse_args()
     if options.check_inputs_only:
