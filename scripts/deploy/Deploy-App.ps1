@@ -169,7 +169,7 @@ function Test-DeploymentSpace {
 function Invoke-DeploymentRetention {
     # Both remote deployment wrappers have returned, closing their flock FDs.
     # The retention helper can now acquire backend then frontend without a cycle.
-    Invoke-Ssh -Command 'set -eu; python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
+    Invoke-Ssh -Command 'set -eu; python3 -B /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 -B /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
 }
 
 function Deploy-Backend {
@@ -185,6 +185,8 @@ set -Eeuo pipefail
 [ "$(id -gn)" = "www-data" ] || { echo 'Backend deployment requires the shared www-data group.' >&2; exit 93; }
 # Code must stay non-writable by PHP-FPM; SQLite inherits database file modes.
 umask 0022
+# Python must not write __pycache__ into the fingerprinted app tree.
+export PYTHONDONTWRITEBYTECODE=1
 archive="$1"
 commit="$2"
 run_migrations="$3"
@@ -201,12 +203,52 @@ preflight="/tmp/repro-stripe-preflight-$commit.php"
 webhook_setup="/tmp/repro-stripe-webhook-$commit.php"
 maintenance=0
 code_replaced=0
+scheduler_hold=""
+hold_set=0
+
+# Scheduler hold for this deploy, read by the app when SCHEDULER_HOLD_ENABLED
+# is on. It expires by itself after 30 minutes and never blocks the deploy.
+# The folder comes from the app's own config (SCHEDULER_HOLD_DIRECTORY), so
+# the hold lands where the scheduler reads; code without that command uses
+# the default folder.
+hold_scheduler() {
+  local directory
+  directory="$(cd "$app" && php artisan scheduler:hold path --no-interaction 2>/dev/null | tail -n 1)" || directory=""
+  case "$directory" in /*) ;; *) directory="$app/storage/framework" ;; esac
+  scheduler_hold="$directory/scheduler-hold.deploy.json"
+  if printf '{"hold":["*"],"reason":"deploy %s","expires_at":%s}\n' "$commit" "$(( $(date +%s) + 1800 ))" > "$scheduler_hold.tmp" \
+    && mv -f "$scheduler_hold.tmp" "$scheduler_hold"; then
+    hold_set=1
+  else
+    rm -f "$scheduler_hold.tmp" 2>/dev/null || true
+    echo 'scheduler_hold=unavailable' >&2
+  fi
+}
+release_scheduler_hold() {
+  if [ "$hold_set" -eq 1 ]; then
+    rm -f "$scheduler_hold"
+    hold_set=0
+  fi
+}
+# Replays Telnyx texts saved during maintenance (docs/sqlite-first/telnyx-receiver.md).
+# This shell already runs with the www-data group; umask 002 keeps what the
+# replay writes usable by PHP-FPM. A replay problem never fails the deploy.
+replay_telnyx_spool() {
+  (cd "$app" && umask 0002 && php artisan telnyx:replay-spool --no-interaction) || echo 'telnyx_spool_replay=failed' >&2
+}
 
 # This lock serializes cooperating deployments. The final process and source
 # checks below also detect common tools that do not take the lock.
 command -v flock >/dev/null
 exec 9>"$HOME/.repro-backend-deploy.lock"
 flock -w 300 9 || { echo 'Another backend deployment holds the lock; retry later.' >&2; exit 94; }
+
+# The administrator-installed cutover controller owns this flag. Check it
+# after taking the deploy lock, before any app mutation.
+if [ -e /etc/repro-database-cutover/active ] || [ -L /etc/repro-database-cutover/active ]; then
+  echo 'Database cutover holds the backend deployment fence.' >&2
+  exit 95
+fi
 
 # Recheck current free blocks under the deployment lock, before extraction,
 # maintenance or rollback backups. The first check ran before SCP.
@@ -242,8 +284,12 @@ finish() {
     echo "backend_source_rollback_complete:$backup" >&2
   fi
   if [ "$maintenance" -eq 1 ]; then
+    replay_telnyx_spool
     (cd "$app" && php artisan up) || true
+    # Texts saved while the first pass ran.
+    replay_telnyx_spool
   fi
+  release_scheduler_hold
   rm -rf "$stage" "$restore_stage"
   rm -f "$archive"
   exit "$rc"
@@ -305,15 +351,16 @@ php "$preflight"
 
 cd "$app"
 python3 "$stage/scripts/deploy/backend-source-fingerprint.py" "$app" --expected "$expected_source" --check-processes
+hold_scheduler
+# Never add --render: a prerendered page answers before Laravel starts, so the
+# Telnyx capture middleware could not run.
 php artisan down --retry=60
 maintenance=1
 tar -czf "$backup/source.tar.gz" -C "$app" \
   --exclude='.env*' --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.pfx' --exclude='*.jks' --exclude='./output' --exclude='quarantine*' --exclude='./bootstrap/cache/*.php' --exclude='./.git' --exclude='./vendor' --exclude='./node_modules' \
   --exclude='./storage' --exclude='./database/*.sqlite' --exclude='./database/*.sqlite-*' \
   --exclude='./public/storage' .
-if [ -f "$app/database/database.sqlite" ]; then
-  php "$stage/scripts/deploy/backup-sqlite.php" "$app/database/database.sqlite" "$backup/database.sqlite"
-fi
+php "$stage/scripts/deploy/backup-database.php" "$app" "$backup"
 echo "Rollback backups: $backup"
 
 code_replaced=1
@@ -440,8 +487,13 @@ curl --fail --silent --show-error https://api.reprodashboard.com/opcache_reset_t
 rm -f "$app/public/opcache_reset_temp.php"
 bash "$app/scripts/deploy/provision-public-storage.sh" verify "$app" https://reprodashboard.com
 php artisan media:storage-health
+# Last step before up: texts saved during this maintenance window.
+replay_telnyx_spool
 php artisan up
 maintenance=0
+# Texts that arrived while the first pass ran.
+replay_telnyx_spool
+release_scheduler_hold
 
 pending="$(php artisan migrate:status --no-interaction | grep -c 'Pending' || true)"
 test "$pending" = "0"
@@ -461,6 +513,8 @@ function Deploy-Frontend {
     )
     $remoteScript = @'
 set -Eeuo pipefail
+# Python must not write __pycache__ into the fingerprinted app tree.
+export PYTHONDONTWRITEBYTECODE=1
 archive="$1"
 commit="$2"
 archive_bytes="$3"
@@ -471,6 +525,11 @@ stage="/tmp/repro-frontend-$commit"
 command -v flock >/dev/null
 exec 9>"$HOME/.repro-frontend-deploy.lock"
 flock -w 300 9 || { echo 'Another frontend deployment holds the lock; retry later.' >&2; exit 94; }
+if [ -e /etc/repro-database-cutover/active ] || [ -L /etc/repro-database-cutover/active ]; then
+  echo 'Database cutover holds the frontend deployment fence.' >&2
+  exit 95
+fi
+
 python3 /var/www/backend/scripts/deploy/deployment-storage.py preflight frontend "$archive_bytes" "$release_bytes"
 
 case "$archive" in /tmp/repro-frontend-*.tar.gz) ;; *) echo "Unsafe archive path" >&2; exit 90 ;; esac

@@ -390,9 +390,12 @@ class IguideLabRuntimeManifestCheckTest extends TestCase
     private function tableCounts(): array
     {
         $counts = [];
-        foreach (DB::select("select name from sqlite_master where type = 'table' and name not like 'sqlite_%' order by name") as $table) {
-            $counts[$table->name] = DB::table($table->name)->count();
+        $connection = DB::connection();
+        $schema = $connection->getDriverName() === 'mysql' ? $connection->getDatabaseName() : null;
+        foreach ($connection->getSchemaBuilder()->getTableListing($schema, schemaQualified: false) as $table) {
+            $counts[$table] = DB::table($table)->count();
         }
+        ksort($counts);
 
         return $counts;
     }

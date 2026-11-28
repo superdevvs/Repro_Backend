@@ -130,7 +130,7 @@ class ListingStudioRequestController extends Controller
                 $payload['client_id'] !== null
                     ? $pending->where('client_id', $payload['client_id'])
                     : $pending->whereNull('client_id')->where('submitted_by_id', $actor->id)
-                        ->whereRaw("LOWER(json_extract(contact, '$.email')) = ?", [strtolower($payload['contact']['email'])]);
+                        ->whereRaw('LOWER('.\App\Support\DatabaseSql::jsonScalar('contact', '$.email').') = ?', [strtolower($payload['contact']['email'])]);
                 abort_if($pending->exists(), 409, 'A signup request for this client is already awaiting review.');
             }
 

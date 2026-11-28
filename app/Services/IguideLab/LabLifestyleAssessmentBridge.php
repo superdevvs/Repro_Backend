@@ -45,7 +45,7 @@ class LabLifestyleAssessmentBridge
         abort_unless(str_starts_with($relativeRequest, 'iguide-lab/'.$projectId.'/lifestyle-assessments/'), 422);
         $disk = Storage::disk(LabService::DISK); $this->json($relativeRequest, $request);
         $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
-        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
+        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'PYTHONDONTWRITEBYTECODE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
         $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/lifestyle_assessment_bridge.py'),
             '--request', $disk->path($relativeRequest), '--allowed-root', $disk->path('iguide-lab/'.$projectId)], null, $env, null, 90);
         $process->run(); $report = json_decode($process->getOutput(), true);

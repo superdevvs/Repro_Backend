@@ -211,6 +211,21 @@ return [
         'webhook_events' => [
             'raw_retention_days' => (int) env('TELNYX_WEBHOOK_RAW_RETENTION_DAYS', 30),
         ],
+        // While the app is in maintenance mode, save signed Telnyx texts to a
+        // private spool and answer 200; telnyx:replay-spool replays them. Voice
+        // and Vapi events are kept for telnyx:missed-calls only. Off by default.
+        // See docs/sqlite-first/telnyx-receiver.md.
+        'maintenance_capture' => [
+            'enabled' => (bool) env('TELNYX_MAINTENANCE_CAPTURE_ENABLED', false),
+            'spool_path' => env('TELNYX_MAINTENANCE_SPOOL_PATH', storage_path('app/telnyx-spool')),
+            'max_body_bytes' => 1048576,
+            // How long a replay waits for a capture that is still saving.
+            'drain_wait_seconds' => 30,
+            // The replay refuses to run under another group, so files it
+            // creates stay writable by PHP-FPM. Empty turns the check off.
+            'replay_group' => env('TELNYX_SPOOL_REPLAY_GROUP', 'www-data'),
+            'keep_days' => (int) env('TELNYX_SPOOL_KEEP_DAYS', 14),
+        ],
     ],
 
     // QA / test harness configuration

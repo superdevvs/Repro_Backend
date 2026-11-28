@@ -27,9 +27,10 @@ class AccountSearchQuery
             $rep = $filters['rep'];
             // Match the directory's legacy rep-name filter, including creator
             // fallback and ID-only assignments. Never infer a superadmin as rep.
-            $explicitId = "COALESCE(NULLIF(json_extract(users.metadata, '$.accountRepId'), ''), NULLIF(json_extract(users.metadata, '$.account_rep_id'), ''), NULLIF(json_extract(users.metadata, '$.repId'), ''), NULLIF(json_extract(users.metadata, '$.rep_id'), ''))";
+            $jsonValue = fn (string $key) => \App\Support\DatabaseSql::jsonScalar('users.metadata', '$.'.$key, $query->getConnection());
+            $explicitId = 'COALESCE('.implode(', ', array_map(fn ($key) => 'NULLIF('.$jsonValue($key).", '')", ['accountRepId', 'account_rep_id', 'repId', 'rep_id'])).')';
             $rawId = "COALESCE($explicitId, users.created_by_id)";
-            $metadataName = "COALESCE(NULLIF(json_extract(users.metadata, '$.accountRep'), ''), NULLIF(json_extract(users.metadata, '$.account_rep'), ''), NULLIF(json_extract(users.metadata, '$.rep'), ''))";
+            $metadataName = 'COALESCE('.implode(', ', array_map(fn ($key) => 'NULLIF('.$jsonValue($key).", '')", ['accountRep', 'account_rep', 'rep'])).')';
             $recordName = "(SELECT account_rep.name FROM users AS account_rep WHERE account_rep.id = $rawId AND account_rep.deleted_at IS NULL AND (account_rep.role <> 'superadmin' OR $explicitId IS NOT NULL) LIMIT 1)";
             $creatorIsSuperadmin = "EXISTS (SELECT 1 FROM users AS creator WHERE creator.id = users.created_by_id AND creator.role = 'superadmin' AND creator.deleted_at IS NULL)";
             $legacyName = "CASE WHEN $creatorIsSuperadmin THEN NULL ELSE NULLIF(users.created_by_name, '') END";
@@ -39,10 +40,10 @@ class AccountSearchQuery
         }
         $term = trim($term);
         if ($term !== '') {
-            $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $term).'%';
+            $like = '%'.\App\Support\DatabaseSql::escapeLike($term).'%';
             $digits = preg_match('/^[+\d\s().\/-]+$/', $term) ? preg_replace('/\D/', '', $term) : '';
             $query->where(function (Builder $q) use ($like, $term, $digits) {
-                foreach (['name', 'email', 'company_name'] as $column) $q->orWhereRaw('LOWER('.$column.") LIKE LOWER(?) ESCAPE '\\'", [$like]);
+                foreach (['name', 'email', 'company_name'] as $column) $q->orWhereRaw('LOWER('.$column.") LIKE LOWER(?) ESCAPE '!'", [$like]);
                 if (ctype_digit($term)) $q->orWhere('users.id', (int) $term);
                 if ($digits !== '') {
                     foreach (['phone', 'phonenumber', 'office_phone'] as $column) {

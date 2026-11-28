@@ -2,6 +2,9 @@
 
 namespace App\Support;
 
+use App\Database\WriterTokenConnection;
+use App\Database\WriterTokenTimeout;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -23,6 +26,12 @@ use Throwable;
  * This is deliberately a short bounded retry, not a way to make the error go
  * away. If the contention does not clear the original exception is rethrown so
  * the caller still fails visibly.
+ *
+ * On MySQL with the writer policy there is no stale-snapshot refusal to retry.
+ * The callback runs once, at its own transaction depth. Each writer-token wait
+ * inside it may retry where it stands, before its BEGIN or statement does
+ * anything. A failure after the token is held, including a MySQL lock timeout
+ * or deadlock, is never retried, so the callback is never replayed for it.
  */
 final class LockedWrite
 {
@@ -39,19 +48,24 @@ final class LockedWrite
      * Run $write, retrying only while the failure is a SQLite lock contention.
      *
      * @template TReturn
+     *
      * @param  callable(): TReturn  $write
      * @return TReturn
      */
     public static function run(callable $write, ?string $context = null, int $attempts = self::DEFAULT_ATTEMPTS)
     {
         $attempts = max(1, $attempts);
+        $connection = DB::connection();
+        $writerToken = $connection instanceof WriterTokenConnection && $connection->writerPolicyEnabled();
 
         for ($attempt = 1; ; $attempt++) {
             try {
-                return $write();
+                return $writerToken ? self::runWithWriterToken($connection, $write, $context, $attempts) : $write();
             } catch (Throwable $e) {
-                if ($attempt >= $attempts || !self::isLockContention($e)) {
-                    if (self::isLockContention($e)) {
+                // Only SQLite's own refusal replays the callback. A MySQL token
+                // wait was already retried in place and is never replayed here.
+                if ($attempt >= $attempts || ! self::isSqliteLockContention($e)) {
+                    if (self::isSqliteLockContention($e)) {
                         Log::error('Write still blocked by another database writer after retrying; giving up.', [
                             'context' => $context,
                             'attempts' => $attempt,
@@ -78,12 +92,52 @@ final class LockedWrite
     }
 
     /**
-     * Is this specifically SQLite refusing a write because of another writer?
+     * Run the callback once. Each MySQL writer-token wait inside it may retry
+     * where it stands, before its BEGIN or statement does anything.
+     *
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $write
+     * @return TReturn
+     */
+    private static function runWithWriterToken(WriterTokenConnection $connection, callable $write, ?string $context, int $attempts)
+    {
+        try {
+            return $connection->withAcquisitionAttempts($attempts, static fn () => $write());
+        } catch (WriterTokenTimeout $e) {
+            if ($connection->isAcquisitionTimeout($e)) {
+                Log::error('Write still blocked by another database writer after retrying; giving up.', [
+                    'context' => $context,
+                    'attempts' => $attempts,
+                ]);
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Was this write refused because another writer was busy? Callers answer
+     * "busy, retry" for it. That is SQLite's "database is locked", or on MySQL
+     * a WriterTokenTimeout: the wait for the writer token ran out before the
+     * statement or transaction did anything.
      *
      * Matched narrowly: anything broader would retry genuine failures such as a
-     * constraint violation, which must surface on the first attempt.
+     * constraint violation, or a MySQL lock error after the token was held.
      */
     public static function isLockContention(Throwable $e): bool
+    {
+        for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof WriterTokenTimeout || self::describesLock($current)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** SQLite's own lock refusal, the only failure that replays a LockedWrite callback. */
+    private static function isSqliteLockContention(Throwable $e): bool
     {
         for ($current = $e; $current !== null; $current = $current->getPrevious()) {
             if (self::describesLock($current)) {

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\PublicApiResponseException;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootRescheduleRequest;
@@ -9,7 +10,6 @@ use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\Scheduling\ScheduleFeasibilityService;
 use App\Services\Scheduling\WriteSchedulePlan;
-use App\Exceptions\PublicApiResponseException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
@@ -49,6 +49,7 @@ class HybridSchedulingWritePathsTest extends TestCase
         $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 17,
             'photographer_id' => $shoot->photographer_id, 'scheduled_at' => '2026-10-15 14:00:00',
             'workflow_status' => 'scheduled', 'is_deliverable' => true]);
+
         return [$admin, $shoot, $service];
     }
 
@@ -73,6 +74,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $this->assertTrue($payload['travel_override_confirmed']);
             $this->assertSame(str_repeat('a', 64), $payload['travel_override_confirmation_version']);
             $seen[] = $payload['action_mode'];
+
             return ['enabled' => true];
         });
         $engine->shouldReceive('assertResult')->andReturnUsing(fn () => throw new PublicApiResponseException(response()->json([
@@ -120,6 +122,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $this->assertNull($plans[1]['shoot']);
             $this->assertSame($shoot->id, $plans[1]['payload']['source_shoot_id']);
             $this->assertSame(15, $plans[1]['payload']['_schedule_visits'][0]['duration_minutes']);
+
             return ['enabled' => true];
         });
         $engine->shouldReceive('assertResult')->andReturnUsing(fn () => throw new PublicApiResponseException(response()->json(['message' => 'Batch travel conflict'], 422)));
@@ -161,6 +164,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $this->assertNull($excluded);
             $this->assertSame('additional_work', $payload['action_mode']);
             $this->assertSame($shoot->id, $payload['source_shoot_id']);
+
             return ['enabled' => true];
         });
         $engine->shouldReceive('assertResult')->andReturnUsing(fn () => throw new PublicApiResponseException(response()->json(['message' => 'Travel blocked'], 422)));
@@ -203,6 +207,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $this->assertSame('2026-10-16T10:00:00-04:00', $visit['scheduled_at']);
             $this->assertSame('America/New_York', $visit['timezone']);
             $this->assertTrue($payload['travel_override_confirmed']);
+
             return ['enabled' => true];
         });
         $engine->shouldReceive('assertResult')->andReturnUsing(fn () => throw new PublicApiResponseException(response()->json(['message' => 'Travel blocked'], 422)));
@@ -248,7 +253,7 @@ class HybridSchedulingWritePathsTest extends TestCase
         $saved = Shoot::findOrFail($id);
         $this->assertSame('2026-10-15 14:50:00', $saved->scheduled_at->format('Y-m-d H:i:s'));
         $this->assertSame(15, $saved->serviceItems()->sole()->duration_minutes);
-        $this->assertSame('2026-10-15 14:50:00', $saved->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-15 14:50:00', \Carbon\CarbonImmutable::parse($saved->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(['signature' => 'trusted-result'], $saved->property_details['schedule_location']);
         $freshWarning = $this->postJson('/api/shoots', $unconfirmed + ['travel_override_confirmed' => true])->assertUnprocessable()
             ->assertJsonValidationErrors('travel_override_confirmation_version')->json('feasibility');
@@ -346,7 +351,9 @@ class HybridSchedulingWritePathsTest extends TestCase
         $shoot->forceFill(['status' => $status, 'workflow_status' => $status, 'photos_uploaded_at' => $uploadedAt,
             'completed_at' => null])->saveQuietly();
         $payload = ['address' => 'Changed building'];
-        if ($edit === 'reschedule') $payload['scheduled_at'] = '2026-10-16T14:00:00Z';
+        if ($edit === 'reschedule') {
+            $payload['scheduled_at'] = '2026-10-16T14:00:00Z';
+        }
         if ($edit === 'capture') {
             $additional = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 45]);
             $this->qualify(User::findOrFail($shoot->photographer_id), $additional);
@@ -397,6 +404,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $this->assertSame(['2026-10-16 14:00:00', '2026-10-16 16:00:00'],
                 array_map(fn ($visit) => \Carbon\Carbon::parse($visit['scheduled_at'])->utc()->format('Y-m-d H:i:s'), $visits));
             $this->assertSame([17, 23], array_column($visits, 'duration_minutes'));
+
             return ['enabled' => true, 'status' => 'available', 'schedule_version' => 'version',
                 'photographer_ids' => [$shoot->photographer_id], 'location' => []];
         });
@@ -407,10 +415,10 @@ class HybridSchedulingWritePathsTest extends TestCase
             'date' => '2026-10-16', 'time_window' => '10:00',
             'travel_override' => true, 'travel_override_confirmed' => true, 'travel_override_reason' => 'Staff reviewed the travel warning',
         ], $admin);
-        $this->assertSame($legacy ? '2026-10-16 10:00:00' : '2026-10-16 14:00:00', $saved->getRawOriginal('scheduled_at'));
+        $this->assertSame($legacy ? '2026-10-16 10:00:00' : '2026-10-16 14:00:00', \Carbon\CarbonImmutable::parse($saved->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('10:00:00', $saved->time);
         $this->assertSame($legacy ? ['2026-10-16 10:00:00', '2026-10-16 12:00:00'] : ['2026-10-16 14:00:00', '2026-10-16 16:00:00'],
-            $saved->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+            $saved->serviceItems()->orderBy('id')->get()->map(fn ($item) => \Carbon\CarbonImmutable::parse($item->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'))->all());
         if ($multiUnit) {
             $this->assertSame(2, $saved->units()->count());
             $this->assertSame(2, $saved->serviceItems()->where('service_id', $service->id)->count());

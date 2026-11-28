@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -96,7 +97,17 @@ class ShootUploadSummaryTest extends TestCase
             $this->attempt($shoot, $photographer, 'unit-'.$index, 0, 1)->update(['shoot_service_id' => $item->id]);
         }
         Sanctum::actingAs($actor);
-        $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()->assertJsonCount(1, 'data');
+        DB::enableQueryLog();
+        try {
+            $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.id', $actor->id.':raw:unit-0');
+            $serviceItemQueries = array_filter(DB::getQueryLog(), fn ($query) =>
+                preg_match('/^select\s+\*\s+from\s+["`]?shoot_service["`]?\s+where\b/i', $query['query']) === 1);
+            $this->assertCount(1, $serviceItemQueries);
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
         $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries?unit_id='.$units[1]->id)->assertOk()->assertJsonCount(0, 'data');
         Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
         $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()->assertJsonCount(2, 'data');

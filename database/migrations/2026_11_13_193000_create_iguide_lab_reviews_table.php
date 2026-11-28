@@ -16,12 +16,12 @@ return new class extends Migration
             $table->uuid('request_id');
             $table->string('request_hash', 64);
             $table->string('verdict', 20);
-            $table->json('checks');
+            $table->longText('checks');
             $table->text('notes');
             $table->string('pipeline', 30);
             $table->string('scope', 30);
             $table->string('batch_id', 100)->nullable();
-            $table->json('metrics')->nullable();
+            $table->longText('metrics')->nullable();
             $table->timestamps();
             $table->unique(['project_id', 'request_id']);
             $table->index(['run_id', 'id']);

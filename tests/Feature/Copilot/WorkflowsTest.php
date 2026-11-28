@@ -12,6 +12,16 @@ use Illuminate\Support\Facades\Queue;
 
 final class WorkflowsTest extends CopilotTestCase
 {
+    public function test_listing_search_does_not_coerce_a_text_prefix_into_a_shoot_id(): void
+    {
+        $user = User::factory()->create(['role' => 'client']);
+        $shoot = Shoot::factory()->create(['client_id' => $user->id, 'address' => 'Quiet Lane', 'city' => 'Baltimore']);
+        $data = app(\App\Services\Copilot\CopilotData::class);
+        $this->assertSame(0, $data->listing(['query' => $shoot->id.'abc'], $user)['total']);
+        $this->assertSame(1, $data->listing(['query' => (string) $shoot->id], $user)['total']);
+        $this->assertSame(1, $data->listing(['query' => 'Quiet'], $user)['total']);
+    }
+
     public function test_editor_can_read_assigned_notes_but_not_company_or_other_shoots(): void
     {
         $editor = User::factory()->create(['role' => 'editor']);

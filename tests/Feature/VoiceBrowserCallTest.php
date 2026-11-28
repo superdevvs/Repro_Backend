@@ -308,7 +308,8 @@ class VoiceBrowserCallTest extends TestCase
 
         $this->assertDatabaseCount('voice_call_transcripts', 1);
         $this->assertSame('customer: Keep exactly once.', $call->fresh()->transcript);
-        $this->assertSame(1, data_get($call->fresh()->metadata, 'live.transcript_seq'));
+        $transcriptId = \App\Models\VoiceCallTranscript::where('voice_call_id', $call->id)->sole()->id;
+        $this->assertSame($transcriptId, data_get($call->fresh()->metadata, 'live.transcript_seq'));
         $this->assertCount(1, data_get($call->fresh()->metadata, 'live.transcript_chunks'));
     }
 

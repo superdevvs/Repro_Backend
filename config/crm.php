@@ -12,6 +12,25 @@ return [
     'enabled' => (bool) env('CRM_ENABLED', false),
 
     /*
+     * Producer replay: hold outbound CRM email (drips, campaigns, the
+     * follow-up digest and any marketing send) without switching the CRM off.
+     * Replies, delivery events, opt-outs and website intake keep working.
+     * Release only after `crm:outbound-release-check --since=<freeze start>`
+     * passes. Off by default.
+     */
+    'outbound_hold' => (bool) env('CRM_OUTBOUND_HOLD', false),
+
+    /*
+     * Producer replay: hold crm:calendar-sync, the five-minute job that
+     * retries pending pushes to Google and pulls moves and deletions back
+     * into the CRM. Release it once `crm:calendar-reconcile --dry-run` exits
+     * 0, or once only cancelled push_pending rows are left: only a sync run
+     * clears those. A follow-up saved in the CRM is still pushed at once.
+     * Off by default.
+     */
+    'calendar_sync_hold' => (bool) env('CRM_CALENDAR_SYNC_HOLD', false),
+
+    /*
      * Placeholder business rules from the design. Owners can change these
      * without a code change.
      */
@@ -37,6 +56,7 @@ return [
         'sender_domain' => env('CRM_SENDER_DOMAIN', 'reprophotos.com'),
         'reply_domain' => env('CRM_REPLY_DOMAIN', 'reply.reprophotos.com'),
         'reply_tracking' => (bool) env('CRM_REPLY_TRACKING', false),
+        'defer_reply_forwarding' => (bool) env('CRM_DEFER_REPLY_FORWARDING', false),
         'receiving_key' => env('CRM_RESEND_RECEIVING_KEY'),
         'company_address' => env('CRM_COMPANY_ADDRESS', env('MAIL_COMPANY_ADDRESS', '')),
         'daily_send_cap_per_rep' => (int) env('CRM_DAILY_SEND_CAP_PER_REP', 300),

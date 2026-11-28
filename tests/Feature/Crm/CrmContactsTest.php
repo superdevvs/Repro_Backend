@@ -131,6 +131,74 @@ class CrmContactsTest extends CrmTestCase
         $this->assertSame(2, $this->getJson('/api/crm/contacts')->assertOk()->json('meta.total'));
     }
 
+    public function test_contact_search_matches_literal_wildcards_and_unicode_within_the_actor_scope(): void
+    {
+        $owner = $this->rep();
+        $otherRep = $this->rep();
+        $mine = $this->contactFor($owner, [
+            'name' => '東京 café 50% [draft].',
+            'company' => 'são_joão!',
+            'email' => 'Sales_Desk@Example.Test',
+        ]);
+        $this->contactFor($owner, [
+            'name' => 'Metro cafe 500 draft!',
+            'company' => 'sãoxjoão?',
+            'email' => 'salesxdesk@example.test',
+        ]);
+        $theirs = $this->contactFor($otherRep, ['name' => '東京 café 50%']);
+        $path = fn (string $term) => '/api/crm/contacts?search='.rawurlencode($term);
+
+        $this->assertSame('sales_desk@example.test', $mine->email_normalized);
+        $this->actAs($owner);
+        foreach (['50%', 'são_joão', 'joão!', '[draft].', 'CAFÉ 50%', '東京', ' SALES_DESK@EXAMPLE.TEST '] as $term) {
+            $this->getJson($path($term))->assertOk()
+                ->assertJsonPath('meta.total', 1)
+                ->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.id', $mine->id);
+        }
+        $this->getJson($path('CAFE 50%'))->assertOk()
+            ->assertJsonPath('meta.total', 0)->assertJsonCount(0, 'data');
+
+        $this->actAs($otherRep);
+        $this->getJson($path('東京'))->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.id', $theirs->id);
+        $this->getJson($path('SALES_DESK@EXAMPLE.TEST'))->assertOk()
+            ->assertJsonPath('meta.total', 0)->assertJsonCount(0, 'data');
+
+        $this->actAs(\App\Models\User::factory()->create(['role' => 'client']));
+        $this->getJson($path('東京'))->assertForbidden();
+    }
+
+    public function test_contact_search_preserves_sqlite_matching_for_existing_accented_case(): void
+    {
+        $rep = $this->actAs($this->rep());
+        $contact = $this->contactFor($rep, ['name' => 'Élodie']);
+        $path = '/api/crm/contacts?search='.rawurlencode('Élodie');
+
+        $this->getJson($path)->assertOk()
+            ->assertJsonPath('meta.total', 0)->assertJsonCount(0, 'data');
+
+        $this->patchJson("/api/crm/contacts/{$contact->id}", ['name' => 'élodie'])->assertOk()
+            ->assertJsonPath('contact.name', 'élodie');
+        $this->getJson($path)->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.id', $contact->id);
+    }
+
+    public function test_contact_search_preserves_sqlite_matching_before_embedded_nul(): void
+    {
+        $rep = $this->actAs($this->rep());
+        $prefix = $this->contactFor($rep, ['name' => "alpha\0beta"]);
+        $suffix = $this->contactFor($rep, ['name' => 'Leading tail']);
+        $this->contactFor($rep, ['name' => 'Leading tail extra']);
+        $path = fn (string $term) => '/api/crm/contacts?search='.rawurlencode($term);
+
+        $this->getJson($path('beta'))->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson($path('alpha'))->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.id', $prefix->id);
+        $this->getJson($path("tail\0ignored"))->assertOk()
+            ->assertJsonPath('meta.total', 1)->assertJsonPath('data.0.id', $suffix->id);
+    }
+
     public function test_no_delete_routes_exist_for_crm(): void
     {
         $deletes = collect(Route::getRoutes()->getRoutes())

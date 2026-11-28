@@ -9,6 +9,7 @@ use App\Services\Schedule\ScheduleInstantResolver;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootDurationResolver;
 use App\Services\Shoots\ShootNotesAccessService;
+use App\Support\DatabaseSql;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Validator;
@@ -150,8 +151,8 @@ final class AssistantQueries
         $term = trim($data['query'] ?? '');
         if ($term !== '') {
             $query->where(function ($q) use ($term) {
-                $pattern = '%'.addcslashes($term, '%_\\').'%';
-                $q->whereRaw("address LIKE ? ESCAPE '\\'", [$pattern])->orWhere('id', ctype_digit($term) ? (int) $term : -1);
+                $pattern = '%'.DatabaseSql::escapeLike($term).'%';
+                $q->whereRaw("LOWER(address) LIKE LOWER(?) ESCAPE '!'", [$pattern])->orWhere('id', ctype_digit($term) ? (int) $term : -1);
             });
         }
         if (($data['action'] ?? '') === 'work.queue') {

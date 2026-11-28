@@ -243,9 +243,10 @@ class FinancialFeeBookingTest extends TestCase
         $this->assertNotNull($basis->completion($shoot->fresh(), $fee));
         $this->assertSame(0, $fee->files()->count());
         $photo->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now()->subHours(2)])->saveQuietly();
+        $deliveredAt = $photo->fresh()->getRawOriginal('delivered_at');
         $shoot->forceFill(['active_work_started_at' => now()->subMinutes(30), 'active_work_is_reopened' => true,
             'active_work_cycle_key' => 'reopened-evidence'])->saveQuietly();
-        $this->assertSame((string) $photo->delivered_at, $basis->completion($shoot->fresh(), $fee));
+        $this->assertSame($deliveredAt, $basis->completion($shoot->fresh(), $fee));
         $fee->photographer_id = User::factory()->photographer()->create()->id;
         $this->assertNull($basis->completion($shoot->fresh(), $fee));
     }

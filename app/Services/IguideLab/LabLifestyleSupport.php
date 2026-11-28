@@ -81,7 +81,7 @@ class LabLifestyleSupport
             'pose'=>$pose,'outputDirectory'=>$disk->path($out)];
         $saved=$bridge->json($out.'-request.json',$request);
         $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
-        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
+        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','PYTHONDONTWRITEBYTECODE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
         $process=new Process([(string)config('iguide-lab.lifestyle_support_python_path'),resource_path('iguide-lab/lifestyle_support_worker.py'),$saved['path'],
             '--allowed-root',$disk->path('iguide-lab/'.$item->project_id)],null,$env,null,100);
         $process->run(); abort_unless($process->isSuccessful(),422,'Automatic support validation failed.');

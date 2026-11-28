@@ -5,6 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\StandingEditorNote;
 use App\Models\User;
+use App\Support\DatabaseSql;
 use Illuminate\Support\Collection;
 
 /**
@@ -108,7 +109,7 @@ class StandingEditorNoteService
         $query = User::query()
             ->where('role', 'client')
             ->whereNotNull('company_name')
-            ->whereRaw("LOWER(company_name) LIKE ? ESCAPE '\\'", ['%'.addcslashes($needle, '%_\\').'%']);
+            ->whereRaw("LOWER(company_name) LIKE ? ESCAPE '!'", ['%'.DatabaseSql::escapeLike($needle).'%']);
 
         return [
             'count' => (clone $query)->count(),

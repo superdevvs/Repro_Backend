@@ -149,6 +149,8 @@ class SmsReactionPresenter
             $digits = "replace({$digits}, '{$character}', '')";
         }
 
-        return "(case when length({$digits}) = 10 then '1' || {$digits} else {$digits} end)";
+        $national = \App\Support\DatabaseSql::concat(["'1'", $digits]);
+
+        return "(case when length({$digits}) = 10 then {$national} else {$digits} end)";
     }
 }

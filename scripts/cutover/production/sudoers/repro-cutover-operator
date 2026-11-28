@@ -1,0 +1,13 @@
+# Install root-owned, mode 0440, after verification with visudo -cf.
+# The dedicated operator may invoke only the actions and arguments checked by the wrapper.
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/local/sbin/repro-cutover-run
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl start repro-media-archives.service
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl stop repro-media-archives.service
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl start repro-backup.timer
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl stop repro-backup.timer
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl start repro-recovery-kit.timer
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl stop repro-recovery-kit.timer
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl start repro-recovery-kit.path
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl stop repro-recovery-kit.path
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl start repro-binlog-purge.timer
+repro-cutover-operator ALL=(root) NOPASSWD: /usr/bin/systemctl stop repro-binlog-purge.timer

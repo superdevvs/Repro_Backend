@@ -1,0 +1,11 @@
+[Unit]
+Description=Check isolated RePro MySQL 8.4 slow-log rotation hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=true
+Unit=repro-mysql84-logrotate.service
+
+[Install]
+WantedBy=timers.target

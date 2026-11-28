@@ -2,15 +2,24 @@
 
 namespace App\Http\Middleware;
 
+use App\Database\WriterTokenConnection;
+use App\Database\WriterTokenTimeout;
 use App\Services\ApiErrorResponder;
 use App\Support\LockedWrite;
 use Closure;
 use Illuminate\Database\QueryException;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
-/** Keep transient SQLite limiter failures outside the application callback. */
+/**
+ * Keep transient limiter failures outside the application callback. SQLite lock
+ * contention replays the limiter operation. On MySQL the operation runs once and
+ * each writer-token wait inside it retries in place, before its statement runs:
+ * a hit commits its increment before a final put, so replaying the whole hit
+ * would count one request twice.
+ */
 class RetryDatabaseThrottleRequests extends ThrottleRequests
 {
     protected function handleRequest($request, Closure $next, array $limits)
@@ -68,12 +77,19 @@ class RetryDatabaseThrottleRequests extends ThrottleRequests
 
     private function limiterOperation(string $operation, Closure $callback): mixed
     {
+        $connection = DB::connection();
+        $writerToken = $connection instanceof WriterTokenConnection && $connection->writerPolicyEnabled();
         for ($attempt = 1; ; $attempt++) {
             try {
-                return $callback();
-            } catch (QueryException $exception) {
-                $transient = $this->isSqliteContention($exception);
-                if (! $transient || $attempt >= LockedWrite::DEFAULT_ATTEMPTS) {
+                return $writerToken
+                    ? $connection->withAcquisitionAttempts(LockedWrite::DEFAULT_ATTEMPTS, $callback)
+                    : $callback();
+            } catch (QueryException|WriterTokenTimeout $exception) {
+                // Only SQLite's own refusal replays the operation. A writer-token wait
+                // already retried in place; it is busy, never replayed.
+                $replay = $exception instanceof QueryException && $this->isSqliteContention($exception);
+                $transient = $replay || $exception instanceof WriterTokenTimeout;
+                if (! $replay || $attempt >= LockedWrite::DEFAULT_ATTEMPTS) {
                     try {
                         Log::error('Rate limiter database operation failed.', ApiErrorResponder::diagnosticContext($exception) + [
                             'limiter_operation' => $operation,

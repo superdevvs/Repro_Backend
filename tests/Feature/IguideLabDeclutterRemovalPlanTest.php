@@ -303,6 +303,30 @@ class IguideLabDeclutterRemovalPlanTest extends TestCase
         $this->assertSame(hash('sha256', json_encode($proposal, JSON_THROW_ON_ERROR)), LabAnalysisRecipes::hash($proposal));
         $sorted = $proposal; ksort($sorted); $this->assertNotSame(LabAnalysisRecipes::hash($sorted), LabAnalysisRecipes::hash($proposal));
     }
+    public function test_reserved_evidence_survives_database_reload_and_preserves_exact_replay_identity(): void
+    {
+        [, , $item] = $this->fixture();
+        $input = ['z' => ['second' => 2, 'first' => '01'], 'a' => ['last', 'first']];
+        $steps = app(LabWorkflowSteps::class);
+        $step = $steps->reserve($item, 'json-evidence', 'analysis', $input);
+        $reloaded = $step->fresh();
+        $this->assertSame($input, $reloaded->input);
+        $this->assertSame($step->input_sha256, LabAnalysisRecipes::hash($reloaded->input));
+        $this->assertSame($step->id, $steps->reserve($item, 'json-evidence', 'analysis', $reloaded->input)->id);
+
+        // Existing evidence hashes deliberately include object order and scalar types.
+        // Storage must preserve that contract rather than accepting a changed request.
+        foreach ([array_reverse($input, true), ['z' => ['second' => 2, 'first' => 1], 'a' => ['last', 'first']]] as $changed) {
+            try {
+                $steps->reserve($item, 'json-evidence', 'analysis', $changed);
+                $this->fail('Changed evidence reused an existing reservation.');
+            } catch (HttpException $error) {
+                $this->assertSame(409, $error->getStatusCode());
+                $this->assertSame('A workflow step changed.', $error->getMessage());
+            }
+        }
+        Http::assertNothingSent();
+    }
     public function test_replay_repairs_a_committed_unattached_queued_record_without_resubmitting_other_states(): void
     {
         [, , , , $step, $record] = $this->reserved(); $service = app(LabDeclutterRemovalPlans::class);

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check native MySQL log sizes hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=repro-mysql84-native-logrotate.service
+
+[Install]
+WantedBy=timers.target

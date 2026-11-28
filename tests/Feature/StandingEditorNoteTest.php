@@ -15,6 +15,20 @@ class StandingEditorNoteTest extends TestCase
 
     private const GRASS = 'All Weichert agents get 1 complimentary exterior green grass.';
 
+    public function test_brokerage_search_treats_escape_characters_and_wildcards_literally(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'company_name' => 'MIXED %_!\\ Realty']);
+        User::factory()->create(['role' => 'client', 'company_name' => 'Ordinary Realty']);
+        User::factory()->create(['role' => 'photographer', 'company_name' => $client->company_name]);
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        foreach (['mixed', '%', '_', '!', '\\', '%_!\\'] as $term) {
+            $this->getJson('/api/standing-editor-notes/matches?company='.urlencode($term))
+                ->assertOk()->assertJsonPath('data.count', 1)
+                ->assertJsonPath('data.clients.0.id', $client->id);
+        }
+    }
+
     public function test_brokerage_match_is_case_insensitive_and_counts_every_spelling(): void
     {
         foreach (['Weichert, Realtors', 'WEICHERT REALTORS - Bethesda', 'weichert'] as $company) {

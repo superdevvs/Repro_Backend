@@ -14,8 +14,7 @@ return new class extends Migration
             $table->unsignedBigInteger('removed_shoot_service_id')->nullable()->index();
             $table->timestamp('service_removed_at')->nullable();
         });
-        DB::statement('DROP INDEX editor_payouts_execution_unique');
-        DB::statement('CREATE UNIQUE INDEX editor_payouts_execution_unique ON editor_payouts (editor_id, shoot_id, service_id, COALESCE(shoot_service_id, removed_shoot_service_id, 0))');
+        $this->replaceExecutionIndex('COALESCE(shoot_service_id, removed_shoot_service_id, 0)');
     }
 
     public function down(): void
@@ -23,8 +22,19 @@ return new class extends Migration
         if (DB::table('editor_payouts')->whereNotNull('removed_shoot_service_id')->exists()) {
             throw new RuntimeException('Removed service editor payouts exist; refusing to discard their execution identity.');
         }
-        DB::statement('DROP INDEX editor_payouts_execution_unique');
-        DB::statement('CREATE UNIQUE INDEX editor_payouts_execution_unique ON editor_payouts (editor_id, shoot_id, service_id, COALESCE(shoot_service_id, 0))');
+        $this->replaceExecutionIndex('COALESCE(shoot_service_id, 0)');
         Schema::table('editor_payouts', fn (Blueprint $table) => $table->dropColumn(['removed_shoot_service_id', 'service_removed_at']));
+    }
+
+    private function replaceExecutionIndex(string $expression): void
+    {
+        Schema::table('editor_payouts', fn (Blueprint $table) => $table->dropUnique('editor_payouts_execution_unique'));
+        // MySQL functional key parts require their own parentheses; SQLite
+        // accepts the expression directly. Preserve the same NULL identity.
+        if (DB::getDriverName() === 'mysql') {
+            $expression = '('.$expression.')';
+        }
+        $table = DB::connection()->getQueryGrammar()->wrapTable('editor_payouts');
+        DB::statement('CREATE UNIQUE INDEX editor_payouts_execution_unique ON '.$table.' (editor_id, shoot_id, service_id, '.$expression.')');
     }
 };

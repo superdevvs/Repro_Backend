@@ -30,16 +30,16 @@ class SupportTicketController extends Controller
         }
         $search = trim($data['query'] ?? '');
         if ($search !== '') {
-            $pattern = '%'.addcslashes($search, '%_\\').'%';
+            $pattern = '%'.\App\Support\DatabaseSql::escapeLike($search).'%';
             $query->where(function ($q) use ($search, $pattern, $canManage) {
-                $q->whereRaw("subject LIKE ? ESCAPE '\\'", [$pattern])
+                $q->whereRaw("LOWER(subject) LIKE LOWER(?) ESCAPE '!'", [$pattern])
                     ->orWhereHas('requester', fn ($requester) => $requester->where(function ($identity) use ($pattern) {
-                        $identity->whereRaw("name LIKE ? ESCAPE '\\'", [$pattern])
-                            ->orWhereRaw("email LIKE ? ESCAPE '\\'", [$pattern]);
+                        $identity->whereRaw("LOWER(name) LIKE LOWER(?) ESCAPE '!'", [$pattern])
+                            ->orWhereRaw("LOWER(email) LIKE LOWER(?) ESCAPE '!'", [$pattern]);
                     }))
                     ->orWhereHas('messages', fn ($message) => $message
                         ->when(! $canManage, fn ($visible) => $visible->where('internal', false))
-                        ->whereRaw("body LIKE ? ESCAPE '\\'", [$pattern]));
+                        ->whereRaw("LOWER(body) LIKE LOWER(?) ESCAPE '!'", [$pattern]));
                 if (preg_match('/^(?:SUP-)?0*([0-9]+)$/i', $search, $match)) {
                     $q->orWhere('id', (int) $match[1]);
                 }

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "identity": {
+    "run_id": null,
+    "release_sha": null,
+    "artifact_sha256": null,
+    "source_sha256": null,
+    "config_sha256": null,
+    "target_uuid": null
+  },
+  "critical_endpoints": [
+    "write:booking",
+    "write:reschedule",
+    "write:upload",
+    "write:delivery",
+    "write:invoice",
+    "write:payment",
+    "write:payout",
+    "write:message",
+    "read:invoice-list",
+    "read:payout-report",
+    "read:past-due",
+    "read:crm-contact-search"
+  ],
+  "busiest_endpoints": null,
+  "host_profile_sha256": "bfd7050882d65063a783762a5d7f397cfda64ecbdef0b4a616f01fb2880bbdb5",
+  "workload_sha256": "047f9f8a95bc5fa74386550aeb43fe39c395367da96b4fdaa02d41d05d523b77",
+  "operations": {
+    "destination_sha256": null,
+    "monitor_profile_sha256": null,
+    "phone_recipient_sha256": null,
+    "window_end_unix_s": null,
+    "interval_s": null,
+    "evidence_valid_until_unix_s": null,
+    "nightly_scope_sha256": "a3807732af33e799198c3e681b2610ff470605e023d2029fc5b8ec81bf5c99d2",
+    "last_nightly_day_utc": null,
+    "backup_health_report_sha256": null,
+    "backup_health_summary_sha256": null,
+    "offsite_retention_report_sha256": null,
+    "offsite_retention_summary_sha256": null,
+    "external_alerts_report_sha256": null,
+    "external_alerts_summary_sha256": null,
+    "point_in_time_drills_report_sha256": null,
+    "point_in_time_drills_summary_sha256": null,
+    "nightly_data_parity_report_sha256": null,
+    "nightly_data_parity_summary_sha256": null
+  }
+}

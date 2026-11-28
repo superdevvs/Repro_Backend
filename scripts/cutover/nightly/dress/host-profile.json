@@ -1,0 +1,50 @@
+{
+  "schema": "repro.dress-rehearsal.host-profile.v1",
+  "status": "draft-for-owner-review",
+  "host": {
+    "name": "maverick",
+    "cpu_cores": 32,
+    "memory_gib": 32,
+    "database_disk": "root NVMe, about 3 ms forced flush",
+    "media_disk": "/mnt/ssd4tb",
+    "bulk_disk": "/mnt/16tb",
+    "power_loss_protection": "unverified",
+    "battery_backup": "unverified"
+  },
+  "software": {
+    "php": "8.3",
+    "php_fpm": "one shared PHP 8.3 pool behind both Dashboard vhosts",
+    "mysql": "8.4.13",
+    "mysql_service": "separate native socket-only service",
+    "python": "3.12"
+  },
+  "mysql": {
+    "skip_networking": "ON",
+    "binlog": "ON",
+    "binlog_format": "ROW",
+    "binlog_row_image": "FULL",
+    "gtid_mode": "ON",
+    "sync_binlog": 1,
+    "innodb_flush_log_at_trx_commit": 1,
+    "innodb_doublewrite": "ON",
+    "innodb_buffer_pool_size": "4G",
+    "innodb_redo_log_capacity": "2G",
+    "default_time_zone": "+00:00"
+  },
+  "writers": {
+    "dashboard_vhosts": 2,
+    "system_supervisor_queue_workers": 3,
+    "deploy_user_supervisor_groups": ["studio", "voice"],
+    "media_archives_service": true,
+    "laravel_scheduler": true
+  },
+  "isolation": {
+    "rehearsal_user": "caged system user with all outbound traffic rejected",
+    "provider_keys": "blank except the encryption key",
+    "pending_jobs_and_messages": "removed from the copy before start"
+  },
+  "priority": {
+    "nice": 10,
+    "ionice_class": 3
+  }
+}

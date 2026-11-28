@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\MigrationForeignId;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -9,7 +10,7 @@ return new class extends Migration {
     {
         Schema::create('message_media', function (Blueprint $t) {
             $t->uuid('id')->primary();
-            $t->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+            MigrationForeignId::matching($t, 'user_id', 'users')->nullable()->constrained()->nullOnDelete();
             $t->string('channel', 16);
             $t->string('name');
             $t->string('mime_type')->default('application/octet-stream');
@@ -30,7 +31,7 @@ return new class extends Migration {
         });
         Schema::create('message_send_receipts', function (Blueprint $t) {
             $t->id();
-            $t->foreignId('user_id')->constrained()->cascadeOnDelete();
+            MigrationForeignId::matching($t, 'user_id', 'users')->constrained()->cascadeOnDelete();
             $t->uuid('request_key');
             $t->string('fingerprint', 64);
             $t->string('status', 24)->default('sending');
@@ -43,7 +44,7 @@ return new class extends Migration {
             $t->id();
             $t->string('message_kind', 16);
             $t->string('message_id', 40);
-            $t->foreignId('user_id')->constrained()->cascadeOnDelete();
+            MigrationForeignId::matching($t, 'user_id', 'users')->constrained()->cascadeOnDelete();
             $t->string('emoji', 32);
             $t->timestamps();
             $t->unique(['message_kind', 'message_id', 'user_id']);

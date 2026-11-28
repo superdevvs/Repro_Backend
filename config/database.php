@@ -21,6 +21,39 @@ if ($sqliteDatabasePath === null || $sqliteDatabasePath === '') {
     }
 }
 
+$mysql = [
+    'driver' => 'mysql',
+    'repro_require_server_identity' => env('APP_ENV', 'production') === 'production',
+    'repro_expected_server_uuid' => env('REPRO_MYSQL_EXPECTED_SERVER_UUID'),
+    'repro_route_budget_writer_token' => env('REPRO_MYSQL_ROUTE_BUDGET_WRITER_TOKEN', false) === true,
+    // One writer at a time, as on SQLite: every write on this connection first
+    // locks repro_mysql_control.writer_token. Exactly one connection carries it.
+    // On by default for MySQL; only an explicit false turns it off. No effect on SQLite.
+    'repro_writer_policy' => env('REPRO_MYSQL_WRITER_POLICY', true) !== false,
+    'repro_writer_long_hold_ms' => (int) env('REPRO_MYSQL_WRITER_LONG_HOLD_MS', 1000),
+    // A row lock outside a transaction protects nothing: an error in tests, a log line elsewhere.
+    'repro_level0_lock_guard' => env('REPRO_MYSQL_LEVEL0_LOCK_GUARD', env('APP_ENV', 'production') === 'testing' ? 'throw' : 'log'),
+    // Fixed, not tuning knobs: the writer token refuses any other session settings.
+    'isolation_level' => 'READ COMMITTED',
+    'repro_lock_wait_timeout' => 5,
+    'url' => env('DB_URL'),
+    'host' => env('DB_HOST', '127.0.0.1'),
+    'port' => env('DB_PORT', '3306'),
+    'database' => env('DB_DATABASE', 'laravel'),
+    'username' => env('DB_USERNAME', 'root'),
+    'password' => env('DB_PASSWORD', ''),
+    'unix_socket' => env('DB_SOCKET', ''),
+    'charset' => env('DB_CHARSET', 'utf8mb4'),
+    'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+    'prefix' => '',
+    'prefix_indexes' => true,
+    'strict' => true,
+    'engine' => null,
+    'options' => extension_loaded('pdo_mysql') ? array_filter([
+        PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+    ]) : [],
+];
+
 return [
 
     /*
@@ -36,6 +69,14 @@ return [
     */
 
     'default' => env('DB_CONNECTION', 'sqlite'),
+
+    /*
+    | What a long-lived worker does with a transaction a job or in-process
+    | scheduled task left open: 'rollback', or 'log' only. On MySQL a leaked
+    | transaction would hold the writer token until the worker dies.
+    */
+    'repro_leftover_transactions' => env('REPRO_DB_LEFTOVER_TRANSACTIONS',
+        env('DB_CONNECTION', 'sqlite') === 'mysql' ? 'rollback' : 'log'),
 
     /*
     |--------------------------------------------------------------------------
@@ -61,24 +102,39 @@ return [
             'synchronous' => env('DB_SYNCHRONOUS'),
         ],
 
-        'mysql' => [
-            'driver' => 'mysql',
-            'url' => env('DB_URL'),
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '3306'),
-            'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
-            'unix_socket' => env('DB_SOCKET', ''),
-            'charset' => env('DB_CHARSET', 'utf8mb4'),
-            'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
-            'prefix' => '',
-            'prefix_indexes' => true,
-            'strict' => true,
-            'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
-            ]) : [],
+        'mysql' => $mysql,
+
+        'mysql_queue_worker' => [
+            ...$mysql,
+            'repro_require_server_identity' => true,
+            'repro_route_budget_writer_token' => false,
+            'url' => null,
+            'repro_writer_policy' => false,
+            'repro_writer_exempt_tables' => ['jobs'],
+            'username' => env('REPRO_MYSQL_QUEUE_WORKER_USERNAME'),
+            'password' => env('REPRO_MYSQL_QUEUE_WORKER_PASSWORD'),
+        ],
+
+        'mysql_scheduling_cache' => [
+            ...$mysql,
+            'repro_require_server_identity' => true,
+            'repro_route_budget_writer_token' => false,
+            'repro_scheduling_cache_only' => true,
+            'repro_writer_policy' => false,
+            'repro_writer_exempt_tables' => ['cache', 'cache_locks'],
+            'url' => null,
+            'username' => env('REPRO_MYSQL_SCHEDULING_CACHE_USERNAME'),
+            'password' => env('REPRO_MYSQL_SCHEDULING_CACHE_PASSWORD'),
+        ],
+
+        // Database cache locks on MySQL. Same account, separate session, no writer
+        // token, and only cache_locks may be written. A process that holds the token
+        // on 'mysql' can still take or release a lock without waiting for itself.
+        'mysql_cache_locks' => [
+            ...$mysql,
+            'repro_route_budget_writer_token' => false,
+            'repro_writer_policy' => false,
+            'repro_writer_exempt_tables' => ['cache_locks'],
         ],
 
         'mariadb' => [

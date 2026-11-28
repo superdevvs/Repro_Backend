@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Crm;
 
+use App\Models\Crm\CrmActivity;
 use App\Models\Crm\CrmContact;
 use App\Models\Crm\CrmDripCampaign;
 use App\Models\Crm\CrmDripEnrollment;
@@ -47,10 +48,10 @@ class CrmIntegrationsTest extends CrmTestCase
         return $rep;
     }
 
-    private function webhook(array $payload, string $id)
+    private function webhook(array $payload, string $id, ?int $signedAt = null)
     {
         $body = json_encode($payload);
-        $ts = (string) now()->timestamp;
+        $ts = (string) ($signedAt ?? now()->timestamp);
         $sig = base64_encode(hash_hmac('sha256', $id.'.'.$ts.'.'.$body, base64_decode(substr(self::SECRET, 6)), true));
 
         return $this->call('POST', '/api/webhooks/resend', [], [], [], [
@@ -116,6 +117,7 @@ class CrmIntegrationsTest extends CrmTestCase
         $this->assertSame(1, $send->fresh()->open_count);
 
         $this->webhook(['type' => 'email.bounced', 'data' => ['email_id' => 're_9', 'bounce' => ['type' => 'Permanent', 'message' => 'No such user']]], 'msg_2')->assertOk();
+        $this->webhook(['type' => 'email.delivered', 'created_at' => now()->subMinute()->toIso8601String(), 'data' => ['email_id' => 're_9']], 'msg_3')->assertOk();
         $this->assertSame('bounced', $send->fresh()->status);
         $this->assertTrue(EmailSuppression::query()->where('email_normalized', 'dana@whitfield.com')->exists());
         $this->assertSame('bounced', $contact->fresh()->email_status);
@@ -166,21 +168,56 @@ class CrmIntegrationsTest extends CrmTestCase
         $this->fakeAcceptedCrmMail();
         config(['crm.email.receiving_key' => 'test-receiving-only', 'services.resend.key' => 'test-sending-only']);
         $this->app->instance(\App\Services\Messaging\Providers\ResendProvider::class, new \App\Services\Messaging\Providers\ResendProvider);
+        Http::preventStrayRequests();
         Http::fake([
             'api.resend.com/emails/receiving/in-1' => Http::response(['text' => 'Received your note']),
             'api.resend.com/emails' => Http::response(['id' => 'test-forward']),
         ]);
         $rep = $this->rep(['email' => 'pilot@example.com']);
+        $contact = $this->contactFor($rep, ['email' => 'client@example.com']);
         $token = 'testreplytoken123';
-        CrmEmailSend::create(['sender_user_id' => $rep->id, 'source_type' => 'one_off', 'from_email' => 'rep@reprophotos.com',
+        $send = CrmEmailSend::create(['contact_id' => $contact->id, 'sender_user_id' => $rep->id, 'source_type' => 'one_off', 'from_email' => 'rep@reprophotos.com',
             'to_email' => 'client@example.com', 'subject' => 'Hello', 'html' => 'Hello', 'text' => 'Hello', 'transport' => 'resend',
             'status' => 'sent', 'reply_token' => $token]);
-        $this->webhook(['type' => 'email.received', 'data' => ['email_id' => 'in-1', 'from' => 'client@example.com',
-            'to' => ["r+$token@reply.reprophotos.com"], 'subject' => 'Re: Hello']], 'msg-dedicated')->assertOk();
+        $eventId = 'msg-dedicated';
+        $beforeFreeze = now();
+        $payload = ['type' => 'email.received', 'created_at' => $beforeFreeze->toIso8601String(), 'data' => [
+            'email_id' => 'in-1', 'from' => 'client@example.com', 'to' => ["r+$token@reply.reprophotos.com"], 'subject' => 'Re: Hello',
+        ]];
+        $this->travelTo($beforeFreeze->copy()->addHour());
+        try {
+            $this->webhook($payload, $eventId, $beforeFreeze->timestamp)->assertUnauthorized();
+            $this->assertDatabaseMissing('crm_email_events', ['provider_event_id' => $eventId]);
+            $this->assertNull($send->fresh()->replied_at);
+            Http::assertNothingSent();
+
+            // Reconcile the reply using its original identity while outgoing mail is held.
+            config(['crm.email.defer_reply_forwarding' => true]);
+            $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
+            $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
+            $this->assertNotNull($send->fresh()->replied_at);
+            $this->assertDatabaseMissing('crm_email_sends', ['source_type' => 'reply_fwd']);
+            Http::assertSentCount(1);
+
+            // A fresh signed replay releases one forward after reconciliation.
+            config(['crm.email.defer_reply_forwarding' => false]);
+            $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
+            $this->webhook($payload, $eventId)->assertOk()->assertJsonPath('status', 'ok');
+        } finally {
+            $this->travelBack();
+        }
+
+        $this->assertDatabaseCount('crm_email_events', 1);
+        $this->assertDatabaseHas('crm_email_events', ['provider_event_id' => $eventId, 'send_id' => $send->id, 'type' => 'replied']);
+        $this->assertNotNull($send->fresh()->replied_at);
+        $this->assertSame(1, CrmActivity::query()->where('contact_id', $contact->id)->where('type', 'email_reply')->count());
+        $this->assertSame(1, CrmNotice::query()->where('user_id', $rep->id)->where('type', 'email_reply')->count());
+        $idempotencyKey = 'crm-reply-fwd-'.$send->id.'-'.md5('in-1');
+        $this->assertSame([$idempotencyKey], CrmEmailSend::query()->where('source_type', 'reply_fwd')->pluck('idempotency_key')->all());
         Http::assertSent(fn ($r) => $r->method() === 'GET' && $r->url() === 'https://api.resend.com/emails/receiving/in-1'
             && $r->hasHeader('Authorization', 'Bearer test-receiving-only'));
         Http::assertSent(fn ($r) => $r->method() === 'POST' && $r->url() === 'https://api.resend.com/emails'
-            && $r->hasHeader('Authorization', 'Bearer test-sending-only'));
+            && $r->hasHeader('Authorization', 'Bearer test-sending-only') && $r->hasHeader('Idempotency-Key', $idempotencyKey));
         Http::assertSentCount(2);
     }
 

@@ -152,6 +152,30 @@ class SmsInboxPolicy
         ]), 'sms.inbox.record');
     }
 
+    /**
+     * For a message stored after newer ones (a replayed text keeps its arrival
+     * time). record() has just set the reply state from it; the newest
+     * incoming or manual message decides instead, as in backfill().
+     */
+    public function recordBackdated(Message $message): void
+    {
+        if (! $message->thread_id || ! $message->created_at || ! in_array($this->kind($message), ['incoming', 'manual'], true)) {
+            return;
+        }
+        $latestKind = null;
+        foreach (Message::query()->where('thread_id', $message->thread_id)->where('channel', 'SMS')
+            ->where('created_at', '>', $message->created_at)->orderByDesc('created_at')->orderByDesc('id')->cursor() as $newer) {
+            if (in_array($kind = $this->kind($newer), ['incoming', 'manual'], true)) {
+                $latestKind = $kind;
+                break;
+            }
+        }
+        if ($latestKind !== null) {
+            LockedWrite::run(fn () => DB::table('message_threads')->where('id', $message->thread_id)->where('channel', 'SMS')
+                ->update(['sms_needs_reply' => $latestKind === 'incoming']), 'sms.inbox.record');
+        }
+    }
+
     /** Shared by HTTP, realtime and badges; editing managers retain broad access. */
     public function scope(Builder $query, string $scope = 'inbox'): Builder
     {
@@ -241,7 +265,7 @@ class SmsInboxPolicy
             ->where('context_threads.channel', 'SMS')->where('context_threads.sms_inbox_active', false)->whereNull('context_threads.sms_group_id')
             ->where('sms_context.channel', 'SMS')->where('sms_context.direction', 'OUTBOUND')
             ->where(fn ($visible) => $visible->where('sms_context.hidden_from_inbox', false)->orWhereNull('sms_context.hidden_from_inbox'))
-            ->whereRaw("LOWER(COALESCE(sms_context.body_text, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern])
+            ->whereRaw("LOWER(COALESCE(sms_context.body_text, '')) LIKE LOWER(?) ESCAPE CHAR(92)", [$pattern])
             ->select('sms_context.thread_id as context_thread_id')
             ->selectRaw($this->phoneSql('sms_context.from_address').' as business')
             ->selectRaw($this->phoneSql('sms_context.to_address').' as person')
@@ -294,7 +318,9 @@ class SmsInboxPolicy
             $digits = "REPLACE({$digits}, '{$separator}', '')";
         }
 
-        return "(CASE WHEN LENGTH({$digits}) = 10 THEN '1' || {$digits} ELSE {$digits} END)";
+        $national = \App\Support\DatabaseSql::concat(["'1'", $digits]);
+
+        return "(CASE WHEN LENGTH({$digits}) = 10 THEN {$national} ELSE {$digits} END)";
     }
 
     /** One-time migration/recovery helper; no message bodies or unread receipts are rewritten. */

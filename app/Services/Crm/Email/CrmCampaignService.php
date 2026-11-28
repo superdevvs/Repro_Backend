@@ -181,7 +181,8 @@ class CrmCampaignService
     public function runDue(): array
     {
         $counts = ['campaigns' => 0, 'sent' => 0, 'skipped' => 0];
-        if (! config('crm.enabled') || $this->sender->transport()->name() === 'log') {
+        // Outbound hold: scheduled campaigns stay scheduled until the release.
+        if (! config('crm.enabled') || config('crm.outbound_hold') || $this->sender->transport()->name() === 'log') {
             return $counts;
         }
         $available = fn ($q) => $q->where(fn ($q) => $q->where('status', 'scheduled')->where('scheduled_at', '<=', now()))

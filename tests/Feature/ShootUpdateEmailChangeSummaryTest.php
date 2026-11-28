@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\MailService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\StoredTimestamp;
 use Tests\TestCase;
 
 class ShootUpdateEmailChangeSummaryTest extends TestCase
@@ -55,7 +56,7 @@ class ShootUpdateEmailChangeSummaryTest extends TestCase
         $html = view('emails.partials.change-summary', ['changesSummary' => $summary['summary']])->render();
         $this->assertStringContainsString($old, html_entity_decode(strip_tags($html)));
         $this->assertStringContainsString($new, html_entity_decode(strip_tags($html)));
-        $this->assertSame($storedTime, $shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame($storedTime, StoredTimestamp::seconds($shoot->serviceItems()->sole()->getRawOriginal('scheduled_at')));
         $this->assertSame([], $mail->buildShootChangeSummary($mail->captureShootSnapshot($shoot), $shoot)['lines']);
     }
 

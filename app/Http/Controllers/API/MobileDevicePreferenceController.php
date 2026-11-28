@@ -49,7 +49,10 @@ class MobileDevicePreferenceController extends Controller
         $data = $request->validate($rules);
         $values = array_map(fn ($value) => (bool) $value, $data['preferences']);
         $preference = LockedWrite::run(fn () => DB::transaction(function () use ($request, $token, $data, $values) {
-            abort_unless(PersonalAccessToken::whereKey($token->id)->exists()
+            // Lock the existing sign-in before reading preferences: on a first
+            // save there is no preference row to lock, and concurrent initial
+            // saves must still compare their sequence against the latest value.
+            abort_unless(PersonalAccessToken::whereKey($token->id)->lockForUpdate()->first()
                 && $request->user()->fresh()?->isAccountEligibleForAuthentication(), 403);
             $current = MobileDevicePreference::whereKey($token->id)->lockForUpdate()->first();
             $installation = strtolower($data['installation_id']);

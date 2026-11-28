@@ -6,6 +6,8 @@ use App\Models\Message;
 use App\Models\SmsNumber;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\OutboundDeliveryGuard;
+use App\Services\Messaging\Providers\TelnyxSmsProvider;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
@@ -52,5 +54,39 @@ class CrmSmsTest extends CrmTestCase
         $this->assertSame('CANCELLED', app(MessagingService::class)->dispatchStoredSmsMessage(Message::findOrFail($id))->status);
         $this->actAs($this->rep());
         $this->postJson($url.'/conversation/sms', $input)->assertNotFound();
+    }
+
+    public function test_unknown_carrier_acceptance_keeps_one_message_and_refuses_to_resend(): void
+    {
+        $this->travelTo(Carbon::parse('2026-11-24 18:00:00 UTC'));
+        config(['crm.sms.enabled' => true]);
+        $rep = $this->actAs($this->rep());
+        $contact = $this->contactFor($rep, ['phone' => '301-555-0188']);
+        $url = "/api/crm/contacts/{$contact->id}";
+        $input = ['body' => 'Requested follow-up', 'request_id' => (string) Str::uuid()];
+        $smsNumber = SmsNumber::create(['phone_number' => '+12025550180', 'provider' => 'TELNYX', 'is_default' => true]);
+        $this->mock(TelnyxSmsProvider::class)->shouldReceive('send')->once()
+            ->withArgs(fn (SmsNumber $number, array $payload) => $number->is($smsNumber)
+                && $payload === ['to' => '+13015550188', 'text' => $input['body'], 'single_attempt' => true])
+            ->andThrow(new ConnectionException('Synthetic carrier acknowledgement timeout.'));
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        $this->postJson($url.'/sms-consent', ['consent' => true, 'source' => 'written'])->assertOk();
+
+        $messageId = $this->postJson($url.'/conversation/sms', $input)->assertOk()
+            ->assertJsonPath('status', 'uncertain')->json('message_id');
+        $message = Message::query()->whereKey($messageId)->sole();
+        $this->assertSame('UNCERTAIN', $message->status);
+        $this->assertNull($message->provider_message_id);
+        $this->assertDatabaseHas('crm_sms_requests', [
+            'contact_id' => $contact->id, 'user_id' => $rep->id, 'request_id' => $input['request_id'],
+            'message_id' => $message->id, 'status' => 'uncertain',
+        ]);
+
+        $this->postJson($url.'/conversation/sms', $input)->assertOk()
+            ->assertJsonPath('message_id', $messageId)->assertJsonPath('status', 'uncertain');
+        $this->postJson($url.'/conversation/sms', [...$input, 'body' => 'Different content'])->assertConflict();
+        $this->assertSame('UNCERTAIN', app(MessagingService::class)->dispatchStoredSmsMessage($message)->status);
+        $this->assertDatabaseCount('crm_sms_requests', 1);
+        $this->assertSame(1, Message::query()->where('send_source', 'CRM')->count());
     }
 }

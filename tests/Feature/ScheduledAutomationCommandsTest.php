@@ -169,6 +169,36 @@ class ScheduledAutomationCommandsTest extends TestCase
         $this->assertSame($count, AutomationRule::count());
     }
 
+    public function test_a_period_another_run_is_working_on_is_skipped_until_its_claim_lapses(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $rule = $this->rule('WEEKLY_SALES_REPORT', ['type' => 'weekly', 'day_of_week' => 1, 'time' => '11:00'],
+            'Weekly report {{report_total_shoots}}', ['rep']);
+        $reports = Mockery::mock(SalesReportService::class);
+        $reports->shouldReceive('getLastCompletedWeek')->andReturn([now()->subWeek()->startOfWeek(), now()->subDay()]);
+        $reports->shouldReceive('generateWeeklyReportsForAllSalesReps')->andReturn(collect([$this->report($rep, 3)]));
+        $reports->shouldReceive('isSalesRep')->andReturnTrue();
+        $this->app->instance(SalesReportService::class, $reports);
+        Carbon::setTestNow(now()->setTime(11, 5));
+        // The scheduler's run started this period five minutes ago and has not finished.
+        $running = AutomationDispatch::create(['automation_rule_id' => $rule->id, 'trigger_type' => 'WEEKLY_SALES_REPORT',
+            'period_key' => 'WEEKLY_SALES_REPORT|2026-09-28', 'status' => 'running', 'started_at' => now()->subMinutes(5)]);
+
+        // An admin's "Run now" meanwhile leaves the period to that run.
+        $this->assertSame(0, Artisan::call('automations:run-system', ['--rule' => $rule->id, '--force' => true]));
+        $this->assertStringContainsString('another run started this period', Artisan::output());
+        $this->assertSame(0, Message::count());
+        $this->assertSame(1, AutomationDispatch::count());
+        $this->assertSame('running', $running->fresh()->status);
+
+        // A run that stopped without finishing no longer holds the period once its claim lapses.
+        Carbon::setTestNow(now()->addMinutes(26));
+        $this->assertSame(0, Artisan::call('automations:run-system', ['--rule' => $rule->id]));
+        $this->assertSame(1, Message::count());
+        $this->assertSame(1, AutomationDispatch::count());
+        $this->assertSame('completed', $running->fresh()->status);
+    }
+
     public function test_weekly_invoicing_generates_without_direct_email_and_only_notifies_for_new_nonzero_invoices(): void
     {
         $photographer = User::factory()->create(['role' => 'photographer']);

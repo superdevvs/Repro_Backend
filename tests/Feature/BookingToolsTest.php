@@ -52,7 +52,7 @@ class BookingToolsTest extends TestCase
         // The same absolute appointment must drive travel checks, persistence,
         // and notifications while retaining the requested local date and time.
         $expectedAt = \Carbon\Carbon::parse($bookingDate.' 13:00', 'America/New_York')->utc();
-        $this->assertSame($expectedAt->format('Y-m-d H:i:s'), $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame($expectedAt->format('Y-m-d H:i:s'), \Carbon\CarbonImmutable::parse($shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('America/New_York', $shoot->timezone);
         $this->assertSame($bookingDate, $shoot->scheduled_date->toDateString());
         $this->assertSame('13:00', $shoot->time);

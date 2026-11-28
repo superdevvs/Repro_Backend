@@ -7,6 +7,7 @@ use App\Models\AryeoApiExport;
 use App\Models\AryeoRequest;
 use App\Services\Aryeo\AryeoCatalog;
 use App\Services\Aryeo\AryeoDiscovery;
+use App\Support\JsonIdentity;
 
 class Snapshots
 {
@@ -18,13 +19,13 @@ class Snapshots
         $installation = $destination->installation()->firstOrFail();
         $catalog = app(AryeoCatalog::class);
         $identity = $catalog->identity($shoot);
-        abort_unless($identity === $destination->identity && (int) $shoot->client_id === (int) $destination->client_id, 409, 'destination_identity_changed');
+        abort_unless(JsonIdentity::same($identity, $destination->identity) && (int) $shoot->client_id === (int) $destination->client_id, 409, 'destination_identity_changed');
         abort_if($destination->on_hold || ! data_get($destination->consent, 'distribution_authorized'), 409, 'distribution_not_authorized');
         if ($destination->workflow === 'showcase') {
             $request = AryeoRequest::findOrFail($destination->request_record_id);
             abort_unless((int) $request->shoot_id === (int) $shoot->id && $request->unit_id === $destination->unit_id
                 && app(AryeoDiscovery::class)->verifiedForDelivery($request, $shoot)
-                && ($request->discovery['required'] ?? null) === $destination->requirements
+                && JsonIdentity::same($request->discovery['required'] ?? null, $destination->requirements)
                 && (! $request->listing_id || $request->listing_id === $destination->legacy_listing_id), 409, 'showcase_identity_changed');
         }
         $ready = $catalog->readiness($shoot, $destination->unit_id, $destination->requirements);
@@ -53,7 +54,7 @@ class Snapshots
 
     public function hash(array $snapshot): string
     {
-        return hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        return hash('sha256', json_encode(JsonIdentity::canonical($snapshot), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION));
     }
 
     public function assertCurrent(AryeoApiExport $export, bool $hashOriginals = false): void

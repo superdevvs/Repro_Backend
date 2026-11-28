@@ -9,6 +9,9 @@ use LogicException;
 /** Reservations contain only our usage accounting, never Google route content. */
 class GoogleRoutesBudget
 {
+    public const RESERVATION_SQL = 'INSERT INTO scheduling_route_usage (elements, reserved_at) '
+        .'SELECT ?, ? WHERE COALESCE((SELECT SUM(elements) FROM scheduling_route_usage WHERE reserved_at > ?), 0) + ? <= ?';
+
     public function reserve(int $elements = 1): bool
     {
         if ($elements < 1 || $elements > $this->limit()) {
@@ -17,13 +20,13 @@ class GoogleRoutesBudget
         if (DB::transactionLevel() > 0) {
             throw new LogicException('Reserve route usage outside the booking transaction.');
         }
-        // One SQLite statement obtains the writer lock before checking the rolling
-        // total. Concurrent requests cannot both spend the last available unit.
-        $changed = LockedWrite::run(fn () => DB::affectingStatement(
-            'INSERT INTO scheduling_route_usage (elements, reserved_at) '
-            .'SELECT ?, ? WHERE COALESCE((SELECT SUM(elements) FROM scheduling_route_usage WHERE reserved_at > ?), 0) + ? <= ?',
+        $reserve = fn () => DB::affectingStatement(
+            self::RESERVATION_SQL,
             [$elements, now('UTC')->toDateTimeString(), $this->cutoff(), $elements, $this->limit()]
-        ), 'scheduling-route-budget');
+        );
+        // SQLite obtains its writer lock before checking the rolling total.
+        // The MySQL writer-token pilot runs once, even if its outcome is unknown.
+        $changed = DB::getDriverName() === 'sqlite' ? LockedWrite::run($reserve, 'scheduling-route-budget') : $reserve();
         if ($changed === 1) {
             $status = $this->status();
             foreach ([75, 90, 100] as $threshold) {

@@ -556,17 +556,21 @@ class IguideLabTourHttpTest extends TestCase
         $last = $analysis->captures()->where('position', 2)->first();
         $this->policy->ready = ['golden-hour' => true, 'twilight' => true, 'grass' => true, 'declutter' => true];
         $surveyed = $this->surveyedColumns(2);
-        $finish = "UPDATE iguide_lab_tour_captures SET status = 'surveyed', survey = ".DB::getPdo()->quote(json_encode($surveyed['survey'])).', applicability = '
-            .DB::getPdo()->quote(json_encode($surveyed['applicability'])).', candidates = '.DB::getPdo()->quote(json_encode($surveyed['candidates']))
-            ." WHERE id = '{$last->id}';"
-            ." UPDATE iguide_lab_tour_analyses SET status = 'ready', completed_at = '2026-11-16 12:00:00', record_revision = record_revision + 1,"
-            ." updated_at = '2026-11-16 12:00:00' WHERE id = '{$analysis->id}';";
-        $restart = "UPDATE iguide_lab_tour_captures SET status = 'surveying', survey = NULL, applicability = NULL, candidates = NULL WHERE id = '{$last->id}';"
-            ." UPDATE iguide_lab_tour_analyses SET status = 'analysing', completed_at = NULL, record_revision = 1 WHERE id = '{$analysis->id}';";
 
-        $this->withWalDatabase(function (\PDO $writer) use ($analysis, $finish, $restart) {
+        $this->withSnapshotDatabase(function (\PDO $writer, string $prefix) use ($analysis, $last, $surveyed) {
+            $finish = [
+                "UPDATE {$prefix}iguide_lab_tour_captures SET status = 'surveyed', survey = ".$writer->quote(json_encode($surveyed['survey'])).', applicability = '
+                    .$writer->quote(json_encode($surveyed['applicability'])).', candidates = '.$writer->quote(json_encode($surveyed['candidates']))
+                    ." WHERE id = '{$last->id}'",
+                "UPDATE {$prefix}iguide_lab_tour_analyses SET status = 'ready', completed_at = '2026-11-16 12:00:00', record_revision = record_revision + 1,"
+                    ." updated_at = '2026-11-16 12:00:00' WHERE id = '{$analysis->id}'",
+            ];
+            $restart = [
+                "UPDATE {$prefix}iguide_lab_tour_captures SET status = 'surveying', survey = NULL, applicability = NULL, candidates = NULL WHERE id = '{$last->id}'",
+                "UPDATE {$prefix}iguide_lab_tour_analyses SET status = 'analysing', completed_at = NULL, record_revision = 1 WHERE id = '{$analysis->id}'",
+            ];
             foreach (['tour-analyses/'.$analysis->id, 'tour-analyses/'.$analysis->id.'/progress'] as $path) {
-                $writer->exec($restart);
+                foreach ($restart as $statement) $writer->exec($statement);
                 $hook = $this->commitBetweenLoaderQueries($writer, $finish);
                 $before = $this->api('GET', $path)->assertOk();
                 $this->assertTrue($hook->fired, "$path: the monitor commit ran between two loader queries");
@@ -794,9 +798,14 @@ class IguideLabTourHttpTest extends TestCase
         return $run->fresh();
     }
 
-    /** Runs $test with the default connection on a WAL copy of the tables the tour routes read, and a second writer on that file. */
-    private function withWalDatabase(callable $test): void
+    /** Isolated copies with a real second writer: SQLite WAL or MySQL InnoDB. */
+    private function withSnapshotDatabase(callable $test): void
     {
+        if (DB::connection()->getDriverName() === 'mysql') {
+            $this->withMySqlSnapshotDatabase($test);
+            return;
+        }
+        $this->assertSame('sqlite', DB::connection()->getDriverName());
         $directory = sys_get_temp_dir().'/tour-snapshot-'.bin2hex(random_bytes(8));
         mkdir($directory, 0700);
         $file = $directory.'/tour.sqlite';
@@ -818,7 +827,7 @@ class IguideLabTourHttpTest extends TestCase
         $previous = DB::getDefaultConnection();
         DB::setDefaultConnection('tour_snapshot');
         try {
-            $test($writer);
+            $test($writer, '');
         } finally {
             DB::setDefaultConnection($previous);
             DB::purge('tour_snapshot');
@@ -829,11 +838,71 @@ class IguideLabTourHttpTest extends TestCase
     }
 
     /**
-     * Commit $sql through a second connection right after the loader's first query: the second select from the analyses
+     * Clone only this request's read tables under a random prefix in the private
+     * test database. DDL runs on a separate connection, so it cannot commit the
+     * RefreshDatabase transaction holding the original fixture rows. CREATE LIKE
+     * deliberately omits foreign keys: this fixture proves snapshot reads only.
+     */
+    private function withMySqlSnapshotDatabase(callable $test): void
+    {
+        $source = DB::connection();
+        $this->assertTrue(app()->environment('testing'));
+        $this->assertSame('repro_mysql_test', $source->getDatabaseName());
+        $this->assertSame('repro_test', $source->getConfig('username'));
+        $this->assertSame('', $source->getTablePrefix());
+        $baseline = $source->transactionLevel();
+        $prefix = 'tour_snap_'.bin2hex(random_bytes(6)).'_';
+        $configuration = $source->getConfig();
+        unset($configuration['name'], $configuration['read'], $configuration['write']);
+        $configuration['url'] = null;
+        $configuration['prefix'] = '';
+        // The test's own wrapper transaction holds the writer token. A second
+        // connection that waited for it would wait for its own process. In the
+        // application the loader's transaction takes the token, so no writer can
+        // commit between its queries; without the token here, a snapshot read
+        // gives the loader the same single view, as SQLite's does.
+        $configuration['repro_writer_policy'] = false;
+        $configuration['isolation_level'] = 'REPEATABLE READ';
+        config(['database.connections.tour_snapshot_writer' => $configuration,
+            'database.connections.tour_snapshot' => array_replace($configuration, ['prefix' => $prefix])]);
+        DB::purge('tour_snapshot_writer');
+        DB::purge('tour_snapshot');
+        $writer = DB::connection('tour_snapshot_writer')->getPdo();
+        $previous = DB::getDefaultConnection();
+        $created = [];
+        $tables = ['iguide_lab_projects', 'iguide_lab_imports', 'iguide_lab_cases', 'iguide_lab_tour_analyses', 'iguide_lab_tour_captures', 'iguide_lab_tour_runs',
+            'iguide_lab_tour_run_chunks', 'iguide_lab_tour_run_targets', 'jobs'];
+        try {
+            foreach ($tables as $table) {
+                $copy = $prefix.$table;
+                $writer->exec('CREATE TABLE `'.$copy.'` LIKE `'.$table.'`');
+                $created[] = $copy;
+                foreach ($source->table($table)->get() as $row) {
+                    $row = (array) $row;
+                    $writer->prepare('INSERT INTO `'.$copy.'` (`'.implode('`,`', array_keys($row)).'`) VALUES ('
+                        .implode(',', array_fill(0, count($row), '?')).')')->execute(array_values($row));
+                }
+            }
+            $this->assertSame($baseline, $source->transactionLevel());
+            $this->assertTrue($source->getPdo()->inTransaction(), 'fixture DDL did not commit the source test transaction');
+            DB::setDefaultConnection('tour_snapshot');
+            $test($writer, $prefix);
+        } finally {
+            DB::setDefaultConnection($previous);
+            DB::purge('tour_snapshot');
+            if ($writer->inTransaction()) $writer->rollBack();
+            foreach (array_reverse($created) as $table) $writer->exec('DROP TABLE `'.$table.'`');
+            $writer = null;
+            DB::purge('tour_snapshot_writer');
+        }
+    }
+
+    /**
+     * Commit $statements through a second connection right after the loader's first query: the second select from the analyses
      * table in the request (the first is the controller's lookup). It does not depend on how the code under test frames
      * its reads, so a loader without one snapshot would read the captures after the commit and mix the two states.
      */
-    private function commitBetweenLoaderQueries(\PDO $writer, string $sql): object
+    private function commitBetweenLoaderQueries(\PDO $writer, array $statements): object
     {
         $hook = new class
         {
@@ -844,14 +913,20 @@ class IguideLabTourHttpTest extends TestCase
             public array $after = [];
             public function disarm(): void { $this->armed = false; }
         };
-        Event::listen(QueryExecuted::class, function (QueryExecuted $query) use ($hook, $writer, $sql) {
+        $table = preg_quote(DB::connection('tour_snapshot')->getQueryGrammar()->wrapTable('iguide_lab_tour_analyses'), '/');
+        Event::listen(QueryExecuted::class, function (QueryExecuted $query) use ($hook, $writer, $statements, $table) {
             if (! $hook->armed || $query->connectionName !== 'tour_snapshot') return;
             if ($hook->fired) { $hook->after[] = $query->sql; return; }
-            if (! preg_match('/\A\s*select .* from "iguide_lab_tour_analyses"/is', $query->sql) || ++$hook->analysisSelects < 2) return;
+            if (! preg_match('/\A\s*select .* from '.$table.'(?:\s|$)/is', $query->sql) || ++$hook->analysisSelects < 2) return;
             $hook->fired = true;
-            $writer->exec('BEGIN IMMEDIATE');
-            $writer->exec($sql);
-            $writer->exec('COMMIT');
+            $writer->exec($writer->getAttribute(\PDO::ATTR_DRIVER_NAME) === 'sqlite' ? 'BEGIN IMMEDIATE' : 'START TRANSACTION');
+            try {
+                foreach ($statements as $statement) $writer->exec($statement);
+                $writer->exec('COMMIT');
+            } catch (\Throwable $error) {
+                $writer->exec('ROLLBACK');
+                throw $error;
+            }
         });
 
         return $hook;

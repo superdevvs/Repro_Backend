@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro independent database backup freshness schedule
+
+[Timer]
+OnStartupSec=5m
+OnUnitInactiveSec=5m
+AccuracySec=30s
+Unit=repro-backup-watchdog.service
+
+[Install]
+WantedBy=timers.target

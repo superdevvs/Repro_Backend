@@ -78,7 +78,7 @@ class LabLifestyleAssessmentContext
         $viewRequest = ['schemaVersion' => 1, 'source' => ['path' => $disk->path($base.'/parent.png'), 'sha256' => $overviewSha], 'outputDirectory' => $disk->path($base.'/parent-views')];
         $this->putOnce($base.'/views-request.json', json_encode($viewRequest, JSON_THROW_ON_ERROR));
         $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
-        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
+        $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'PYTHONDONTWRITEBYTECODE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
         $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/analysis_views.py'), '--request', $disk->path($base.'/views-request.json')], null, $env, null, 90);
         $process->run(); $views = json_decode($process->getOutput(), true);
         abort_unless($process->isSuccessful() && ($views['status'] ?? null) === 'completed', 422, 'Original parent context preparation failed.');

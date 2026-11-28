@@ -1,0 +1,72 @@
+#!/usr/bin/python3 -IS
+"""Run an approved operator action in a transient service that survives an SSH disconnect."""
+import os
+import re
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+CLI = "/opt/repro-cutover-fence/production/cli.py"
+ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+SIMPLE = {"init", "prepare", "abort", "rehold", "refresh", "release-scheduler", "gate-check"}
+
+
+def allowed(argv):
+    if not argv:
+        return False
+    action, *args = argv
+    if action in SIMPLE:
+        return not args
+    if action == "hold":
+        return args == ["--issued-approval"]
+    if action == "promote":
+        return args in (["--issued-approval"], ["--issued-approval", "--then-reopen"])
+    if action == "reopen":
+        return args in ([], ["--hold-scheduler"])
+    if action == "status":
+        return args in ([], ["--evidence"])
+    if action == "approval-template":
+        return len(args) == 2 and args[0] == "--phase" and args[1] in ("hold", "freeze", "promote")
+    if action == "arm-deadline":
+        if len(args) != 4 or set(args[::2]) != {"--minutes", "--phase"}:
+            return False
+        values = dict(zip(args[::2], args[1::2]))
+        return (values["--phase"] in ("holding", "frozen", "ready")
+                and re.fullmatch(r"[1-9][0-9]?", values["--minutes"]) is not None
+                and int(values["--minutes"]) <= 45)
+    if action == "check-evidence":
+        args = args.copy()
+        if "--write" in args:
+            args.remove("--write")
+        if len(args) != 2 or args[0] != "--inputs":
+            return False
+        directory = Path(args[1])
+        return directory.is_absolute() and ".." not in directory.parts and str(directory) == args[1]
+    if action == "freeze":
+        return args in ([], ["--issued-approval"])
+    return False
+
+
+def main(argv):
+    if not allowed(argv):
+        print("Unsupported cutover action or arguments", file=sys.stderr)
+        return 2
+    if sys.platform != "linux" or os.geteuid() != 0:
+        print("The cutover operator wrapper requires root on Linux", file=sys.stderr)
+        return 1
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    unit = f"repro-cutover-op-{argv[0]}-{stamp}-{uuid.uuid4().hex[:8]}"
+    print(f"Follow with journalctl -fu {unit}.service", flush=True)
+    options = {"env": ENVIRONMENT, "cwd": "/", "stdin": subprocess.DEVNULL}
+    command = ["/usr/bin/systemd-run", f"--unit={unit}", "--collect", "--wait", "--service-type=exec",
+               "--property=UMask=0077", "--property=TimeoutStartSec=25min",
+               "/usr/bin/python3", "-I", "-S", CLI, *argv]
+    result = subprocess.run(command, **options)
+    journal = subprocess.run(["/usr/bin/journalctl", "--no-pager", "-u", unit + ".service"], **options)
+    return result.returncode or journal.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

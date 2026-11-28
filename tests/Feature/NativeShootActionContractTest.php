@@ -136,7 +136,7 @@ class NativeShootActionContractTest extends TestCase
         $this->assertSame('scheduled', $shoot->fresh()->workflow_status);
         $this->assertSame('2026-11-12', $shoot->fresh()->scheduled_date->toDateString());
         $this->assertSame('15:00', $shoot->fresh()->time);
-        $this->assertSame('2026-11-12 20:00:00', $line->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-11-12 20:00:00', \Carbon\CarbonImmutable::parse($line->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(60, $line->fresh()->duration_minutes);
         $this->assertSame(1, $shoot->serviceItems()->count());
         Http::assertNothingSent();

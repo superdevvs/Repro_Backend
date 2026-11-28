@@ -30,7 +30,13 @@ try {
     $source->busyTimeout(5000);
     $destination = new SQLite3($output, SQLITE3_OPEN_READWRITE);
     $destination->enableExceptions(true);
-    if (! $source->backup($destination) || $destination->querySingle('PRAGMA quick_check') !== 'ok') {
+    if (! $source->backup($destination)) {
+        throw new RuntimeException('SQLite online backup failed.');
+    }
+    // A backup of a WAL-mode database can inherit the WAL header. Switch only
+    // the destination to a self-contained file before later read-only checks.
+    if ($destination->querySingle('PRAGMA journal_mode=DELETE') !== 'delete'
+        || $destination->querySingle('PRAGMA quick_check') !== 'ok') {
         throw new RuntimeException('SQLite backup verification failed.');
     }
     $destination->close();

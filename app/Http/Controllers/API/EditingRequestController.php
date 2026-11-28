@@ -30,13 +30,13 @@ class EditingRequestController extends Controller
 
         if ($request->attributes->get('contextual_search_source')) {
             $term = trim((string) $request->query('search', ''));
-            $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $term).'%';
+            $like = '%'.\App\Support\DatabaseSql::escapeLike($term).'%';
             $query->where(function ($builder) use ($like) {
-                $builder->whereRaw("summary LIKE ? ESCAPE '\\'", [$like])
-                    ->orWhereRaw("tracking_code LIKE ? ESCAPE '\\'", [$like])
-                    ->orWhereRaw("details LIKE ? ESCAPE '\\'", [$like])
-                    ->orWhereHas('shoot', fn ($shoot) => $shoot->whereRaw("address LIKE ? ESCAPE '\\'", [$like]))
-                    ->orWhereHas('requester', fn ($user) => $user->whereRaw("name LIKE ? ESCAPE '\\'", [$like]));
+                $builder->whereRaw("LOWER(summary) LIKE LOWER(?) ESCAPE '!'", [$like])
+                    ->orWhereRaw("LOWER(tracking_code) LIKE LOWER(?) ESCAPE '!'", [$like])
+                    ->orWhereRaw("LOWER(details) LIKE LOWER(?) ESCAPE '!'", [$like])
+                    ->orWhereHas('shoot', fn ($shoot) => $shoot->whereRaw("LOWER(address) LIKE LOWER(?) ESCAPE '!'", [$like]))
+                    ->orWhereHas('requester', fn ($user) => $user->whereRaw("LOWER(name) LIKE LOWER(?) ESCAPE '!'", [$like]));
             });
             return response()->json($query->paginate(min(100, max(1, $request->integer('per_page', 8)))));
         }

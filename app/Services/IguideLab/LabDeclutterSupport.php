@@ -53,7 +53,7 @@ class LabDeclutterSupport
             'receipts'=>array_map(fn($value,$i)=>$bridge->json($out.'-receipt-'.$i.'.json',$value),$receipts,array_keys($receipts)),
             'masks'=>$masks,'outputDirectory'=>$disk->path($out)];
         $input=$bridge->json($out.'-request.json',$request);$env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
-        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
+        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','PYTHONDONTWRITEBYTECODE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
         $process=new Process([(string)config('iguide-lab.harmonization_python_path'),resource_path('iguide-lab/declutter_support.py'),'--request',$input['path']],null,$env,null,65);
         $process->run();$report=json_decode($process->getOutput(),true);$path=$out.'/report.json';
         abort_unless($process->isSuccessful()&&is_array($report)&&$disk->exists($path)&&filesize($disk->path($path))<=1024*1024

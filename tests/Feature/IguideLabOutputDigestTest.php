@@ -83,16 +83,19 @@ class IguideLabOutputDigestTest extends TestCase
     public function test_backfill_rechecks_file_and_record_after_obtaining_write_lock(): void
     {
         $run = $this->completedResult(); $disk = Storage::disk(LabService::DISK); $changed = false;
-        DB::listen(function ($query) use ($run, $disk, &$changed) {
-            if (! $changed && str_contains($query->sql, 'update "iguide_lab_projects"')) {
+        $projectUpdate = 'update '.DB::connection()->getQueryGrammar()->wrapTable('iguide_lab_projects').' ';
+        DB::listen(function ($query) use ($run, $disk, $projectUpdate, &$changed) {
+            if (! $changed && str_starts_with($query->sql, $projectUpdate)) {
+                $this->assertGreaterThan(0, $query->connection->transactionLevel());
                 $changed = true; $disk->put($run->output_path, $this->png.'changed');
             }
         });
         $this->artisan('iguide-lab:verify-output-digests', ['project' => $this->project->id])->assertFailed();
         $this->assertTrue($changed); $this->assertNull($run->fresh()->output_sha256);
         $disk->put($run->output_path, $this->png); $associationChanged = false;
-        DB::listen(function ($query) use ($run, &$associationChanged) {
-            if (! $associationChanged && str_contains($query->sql, 'update "iguide_lab_projects"')) {
+        DB::listen(function ($query) use ($run, $projectUpdate, &$associationChanged) {
+            if (! $associationChanged && str_starts_with($query->sql, $projectUpdate)) {
+                $this->assertGreaterThan(0, $query->connection->transactionLevel());
                 $associationChanged = true; IguideLabRun::whereKey($run->id)->update(['output_width' => 256]);
             }
         });

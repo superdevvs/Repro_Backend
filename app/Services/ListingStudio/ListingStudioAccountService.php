@@ -100,14 +100,17 @@ class ListingStudioAccountService
     public function transactions(User $client, int $pageNumber = 1, int $perPage = 20): array
     {
         ListingStudioClientAccess::assert($client);
+        $creditId = \App\Support\DatabaseSql::textCast('c.id');
         $credit = DB::table('listing_studio_credit_entries as c')->join('listing_studio_subscriptions as s', 's.id', '=', 'c.subscription_id')
-            ->where('s.client_id', $client->id)->selectRaw("'credit' AS record_type, CAST(c.id AS TEXT) AS record_id, c.source_type AS kind, 'succeeded' AS status,
-                c.amount_cents, c.plan_code, c.source_key, c.subscription_id, NULL AS order_id, c.created_at AS occurred_at, c.expires_at");
+            ->where('s.client_id', $client->id)->selectRaw("'credit' AS record_type, {$creditId} AS record_id, c.source_type AS kind, 'succeeded' AS status,
+                c.amount_cents, c.plan_code, c.source_key, c.subscription_id, NULL AS order_id, c.created_at AS occurred_at, c.expires_at, c.id AS credit_sequence");
         $card = DB::table('listing_studio_order_funding_effects as e')->join('listing_studio_orders as o', 'o.id', '=', 'e.order_id')
             ->where('o.client_id', $client->id)->selectRaw("'card' AS record_type, e.id AS record_id, e.kind, e.status,
                 CASE WHEN e.kind = 'payment' THEN -e.amount_cents ELSE e.amount_cents END AS amount_cents,
-                NULL AS plan_code, NULL AS source_key, NULL AS subscription_id, e.order_id, e.occurred_at, NULL AS expires_at");
-        $page = DB::query()->fromSub($credit->unionAll($card), 'studio_transactions')->orderByDesc('occurred_at')->orderByDesc('record_id')
+                NULL AS plan_code, NULL AS source_key, NULL AS subscription_id, e.order_id, e.occurred_at, NULL AS expires_at, NULL AS credit_sequence");
+        // Credit IDs share a text UNION field with UUID card effects. Keep a
+        // numeric tie-breaker so a later credit 10 sorts ahead of credit 9.
+        $page = DB::query()->fromSub($credit->unionAll($card), 'studio_transactions')->orderByDesc('occurred_at')->orderByDesc('credit_sequence')->orderByDesc('record_id')
             ->paginate(min(100, max(1, $perPage)), ['*'], 'page', max(1, $pageNumber));
         $rows = $page->getCollection();
         $referenced = $rows->map(function ($row) {

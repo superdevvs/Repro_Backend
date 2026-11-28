@@ -1,0 +1,108 @@
+#!/usr/bin/python3 -IS
+"""Pause or resume one host-config queue as www-data (design 5.1). Runs as root through sudo:
+
+    sudo -n /usr/local/sbin/repro-queue-flag pause|resume <connection:queue>
+
+For the deploy user's pre-hold pauses and the undo list's resumes. Laravel keeps the pause flag in
+the file cache, in www-data's 0755 folders under storage/framework/cache/data, so only www-data can
+write and remove it; and a flag the deploy user's workers cannot read counts as "not paused".
+
+The helper loads /etc/repro-cutover-fence/host.json with the controller's own check (root-only file,
+and the identity.json it names), refuses any queue the host config does not list, and runs the host
+config's fixed queue_pause or queue_resume argument list with the queue appended as "$1". The check
+makes that list exactly `runuser -u www-data -- /bin/sh -c 'cd <app_root> && umask 0022 && exec
+/usr/bin/php artisan queue:<verb> "$1"'`, so the flag is www-data 0644 in 0755 folders whatever umask
+sudo or the caller had. It runs nothing else and takes no other argument.
+
+Exit status: 0 done; 1 refused (nothing run); 2 usage (nothing run); 3 the queue command failed or
+timed out (the flag may or may not have changed).
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+from contextlib import nullcontext
+from pathlib import Path
+
+INSTALLED = Path("/usr/local/sbin/repro-queue-flag")
+# The controller as installed (README); in the repository this file sits in production/sbin/.
+FENCE = Path("/opt/repro-cutover-fence/production")
+_here = Path(__file__).resolve()
+sys.path.insert(0, str(FENCE if _here == INSTALLED else _here.parents[1]))
+import adapter  # noqa: E402
+from adapter import guard  # noqa: E402
+from runner import Journal, UnsafeCutover  # noqa: E402
+
+CONFIG = Path("/etc/repro-cutover-fence/host.json")
+VERBS = ("pause", "resume")
+USAGE = "Usage: repro-queue-flag pause|resume <connection:queue>"
+REFUSED = 1
+USAGE_ERROR = 2
+FAILED = 3
+# Never pass on the caller's environment.
+ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+
+
+def run(argv: list[str], seconds: int) -> tuple[int | None, str, str]:
+    """Run argv in its own process group and return (exit code, stdout, stderr); None means timed out.
+
+    runuser does not pass SIGKILL on to the command it started, so a timeout stops the whole group:
+    no queue command keeps running to change the flag after the helper has reported.
+    """
+    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, errors="replace", cwd="/", env=ENVIRONMENT, start_new_session=True) as child:
+        try:
+            output, error = child.communicate(timeout=seconds)
+        except BaseException as stopped:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
+            if isinstance(stopped, subprocess.TimeoutExpired):
+                return None, "", ""
+            raise
+        return child.returncode, output, error
+
+
+def main(argv: list[str], *, config: Path = CONFIG) -> int:
+    if len(argv) != 2 or argv[0] not in VERBS:
+        print(USAGE, file=sys.stderr)
+        return USAGE_ERROR
+    verb, queue = argv
+    try:
+        if sys.platform != "linux" or os.geteuid() != 0:
+            raise guard.Refused("it runs as root on the Linux host")
+        # identity.json gets the same root-only check; load_config refuses unsafe queue commands.
+        host = adapter.load_config(guard.read_protected(config), read=guard.read_protected)
+        guard.require(queue in host["queues"], f"{queue!r} is not a queue in the host config")
+        lock = Journal(Path(host["paths"]["state"])).acquire() if verb == "resume" else nullcontext((None, None))
+        with lock as (state, _):
+            if state is not None:
+                guard.require(state.get("version") == 1 and state.get("phase") in
+                              ("planned", "sqlite_authoritative", "mysql_authoritative")
+                              and "pending" in state and state["pending"] is None
+                              and state.get("writes_possible") is (state["phase"] == "mysql_authoritative"),
+                              "Queue resume refused while the cutover is held")
+            code, output, error = run(host["commands"][f"queue_{verb}"] + [queue], host["command_seconds"])
+    except (UnsafeCutover, guard.Refused, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        print(f"repro-queue-flag refused: {error}", file=sys.stderr)
+        return REFUSED
+    seconds = host["command_seconds"]
+    sys.stdout.write(output)
+    sys.stderr.write(error)
+    if code is None:
+        print(f"repro-queue-flag: queue:{verb} {queue} timed out after {seconds} s; "
+              "the flag may or may not have changed", file=sys.stderr)
+        return FAILED
+    if code != 0:
+        print(f"repro-queue-flag: queue:{verb} {queue} exited {code}", file=sys.stderr)
+        return FAILED
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

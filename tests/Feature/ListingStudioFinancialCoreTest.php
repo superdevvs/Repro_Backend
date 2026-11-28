@@ -156,7 +156,7 @@ class ListingStudioFinancialCoreTest extends TestCase
         $this->orders()->completeItem($item->id, $descriptor);
         $this->assertSame('captured', $order->reservation()->first()->status);
         $this->assertSame(1, DB::table('listing_studio_credit_entries')->where('source_type', 'usage')->count());
-        $this->assertSame($oldEnd->format('Y-m-d H:i:s'), DB::table('listing_studio_credit_entries')->where('source_type', 'usage')->value('expires_at'));
+        $this->assertSame($oldEnd->format('Y-m-d H:i:s'), \Carbon\CarbonImmutable::parse(DB::table('listing_studio_credit_entries')->where('source_type', 'usage')->value('expires_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(13500, app(ListingStudioCreditService::class)->summary($subscription)['available_cents']);
         $this->expectCode('revision_state_conflict', fn () => $this->orders()->cancelItem($item->id, 'order_cancelled'));
         $this->assertSame('completed', $item->fresh()->status);
@@ -342,6 +342,26 @@ class ListingStudioFinancialCoreTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_transaction_history_orders_tied_credit_ids_numerically_across_a_digit_boundary(): void
+    {
+        $subscription = $this->subscription(1500);
+        $entry = (array) DB::table('listing_studio_credit_entries')->where('subscription_id', $subscription->id)->first();
+        DB::table('listing_studio_credit_entries')->where('id', $entry['id'])->delete();
+        DB::table('listing_studio_credit_entries')->insert([
+            [...$entry, 'id' => 9],
+            [...$entry, 'id' => 10, 'source_type' => 'usage', 'source_key' => 'history-sort-usage', 'amount_cents' => -1500],
+        ]);
+        $accounts = app(\App\Services\ListingStudio\ListingStudioAccountService::class);
+        $first = $accounts->transactions($this->client, 1, 1);
+        $second = $accounts->transactions($this->client, 2, 1);
+        $this->assertSame(2, $first['pagination']['total']);
+        $this->assertSame('credit:10', $first['transactions'][0]['id']);
+        $this->assertSame('credit_usage', $first['transactions'][0]['kind']);
+        $this->assertSame('credit:9', $second['transactions'][0]['id']);
+        $this->assertSame('credit_grant', $second['transactions'][0]['kind']);
+        Http::assertNothingSent();
+    }
+
     public function test_paid_http_routes_keep_email_verification_and_reject_staff_and_impersonation(): void
     {
         \Laravel\Sanctum\Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
@@ -387,6 +407,10 @@ class ListingStudioFinancialCoreTest extends TestCase
 
     public function test_independent_sqlite_processes_cannot_both_spend_last_credit_or_take_last_unpaid_order_slot(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite file-copy race fixture; MySQL concurrency is exercised separately.');
+        }
+
         $this->subscription(700);
         $quotes = [$this->quote(), $this->quote()];
         $script = <<<'PHP'

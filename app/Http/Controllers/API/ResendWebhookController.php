@@ -25,7 +25,11 @@ class ResendWebhookController extends CakemailWebhookController
         $event = $payload['type'] ?? '';
         // Sales CRM: a reply to r+<token>@reply domain (Resend receiving webhook).
         if ($event === 'email.received') {
-            $handled = config('crm.enabled') && app(\App\Services\Crm\Email\CrmInboundReply::class)->handle($payload, (string) $request->header('svix-id'));
+            if (! config('crm.enabled')) {
+                // Never acknowledge a reply the CRM cannot record: Resend retries a 503.
+                return \App\Http\Middleware\HoldProducerIngress::retryable('crm_paused');
+            }
+            $handled = app(\App\Services\Crm\Email\CrmInboundReply::class)->handle($payload, (string) $request->header('svix-id'));
 
             return response()->json(['status' => $handled ? 'ok' : 'ignored']);
         }

@@ -11,6 +11,14 @@ abstract class TestCase extends BaseTestCase
     /** Parallel workers whose private storage directory was reset in this process. */
     private static array $preparedParallelStorage = [];
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        if (filter_var(getenv('MYSQL_TEST_FACTORY_DEFAULTS'), FILTER_VALIDATE_BOOLEAN)) {
+            \Tests\Support\MySqlFactoryDefaults::seed();
+        }
+    }
+
     /**
      * Pin the application base path to this checkout.
      *
@@ -31,6 +39,14 @@ abstract class TestCase extends BaseTestCase
         $this->traitsUsedByTest = array_flip(class_uses_recursive(static::class));
 
         $app->make(Kernel::class)->bootstrap();
+
+        if (filter_var(getenv('MYSQL_TEST_FACTORY_DEFAULTS'), FILTER_VALIDATE_BOOLEAN)) {
+            $connection = $app['db']->connection();
+            if ($connection->getDriverName() !== 'mysql' || $connection->getDatabaseName() !== 'repro_mysql_test'
+                || $connection->getConfig('username') !== 'repro_test') {
+                throw new \RuntimeException('MySQL regression tests require the actual application connection to use the isolated test database and account.');
+            }
+        }
 
         return $app;
     }

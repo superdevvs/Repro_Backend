@@ -300,8 +300,10 @@ class IguideLabWorkflowEvaluationTest extends TestCase
     {
         [, $item] = $this->fixture(); $service = new LabWorkflows; $injected = false;
         $workflow = \App\Models\IguideLabWorkflow::findOrFail($item->workflow_id);
-        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function ($sql) use (&$injected, $service, $workflow) {
-            if (! $injected && str_contains($sql, 'update "iguide_lab_workflow_items"') && str_contains($sql, 'exists')) {
+        $connection = \Illuminate\Support\Facades\DB::connection();
+        $update = 'update '.$connection->getQueryGrammar()->wrapTable('iguide_lab_workflow_items').' ';
+        $connection->beforeExecuting(function ($sql) use (&$injected, $service, $workflow, $update) {
+            if (! $injected && str_starts_with($sql, $update) && str_contains($sql, 'exists')) {
                 $injected = true; $service->cancel($workflow);
             }
         });

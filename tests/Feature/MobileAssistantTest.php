@@ -68,6 +68,22 @@ class MobileAssistantTest extends TestCase
         $response->assertJsonPath('details.notes.0.content', 'Meet at the door');
     }
 
+    public function test_search_is_case_insensitive_and_treats_wildcards_and_escape_characters_literally(): void
+    {
+        $actor = User::factory()->create(['role' => 'client']);
+        $address = '10 MIXED %_!\\ Street';
+        $own = Shoot::factory()->create(['client_id' => $actor->id, 'address' => $address]);
+        Shoot::factory()->create(['client_id' => $actor->id, 'address' => '20 Ordinary Street']);
+        Shoot::factory()->create(['address' => $address]);
+        $this->actingAs($actor);
+
+        foreach (['mixed', '%', '_', '!', '\\', '%_!\\'] as $term) {
+            $this->postJson('/api/mobile/assistant/query', ['action' => 'shoot.search', 'query' => $term])
+                ->assertOk()->assertJsonPath('total', 1)
+                ->assertJsonPath('cards.0.record_id', (string) $own->id);
+        }
+    }
+
     public function test_note_is_only_saved_after_confirmation_and_replays_do_not_duplicate_it(): void
     {
         $actor = User::factory()->create(['role' => 'client']);

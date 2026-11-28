@@ -20,6 +20,11 @@ class CrmRunDue extends Command
 
             return self::SUCCESS;
         }
+        if (config('crm.outbound_hold')) {
+            $this->line('CRM outbound is held (CRM_OUTBOUND_HOLD). Nothing was claimed.');
+
+            return self::SUCCESS;
+        }
         $d = $drips->runDue((int) $this->option('limit'));
         $c = $campaigns->runDue();
         $this->line('Drips: '.json_encode($d).' Campaigns: '.json_encode($c));

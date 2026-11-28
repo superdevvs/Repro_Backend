@@ -1,0 +1,11 @@
+[Unit]
+Description=RePro alert status relay every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:40 UTC
+AccuracySec=1s
+Persistent=false
+Unit=repro-alert-forward.service
+
+[Install]
+WantedBy=timers.target

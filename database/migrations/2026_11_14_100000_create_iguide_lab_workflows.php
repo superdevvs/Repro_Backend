@@ -7,10 +7,12 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
+        // Evidence hashes bind the stored JSON key order. Native MySQL JSON would reorder it.
+        // Keep textual JSON and the existing model array casts, as on SQLite.
         Schema::create('iguide_lab_workflows', function (Blueprint $table) {
             $table->uuid('id')->primary(); $table->foreignUuid('project_id')->constrained('iguide_lab_projects')->cascadeOnDelete();
             $table->uuid('request_id'); $table->string('request_hash', 64); $table->string('status', 24)->default('queued');
-            $table->json('policy'); $table->timestamp('cancelled_at')->nullable(); $table->timestamp('completed_at')->nullable(); $table->timestamps();
+            $table->longText('policy'); $table->timestamp('cancelled_at')->nullable(); $table->timestamp('completed_at')->nullable(); $table->timestamps();
             $table->unique(['project_id', 'request_id']);
         });
         Schema::create('iguide_lab_workflow_items', function (Blueprint $table) {
@@ -18,8 +20,8 @@ return new class extends Migration {
             $table->foreignUuid('project_id')->constrained('iguide_lab_projects')->cascadeOnDelete();
             $table->foreignUuid('case_id')->constrained('iguide_lab_cases'); $table->unsignedSmallInteger('position');
             $table->string('preset', 40); $table->string('style', 40)->nullable(); $table->text('instructions');
-            $table->json('source'); $table->string('status', 24)->default('queued'); $table->unsignedTinyInteger('attempt_count')->default(0);
-            $table->json('data'); $table->timestamp('completed_at')->nullable(); $table->timestamps();
+            $table->longText('source'); $table->string('status', 24)->default('queued'); $table->unsignedTinyInteger('attempt_count')->default(0);
+            $table->longText('data'); $table->timestamp('completed_at')->nullable(); $table->timestamps();
             $table->unique(['workflow_id', 'position']);
         });
         Schema::create('iguide_lab_workflow_steps', function (Blueprint $table) {
@@ -27,15 +29,15 @@ return new class extends Migration {
             $table->foreignUuid('project_id')->constrained('iguide_lab_projects')->cascadeOnDelete();
             $table->string('step_key', 80); $table->string('kind', 24); $table->uuid('request_id');
             $table->string('status', 24)->default('reserved'); $table->uuid('child_id')->nullable();
-            $table->json('input'); $table->string('input_sha256', 64); $table->json('data')->nullable(); $table->timestamps();
+            $table->longText('input'); $table->string('input_sha256', 64); $table->longText('data')->nullable(); $table->timestamps();
             $table->unique(['item_id', 'step_key']); $table->unique(['project_id', 'request_id']);
         });
         Schema::create('iguide_lab_workflow_evaluations', function (Blueprint $table) {
             $table->uuid('id')->primary(); $table->foreignUuid('step_id')->unique()->constrained('iguide_lab_workflow_steps')->cascadeOnDelete();
             $table->foreignUuid('project_id')->constrained('iguide_lab_projects')->cascadeOnDelete();
             $table->uuid('request_id'); $table->string('request_hash', 64); $table->string('status', 24)->default('queued');
-            $table->json('data'); $table->json('result')->nullable(); $table->json('provider_attempts')->nullable();
-            $table->string('provider_request_id')->nullable(); $table->json('usage')->nullable(); $table->text('error')->nullable();
+            $table->longText('data'); $table->longText('result')->nullable(); $table->longText('provider_attempts')->nullable();
+            $table->string('provider_request_id')->nullable(); $table->longText('usage')->nullable(); $table->text('error')->nullable();
             $table->timestamp('started_at')->nullable(); $table->timestamp('completed_at')->nullable(); $table->timestamps();
             $table->unique(['project_id', 'request_id']);
         });

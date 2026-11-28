@@ -153,6 +153,21 @@ class ListingStudioAiRevisionTest extends TestCase
         app(ListingStudioPaidPipeline::class)->authorize($workspace->fresh());
     }
 
+    public function test_json_object_key_order_preserves_authorization_but_value_types_remain_strict(): void
+    {
+        [$client, $item] = $this->item();
+        app(ListingStudioAiRevisionService::class)->request($client, $item->order_id, 'Use a lighter rug.', (string) Str::uuid());
+        $workspace = $item->workspace->fresh();
+        $operation = $workspace->operation;
+        $operation['payload'] = array_reverse($operation['payload'], preserve_keys: true);
+        $workspace->update(['operation' => $operation]);
+        $this->assertSame($item->id, app(ListingStudioPaidPipeline::class)->authorize($workspace->fresh())->id);
+        $operation['payload']['customEdit'] = 'true';
+        $workspace->update(['operation' => $operation]);
+        $this->expectException(StudioProviderException::class);
+        app(ListingStudioPaidPipeline::class)->authorize($workspace->fresh());
+    }
+
     public function test_existing_processor_finishes_one_revision_without_recharging_and_private_versions_remain_readable(): void
     {
         [$client, $item] = $this->item();

@@ -34,13 +34,22 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('shoots', function (Blueprint $table) {
-            // Drop indexes
-            $table->dropIndex('idx_shoots_status');
-            $table->dropIndex('idx_shoots_client_id');
-            $table->dropIndex('idx_shoots_photographer_id');
-            $table->dropIndex('idx_shoots_editor_id');
-            $table->dropIndex('idx_shoots_scheduled_date');
+        $redundantIndexes = [
+            'idx_shoots_status',
+            'idx_shoots_client_id',
+            'idx_shoots_photographer_id',
+            'idx_shoots_editor_id',
+            'idx_shoots_scheduled_date',
+        ];
+        if (Schema::getConnection()->getDriverName() === 'mysql') {
+            // A converted database may keep only the equivalent earlier indexes.
+            $redundantIndexes = array_intersect($redundantIndexes, array_column(Schema::getIndexes('shoots'), 'name'));
+        }
+
+        Schema::table('shoots', function (Blueprint $table) use ($redundantIndexes) {
+            foreach ($redundantIndexes as $index) {
+                $table->dropIndex($index);
+            }
             $table->dropIndex('idx_shoots_created_at');
             $table->dropIndex('idx_shoots_admin_verified_at');
             $table->dropIndex('idx_shoots_editing_completed_at');
