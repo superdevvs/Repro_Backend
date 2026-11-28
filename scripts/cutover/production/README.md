@@ -617,8 +617,12 @@ proof also require full export.
 The short rollback requires `smoke_row_scope_verified: true` in the audit. The probe decodes the four
 consecutive GTIDs from the same binary log using the existing private probe account over its Unix socket.
 It compares each full before/after row image against the verified marked client, shoot and job. It also
-checks the associated Aryeo change and the exact column layout of the reviewed schema, using the existing
-token-check account to read column metadata. The audit exposes an aggregate boolean and keeps decoded rows
+checks the associated Aryeo change and the exact ordinal, MySQL type and nullability of all 243 columns
+across the four smoke tables. It uses the existing token-check account to read column metadata. Two complete
+catalogs are reviewed for this release. The clean MySQL installation and the SQLite conversion differ in
+the placement of `users.deleted_at` and `users.secondary_roles`, and in their representations of some
+temporal, boolean and text columns. The decoder resolves each row field by its name at the measured ordinal.
+A third catalog or a combination of the two requires full reverse export. The audit exposes an aggregate boolean and keeps decoded rows
 in private process memory. The candidate binary log range is limited to 128 KiB and decoded output to 2 MiB.
 
 This optional path requires the reviewed Oracle MySQL 8.4.13 Linux x86_64 `mysqlbinlog` next to the configured

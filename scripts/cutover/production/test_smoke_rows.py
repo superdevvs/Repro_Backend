@@ -116,6 +116,27 @@ class RowEvidenceTests(unittest.TestCase):
     def test_complete_four_committed_transactions(self):
         self.assertTrue(self.verdict())
 
+    def test_converted_sqlite_users_ordinals_follow_the_marked_field_by_name(self):
+        columns = dict(self.columns)
+        users = [name for name in columns["users"] if name not in {"deleted_at", "secondary_roles"}]
+        users.insert(6, "deleted_at")
+        users.insert(11, "secondary_roles")
+        columns["users"] = tuple(users)
+        self.assertEqual(("company_notes", "company_notes"), (self.columns["users"][24], users[26]))
+        self.assertTrue(self.verdict(render(self.transactions, columns), layout=columns))
+        # A review of the old ordinals would attribute other fields to the wrong names.
+        self.assertFalse(self.verdict(render(self.transactions, columns), layout=self.columns))
+        wrong = fixture_transactions()
+        user_after = wrong[0][0][2][1]
+        user_after["company_notes"] = "old"
+        user_after[users[24]] = MARKER
+        self.assertFalse(self.verdict(render(wrong, columns), layout=columns))
+        user_after["company_notes"] = MARKER
+        self.assertFalse(self.verdict(render(wrong, columns), layout=columns))
+        extra = fixture_transactions()
+        extra[0].insert(1, extra[0][0])
+        self.assertFalse(self.verdict(render(extra, columns), layout=columns))
+
     def test_extra_business_edit_or_wrong_row_in_first_transaction(self):
         for idx, key, value in ((0, "name", "some other edit"), (0, "email", "real@example.invalid"),
                                 (0, "id", 39), (1, "id", 22), (1, "client_id", 6), (1, "shoot_type", "customer"),

@@ -11,12 +11,16 @@ import re
 from datetime import datetime, timezone
 
 
-# SHA-256 of the NUL-separated ordinal column names in the candidate's mysql-schema.sql.
+# SHA-256 of the NUL-separated column names in server ordinal order.
+# In a fresh SQLite migration and import, users.deleted_at and secondary_roles occupy
+# positions 7 and 12. The reviewed clean MySQL schema places them at positions 46 and 26.
+# fields() maps the measured native ordinals to names separately for each admitted layout.
 LAYOUT_HASHES = {
-    "users": "ee0b74e03a5f889b215ffa7a0d2c92c4d368878dd54ea62ab8cf6e91de02e3f3",
-    "shoots": "949be0f8cb9547c1e3aa4f051c29b5092c908e1df676f98203d66dc4fc117b14",
-    "aryeo_changes": "b89490109bbb440f92aa27b8efd935f643e717cd23598883a19791a02dabe5e2",
-    "jobs": "671cf5925293f4ddd626a5933b587ffe32a72fbd4b0dbad9e827566cc369a75b",
+    "users": {"ee0b74e03a5f889b215ffa7a0d2c92c4d368878dd54ea62ab8cf6e91de02e3f3",
+              "fd51177506dc06bd70b69429d7c10e2e02c2b426b4772b2135439d7c0f9172fa"},
+    "shoots": {"949be0f8cb9547c1e3aa4f051c29b5092c908e1df676f98203d66dc4fc117b14"},
+    "aryeo_changes": {"b89490109bbb440f92aa27b8efd935f643e717cd23598883a19791a02dabe5e2"},
+    "jobs": {"671cf5925293f4ddd626a5933b587ffe32a72fbd4b0dbad9e827566cc369a75b"},
 }
 IDENT = rb"[a-zA-Z0-9_]+"
 UUID = r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}"
@@ -46,7 +50,7 @@ def verified_layout(layout):
     for table, columns in layout.items():
         require(isinstance(columns, (list, tuple)) and 0 < len(columns) <= 200
                 and all(isinstance(col, str) and re.fullmatch("[a-z][a-z0-9_]*", col) for col in columns))
-        require(hashlib.sha256("\0".join(columns).encode("ascii")).hexdigest() == LAYOUT_HASHES[table])
+        require(hashlib.sha256("\0".join(columns).encode("ascii")).hexdigest() in LAYOUT_HASHES[table])
 
 
 def column_value(line):

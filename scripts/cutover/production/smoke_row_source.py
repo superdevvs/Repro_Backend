@@ -20,6 +20,12 @@ OPENSSL_SHA256 = {"libssl.so.3": "78ae74e4cc70d4e19478065ee00c5b1864cf8528c725eb
 MAX_BINLOG_BYTES = 128 * 1024
 MAX_DECODED_BYTES = 2 * 1024 * 1024
 TABLES = ("aryeo_changes", "jobs", "shoots", "users")
+# Each release layout binds all four tables together, including the real ordinal assignment,
+# complete COLUMN_TYPE and nullability. A mixture of two known layouts remains unreviewed.
+CATALOG_SHA256 = {
+    "224b87b85c4bf310c25eb41e2cb36b825c0b94c665e729671c9600f32e4f4990",  # clean MySQL schema
+    "8f5c86b31b71a3cf66b5945730b29e179f888fc96f6ae713035120831810b589",  # reviewed SQLite import
+}
 
 
 class Unavailable(ValueError):
@@ -84,7 +90,8 @@ def coordinates(config, window, listed):
     raise Unavailable("The smoke transaction has no verified end")
 
 
-def layout(config, *, deadline=None):
+def measured_catalog(config, *, deadline=None):
+    """Return the actual ordinal names and an approved digest of all four complete typed layouts."""
     import gate
 
     mysql = config["mysql"]
@@ -92,8 +99,8 @@ def layout(config, *, deadline=None):
     tables = ", ".join(probe._literal(name) for name in TABLES)
     sql = ("SELECT JSON_ARRAY(CURRENT_USER(), @@server_uuid, VERSION(), @@GLOBAL.skip_networking,"
            " @@GLOBAL.binlog_row_image, @@GLOBAL.binlog_format); "
-           "SELECT JSON_ARRAY(c.TABLE_NAME, c.ORDINAL_POSITION, c.COLUMN_NAME) FROM information_schema.COLUMNS c "
-           "JOIN information_schema.TABLES t USING (TABLE_SCHEMA,TABLE_NAME) "
+           "SELECT JSON_ARRAY(c.TABLE_NAME, c.ORDINAL_POSITION, c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE) "
+           "FROM information_schema.COLUMNS c JOIN information_schema.TABLES t USING (TABLE_SCHEMA,TABLE_NAME) "
            f"WHERE c.TABLE_SCHEMA = {database} AND c.TABLE_NAME IN ({tables}) "
            "AND t.ENGINE='InnoDB' AND t.TABLE_TYPE='BASE TABLE' AND c.GENERATION_EXPRESSION='' "
            "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION")
@@ -103,12 +110,22 @@ def layout(config, *, deadline=None):
     require(lines and json.loads(lines[0]) == ["repro_token_check@localhost", mysql["target_uuid"],
                                                binlog_scan.SERVER_VERSION, 1, "FULL", "ROW"])
     names = {name: [] for name in TABLES}
+    shapes = {name: [] for name in TABLES}
     for line in lines[1:]:
-        table, ordinal, column = json.loads(line)
+        table, ordinal, column, mysql_type, nullable = json.loads(line)
         require(table in names and type(ordinal) is int and ordinal == len(names[table]) + 1
-                and isinstance(column, str) and re.fullmatch(r"[a-z0-9_]+", column))
+                and isinstance(column, str) and re.fullmatch(r"[a-z0-9_]+", column)
+                and isinstance(mysql_type, str) and nullable in ("NO", "YES"))
         names[table].append(column)
-    return names
+        shapes[table].append((column, mysql_type, nullable))
+    encoded = json.dumps(shapes, sort_keys=True, separators=(",", ":")).encode("ascii")
+    digest = hashlib.sha256(encoded).hexdigest()
+    require(digest in CATALOG_SHA256)
+    return names, digest
+
+
+def layout(config, *, deadline=None):
+    return measured_catalog(config, deadline=deadline)[0]
 
 
 def safe_schema_at_smoke(config, deadline):

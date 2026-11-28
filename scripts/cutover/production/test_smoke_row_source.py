@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -62,15 +63,24 @@ class RowSourceTests(unittest.TestCase):
 
     def test_layout_query_is_bound_to_target_account_ordinal_sequence_and_full_images(self):
         header = ["repro_token_check@localhost", UUID, "8.4.13", 1, "FULL", "ROW"]
-        rows = [[name, index, value] for name in source.TABLES for index, value in enumerate(["id", "value"], 1)]
+        rows = [[name, 1, "id", "bigint", "NO"] for name in source.TABLES]
+        rows += [[name, 2, "value", "longtext", "YES"] for name in source.TABLES]
         def output(first, columns):
             return SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(row) for row in [first, *columns]))
 
         names = {name: ["id", "value"] for name in source.TABLES}
+        catalog = dict.fromkeys(source.TABLES, [["id", "bigint", "NO"], ["value", "longtext", "YES"]])
+        encoded = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode()
+        pin = patch.object(source, "CATALOG_SHA256", {hashlib.sha256(encoded).hexdigest()})
+        pin.start()
+        self.addCleanup(pin.stop)
         with patch.object(gate, "_client", return_value=output(header, rows)):
             self.assertEqual(names, source.layout(self.config))
         for first, columns in (([*header[:4], "MINIMAL", "ROW"], rows), ([*header[:1], "other", *header[2:]], rows),
-                               (header, [*rows[:-1], [rows[-1][0], 3, "other"]]), (header, [[None, 1, "id"]])):
+                               (header, [*rows[:-1], [rows[-1][0], 3, "other", "longtext", "YES"]]),
+                               (header, [*rows[:-1], [*rows[-1][:3], "bigint", "YES"]]),
+                               (header, [*rows[:-1], [*rows[-1][:4], "NO"]]),
+                               (header, [[None, 1, "id", "bigint", "NO"]])):
             with (self.subTest(first=first, columns=columns),
                   patch.object(gate, "_client", return_value=output(first, columns))):
                 with self.assertRaises(source.Unavailable):
@@ -97,6 +107,42 @@ class RowSourceTests(unittest.TestCase):
             with self.subTest(assessment=assessment), patch.object(source, "coordinates") as bounds:
                 self.assertFalse(source.verified(self.config, window, self.listed))
                 bounds.assert_not_called()
+
+    def test_reviewed_clean_and_imported_catalogs_and_rejecting_mixed_layouts(self):
+        ddl = (Path(__file__).resolve().parents[3] / "database/schema/mysql-schema.sql").read_text(encoding="utf-8")
+        clean = {}
+        for table in source.TABLES:
+            body = re.search(r"CREATE TABLE \x60" + table + r"\x60 \((.*?)\n\) ENGINE=", ddl, re.S)[1]
+            declarations = re.findall(r"^  \x60([a-z0-9_]+)\x60 ([a-z]+(?:\([0-9,]+\))?(?: unsigned)?)([^\n]*)",
+                                      body, re.M)
+            clean[table] = [(col, kind, "NO" if "NOT NULL" in attrs else "YES") for col, kind, attrs in declarations]
+
+        # Reconstruct this release's imported metadata. The converter preserves SQLite
+        # date/time text and maps the original integer and text affinities to these types.
+        native = {"datetime(6)": "varchar(64)", "date": "varchar(64)", "tinyint(1)": "bigint",
+                  "char(36)": "longtext", "json": "longtext"}
+        imported = {table: [(col, native.get(kind, kind), null) for col, kind, null in columns]
+                    for table, columns in clean.items()}
+        users = {col[0]: col for col in imported["users"]}
+        ordered = [col for col in imported["users"] if col[0] not in {"deleted_at", "secondary_roles"}]
+        ordered.insert(6, users["deleted_at"])
+        ordered.insert(11, users["secondary_roles"])
+        imported["users"] = ordered
+
+        def attest(candidate):
+            result = [["repro_token_check@localhost", UUID, "8.4.13", 1, "FULL", "ROW"]]
+            for table, columns in candidate.items():
+                result += [[table, ordinal, *column] for ordinal, column in enumerate(columns, 1)]
+            rows = SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(line) for line in result))
+            with patch.object(gate, "_client", return_value=rows):
+                return source.layout(self.config)
+
+        self.assertEqual([col[0] for col in clean["users"]], attest(clean)["users"])
+        self.assertEqual([col[0] for col in ordered], attest(imported)["users"])
+        wrong_order = {**imported, "users": [users[column[0]] for column in clean["users"]]}
+        for hybrid in (wrong_order, {**imported, "shoots": clean["shoots"]}, {**clean, "users": ordered}):
+            with self.assertRaises(source.Unavailable):
+                attest(hybrid)
 
     @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Protected Linux fixture")
     def test_decoder_is_pinned_bounded_and_cannot_leak_errors(self):
