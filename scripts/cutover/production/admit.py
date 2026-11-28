@@ -26,7 +26,7 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parent.parent)]
 try:
     from fence import guard  # Repository layout.
 except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
