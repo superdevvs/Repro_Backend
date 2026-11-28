@@ -75,6 +75,7 @@ python3 -B -m unittest discover -s "$cutover/host" -p test_prewrite_fastcgi.py
 # launcher tests in the same file need docker run --privileged (they fail without it) and run only
 # when production/sandbox/test_sandbox.py is passed as an extra argument.
 python3 -B -m unittest discover -s "$cutover/production/sandbox" -p test_sandbox.py -k MakeConfigTests -v
+python3 -B -m unittest discover -s "$cutover/production/sandbox" -p test_verify_w2c.py
 for extra in "$@"; do
     python3 -B -m unittest discover -s "$(dirname "$cutover/$extra")" -p "$(basename "$extra")" -v
 done

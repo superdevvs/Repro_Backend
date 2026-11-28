@@ -19,6 +19,12 @@ in which every one of those paths is a directory under the sandbox root.
 | `make_config.py` | Writes the sandbox `host.json`, `identity.json`, `policy.json` and wrapper files |
 | `test_sandbox.py` | Tests (launcher tests need a privileged container) |
 
+Save the terminal output of the two local W2c cases for review. The offline checker verifies their common release, distinct targets, recovery method, hashes, transaction counts and successful launcher exits. The export case must read its confirmed write through Laravel on the reopened SQLite file. Supply the same path twice for a combined log, or separate case logs in the order shown.
+
+```sh
+python3 -B verify_w2c.py --release "$reviewed_sha" short-case.log export-case.log
+```
+
 ## Usage
 
 ```sh
