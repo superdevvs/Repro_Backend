@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from adapter import guard
 import binlog_scan
@@ -94,6 +94,18 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(1, self.adapter._execute.call_count)
         with self.assertRaisesRegex(UnsafeCutover, "last write-smoke GTIDs"):
             self.attempt(gtid(11))
+
+    def test_audit_refuses_empty_binlog_for_a_successful_smoke(self):
+        self.attempt(gtid(10), gtid(14))
+        journal = {"phase": "recovery_required", "identity": {"run_id": RUN}}
+        receipt = mysql_probe.Receipt(SHA, binlog_scan.Coordinate("binlog.000001", 4), binlog_scan.GtidSet.parse(gtid(9)))
+        with (patch.object(mysql_probe, "read_journal", return_value=journal),
+              patch.object(mysql_probe, "read", return_value=({"server_uuid": UUID}, None)),
+              patch.object(mysql_probe, "_base", return_value={}),
+              patch.object(mysql_probe, "load_receipt", return_value=receipt),
+              patch.object(mysql_probe, "_scan", return_value=(binlog_scan.Result(0, None, []), None, gtid(14)))):
+            with self.assertRaisesRegex(mysql_probe.Refusal, "no corresponding business writes"):
+                mysql_probe.audit(self.config)
 
     def test_missing_end_persists_and_a_retry_cannot_extend_an_old_window(self):
         with self.assertRaisesRegex(OSError, "server down"):

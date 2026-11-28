@@ -707,6 +707,9 @@ def audit(config: dict) -> dict:
         raise _refused(EXIT_PURGED, "The server no longer contains the verified write-smoke GTIDs", base)
     listed = binlog_scan.audit(result, frozenset(config["mysql"]["smoke_tables"]),
                                None if window is None else window[:2], server_uuid=server["server_uuid"])
+    if window is not None and not any(item["class"] in {"smoke", "business"} for item in listed):
+        raise _refused(EXIT_UNRECOGNISED, "The verified application smoke has no corresponding business writes "
+                       "in the binary log audit", base)
     return {**_listing(base), "receipt": receipt.sha256, "armed_from": receipt.armed_from.record(),
             "boundary": result.boundary,
             "smoke_window": None if window is None else {name: window[2][name] for name in ("gtid_before",
