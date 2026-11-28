@@ -49,6 +49,36 @@ class CutoverViewTests(unittest.TestCase):
         record = self.build()
         self.assertEqual(record, {"schema": view.SCHEMA, "observed_unix_s": NOW, "boot_id": BOOT, "journal": "absent"})
 
+    @unittest.skipUnless(os.name != "posix" or os.geteuid() == 0, "retirement records must be root-owned")
+    def test_retired_authority_is_redacted_and_active_journal_takes_precedence(self):
+        retired = self.root / "retired.json"
+        marker = {"version": 1, "run_id": self.identity.run_id, "engine": "mysql",
+                  "archive": "/var/lib/repro-cutover-archive/" + self.identity.run_id + "-20261128T083000Z"}
+        retired.write_text(json.dumps(marker))
+        retired.chmod(0o600)
+        def read():
+            return view.build(self.journal.path, BOOT, NOW, retired=retired)
+        self.assertEqual({"schema": view.SCHEMA, "observed_unix_s": NOW, "boot_id": BOOT, "journal": "retired",
+                          "run_id": self.identity.run_id, "engine": "mysql"}, read())
+        for changes in ({"engine": "pg"}, {"archive": "/tmp/anything"},
+                        {"archive": marker["archive"].replace("20261128", "20260231")}):
+            retired.write_text(json.dumps({**marker, **changes}))
+            self.assertEqual("unreadable", read()["journal"])
+        retired.write_text(json.dumps(marker))
+        pending = self.journal.path.with_name("retire-pending.json")
+        pending.write_text("{}")
+        self.assertEqual("unreadable", read()["journal"])
+        pending.unlink()
+        if os.name == "posix":
+            retired.chmod(0o666)
+            self.assertEqual("unreadable", read()["journal"])
+            retired.chmod(0o600)
+        retired.write_text(json.dumps(marker))
+        self.runner.initialize()
+        self.assertEqual("present", read()["journal"])
+        self.journal.path.write_text("broken")
+        self.assertEqual("unreadable", read()["journal"])
+
     def test_planned_journal_has_no_hold(self):
         self.runner.initialize()
         record = self.build()

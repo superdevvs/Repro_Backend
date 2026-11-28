@@ -775,6 +775,30 @@ class HoldErrorRateTests(CutoverFixture):
 
 
 class AuthoritativeEngineTests(CutoverFixture):
+    def test_retired_engine_reported_without_detector_error_only_when_ingress_open(self):
+        for engine in ("sqlite", "mysql"):
+            with self.subTest(engine=engine):
+                record = {"schema": cutover_view.SCHEMA, "observed_unix_s": NOW, "boot_id": self.boot,
+                          "journal": "retired", "run_id": IDENTITY.run_id, "engine": engine}
+                self.publish(record)
+                self.open_site()
+                (self.root / "app" / ".env").write_text("DB_CONNECTION=" + engine + "\n")
+                self.assertEqual(engine, probe.authoritative_engine(self.context()))
+                statuses = self.run_probe()
+                for name in ("site_held", "wrong_database_engine"):
+                    self.assertEqual("ok", statuses[name]["state"], statuses[name])
+                self.marker.unlink()
+                self.assertEqual("fail", self.run_probe()["site_held"]["state"])
+                self.publish({**record, "engine": "unknown"})
+                with self.assertRaises(probe.DetectorError):
+                    probe.authoritative_engine(self.context())
+
+    def test_held_without_journal_or_retired_still_pages(self):
+        self.publish({"schema": cutover_view.SCHEMA, "observed_unix_s": NOW, "boot_id": self.boot, "journal": "absent"})
+        self.assertEqual("fail", self.run_probe()["site_held"]["state"])
+        with self.assertRaises(probe.DetectorError):
+            probe.authoritative_engine(self.context())
+
     def test_engine_follows_the_journal_after_the_switch_not_the_install_value(self):
         self.assertEqual(self.plan["expected_engine"], "sqlite")
         self.view(phase="mysql_authoritative")

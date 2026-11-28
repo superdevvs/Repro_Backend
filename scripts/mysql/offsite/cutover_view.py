@@ -4,11 +4,9 @@
 The writer-hold journal (/var/lib/repro-cutover-fence/state.json) is root-private,
 and the guard refuses a journal folder that group or others can read. This tool
 runs from repro-alert-cutover-view.service as root with no capabilities: it has
-only the owner's rights, sees only the journal folder, its own output folder and
-its code, and has no network. It never takes a cutover lock and never writes the
-journal. The view holds the run ID, phase, write marker, hold start, pending
-action and the boot the hold was taken in. It holds no approval, challenge,
-digest or observation.
+only the owner's rights and sees the journal folder, retirement marker, its output folder
+and its code. An active journal takes precedence. After completed retirement the view
+exposes only the engine and run ID. The view never takes a writer lock or changes authority.
 """
 from __future__ import annotations
 
@@ -16,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -23,6 +22,7 @@ import uuid
 
 SCHEMA = "repro.alert.cutover-view.v1"
 JOURNAL = Path("/var/lib/repro-cutover-fence/state.json")
+RETIRED = Path("/etc/repro-cutover-fence/retired.json")
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 OUTPUT = Path("/var/lib/repro-alert-cutover/view.json")
 MAX_JOURNAL_BYTES = 1024 * 1024  # The guard's own record limit.
@@ -66,13 +66,53 @@ def fields(state: object) -> dict | None:
     return record if valid else None
 
 
-def build(journal: Path, boot_id: str, now: int) -> dict:
+def retired_authority(path: Path) -> dict:
+    """Expose just the engine and run from a root-owned retirement marker."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or (os.name == "posix" and (info.st_uid != 0 or info.st_mode & 0o022))
+                or not 0 < info.st_size <= MAX_JOURNAL_BYTES):
+            raise ValueError("untrusted retirement record")
+        raw = stream.read(MAX_JOURNAL_BYTES + 1)
+    if len(raw) > MAX_JOURNAL_BYTES:
+        raise ValueError("oversized retirement record")
+    def unique_fields(items):
+        fields = dict(items)
+        if len(fields) != len(items):
+            raise ValueError("duplicate retirement fields")
+        return fields
+
+    state = json.loads(raw, object_pairs_hook=unique_fields)
+    if not (isinstance(state, dict) and state.keys() == {"version", "run_id", "engine", "archive"}
+            and type(state["version"]) is int and state["version"] == 1 and state["engine"] in ("mysql", "sqlite")
+            and isinstance(state["run_id"], str) and RUN_ID.fullmatch(state["run_id"])
+            and isinstance(state["archive"], str)):
+        raise ValueError("invalid retirement record")
+    prefix = "/var/lib/repro-cutover-archive/" + state["run_id"] + "-"
+    timestamp = state["archive"][len(prefix):]
+    if not state["archive"].startswith(prefix) or re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", timestamp) is None:
+        raise ValueError("invalid retirement archive path")
+    time.strptime(timestamp, "%Y%m%dT%H%M%SZ")
+    return {"journal": "retired", "run_id": state["run_id"], "engine": state["engine"]}
+
+
+def build(journal: Path, boot_id: str, now: int, *, retired: Path = RETIRED) -> dict:
     record = {"schema": SCHEMA, "observed_unix_s": int(now), "boot_id": boot_id}
     try:
         with open(journal, "rb") as stream:
             raw = stream.read(MAX_JOURNAL_BYTES + 1)
     except FileNotFoundError:
-        return record | {"journal": "absent"}
+        try:
+            authority = retired_authority(retired)
+        except FileNotFoundError:
+            authority = {"journal": "absent"}
+        except (OSError, ValueError, RecursionError):
+            authority = {"journal": "unreadable"}
+        # A dangling journal or an initialization racing the read cannot establish retired authority.
+        if os.path.lexists(journal) or os.path.lexists(journal.with_name("retire-pending.json")):
+            authority = {"journal": "unreadable"}
+        return record | authority
     except OSError:
         return record | {"journal": "unreadable"}
     try:

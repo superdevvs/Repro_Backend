@@ -256,8 +256,13 @@ class Cutover:
 def valid_view(record: object) -> bool:
     if not (isinstance(record, dict) and record.get("schema") == VIEW_SCHEMA
             and type(record.get("observed_unix_s")) is int and isinstance(record.get("boot_id"), str)
-            and record.get("journal") in ("absent", "present", "unreadable")):
+            and record.get("journal") in ("absent", "present", "unreadable", "retired")):
         return False
+    if record["journal"] == "retired":
+        return (record.keys() == {"schema", "observed_unix_s", "boot_id", "journal", "engine", "run_id"}
+                and isinstance(record["run_id"], str)
+                and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", record["run_id"]) is not None
+                and record["engine"] in ("mysql", "sqlite"))
     if record["journal"] != "present":
         return True
     return (isinstance(record.get("run_id"), str) and isinstance(record.get("phase"), str)
@@ -319,6 +324,8 @@ def authoritative_engine(context: Context) -> str:
         if state.ingress_folder:
             raise DetectorError("authoritative engine unknown: the writer hold has no cutover journal")
         return context.plan["expected_engine"]
+    if view["journal"] == "retired":
+        return view["engine"]
     if view["phase"] in SQLITE_PHASES:
         return "sqlite"
     if view["phase"] in MYSQL_PHASES:
@@ -354,6 +361,8 @@ def hold_verdict(context: Context) -> tuple[bool, str]:
         return False, "site held with no cutover journal"
     if view["journal"] == "unreadable":
         return False, "site held: the cutover journal is unreadable"
+    if view["journal"] == "retired":
+        return False, "site held after retirement: check retired-open and the ingress marker"
     phase, started = view["phase"], view["started_at"]
     same_boot = view["hold_boot_id"] == state.boot
     if phase in ("planned", "sqlite_authoritative") and (started is None or not same_boot):

@@ -142,7 +142,8 @@ class ProductionUnitTests(unittest.TestCase):
         self.assertEqual((service["User"], service["Group"]), ("root", "repro-backup"))
         self.assertEqual((service["CapabilityBoundingSet"], service["AmbientCapabilities"]), ("", ""))
         self.assertEqual(service["TemporaryFileSystem"], "/etc:ro /var:ro /run:ro /opt:ro")
-        self.assertEqual(service["BindReadOnlyPaths"], "/opt/repro-backup-tools -/var/lib/repro-cutover-fence")
+        self.assertEqual(service["BindReadOnlyPaths"], "/opt/repro-backup-tools -/var/lib/repro-cutover-fence "
+                         "-/etc/repro-cutover-fence/retired.json")
         self.assertEqual(service["BindPaths"], "/var/lib/repro-alert-cutover")
         self.assertEqual(service["InaccessiblePaths"], "-/mnt -/media -/srv")
         self.assertEqual(service["ProtectHome"], "yes")

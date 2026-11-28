@@ -27,7 +27,7 @@ ProtectHome=yes
 TemporaryFileSystem=/etc:ro /var:ro /run:ro /opt:ro
 InaccessiblePaths=-/mnt -/media -/srv
 # A missing journal folder (no writer hold installed) is not an error: the view says absent.
-BindReadOnlyPaths=/opt/repro-backup-tools -/var/lib/repro-cutover-fence
+BindReadOnlyPaths=/opt/repro-backup-tools -/var/lib/repro-cutover-fence -/etc/repro-cutover-fence/retired.json
 BindPaths=/var/lib/repro-alert-cutover
 PrivateTmp=yes
 PrivateDevices=yes
