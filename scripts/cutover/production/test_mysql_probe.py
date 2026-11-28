@@ -1286,13 +1286,12 @@ class FakeServerTests(unittest.TestCase):
         code, output, stderr = self.run_probe("recovery_required", "--audit")
         self.assertEqual(0, code, stderr)
         self.assertEqual([(f"{self.fake.uuid}:{number}", kind) for number, kind in
-                          ((49, "foreign"), (55, "smoke"), (56, "smoke"), (57, "business"))],
+                          ((49, "foreign"), (55, "business"), (56, "business"), (57, "business"))],
                          [(item["gtid"], item["class"]) for item in output["transactions"]])
-        self.assertEqual({"foreign": 1, "smoke": 2, "business": 1}, output["counts"])
+        self.assertEqual({"foreign": 1, "smoke": 0, "business": 3}, output["counts"])
         self.assertEqual((sha, {"file": "binlog.000001", "position": 13791}, len(recorded.E6_G6)),
                          (output["receipt"], output["armed_from"], output["scanned_events"]))
-        self.assertEqual({"gtid_before": recorded.E6_SMOKE_WINDOW[0], "gtid_after": recorded.E6_SMOKE_WINDOW[1]},
-                         output["smoke_window"])
+        self.assertIsNone(output["smoke_window"], "An old unverified synthetic report cannot authorize rollback")
         self.assertFalse(self.host.path("activity").exists())  # The audit only reads.
         # A window recorded for another receipt is not this run's: every business transaction is business.
         self.host.write("smoke_window", window_record("0" * 64, *recorded.E6_SMOKE_WINDOW))
@@ -1588,10 +1587,10 @@ class ActivityTests(unittest.TestCase):
         self.do(*E6_REPLAY[5:])
         self.host.write("smoke_window", window_record(sha, before, after))
         output = self.probe("recovery_required", "--audit")
-        self.assertEqual([("foreign", ["shoots"]), ("smoke", ["jobs", "shoots"]), ("smoke", ["jobs"]),
+        self.assertEqual([("foreign", ["shoots"]), ("business", ["jobs", "shoots"]), ("business", ["jobs"]),
                           ("business", ["shoots"])],
                          [(item["class"], item["tables"]) for item in output["transactions"]])
-        self.assertEqual({"foreign": 1, "smoke": 2, "business": 1}, output["counts"])
+        self.assertEqual({"foreign": 1, "smoke": 0, "business": 3}, output["counts"])
 
     def test_since_reports_the_coordinate_and_app_transactions(self):
         file, position, _ = self.status()

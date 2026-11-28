@@ -463,18 +463,24 @@ class GtidSet:
         return True
 
 
-def audit(result: Result, smoke_tables: frozenset, window: tuple[GtidSet, GtidSet] | None) -> list[dict]:
-    """Each app-schema transaction as foreign, smoke or business.
+def audit(result: Result, smoke_tables: frozenset, window: tuple[GtidSet, GtidSet] | None, *,
+          server_uuid: str | None = None) -> list[dict]:
+    """Discount only the complete sequence of app-schema writes produced by the pinned smoke.
 
-    Smoke: business, its GTID in the smoke window (in `after`, not in `before`), every table it wrote in
-    `smoke_tables` and no other app-schema event. Anything else after the boundary is business.
+    Laravel commits its fixture edits together, then enqueues, reserves and deletes the no-op job.
+    An additional transaction, even on one of those tables, makes attribution ambiguous.
     """
-    listed = []
-    for transaction in result.transactions:
-        record = transaction.record()
-        if (transaction.business and window is not None and transaction.gtid in window[1]
-                and transaction.gtid not in window[0] and not transaction.statements
-                and transaction.tables <= smoke_tables):
-            record["class"] = "smoke"
-        listed.append(record)
+    listed = [transaction.record() for transaction in result.transactions]
+    if window is None or server_uuid is None:
+        return listed
+    before, after = window
+    inside = [item for item in listed if item["gtid"] in after and item["gtid"] not in before]
+    edits = {"users", "shoots", "aryeo_changes"}
+    jobs = {"jobs"}
+    if (smoke_tables == edits | jobs and [set(item["tables"]) for item in inside] == [edits, jobs, jobs, jobs]
+            and all(item["class"] == "business" and not item["statements"]
+                    and item["gtid"].split(":", 1)[0] == server_uuid for item in inside)
+            and len({item["gtid"] for item in inside}) == len(inside)):
+        for item in inside:
+            item["class"] = "smoke"
     return listed

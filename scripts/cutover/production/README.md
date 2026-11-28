@@ -592,11 +592,20 @@ runbook text.
 
 **Modes.** `--audit` (way back, 4.3) needs this run's receipt (else exit 4),
 scans from `armed_from` even after activation, and lists every app-schema
-transaction with `class` `foreign`, `smoke` (business, its GTID in
-`gtid_after` and not in `gtid_before` of this receipt's smoke window, only
-`smoke_tables`, no DDL) or `business`, plus `counts`, `boundary`,
-`smoke_window` and `scanned_events`. It reads the receipt and the smoke
-window, never the latch or the activation record. `--since <file>:<position>`
+transaction with its classification, counts, boundary, smoke window and event count.
+A version 2 smoke record binds the run and receipt to the target, pinned route, fixture IDs and installed wrapper.
+Each attempt persists its starting GTID set before the application runs. An interrupted or failed attempt stays
+in the record. A verified attempt stores the ending GTID set and the application's validated report. A later
+reopen records reuse of that result after confirming the server still has its GTIDs.
+
+The audit credits the verified attempt only when its GTID difference contains the expected application writes
+in order. The fixture update touches `users`, `shoots` and `aryeo_changes` in one transaction. The database
+queue then inserts, reserves and deletes its no-op job in three separate `jobs` transactions. Additional
+application transactions, a different table sequence or DDL leave the writes classified as business. Legacy
+version 1 windows and incomplete attempts also leave their business transactions in the audit. Verify the complete
+sequence on the pinned application and MySQL configuration during W2c before relying on the short rollback.
+
+`--since <file>:<position>`
 (for `prepare`, 3.2 steps 4 and 10) needs no receipt: it reads the coordinate
 first (`until`, with `gtid_executed`), scans from the given one to the end and
 lists every app-schema transaction; `prepare` writes `armed_from = until` only
@@ -641,7 +650,7 @@ them, latch, modes, `--since-gtid`, exit 3 with this run's records,
 `read_gate`); `ActivityTests` need the socket fixture and replay E6 on it (the
 recorded text must equal what the server prints), plus compressed
 transactions, more than one page, several files, a purge, the activation
-record, the typed lock forms, the audit with a real smoke window, `--since`,
+record, the typed lock forms, rejection of the legacy synthetic smoke window, `--since`,
 `--since-gtid` and a multi-line DDL. The filter refusal has no fixture test:
 `mysql/fixture.sh serve` cannot start a server with `binlog-ignore-db`
 without a change to that script.

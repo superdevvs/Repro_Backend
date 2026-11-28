@@ -60,6 +60,7 @@ from adapter import guard  # noqa: E402
 from binlog_scan import Coordinate, GtidSet, Unreadable  # noqa: E402
 
 VERSION = 2
+AUTHENTICATED_SMOKE_WINDOW_VERSION = 2
 EXIT_FAILURE, EXIT_UNREACHABLE, EXIT_UNRECOGNISED, EXIT_PURGED, EXIT_WRONG_SERVER = 1, 3, 4, 5, 6
 PROBE_ACCOUNT = "repro_cutover_probe@localhost"
 TOKEN_TABLE, TOKEN_COLUMN = "writer_token", "id"
@@ -123,7 +124,6 @@ COORDINATE_KEYS = {"file", "position"}
 LATCH_KEYS = {"version", "run_id", "receipt_sha256", "gtid", "file", "position", "tables", "statements",
               "boundary", "foreign_activity"}
 ACTIVATED_KEYS = {"version", "run_id", "server_uuid", "database", "receipt_sha256"}
-WINDOW_KEYS = {"version", "run_id", "receipt_sha256", "gtid_before", "gtid_after", "report"}
 LISTING = "SHOW BINARY LOG STATUS; SHOW BINARY LOGS"
 
 
@@ -600,19 +600,34 @@ def load_activated(config: dict, run: str, server: dict, base: dict) -> dict | N
 
 
 def load_window(config: dict, run: str, receipt: Receipt) -> tuple[GtidSet, GtidSet, dict] | None:
-    """The smoke window (design 3.6 step 7) if it belongs to this run's receipt; else every business
-    transaction stays business in the audit."""
-    loaded = _record(Path(config["paths"]["smoke_window"]))
-    if loaded is None:
+    """Only a completed write from this run, target, policy and marked fixtures can be discounted."""
+    import mysql_reopen_smoke as smoke
+
+    record = smoke.read(Path(config["paths"]["smoke_window"]))
+    if record is None:
         return None
-    _, record = loaded
-    guard.require(record.keys() == WINDOW_KEYS and guard.matches(host.RUN_ID, record["run_id"])
-                  and _sha256(record["receipt_sha256"]) and isinstance(record["report"], dict),
-                  "The MySQL smoke window is malformed")
-    before, after = (_gtid_set(record[name], "smoke window") for name in ("gtid_before", "gtid_after"))
-    if (record["run_id"], record["receipt_sha256"]) != (run, receipt.sha256):
+    if type(record.get("version")) is int and record["version"] == 1:
+        # The old fixture format carries no authenticated application evidence.
         return None
-    return before, after, record
+    guard.require(type(record.get("version")) is int and record["version"] == AUTHENTICATED_SMOKE_WINDOW_VERSION
+                  and isinstance(record.get("binding"), dict), "The MySQL smoke window is malformed")
+    saved = record["binding"]
+    if (saved.get("run_id"), saved.get("receipt_sha256")) != (run, receipt.sha256):
+        return None
+    policy = guard.read_json(guard.read_protected(Path(config["paths"]["policy"])))
+    guard.require(isinstance(policy.get("identity"), dict) and policy["identity"].get("run_id") == run
+                  and _sha256(policy.get("mysql_live_config_sha256")), "The audit has no matching MySQL route policy")
+    expected = {"engine": "mysql", "database": config["mysql"]["database"], "server_uuid": config["mysql"]["target_uuid"],
+                "route_sha256": policy["mysql_live_config_sha256"]}
+    try:
+        profile = smoke.load_profile(config)
+        bound = smoke.binding(config, expected, run, receipt.sha256, profile)
+        attempt = smoke.verified_window(record, bound, profile, config["app_root"])
+    except host.UnsafeCutover as error:
+        raise guard.Refused(f"Invalid write-smoke evidence: {error}") from None
+    if attempt is None:
+        return None
+    return (_gtid_set(attempt["gtid_before"], "smoke window"), _gtid_set(attempt["gtid_after"], "smoke window"), attempt)
 
 
 def _latch(config: dict, run: str, receipt: Receipt, result: binlog_scan.Result) -> None:
@@ -687,9 +702,11 @@ def audit(config: dict) -> dict:
     if receipt is None:
         raise _refused(EXIT_UNRECOGNISED, "No receipt of this run: nothing to audit", base)
     window = load_window(config, run, receipt)
-    result, _, _ = _scan(config, receipt.armed_from, base, receipt.backup)
+    result, _, executed = _scan(config, receipt.armed_from, base, receipt.backup)
+    if window is not None and not window[1].issubset(GtidSet.parse(executed)):
+        raise _refused(EXIT_PURGED, "The server no longer contains the verified write-smoke GTIDs", base)
     listed = binlog_scan.audit(result, frozenset(config["mysql"]["smoke_tables"]),
-                               None if window is None else window[:2])
+                               None if window is None else window[:2], server_uuid=server["server_uuid"])
     return {**_listing(base), "receipt": receipt.sha256, "armed_from": receipt.armed_from.record(),
             "boundary": result.boundary,
             "smoke_window": None if window is None else {name: window[2][name] for name in ("gtid_before",

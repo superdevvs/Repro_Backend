@@ -777,8 +777,8 @@ class AuditTests(unittest.TestCase):
 
     def test_audit_classifies_foreign_smoke_and_business(self):
         listed = binlog_scan.audit(scan(events(E6_G6)), SMOKE_TABLES, self.window(*E6_SMOKE_WINDOW))
-        self.assertEqual([(f"{E6_UUID}:49", "foreign", ["shoots"]), (f"{E6_UUID}:55", "smoke", ["jobs", "shoots"]),
-                          (f"{E6_UUID}:56", "smoke", ["jobs"]), (f"{E6_UUID}:57", "business", ["shoots"])],
+        self.assertEqual([(f"{E6_UUID}:49", "foreign", ["shoots"]), (f"{E6_UUID}:55", "business", ["jobs", "shoots"]),
+                          (f"{E6_UUID}:56", "business", ["jobs"]), (f"{E6_UUID}:57", "business", ["shoots"])],
                          [(item["gtid"], item["class"], item["tables"]) for item in listed])
 
     def test_window_transaction_outside_smoke_tables_or_with_ddl_is_business(self):
@@ -797,11 +797,11 @@ class AuditTests(unittest.TestCase):
     def test_window_is_after_minus_before(self):
         # 55 was already in gtid_before: it is not part of the smoke, so it stays business.
         listed = binlog_scan.audit(scan(events(E6_G6)), SMOKE_TABLES, self.window(f"{E6_UUID}:1-55", f"{E6_UUID}:1-56"))
-        self.assertEqual(["foreign", "business", "smoke", "business"], [item["class"] for item in listed])
+        self.assertEqual(["foreign", "business", "business", "business"], [item["class"] for item in listed])
 
     def test_window_never_turns_a_foreign_transaction_into_smoke(self):
         listed = binlog_scan.audit(scan(events(E6_G6)), SMOKE_TABLES, self.window("", f"{E6_UUID}:1-56"))
-        self.assertEqual(["foreign", "smoke", "smoke", "business"], [item["class"] for item in listed])
+        self.assertEqual(["foreign", "business", "business", "business"], [item["class"] for item in listed])
 
 
 if __name__ == "__main__":
