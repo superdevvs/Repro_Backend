@@ -40,6 +40,8 @@ class RetirementTests(unittest.TestCase):
         self.host.locks = [self.root / "backend.lock", self.root / "frontend.lock"]
         self.host.owner = (0, 0)
         self.json("deploy_marker", {"version": 1, "run_id": self.run})
+        self.host.pinned = IDENTITY
+        self.json("scheduler_release", {"version": 1, "engine": "sqlite"})
         self.host.policy = {"version": 1, "identity": asdict(IDENTITY),
                             "machine_id_sha256": guard.sha256(b"fixture-machine"),
                             "sqlite_live_config_sha256": "a" * 64, "mysql_live_config_sha256": "b" * 64}
@@ -69,6 +71,7 @@ class RetirementTests(unittest.TestCase):
         return p, i
 
     def mysql(self):
+        self.json("scheduler_release", {"version": 1, "engine": "mysql"})
         self.state.update(phase="mysql_authoritative", started_at=1, writes_possible=True,
                           history=[{"action": "promote", "phase": "mysql_authoritative",
                                     "after": {"engine": "mysql", "admissions_open": False, "workers_stopped": True,
@@ -91,6 +94,20 @@ class RetirementTests(unittest.TestCase):
         self.json("activated", {"version": 1, "run_id": self.run, "database": self.host.config["mysql"]["database"],
                                 "server_uuid": IDENTITY.target_uuid,
                                 "receipt_sha256": guard.sha256(self.host.paths["receipt"].read_bytes())})
+
+    def test_retire_cannot_bypass_staged_scheduler_or_an_unfinished_mysql_reopen(self):
+        self.host.paths["scheduler_release"].unlink()
+        with self.assertRaisesRegex(guard.Refused, "scheduler release"):
+            retire.retire(self.host)
+        self.mysql()
+        import mysql_reopen
+        mysql_reopen.intent_path(self.host).touch()
+        with self.assertRaisesRegex(guard.Refused, "interrupted MySQL reopen"):
+            retire.retire(self.host)
+        with self.assertRaisesRegex(guard.Refused, "verified way-back"):
+            retire.retire(self.host, *self.pair())
+        self.assertTrue(self.journal.path.exists())
+        self.assertFalse(self.host.paths["retired"].exists())
 
     def test_archive_is_byte_identical_and_locks_stay(self):
         original = self.journal.path.read_bytes()

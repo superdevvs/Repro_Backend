@@ -25,6 +25,7 @@ Review the fixed operator wrapper and sudoers before installation. Use the admin
 | Finance and CRM | Invoice and payout calculations agree, client-import dry-run finds existing links, encrypted fields open under the retained key, applicant storage checks agree, and authorization and retry cases pass. |
 | Writers and external effects | Review the deployed website revision, outbox scheduler owner and durable retry behavior. Account for HTTP writes, jobs, cron, long-running workers, CRM and Calendar, callbacks, public quote views, opt-outs and uncertain sends. Keep outbound delivery held through reconciliation. |
 | Backups, restore and paging | Five qualifying parity nights, final two on the frozen release. Seven actual days of off-site evidence. Latest snapshot under 26 hours old, log lag within five minutes for at least 99% of observations, two independent restores within 30 minutes and both failure types visible on the phone. |
+| Load and reliability | Replay the same representative concurrent workload on both engines. Record request throughput, median and p95 latency, queue age, database lock waits, deadlocks, retries and duplicate or missing effects. Compare against the agreed service objectives before claiming an improvement. |
 | Host and clock | Pinned separate MySQL 8.4.13 service, restricted accounts, real timers and restart behavior, adequate space, measured P4 uplink and base sizes, two complete representative outages within 60 minutes, including replay and verified service reopening. |
 
 Record the SQLite-compatible release sequence for the tenth CRM migration before the final schema pin. Store only aggregate counts, hashes, UTC timestamps, decisions and evidence references in shared reports. [CRM checks, privacy and writer inventory](../../../docs/mysql-production-cutover.md#sales-crm-on-sqlite-before-cutover)
@@ -44,6 +45,8 @@ The times below are targets for the two host rehearsals. Record actual UTC hold,
 | By 60 min | Confirm routed writes on the chosen engine, drains, both replay passes, queue health and the scheduler disposition. Record the actual outage and reconcile every external producer before enabling outbound effects. | Report an outage breach and retain the evidence. Either dress rehearsal exceeding 60 minutes keeps cutover on hold. |
 
 Calculate P4 using the measured sustained upload rate and both actual compressed bases. Record whether the real uploads overlap and when each independent check completes. A local synthetic result or a drill waiver supplies no production upload budget. Stop before promotion if the measured worst-case failure path cannot fit the remaining outage budget.
+
+Commit the scheduler release and finish any interrupted MySQL reopen before retiring into normal service. Record who reconciled the final producer and provider ledger. Rehearse service interruption after ingress opens, when real writes may already have occurred.
 
 ## Recovery decision
 

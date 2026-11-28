@@ -300,9 +300,16 @@ def retire(adapter, next_policy=None, next_identity=None):
             guard.require(host.deploy_marker.published(paths["deploy_marker"], run), "The run's deployment fence is missing")
             pair = _pair(adapter, next_policy, next_identity, run)
             engine = _engine(adapter, state, pair)
+            if engine == "mysql":
+                guard.require(pair is None, "Changing the policy after MySQL activation requires verified way-back recovery")
+                import mysql_reopen
+                guard.require(not exists(mysql_reopen.intent_path(adapter)), "Finish the interrupted MySQL reopen before retirement")
             if engine in ("mysql", "recovery"):
                 _validate_keep(adapter, journal.directory, run)
             if pair is None:
+                release = paths["scheduler_release"]
+                guard.require(exists(release) and _record(guard.read_protected(release)) == {"version": 1, "engine": engine},
+                              "Complete the scheduler release before retiring into service")
                 observed = adapter.observe()
                 guard.require(observed.sqlite_live() if engine == "sqlite" else observed.mysql_live(),
                               "Complete the normal reopen before retiring into service")
