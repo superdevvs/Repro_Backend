@@ -54,6 +54,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 # --------------------------------------------------------------------------------------------------
@@ -1681,14 +1682,18 @@ class Inside:
         self.cli("approval-template", "--phase", "promote")
         require((ISSUED / "promote.json").exists(), "no issued promote approval")
         timers = [read_json(path) for path in (self.paths.e2e / "timers").glob("*.json")]
-        armed = [timer for timer in timers if timer.get("fired_at") is None and timer.get("stopped_at") is None]
-        require(len(armed) == 1, f"expected exactly one armed timer, found {len(armed)}")
+        approval = read_json(ISSUED / "promote.json")
+        unit = f"repro-cutover-approval-ready-{approval['challenge'][:12]}"
+        armed = [timer for timer in timers if timer.get("unit") == unit and timer.get("fired_at") is None
+                 and timer.get("stopped_at") is None]
+        require(len(armed) == 1, f"expected one armed approval timer for this challenge, found {len(armed)}")
         timer = armed[0]
-        require({"abort", "--if-challenge", "--if-phase"} <= set(timer["command"]),
-                f"the armed timer does not run the conditional abort: {timer['command']}")
-        require(0 < timer["on_active"] <= 300 and timer["collect"] is True and timer["umask"] == "0077",
-                f"the timer is not armed with --collect, UMask=0077 and at most 5 minutes: on_active "
-                f"{timer['on_active']}, collect {timer['collect']}, umask {timer['umask']}")
+        require(timer["command"] == ["/usr/bin/python3", "-I", "-S", str(CLI), "abort", "--if-challenge",
+                                      approval["challenge"], "--if-phase", "ready"],
+                "the approval timer does not run this challenge's conditional abort")
+        require(timer["expires_at"] == approval["expires_at"] and 0 < timer["on_active"] <= 300
+                and timer["accuracy"] == "1us" and timer["collect"] is True and timer["umask"] == "0077",
+                "the approval timer does not match the issued expiry and systemd properties")
         self.notes["promote_timer"] = timer["unit"]
         return f"timer {timer['unit']} armed for {timer['on_active']:g} s (scaled {timer['scaled']:.1f} s)"
 
@@ -2167,10 +2172,11 @@ class TimerUsage(ValueError):
 
 
 def timer_arguments(words: list[str]) -> tuple[dict, list[str]]:
-    """systemd-run's options as the timer stand-in takes them: --unit/-u, --on-active, --property/-p (UMask only),
+    """systemd-run's options as the timer stand-in takes them: --unit/-u, --on-active or --on-calendar,
+    --timer-property (AccuracySec=1us), --property/-p (UMask only),
     --collect/-G, --quiet/-q, --no-block; `--NAME=VALUE` or `--NAME VALUE`; the command after the options or
     `--`. Anything else is refused (TimerUsage), so D14 never relies on something the stand-in ignores."""
-    options = {"unit": None, "on_active": None, "umask": None, "collect": False}
+    options = {"unit": None, "on_active": None, "expires_at": None, "accuracy": None, "umask": None, "collect": False}
     index = 0
     while index < len(words):
         word = words[index]
@@ -2181,7 +2187,7 @@ def timer_arguments(words: list[str]) -> tuple[dict, list[str]]:
             break
         if word.startswith("--"):
             name, equals, value = word[2:].partition("=")
-            if name in ("unit", "on-active", "property"):
+            if name in ("unit", "on-active", "on-calendar", "property", "timer-property"):
                 if not equals:
                     index += 1
                     if index >= len(words):
@@ -2208,6 +2214,16 @@ def timer_arguments(words: list[str]) -> tuple[dict, list[str]]:
                 options["on_active"] = timespan(value)
             except ValueError as error:
                 raise TimerUsage(str(error)) from None
+        elif name == "on-calendar":
+            try:
+                date = datetime.strptime(value, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise TimerUsage("expected an absolute UTC timer deadline") from None
+            options["expires_at"] = int(date.timestamp())
+        elif name == "timer-property":
+            if value != "AccuracySec=1us":
+                raise TimerUsage("only --timer-property=AccuracySec=1us is supported")
+            options["accuracy"] = "1us"
         elif name == "property":
             key, _, setting = value.partition("=")
             if key != "UMask" or re.fullmatch(r"0?[0-7]{3}", setting) is None:
@@ -2270,8 +2286,8 @@ def timer_main(argv: list[str]) -> int:
     if not unit or re.fullmatch(UNIT_NAME, unit) is None or unit.endswith((".timer", ".service")):
         print("timer: --unit=NAME (without a .timer or .service suffix) is required", file=sys.stderr)
         return 2
-    if options["on_active"] is None or not command:
-        print("timer: --on-active=SPAN and a command are required", file=sys.stderr)
+    if (options["on_active"] is None) == (options["expires_at"] is None) or not command:
+        print("timer: choose one relative or absolute deadline and supply a command", file=sys.stderr)
         return 2
     scale = float((paths.e2e / "scale").read_text().strip())
     with _unit_lock(paths, unit):
@@ -2280,9 +2296,15 @@ def timer_main(argv: list[str]) -> int:
             print(f"Failed to start transient timer unit: Unit {unit}.timer was already loaded or has a fragment "
                   "file.", file=sys.stderr)
             return 1
-        record = {"unit": unit, "on_active": options["on_active"], "scaled": options["on_active"] / scale,
+        armed_at = time.time()
+        seconds = options["on_active"] if options["expires_at"] is None else options["expires_at"] - armed_at
+        if seconds <= 0:
+            print("timer: deadline has elapsed", file=sys.stderr)
+            return 1
+        record = {"unit": unit, "on_active": seconds, "scaled": seconds / scale,
+                  "expires_at": options["expires_at"], "accuracy": options["accuracy"],
                   "umask": options["umask"], "collect": options["collect"], "command": command,
-                  "armed_at": time.time(), "pid": None, "fired_at": None, "exit": None, "error": None,
+                  "armed_at": armed_at, "pid": None, "fired_at": None, "exit": None, "error": None,
                   "finished_at": None, "stopped_at": None}
         write(paths.e2e / "timers" / f"{unit}.json", json.dumps(record), 0o600)
     first = os.fork()

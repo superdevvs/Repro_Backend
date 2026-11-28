@@ -252,6 +252,8 @@ class QueueFlagHelperTests(HelperFixture):
                         {"phase": "recovery_required"}, {"phase": "sqlite_authoritative", "writes_possible": True}):
             journal.write({**state, **changes})
             self.assertEqual(1, self.run_helper("resume", queue)[0], changes)
+        journal.path.write_text("null")
+        self.assertEqual(1, self.run_helper("resume", queue)[0])
         self.assertEqual([], self.commands())
 
     def php_settings(self, **settings):

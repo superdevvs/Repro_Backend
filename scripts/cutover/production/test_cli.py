@@ -7,6 +7,7 @@ import runpy
 import stat
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -25,6 +26,7 @@ class OperatorTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         self.ready = fixture.ready
         self.hold = fixture.hold
+        self.fixture = fixture
         self.runner = fixture.runner
         self.adapter = fixture.adapter
         self.adapter.paths = {"issued_approvals": fixture.journal.directory / "issued"}
@@ -48,7 +50,13 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(0o700, stat.S_IMODE(path.parent.stat().st_mode))
         command = self.adapter._run.call_args.args[0]
         self.assertEqual(["abort", "--if-challenge", approval["challenge"], "--if-phase", "ready"], command[-5:])
-        self.assertIn("--on-active=300s", command)
+        expiry = datetime.fromtimestamp(approval["expires_at"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        self.assertIn("--on-calendar=" + expiry, command)
+        self.assertIn("--timer-property=AccuracySec=1us", command)
+        approval_unit = next(arg for arg in command if arg.startswith("--unit="))
+        independent = self.dispatch("arm-deadline", "--minutes", "30", "--phase", "ready")["timer"]
+        self.assertNotEqual(approval_unit, "--unit=" + independent)
+        self.assertEqual(independent + ".timer", self.adapter._execute.call_args.args[0][-1])
         self.adapter._run.side_effect = cli.UnsafeCutover("timer unavailable")
         with self.assertRaisesRegex(cli.UnsafeCutover, "timer unavailable"):
             self.dispatch("approval-template", "--phase", "promote")
@@ -70,6 +78,27 @@ class OperatorTests(unittest.TestCase):
             self.dispatch("approval-template", "--phase", "promote")
         self.adapter._run.assert_not_called()
         self.assertFalse(self.adapter.paths["issued_approvals"].exists())
+
+    def test_status_evidence_requires_the_current_journals_exact_report(self):
+        from test_evidence import raw, sample_report
+
+        state = self.runner.status()
+        report = sample_report(run_id=state["identity"]["run_id"])
+        self.adapter.paths["evidence_report"] = Path("/fixture/report")
+        state["evidence"] = {"report_sha256": cli.guard.sha256(raw(report))}
+        self.runner.journal.write(state)
+        with patch.object(cli.guard, "read_protected", return_value=raw(report)):
+            self.assertEqual(report, self.dispatch("status", "--evidence"))
+        for replacement in ({**report, "written_at": report["written_at"] + 1}, {**report, "run_id": "another-run"}):
+            with self.subTest(replacement=replacement["run_id"]), \
+                    patch.object(cli.guard, "read_protected", return_value=raw(replacement)), \
+                    self.assertRaisesRegex(cli.UnsafeCutover, "current run"):
+                self.dispatch("status", "--evidence")
+        state["evidence"] = None
+        self.runner.journal.write(state)
+        with patch.object(cli.guard, "read_protected", return_value=raw(report)), \
+                self.assertRaisesRegex(cli.UnsafeCutover, "current run"):
+            self.dispatch("status", "--evidence")
 
     def test_promote_refused_in_drill_mode_with_journal_unchanged(self):
         self.ready()
@@ -107,12 +136,56 @@ class OperatorTests(unittest.TestCase):
         result = self.dispatch("arm-deadline", "--minutes", "3", "--phase", "holding")
         cmd = self.adapter._run.call_args.args[0]
         self.assertIn("--unit=" + result["timer"], cmd)
-        self.assertIn("--on-active=180s", cmd)
+        deadline = int(self.runner.clock()) + 180
+        end = datetime.fromtimestamp(deadline, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        self.assertIn("--on-calendar=" + end, cmd)
         self.assertIn("--property=UMask=0077", cmd)
         self.assertIn(state["challenge"], cmd)
-        self.adapter._execute.assert_called_once_with(["/usr/bin/systemctl", "stop", result["timer"] + ".timer"])
+        self.adapter._execute.assert_called_once_with(["/usr/bin/systemctl", "stop", result["timer"] + ".timer"], deadline)
         with self.assertRaises(cli.UnsafeCutover):
             self.dispatch("arm-deadline", "--minutes", "3", "--phase", "ready")
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "approvals are root-owned")
+    def test_timer_installation_uses_the_same_expiry_after_a_slow_stop(self):
+        self.ready()
+        start = self.fixture.now
+        def stop(_argv, deadline):
+            self.assertEqual(start + 300, deadline)
+            self.fixture.now += 12
+            return 0, ""
+
+        self.adapter._execute.side_effect = stop
+        approval = self.dispatch("approval-template", "--phase", "promote")
+        options = self.adapter._run.call_args.args[0]
+        from e2e import run_drill
+        parsed, _ = run_drill.timer_arguments(options[1:])
+        self.assertEqual(start + 300, parsed["expires_at"])
+        self.assertEqual("1us", parsed["accuracy"])
+        self.assertEqual(approval["expires_at"], self.adapter._run.call_args.args[1])
+        for flags in (["--timer-property=AccuracySec=2min"], ["--on-calendar=bad"]):
+            with self.assertRaises(run_drill.TimerUsage):
+                run_drill.timer_arguments(flags)
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "approvals are root-owned")
+    def test_timer_expiring_during_stop_or_activation_issues_no_approval(self):
+        self.ready()
+        path = self.adapter.paths["issued_approvals"] / "promote.json"
+        for expire_during in ("stop", "activate"):
+            def stop(_argv, deadline):
+                if expire_during == "stop":
+                    self.fixture.now = deadline
+                return 0, ""
+
+            def activate(_argv, deadline):
+                self.fixture.now = deadline
+
+            self.adapter._execute.side_effect = stop
+            self.adapter._run.reset_mock()
+            self.adapter._run.side_effect = activate
+            with self.subTest(expire_during), self.assertRaisesRegex(cli.UnsafeCutover, "expired"):
+                self.dispatch("approval-template", "--phase", "promote")
+            self.assertFalse(path.exists())
+            self.assertEqual(expire_during == "activate", self.adapter._run.called)
 
     def test_gate_normalise_refused_when_writes_possible(self):
         state = self.runner.status()

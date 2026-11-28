@@ -259,7 +259,10 @@ class Journal:
     def read(self) -> dict | None:
         if not self.path.exists():
             return None
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        state = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise UnsafeCutover("The existing cutover journal must contain an object")
+        return state
 
     def write(self, state: dict) -> None:
         self.write_record(self.path.name, state)

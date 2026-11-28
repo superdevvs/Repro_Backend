@@ -351,7 +351,7 @@ harness, so nothing it starts counts as a host command still running
 | `fpm-start` | `systemctl restart php8.3-fpm.service` (design 3.1 `fpm_start`) | Stops a running master as `fpm-stop` does, starts it, waits for the socket. Exits 1 while `ROOT/e2e/faults/fpm-start` exists (run 2's injected prepare failure) |
 | `fpm-stop` | `systemctl stop php8.3-fpm.service` | SIGTERM to the master (Debian's unit sets no `KillSignal`: requests in flight end at once, design 5.4), SIGKILL to what is left after 30 s |
 | `fpm-reload` | `systemctl try-reload-or-restart php8.3-fpm.service` | SIGUSR2 to a running master; nothing for a stopped one |
-| `timer` | `systemd-run` transient timer (design 3.10) | `timer --unit=NAME --on-active=SPAN [--collect] [--property=UMask=0077] [--] COMMAND...`, also `-u NAME`, `-p UMask=0077`, `-G`, `--NAME VALUE`, `--quiet`, `--no-block`. SPAN is a systemd time span (`300`, `300s`, `5min`). COMMAND runs detached after SPAN / time scale, with that umask and a clean environment. A unit stays loaded after it fired until it is stopped (systemd's `RemainAfterElapse=yes`), and arming a loaded name is refused with exit 1, as `systemd-run` refuses it. A COMMAND that cannot be executed is recorded with exit 203 (systemd's `203/EXEC`) and the error. Any other option or property, or a malformed span, exits 2. Record: `ROOT/e2e/timers/NAME.json` |
+| `timer` | `systemd-run` transient timer (design 3.10) | The controller supplies `--unit=NAME`, an absolute `--on-calendar=YYYY-MM-DD HH:MM:SS UTC` argument, `--timer-property=AccuracySec=1us`, `--collect` and `--property=UMask=0077`. The shim records the absolute expiry and runs the command after the remaining time divided by the drill scale. Standalone fixtures also accept `--on-active=SPAN`. An occupied name exits 1. Unsupported arguments exit 2. A command that fails to execute records exit 203. The receipt is `ROOT/e2e/timers/NAME.json`. |
 | `timer-stop` | `systemctl stop NAME.timer` (proposed `commands.timer_stop`, below) | Only `stop NAME.timer`: cancels an armed timer (its command never runs) or unloads an elapsed one; a command already running goes on. Exit 5 when NAME.timer is not loaded, as `systemctl`; any other form exits 2 |
 
 The private Supervisor is the harness's own (`python3 -m supervisor` is not in
@@ -463,8 +463,9 @@ paths (production's values); `ROOT` is `/srv/repro-drill-<run>`; "night" is
 - `r1.approval-promote` (D14): `cli.py approval-template --phase promote`
   exits 0, writes `issued-approvals/promote.json` and arms exactly one timer
   through `host.json` `commands.timer` (`ROOT/bin/timer`) with `--collect`,
-  `--property=UMask=0077`, a span of at most 300 s and a command containing
-  `abort`, `--if-challenge` and `--if-phase` (design 3.10:
+  `--property=UMask=0077`, `--timer-property=AccuracySec=1us` and the exact
+  UTC expiry on the issued approval, at most 300 s away. The command is
+  bound to the full challenge and ready phase (design 3.10:
   `/usr/bin/python3 -I -S /opt/repro-cutover-fence/production/cli.py abort
   --if-challenge C --if-phase ready`). Re-issuing a template first cancels
   its timer with `commands.timer_stop` (D18R-2 below).
@@ -554,13 +555,11 @@ reports a closed gate, `writable` false and no business or foreign activity.
   timer; a transient timer is cancelled with `systemctl stop <unit>.timer`.
   Neither design 3.1/3.10 nor D14's build-plan entry names a host.json
   command for it, so this README proposes one: `commands.timer_stop`, in
-  production `["/usr/bin/systemctl", "stop"]`, in the sandbox
-  (`make_config.py`) `["ROOT/bin/timer-stop", "stop"]`; D14 appends exactly
-  one argument, `<unit>.timer`, adds the name to `adapter.COMMANDS` and
-  `make_config.py`, and treats exit 5 (not loaded) as already gone.
-  Re-issuing a template runs `timer_stop` and then `timer` (systemd keeps an
-  elapsed transient timer loaded, so arming the same unit name again
-  without the stop is refused). Test: re-issue the promote template twice;
+  production `["/usr/bin/systemctl"]`, in the sandbox
+  (`make_config.py`) `["ROOT/bin/timer-stop"]`. D14 appends `stop <unit>.timer`
+  and treats exit 5 as already gone.
+  Reissuing a template stops the previous approval timer before scheduling
+  its replacement. The operational deadline has its own unit. Reissue the promote template twice;
   the stand-in must show one armed timer, the first stopped and never
   fired.
 - **D18R-11, a conditional abort while the controller lock is busy.**

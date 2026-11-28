@@ -107,7 +107,8 @@ def issue(runner, adapter, phase):
         if phase == "promote":
             # Withdraw the old token first. Failed re-arming cannot leave an approval without a timer.
             host._remove(path)
-            timers.arm(adapter, state["phase"], approval.challenge, approval.expires_at - int(runner.clock()))
+            timers.arm(adapter, state["phase"], approval.challenge, purpose="approval",
+                       deadline=approval.expires_at, clock=runner.clock)
         host._write_atomic(path, asdict(approval), 0o600)
         return asdict(approval)
 
@@ -117,7 +118,14 @@ def dispatch(args, runner, adapter):
     if action == "approval-template":
         return issue(runner, adapter, args.phase)
     if action == "status" and args.evidence:
-        return host.evidence.parse(guard.read_protected(adapter.paths["evidence_report"]))
+        state = runner.status()
+        raw = guard.read_protected(adapter.paths["evidence_report"])
+        report = host.evidence.parse(raw)
+        prepared = state.get("evidence")
+        if (report["run_id"] != state["identity"]["run_id"] or not isinstance(prepared, dict)
+                or prepared.get("report_sha256") != guard.sha256(raw)):
+            raise UnsafeCutover("This report is not the evidence recorded by the current run")
+        return report
     if action == "check-evidence":
         with runner.journal.acquire():
             state = runner.status()
@@ -129,8 +137,9 @@ def dispatch(args, runner, adapter):
             state = runner.status()
             if state["phase"] != args.phase or state["pending"] or state["writes_possible"]:
                 raise UnsafeCutover("Timer does not match a stable held phase")
-            seconds = min(60 * args.minutes, state["started_at"] + runner.DECISION_SECONDS - int(runner.clock()))
-            return {"timer": timers.arm(adapter, args.phase, state["challenge"], seconds)}
+            deadline = min(int(runner.clock()) + 60 * args.minutes, state["started_at"] + runner.DECISION_SECONDS)
+            return {"timer": timers.arm(adapter, args.phase, state["challenge"], purpose="deadline",
+                                        deadline=deadline, clock=runner.clock)}
     if action == "gate-normalise":
         with runner.journal.acquire():
             state = runner.status()

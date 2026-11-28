@@ -871,7 +871,9 @@ The hold validates the target identity and closed gate under the controller lock
 Run `check-evidence --inputs DIR --write` while frozen and use `status --evidence` after prepare.
 Issuing a promote approval rechecks the prepared evidence and arms a challenge-bound expiry timer.
 A separate `arm-deadline --minutes N --phase frozen` uses the earlier of N minutes and the run's
-decision deadline. A stale timer leaves the new phase alone. This drill build refuses promotion.
+decision deadline. The two timers use separate unit names. Each schedules the exact UTC deadline
+with `--on-calendar` and `--timer-property=AccuracySec=1us`. Reissuing an approval replaces its
+own timer under the controller lock. A stale timer leaves the new phase alone. This drill build refuses promotion.
 Queue resumes take the same controller lock and require a stable pre-hold or authority phase.
 
 ## Observation and authority (design 1.2, 1.3, 3.2, 3.4)
@@ -1366,8 +1368,8 @@ What D14 calls:
   exit 1 with its message.
 - `prepare`: `runner.perform("prepare")` (steps 1 to 12 and `evidence()`).
 - `status --evidence`: the bytes of `paths.evidence_report` (root 0600, read
-  through `guard.read_protected`), checked with `evidence.parse`; it holds
-  no secret.
+  through `guard.read_protected`), checked with `evidence.parse` and bound to the
+  current run ID and the SHA-256 in its prepared journal evidence.
 - `approval-template --phase promote`: before issuing, `adapter.evidence()`
   (the live preconditions and the B2-1 self-check) and
   `dataclasses.asdict(record) == state["evidence"]`, else refuse.
