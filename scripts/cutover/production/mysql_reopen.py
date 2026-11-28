@@ -126,7 +126,7 @@ def reopen(adapter, *, hold_scheduler: bool) -> None:
             timeout = min(fpm_drain.REQUEST_SECONDS, adapter._remaining(deadline, "The FPM status check timed out"))
             try:
                 status = fpm_drain.read_status(adapter.config["fpm"]["status_socket"], timeout)
-                prepared_pool = adapter._freeze_drain(state)["pool"]
+                prepared_pool = adapter._freeze_drain(state).get("pool")
                 _require(prepared_pool is None or status.pool == prepared_pool,
                          "The PHP-FPM status socket names a different pool from the verified freeze")
             except (fastcgi.FastCgiError, fpm_drain.StatusError) as error:
