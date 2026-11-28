@@ -19,6 +19,8 @@ Build one archive at the selected cutover commit. Verify the release SHA, applic
 
 Review the fixed operator wrapper and sudoers before installation. Use the administrator session for recovery and retirement actions. Keep policy pairs, recovery manifests and verifier input files root-owned in private directories. Preserve the current files for undo, validate systemd, FPM, nginx and sudoers, and exercise the reviewed commands in the isolated host sandbox. Enable host units and switch into cutover mode only in the separately approved window.
 
+For the optional smoke-only recovery, verify that the approved host layout supplies the pinned Oracle MySQL 8.4.13 binary-log reader and its matching runtime libraries in the protected tool installation. The operator must demonstrate exact fixture-row attribution against a real binary log on that layout. Without that proof, budget and rehearse the full reverse export. Review the private installation paths with the administrator before staging native binaries.
+
 ## Evidence to put on the decision sheet
 
 | Evidence | Acceptance |
