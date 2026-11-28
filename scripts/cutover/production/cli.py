@@ -15,6 +15,7 @@ import adapter as host
 import config_build
 import gate
 import live_config
+import retire
 import timers
 from adapter import guard
 from runner import Approval, ControllerBusy, Journal, UnsafeCutover
@@ -29,6 +30,7 @@ FIXED_PATHS = {
     "scheduler_release": RUNTIME / "scheduler-released", "wrappers": CONFIG.parent / "wrappers.json",
     "retired": CONFIG.parent / "retired.json", "issued_approvals": guard.STATE / "issued-approvals",
     "ingress_open": INGRESS_OPEN, "deploy_marker": DEPLOY_MARKER,
+    "archive": retire.ARCHIVE, "keep": retire.KEEP,
 }
 
 
@@ -37,8 +39,11 @@ def arguments(argv):
     parser.add_argument("--config", type=Path, default=CONFIG)
     commands = parser.add_subparsers(dest="action", required=True)
     for name in ("init", "tick", "refresh", "release-scheduler", "rehold", "prepare",
-                 "pin-config", "gate-check", "gate-normalise"):
+                 "pin-config", "gate-check", "gate-normalise", "retired-open"):
         commands.add_parser(name)
+    retirement = commands.add_parser("retire")
+    retirement.add_argument("--next-policy", type=Path)
+    retirement.add_argument("--next-identity", type=Path)
     commands.add_parser("status").add_argument("--evidence", action="store_true")
     commands.add_parser("reopen").add_argument("--hold-scheduler", action="store_true")
     issue = commands.add_parser("approval-template")
@@ -116,6 +121,10 @@ def issue(runner, adapter, phase):
 
 def dispatch(args, runner, adapter):
     action = args.action
+    if action == "retire":
+        return retire.retire(adapter, args.next_policy, args.next_identity)
+    if action == "retired-open":
+        return retire.retired_open(adapter)
     if action == "approval-template":
         return issue(runner, adapter, args.phase)
     if action == "status" and args.evidence:
@@ -152,7 +161,7 @@ def dispatch(args, runner, adapter):
                 raise UnsafeCutover("Gate normalization requires a partial gate")
             return gate.close_gate(adapter.config)
     if action == "init":
-        state = runner.initialize(fence_deploys=adapter.hold_deploys)
+        state = retire.initialize(runner, adapter)
     elif action == "status":
         state = runner.status()
     elif action in ("refresh", "rehold", "release-scheduler"):

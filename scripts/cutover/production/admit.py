@@ -106,8 +106,11 @@ def run(name: str, *, wrappers: Path = WRAPPERS) -> int:
 
     with ExitStack() as stack:
         try:
-            lease = stack.enter_context(guard.admitted(profile["action"], profile["engine"]))
-            if profile["action"] == "scheduler":
+            import retire
+            retired = not retire.exists(guard.STATE / "state.json") and retire.exists(retire.RETIRED)
+            lease = stack.enter_context(retire.retired_lease(profile["engine"], marker=retire.RETIRED)
+                                        if retired else guard.admitted(profile["action"], profile["engine"]))
+            if profile["action"] == "scheduler" and not retired:
                 # Checked under the shared writer lease. A concurrent hold drains
                 # this invocation along with the scheduler children it starts.
                 with guard.open_protected(SCHEDULER_RELEASE):

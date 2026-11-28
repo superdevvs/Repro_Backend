@@ -883,6 +883,14 @@ with `--on-calendar` and `--timer-property=AccuracySec=1us`. Reissuing an approv
 own timer under the controller lock. A stale timer leaves the new phase alone. This drill build refuses promotion.
 Queue resumes take the same controller lock and require a stable pre-hold or authority phase.
 
+## Retiring a completed run
+
+The owner invokes `cli.py retire` directly on the approved host. Retirement requires a planned SQLite run, a completed SQLite rollback, or a completed MySQL promotion with its durable activation receipt. An ordinary retirement checks the reopened application and its pinned route. It archives the journal in a private directory named `<run>-<UTC>`, compares the files and keeps both lock inodes. On MySQL it validates the four rollback records, retains private copies and moves the sealed SQLite file and its companions into `database/frozen-<run>/`. A root-private directory occupies the original SQLite path.
+
+The protected `retire-pending.json` records the archive and chosen outcome before any journal records are removed. After interruption, rerun the same retirement. The controller refuses competing transitions. The retired authority becomes usable only after the journal and pending record are both absent. Workers hold a shared lease on the existing operator lock and must match the retired engine. At boot `repro-cutover-retired-ingress.service` verifies the cached route before opening the ingress marker.
+
+To install a reviewed next run, supply both `--next-policy PATH` and `--next-identity PATH`. The pair must describe the same new run and host. The deployment fence transfers to the new run atomically. A recovery handoff additionally requires the completed way-back close coordinate, stopped writers, a quiet closed MySQL gate and the restored SQLite route. Its root-private `state/next-run.json` identifies the exact archive, previous run, new run and installed policy checksum. Reinitializing from ordinary retired SQLite commits the new journal before removing the retired marker. The operator then runs the normal rehold, refresh and reopen sequence.
+
 ## Observation and authority (design 1.2, 1.3, 3.2, 3.4)
 
 `observe()` runs the MySQL probe and the live config module on every call.

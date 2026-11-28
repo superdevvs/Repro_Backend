@@ -1,0 +1,15 @@
+[Unit]
+Description=Open ingress for the verified retired database engine
+Before=nginx.service
+After=systemd-tmpfiles-setup.service
+ConditionPathExists=/etc/repro-cutover-fence/retired.json
+ConditionPathExists=!/var/lib/repro-cutover-fence/state.json
+ConditionPathExists=!/var/lib/repro-cutover-fence/retire-pending.json
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 -IB -S /opt/repro-cutover-fence/production/cli.py retired-open
+
+[Install]
+WantedBy=multi-user.target

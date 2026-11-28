@@ -79,11 +79,14 @@ def published(marker: Path, run_id: str) -> bool:
 
 
 def publish(marker: Path, locks: Sequence[Path], run_id: str, seconds: float,
-            owner: tuple[int, int] | None = None) -> None:
+            owner: tuple[int, int] | None = None, *, previous_run: str | None = None) -> None:
     with deploy_locks(locks, seconds, owner):
         if published(marker, run_id):
             return
-        if marker.exists() or marker.is_symlink():
+        if previous_run is not None:
+            if marker.is_symlink() or not published(marker, previous_run):
+                raise UnsafeCutover("The deployment fence does not belong to the retiring run")
+        elif marker.exists() or marker.is_symlink():
             raise UnsafeCutover("Another cutover run holds the deployment fence")
         temporary = marker.with_name(f".{marker.name}.{os.getpid()}")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)

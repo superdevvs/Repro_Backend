@@ -294,10 +294,12 @@ class Journal:
             Path(temporary).unlink(missing_ok=True)
 
     @contextmanager
-    def acquire(self, wait_seconds: float = 0):
+    def acquire(self, wait_seconds: float = 0, *, retiring: bool = False):
         with (self.directory / CONTROLLER_LOCK).open("a+b") as stream:
             if not _wait_lock(stream, wait_seconds):
                 raise ControllerBusy("Another host operator holds the cutover lock")
+            if not retiring and os.path.lexists(self.directory / "retire-pending.json"):
+                raise UnsafeCutover("An interrupted retirement must be completed first")
             # The guard opens the writer lock read-only and never creates it.
             (self.directory / WRITER_LOCK).open("a+b").close()
             lease = None
@@ -434,7 +436,8 @@ class Runner:
         self.require_long_job_predrain = require_long_job_predrain
         self.after_unattended_rollback = after_unattended_rollback
 
-    def initialize(self, fence_deploys: Callable[[], None] | None = None) -> dict:
+    def initialize(self, fence_deploys: Callable[[], None] | None = None,
+                   after_commit: Callable[[], None] | None = None) -> dict:
         """Commit a planned run.
 
         fence_deploys runs under the controller lock before the journal is
@@ -467,6 +470,8 @@ class Runner:
                 "history": [],
             }
             self.journal.write(state)
+            if after_commit is not None:
+                after_commit()
             return state
 
     def _verify_identity(self) -> None:

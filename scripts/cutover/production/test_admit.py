@@ -43,9 +43,11 @@ def fixture_guard(directory):
 
 def child_main(directory, profile):
     import admit
+    import retire
 
     directory = Path(directory)
-    with fixture_guard(directory), patch.object(admit, "SCHEDULER_RELEASE", directory / "scheduler-released"):
+    with fixture_guard(directory), patch.object(admit, "SCHEDULER_RELEASE", directory / "scheduler-released"), \
+            patch.object(retire, "RETIRED", directory / "retired.json"):
         return admit.run(profile, wrappers=directory / "wrappers.json")
 
 
@@ -157,6 +159,25 @@ class AdmissionWrapperTests(unittest.TestCase):
         (self.out / "release").touch()
         wrapper.communicate(timeout=5)
         self.assertEqual(3, wrapper.returncode)
+        self.assertTrue(self.writers_drain())
+
+    def test_retired_profile_runs_with_a_shared_lease_for_its_engine(self):
+        from retire import ARCHIVE
+        marker = self.journal.directory / "retired.json"
+        marker.write_text(json.dumps({"version": 1, "run_id": IDENTITY.run_id, "engine": "sqlite",
+                                     "archive": str(ARCHIVE / (IDENTITY.run_id + "-20261128T120000Z"))}))
+        self.profiles(worker={"argv": ["/bin/sh", "-c", "touch started; while [ ! -e release ]; do sleep 0.05; done"]},
+                      other={"engine": "mysql", "argv": ["/usr/bin/true"]})
+        self.journal.path.unlink()
+        writer = self.start("worker")
+        self.wait_for("started")
+        self.assertFalse(self.writers_drain())
+        wrong = self.start("other")
+        wrong.communicate(timeout=5)
+        self.assertEqual(75, wrong.returncode)
+        (self.out / "release").touch()
+        writer.communicate(timeout=5)
+        self.assertEqual(0, writer.returncode)
         self.assertTrue(self.writers_drain())
 
     def test_held_journal_refuses_without_running_the_command(self):
