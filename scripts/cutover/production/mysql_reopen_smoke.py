@@ -202,9 +202,8 @@ def run(adapter, expected, receipt_sha256, deadline, read_gtid):
     try:
         from smoke_row_source import safe_schema_at_smoke
     except ImportError:
-        safe_schema = None
-    else:
-        safe_schema = safe_schema_at_smoke(config, time.monotonic() + (deadline - adapter.clock()))
+        raise UnsafeCutover("MySQL write smoke requires the foreign-key safety preflight; keep admissions held") from None
+    safe_schema = safe_schema_at_smoke(config, time.monotonic() + (deadline - adapter.clock()))
     attempt = {"boot_id": authority[0], "authority_sha256": authority[1], "reuses": 0,
                "prewrite_catalog_sha256": safe_schema,
                "gtid_before": start, "gtid_after": None, "started_at": int(adapter.clock()), "finished_at": None,

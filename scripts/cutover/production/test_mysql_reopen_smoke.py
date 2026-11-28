@@ -33,6 +33,9 @@ def gtid(end):
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Uses protected Linux records")
 class WindowTests(unittest.TestCase):
     def setUp(self):
+        preflight = patch("smoke_row_source.safe_schema_at_smoke", return_value=SHA)
+        self.preflight = preflight.start()
+        self.addCleanup(preflight.stop)
         private = tempfile.TemporaryDirectory(dir="/var/lib")
         self.addCleanup(private.cleanup)
         self.root = Path(private.name)
@@ -114,6 +117,18 @@ class WindowTests(unittest.TestCase):
 
     def audited(self):
         return mysql_probe.load_window(self.config, RUN, SimpleNamespace(sha256=SHA))
+
+    def test_unproven_fk_safety_blocks_app_before_it_can_write(self):
+        self.preflight.side_effect = UnsafeCutover("cascade safety")
+        with self.assertRaisesRegex(UnsafeCutover, "cascade safety"):
+            self.attempt(gtid(10))
+        self.adapter._execute.assert_not_called()
+        self.assertFalse(self.paths["smoke_window"].exists())
+
+    def test_safe_unknown_decoder_layout_can_run_but_supplies_no_short_path_digest(self):
+        self.preflight.return_value = None
+        self.assertIsNone(self.attempt(gtid(10), gtid(14))["prewrite_catalog_sha256"])
+        self.adapter._execute.assert_called_once()
 
     def test_prewrite_schema_verdict_is_saved_with_intent_and_older_records_stay_readable(self):
         def examine(config, deadline):

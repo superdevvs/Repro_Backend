@@ -90,8 +90,8 @@ def coordinates(config, window, listed):
     raise Unavailable("The smoke transaction has no verified end")
 
 
-def measured_catalog(config, *, deadline=None):
-    """Return the actual ordinal names and an approved digest of all four complete typed layouts."""
+def _table_catalog(config, *, deadline=None):
+    """Read the four actual base tables, excluding any with implicit update or generated columns."""
     import gate
 
     mysql = config["mysql"]
@@ -100,7 +100,7 @@ def measured_catalog(config, *, deadline=None):
     sql = ("SELECT JSON_ARRAY(CURRENT_USER(), @@server_uuid, VERSION(), @@GLOBAL.skip_networking,"
            " @@GLOBAL.binlog_row_image, @@GLOBAL.binlog_format); "
            "SELECT JSON_ARRAY(c.TABLE_NAME, c.ORDINAL_POSITION, c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE,"
-           " CAST(c.GENERATION_EXPRESSION='' AS UNSIGNED)) "
+           " CAST(c.GENERATION_EXPRESSION='' AND LOWER(c.EXTRA) NOT LIKE '%on update%' AS UNSIGNED)) "
            "FROM information_schema.COLUMNS c JOIN information_schema.TABLES t USING (TABLE_SCHEMA,TABLE_NAME) "
            f"WHERE c.TABLE_SCHEMA = {database} AND c.TABLE_NAME IN ({tables}) "
            "AND t.ENGINE='InnoDB' AND t.TABLE_TYPE='BASE TABLE' "
@@ -121,6 +121,12 @@ def measured_catalog(config, *, deadline=None):
         shapes[table].append((column, mysql_type, nullable))
     encoded = json.dumps(shapes, sort_keys=True, separators=(",", ":")).encode("ascii")
     digest = hashlib.sha256(encoded).hexdigest()
+    return names, digest
+
+
+def measured_catalog(config, *, deadline=None):
+    """Return the typed layout only when the native decoder understands it."""
+    names, digest = _table_catalog(config, deadline=deadline)
     require(digest in CATALOG_SHA256)
     return names, digest
 
@@ -133,10 +139,11 @@ def safe_schema_at_smoke(config, deadline):
     """Return the prewrite catalog digest only after ruling out hidden InnoDB cascade effects."""
     import gate
     try:
-        import smoke_rows
-
-        names, digest = measured_catalog(config, deadline=deadline)
-        smoke_rows.verified_layout(names)
+        names, digest = _table_catalog(config, deadline=deadline)
+        required = {"users": {"id", "email", "company_notes"}, "shoots": {"id", "client_id", "shoot_type", "company_notes"},
+                    "aryeo_changes": {"id", "client_id", "shoot_id", "kind", "created_at"},
+                    "jobs": {"id", "queue", "payload", "attempts", "reserved_at", "available_at", "created_at"}}
+        require(all(required[table].issubset(names[table]) for table in TABLES))
         mysql = config["mysql"]
         db = probe._literal(mysql["database"])
         # InnoDB executes cascades internally. FULL row images show only the originating
@@ -177,10 +184,12 @@ def safe_schema_at_smoke(config, deadline):
         actual = json.loads(result.stdout)
         expected = [probe.PROBE_ACCOUNT, mysql["target_uuid"], binlog_scan.SERVER_VERSION, 1, 0, 1, 1, 0]
         require(actual == expected and all(type(value) is int for value in actual[3:]))
-        return digest
+        # FK safety controls whether the application may write. The optional decoder
+        # needs a narrower typed layout before those writes can ever be discounted.
+        return digest if digest in CATALOG_SHA256 else None
     except (ImportError, OSError, ValueError, TypeError, KeyError, guard.Refused, UnsafeCutover,
             subprocess.SubprocessError):
-        return None
+        raise UnsafeCutover("MySQL write smoke requires verified foreign-key cascade safety; keep admissions held") from None
 
 
 def check_digest(path, expected):

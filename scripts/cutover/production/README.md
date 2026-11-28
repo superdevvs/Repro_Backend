@@ -609,9 +609,11 @@ export and independent verification.
 After capturing the starting GTID set and before executing the smoke, the recorder verifies the four
 InnoDB table layouts and reads the global InnoDB foreign-key dictionary using the probe's existing
 `PROCESS` privilege. It checks incoming references from every schema. An update cascade or set-null
-on an edited key, a delete cascade or set-null on a job, or incomplete dictionary evidence requires
-full reverse export. MySQL's row logs omit these engine-driven changes. The protected attempt records
-the complete typed catalog's digest only after this check succeeds. Recovery must measure the same
+on an edited key, a delete cascade or set-null on a job, or incomplete dictionary evidence stops
+the smoke before Laravel writes. Keep ingress held and review the relationship before retrying.
+MySQL's row logs omit these engine-driven changes. When the cascade check passes, a supported
+typed layout supplies the protected attempt's digest. Other layouts with measured safe relationships
+and the required smoke fields can run the smoke and require full export. Recovery must measure the same
 reviewed layout before decoding the row images. Older attempts without this digest require full export.
 
 The short rollback requires `smoke_row_scope_verified: true` in the audit. The probe decodes the four

@@ -90,7 +90,10 @@ class RowSourceTests(unittest.TestCase):
     def test_foreign_key_evidence_needs_real_probe_target_visibility_canary_and_zero_danger(self):
         expected = [mysql_probe.PROBE_ACCOUNT, UUID, "8.4.13", 1, 0, 1, 1, 0]
         digest = sorted(source.CATALOG_SHA256)[0]
-        with patch.object(source, "measured_catalog", return_value=({},digest)) as get_layout, patch("smoke_rows.verified_layout"):
+        names = {"users": ["id", "email", "company_notes"], "shoots": ["id", "client_id", "shoot_type", "company_notes"],
+                 "aryeo_changes": ["id", "client_id", "shoot_id", "kind", "created_at"],
+                 "jobs": ["id", "queue", "payload", "attempts", "reserved_at", "available_at", "created_at"]}
+        with patch.object(source, "_table_catalog", return_value=(names, digest)) as get_layout:
             variants = [(expected, True), (expected[:7], False)]
             for i, changed in enumerate(["guest@localhost", "other", "8.4.12", 0, 1, 0, 0, 2]):
                 variants.append(([*expected[:i], changed, *expected[i+1:]], False))
@@ -98,10 +101,21 @@ class RowSourceTests(unittest.TestCase):
             for response, valid in variants:
                 out = SimpleNamespace(returncode=0, stdout=json.dumps(response))
                 with self.subTest(response=response), patch.object(gate, "_client", return_value=out) as query:
-                    self.assertEqual(digest if valid else None, source.safe_schema_at_smoke(self.config, 123))
+                    if valid:
+                        self.assertEqual(digest, source.safe_schema_at_smoke(self.config, 123))
+                    else:
+                        with self.assertRaisesRegex(source.UnsafeCutover, "cascade safety"):
+                            source.safe_schema_at_smoke(self.config, 123)
                     get_layout.assert_called_with(self.config, deadline=123)
                     self.assertEqual("probe_defaults", query.call_args.args[1])
                     self.assertEqual({"deadline": 123}, query.call_args.kwargs)
+            out = SimpleNamespace(returncode=0, stdout=json.dumps(expected))
+            with patch.object(gate, "_client", return_value=out):
+                get_layout.return_value = (names, "0"*64)
+                self.assertIsNone(source.safe_schema_at_smoke(self.config, 123))
+                get_layout.return_value = ({**names, "users": ["id", "email"]}, "0"*64)
+                with self.assertRaisesRegex(source.UnsafeCutover, "cascade safety"):
+                    source.safe_schema_at_smoke(self.config, 123)
 
     def test_a_later_clean_catalog_cannot_replace_the_proof_at_write_time(self):
         for assessment in ({}, {"schema_verified_before_write": True}, {"prewrite_catalog_sha256": None},
