@@ -228,6 +228,24 @@ def review_rehearsal_pair(receipt: dict) -> None:
         raise Failed("Dress rehearsals must use distinct run IDs and reports")
 
 
+def review_write_outage(rehearsal: dict) -> None:
+    timeline = object_field(rehearsal, "write_outage")
+    sha_field(timeline, "writer_replay_ledger_sha256")
+    app_hold = number(timeline, "app_first_hold_utc_ms", 1)
+    producer_hold = number(timeline, "producer_first_hold_utc_ms", 1)
+    first_hold = min(app_hold, producer_hold)
+    decision = number(timeline, "decision_utc_ms", 1)
+    app_ready = number(timeline, "app_write_verified_utc_ms", 1)
+    producers_ready = number(timeline, "producer_writes_verified_utc_ms", 1)
+    replay_ready = number(timeline, "replay_reconciled_utc_ms", 1)
+    if not max(app_hold, producer_hold) <= decision <= min(app_ready, producers_ready) or replay_ready < first_hold:
+        raise Failed("The decision, replay or verified write times conflict with the admission holds")
+    if decision - first_hold != number(rehearsal, "reopen_decision_ms", 1):
+        raise Failed("Elapsed decision time must start at the first business write hold")
+    if max(app_ready, producers_ready, replay_ready) - first_hold > 60 * MINUTE:
+        raise Failed("End-to-end business write outage exceeds 60 minutes")
+
+
 def review_rehearsal_scope(policy: dict, rehearsal: dict) -> None:
     sha_field(rehearsal, "snapshot_sha256")
     for name in ("host_profile_sha256", "workload_sha256"):
@@ -568,6 +586,7 @@ def evaluate(policy: dict, receipt: dict, *, now_unix_s: int | None = None) -> d
             if not gates.check(f"{prefix}.scope", lambda: review_rehearsal_scope(policy, rehearsal)):
                 continue
             comparable.append(rehearsal)
+            gates.check(f"{prefix}.write_outage", lambda: review_write_outage(rehearsal))
             for name, limit in TIMINGS.items():
                 gates.check(f"{prefix}.{name}", lambda: cap(rehearsal, name, limit))
             for name in ("lost_acknowledged_writes", "duplicate_business_effects"):

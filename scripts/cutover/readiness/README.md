@@ -37,7 +37,9 @@ shape and supplies synthetic values only.
 | `point_in_time_drills` | Two distinct off-site-only restore reports, contiguous logs, verified chosen transactions, recovery duration, heartbeat distance from target, and verified exclusion of a planted bad write in one drill. |
 | `nightly_data_parity` | Five chronological reports for consecutive UTC schedule dates ending on `last_nightly_day_utc`. Each identifies its release and fresh snapshot, elapsed import and independent verification, source scope and integrity, row and exception parity, target settings and engine, SQLite reverse parity, invoice and payout parity, and a CRM review bound to the same night and input. |
 
-The rehearsal clock starts when write admissions first close. Report the total
+For each rehearsal, include a `write_outage` record with `app_first_hold_utc_ms`, `producer_first_hold_utc_ms`, `decision_utc_ms`, `app_write_verified_utc_ms`, `producer_writes_verified_utc_ms`, `replay_reconciled_utc_ms` and the `writer_replay_ledger_sha256` of the reviewed evidence. Use the first affected external producer and the last verified producer write across the inventory. Use UTC epoch milliseconds from the same measured window. The checker counts from the earlier hold through the latest verified write or replay reconciliation and enforces the 60-minute maximum. Older receipts require this evidence before approval.
+
+Report the total
 time to the reopen decision, verified SQLite rollback before writes, and verified
 failback after MySQL writes. Milliseconds keep timing boundaries exact. Record
 SQLite and MySQL p95 measurements in integer microseconds for every pinned

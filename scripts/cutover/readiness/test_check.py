@@ -109,6 +109,15 @@ def readiness_fixture():
                 "workload_sha256": policy["workload_sha256"],
                 "peak_and_surge_profile_completed": True,
                 **check.TIMINGS,
+                "write_outage": {
+                    "writer_replay_ledger_sha256": str(index) * 64,
+                    "producer_first_hold_utc_ms": index * 86_400_000,
+                    "app_first_hold_utc_ms": index * 86_400_000 + check.MINUTE,
+                    "decision_utc_ms": index * 86_400_000 + 40 * check.MINUTE,
+                    "app_write_verified_utc_ms": index * 86_400_000 + 50 * check.MINUTE,
+                    "producer_writes_verified_utc_ms": index * 86_400_000 + 60 * check.MINUTE,
+                    "replay_reconciled_utc_ms": index * 86_400_000 + 54 * check.MINUTE,
+                },
                 "lost_acknowledged_writes": 0, "duplicate_business_effects": 0,
                 "peak_queue_start_depth": 4, "peak_queue_end_depth": 4,
                 "endpoint_p95_us": {
@@ -173,6 +182,22 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual("meets_review_gates", result["decision"])
         self.assertEqual(digest(self.receipt), result["receipt_sha256"])
         self.assertTrue(all(gate["status"] == "passed" for gate in result["gates"].values()))
+
+    def test_full_outage_includes_early_producer_hold_and_final_replay_or_write(self):
+        scope = self.first["write_outage"]
+        original = scope.copy()
+        for key in ("producer_writes_verified_utc_ms", "app_write_verified_utc_ms", "replay_reconciled_utc_ms"):
+            with self.subTest(key=key):
+                scope[key] = original["producer_first_hold_utc_ms"] + 60 * check.MINUTE + 1
+                self.assert_gate("dress_rehearsal_1.write_outage", "failed")
+                scope.update(original)
+        scope["producer_first_hold_utc_ms"] -= 1
+        self.assert_gate("dress_rehearsal_1.write_outage", "failed")
+        scope.update(original)
+        scope["app_write_verified_utc_ms"] = scope["decision_utc_ms"] - 1
+        self.assert_gate("dress_rehearsal_1.write_outage", "failed")
+        del self.first["write_outage"]
+        self.assert_gate("dress_rehearsal_1.write_outage", "missing")
 
     def test_over_budget_rehearsal_fails_each_timing_gate(self):
         for name in check.TIMINGS:
