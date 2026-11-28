@@ -6,6 +6,7 @@ import os
 import runpy
 import stat
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ class OperatorTests(unittest.TestCase):
         self.adapter.paths = {"issued_approvals": fixture.journal.directory / "issued"}
         reading = probe_reading()
         self.adapter.config = {"commands": {"timer": ["/usr/bin/systemd-run"]},
-                               "mysql": {"target_uuid": reading["server_uuid"], "database": reading["database"]}}
+                               "mysql": {"mode": "drill", "target_uuid": reading["server_uuid"], "database": reading["database"]}}
         self.adapter._mysql = Mock(return_value=reading)
         self.adapter._execute = Mock(return_value=(5, ""))
         self.adapter._run = Mock()
@@ -71,6 +72,13 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual("holding", held["state"]["phase"])
         self.adapter._mysql.assert_called_once()
 
+    def issue_cutover_approval(self):
+        private = tempfile.TemporaryDirectory(dir="/var/lib")
+        self.addCleanup(private.cleanup)
+        self.adapter.paths["issued_approvals"] = Path(private.name)
+        self.adapter.config["mysql"]["mode"] = "cutover"
+        self.dispatch("approval-template", "--phase", "promote")
+
     def test_approval_template_promote_refuses_failed_live_preconditions(self):
         self.ready()
         self.adapter.backup_ok = False
@@ -106,6 +114,44 @@ class OperatorTests(unittest.TestCase):
         with self.assertRaisesRegex(cli.UnsafeCutover, "cannot promote"):
             self.dispatch("promote", "--issued-approval", "--then-reopen")
         self.assertEqual(before, self.runner.journal.path.read_bytes())
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "approvals are root-owned")
+    def test_promote_then_reopen_runs_in_one_unit(self):
+        self.ready()
+        self.issue_cutover_approval()
+        original = self.adapter.reopen
+
+        def reopen():
+            self.assertEqual("mysql_authoritative", self.runner.status()["phase"])
+            original()
+
+        with patch.object(self.adapter, "reopen_mysql", side_effect=reopen, create=True) as reopened:
+            result = self.dispatch("promote", "--issued-approval", "--then-reopen")
+        reopened.assert_called_once_with()
+        self.assertEqual("mysql_authoritative", result["state"]["phase"])
+        self.assertTrue(result["observation"]["admissions_open"])
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "approvals are root-owned")
+    def test_promotion_that_returns_sqlite_rollback_cannot_chain_reopen(self):
+        self.ready()
+        self.issue_cutover_approval()
+        self.fixture.now += self.runner.DECISION_SECONDS
+        with patch.object(self.adapter, "reopen_mysql", create=True) as reopened, self.assertRaisesRegex(cli.UnsafeCutover, "authority"):
+            self.dispatch("promote", "--issued-approval", "--then-reopen")
+        reopened.assert_not_called()
+        self.assertEqual("sqlite_authoritative", self.runner.status()["phase"])
+
+    def test_combined_promotion_requires_mysql_reopen_before_recording_write_intent(self):
+        self.ready()
+        self.adapter.config["mysql"]["mode"] = "cutover"
+        before = self.runner.journal.path.read_bytes()
+        with self.assertRaisesRegex(cli.UnsafeCutover, "no MySQL reopen action"):
+            self.dispatch("promote", "--issued-approval", "--then-reopen")
+        self.assertEqual(before, self.runner.journal.path.read_bytes())
+
+    def test_production_promote_refuses_an_alternate_approval_source(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.arguments(["promote", "--approval", "/some/other/record.json"])
 
     def test_hold_preflight_refuses_unreachable_or_open_mysql(self):
         before = self.runner.journal.path.read_bytes()

@@ -2372,6 +2372,98 @@ class EvidenceTests(unittest.TestCase):
                           "sqlite_backup_offsite": True, "mysql_backup_offsite": True}, report["results"])
 
 
+@unittest.skipUnless(LINUX_ROOT, "Needs Linux root and a private synthetic host")
+class PromotionTests(unittest.TestCase):
+    def ready(self, mode="cutover"):
+        host = PrepareHost(self, mode=mode)
+        host.freeze()
+        host.assert_prepared(host.prepare())
+        return host
+
+    def test_ready_to_mysql_authoritative_with_gate_open(self):
+        host = self.ready()
+        journal, adapter, runner = host.host()
+        sqlite_wrappers = host.path("wrappers").read_bytes()
+
+        def open_gate(config, *, deadline):
+            self.assertGreater(deadline, time.monotonic())
+            intent = journal.read()
+            self.assertEqual(("writes_possible", True, "promote"),
+                             (intent["phase"], intent["writes_possible"], intent["pending"]["action"]))
+            host.answer(probe_reading("open", server_uuid=host.target))
+            return {"before": "closed", "granted": True, "killed": [], "kill_failed": [7], "stragglers": []}
+
+        with patch.object(gate, "open_gate", side_effect=open_gate) as opened:
+            state = runner.perform("promote", runner.approval_request("promote"))
+        opened.assert_called_once()
+        self.assertEqual(("mysql_authoritative", True, None), (state["phase"], state["writes_possible"], state["pending"]))
+        self.assertTrue(adapter.observe().sealed("mysql"))
+        self.assertEqual(sqlite_wrappers, host.path("wrappers").read_bytes())
+        self.assertEqual([7], json.loads((journal.directory / "mysql-gate-open.json").read_bytes())["gate"]["kill_failed"])
+        proof = host.path("evidence").read_bytes()
+        guard.verify(adapter.policy_raw, journal.path.read_bytes(), proof, machine_sha=adapter._machine_sha(),
+                     boot_id=adapter.boot_id(), action="queue-worker", expected_engine="mysql")
+        with self.assertRaisesRegex(guard.Refused, "not authoritative"):
+            guard.verify(adapter.policy_raw, journal.path.read_bytes(), proof, machine_sha=adapter._machine_sha(),
+                         boot_id=adapter.boot_id(), action="queue-worker", expected_engine="sqlite")
+
+    def test_seal_mysql_refuses_in_drill_mode(self):
+        host = self.ready(mode="drill")
+        journal, adapter, _ = host.host()
+        with host.lease(journal) as lease, patch.object(gate, "open_gate") as opened:
+            with self.assertRaisesRegex(UnsafeCutover, "drill"):
+                adapter.seal_mysql(lease, time.time() + 60)
+        opened.assert_not_called()
+        self.assertFalse(journal.read()["writes_possible"])
+
+    def test_wrong_target_after_open_requires_recovery_and_never_publishes(self):
+        host = self.ready()
+        journal, adapter, runner = host.host()
+
+        def changed_target(config, *, deadline):
+            host.answer(probe_reading("open", server_uuid=OTHER_UUID))
+            return {"before": "closed", "granted": True, "killed": [], "kill_failed": [], "stragglers": []}
+
+        with patch.object(gate, "open_gate", side_effect=changed_target):
+            with self.assertRaisesRegex(UnsafeCutover, "could not be verified after the grant"):
+                runner.perform("promote", runner.approval_request("promote"))
+        self.assertEqual("recovery_required", journal.read()["phase"])
+        self.assertFalse(host.path("evidence").exists())
+        self.assertFalse(adapter.observe().sqlite_writable)
+
+    def test_changed_pin_at_publication_leaves_no_authority_proof(self):
+        host = self.ready()
+        journal, adapter, runner = host.host()
+        measure = adapter._measured_authority
+
+        def different_route(*args):
+            return {**measure(*args), "live_config_sha256": "a" * 64}
+
+        def open_gate(config, *, deadline):
+            host.answer(probe_reading("open", server_uuid=host.target))
+            return {"before": "closed", "granted": True, "killed": [], "kill_failed": [], "stragglers": []}
+
+        with patch.object(gate, "open_gate", side_effect=open_gate), \
+                patch.object(adapter, "_measured_authority", side_effect=different_route):
+            with self.assertRaises(guard.Refused):
+                runner.perform("promote", runner.approval_request("promote"))
+        self.assertEqual("recovery_required", journal.read()["phase"])
+        self.assertFalse(host.path("evidence").exists())
+
+    def test_grant_failure_records_recovery_required(self):
+        host = self.ready()
+        journal, adapter, runner = host.host()
+        with patch.object(gate, "open_gate", side_effect=gate.GateRefused("synthetic grant failure")):
+            with self.assertRaisesRegex(UnsafeCutover, "synthetic grant failure"):
+                runner.perform("promote", runner.approval_request("promote"))
+        state = journal.read()
+        self.assertEqual(("recovery_required", True), (state["phase"], state["writes_possible"]))
+        self.assertFalse(host.path("evidence").exists())
+        self.assertFalse(adapter.observe().sqlite_writable)
+        with self.assertRaisesRegex(UnsafeCutover, "writes may exist"):
+            runner.perform("abort")
+
+
 @unittest.skipUnless(LINUX_ROOT and PROBE_FIXTURE, "Needs Linux root and the MySQL fixture (REPRO_MYSQL_PROBE_FIXTURE)")
 class EvidenceFixtureTests(unittest.TestCase):
     """evidence() and check-evidence against D04's MySQL 8.4.13 fixture: the real probe and the real gate.check with
@@ -2383,6 +2475,22 @@ class EvidenceFixtureTests(unittest.TestCase):
     setUp = PrepareFixtureTests.setUp
     assert_restored = PrepareFixtureTests.assert_restored
     frozen = PrepareFixtureTests.frozen
+
+    def test_guard_admits_mysql_profile_with_new_evidence(self):
+        import admit
+
+        host = self.frozen(mode="cutover")
+        host.assert_prepared(host.prepare())
+        journal, adapter, runner = host.host()
+        wrappers = host.path("wrappers").read_bytes()
+        self.assertEqual("mysql_authoritative", runner.perform("promote", runner.approval_request("promote"))["phase"])
+        self.assertEqual("open", gate.read(adapter.config).gate)
+        self.assertTrue(adapter.observe().sealed("mysql"))
+        self.assertEqual(wrappers, host.path("wrappers").read_bytes())
+        actual = admit.load_profile("cutover-smoke", (HERE / "wrappers.mysql.example.json").read_bytes())
+        proof = host.path("evidence").read_bytes()
+        guard.verify(adapter.policy_raw, journal.path.read_bytes(), proof, machine_sha=adapter._machine_sha(),
+                     boot_id=adapter.boot_id(), action=actual["action"], expected_engine=actual["engine"])
 
     def test_evidence_on_the_fixture_refuses_a_foreign_write(self):
         from test_mysql_probe import FOREIGN_WRITE
@@ -2485,6 +2593,7 @@ class FixtureCheckTests(unittest.TestCase):
                           "EvidenceFixtureTests.test_check_evidence_runs_the_real_gate_check",
                           "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_a_foreign_write",
                           "EvidenceFixtureTests.test_evidence_on_the_fixture_refuses_an_open_gate_and_a_locked_gate_account",
+                          "EvidenceFixtureTests.test_guard_admits_mysql_profile_with_new_evidence",
                           "SealSqliteFixtureTests.test_abort_from_ready_closes_the_gate_and_ends_app_sessions",
                           "SealSqliteFixtureTests.test_receipt_still_armed_after_publication"],
                          fixture_tests())

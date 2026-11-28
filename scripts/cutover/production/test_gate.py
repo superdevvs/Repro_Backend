@@ -210,6 +210,23 @@ class StatementTests(unittest.TestCase):
              "GRANT UPDATE (`id`) ON `repro_mysql_control`.`writer_token` TO 'repro_app'@'localhost'"],
             self.gate.grant_statements(self.config))
 
+    def test_open_uses_one_deadline_for_reads_grants_kills_and_session_poll(self):
+        from unittest.mock import patch
+
+        self.config["mysql"]["mode"] = "cutover"
+        deadline = time.monotonic() + 2.0
+        readings = [self.gate.Reading(state, {}, sessions) for state, sessions in
+                    (("closed", ()), ("open", (81,)), ("open", ()))]
+        success = subprocess.CompletedProcess([], 0, "", "")
+        with (patch.object(self.gate, "_journal_phase", return_value="writes_possible"),
+              patch.object(self.gate, "read", side_effect=readings) as probe,
+              patch.object(self.gate, "_client", return_value=success) as client):
+            result = self.gate.open_gate(self.config, deadline=deadline)
+        self.assertEqual([81], result["killed"])
+        self.assertEqual(3, probe.call_count)
+        self.assertEqual(2, client.call_count)
+        self.assertTrue(all(call.kwargs["deadline"] == deadline for call in probe.call_args_list + client.call_args_list))
+
     def test_revoke_names_only_the_present_privileges_one_statement_per_level(self):
         cases = {
             ("INSERT",): ["REVOKE INSERT ON `repro\\_dashboard`.* FROM 'repro_app'@'localhost'"],

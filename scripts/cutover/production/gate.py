@@ -356,21 +356,21 @@ def read(config: dict, *, deadline: float | None = None) -> Reading:
 
 # The procedures.
 
-def _run_gate(config: dict, statements: list[str]) -> None:
-    result = _client(config, "gate_defaults", statements)
+def _run_gate(config: dict, statements: list[str], *, deadline: float | None = None) -> None:
+    result = _client(config, "gate_defaults", statements, deadline=deadline)
     if result.returncode != 0:
         # The client stops at the first error; the next reading shows what was applied.
         raise GateRefused(f"The gate account's statements failed: {result.stderr.strip()[:500]}")
 
 
-def _kill(config: dict, listed: list[int]) -> dict:
+def _kill(config: dict, listed: list[int], *, deadline: float | None = None) -> dict:
     """KILL each listed session as the gate account; return {session: error} for each KILL that failed.
 
     A script on stdin, one KILL per line, so every KILL runs and an error names the KILL it belongs to.
     1094 (unknown thread) for its own ID means the session had already gone. An error that names no line
     (a refused login, a client error) or a client failure leaves the other KILLs unaccounted for: failed.
     """
-    result = _client(config, "gate_defaults", [f"KILL {int(session)}" for session in listed], script=True)
+    result = _client(config, "gate_defaults", [f"KILL {int(session)}" for session in listed], script=True, deadline=deadline)
     failed, gone, unaccounted = {}, set(), []
     for line in (line for line in result.stderr.splitlines() if line.strip()):
         match = KILL_ERROR.fullmatch(line)
@@ -387,20 +387,21 @@ def _kill(config: dict, listed: list[int]) -> dict:
     return failed
 
 
-def _wait_gone(config: dict, sessions: list[int], wait_seconds: float, state: str) -> list[int]:
+def _wait_gone(config: dict, sessions: list[int], wait_seconds: float, state: str, *,
+               deadline: float | None = None) -> list[int]:
     """Poll the probe until none of `sessions` remains, at most `wait_seconds`; return those still listed.
 
     Only these IDs are waited for (connection IDs are never reused while the server runs): sessions that
     connect after the change carry its privileges and may come and go. Every reading must stay `state`.
     """
-    deadline = time.monotonic() + wait_seconds
+    poll_until = time.monotonic() + wait_seconds
     while True:
-        reading = read(config)
+        reading = read(config, deadline=deadline)
         _refuse_unless(reading.gate == state, f"The gate reads {reading.gate} while its app sessions end")
         remaining = sorted(set(sessions) & set(reading.sessions))
-        if not remaining or time.monotonic() >= deadline:
+        if not remaining or time.monotonic() >= poll_until:
             return remaining
-        time.sleep(POLL_SECONDS)
+        time.sleep(probe.timeout_seconds(POLL_SECONDS, deadline))
 
 
 def _end_sessions(config: dict, sessions: tuple, wait_seconds: float) -> list[int]:
@@ -450,7 +451,7 @@ def _journal_phase(config: dict) -> str | None:
         raise GateRefused(f"The cutover journal could not be read: {error}") from None
 
 
-def open_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS) -> dict:
+def open_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS, deadline: float | None = None) -> dict:
     """Open the gate (design 2.3, Open; seal_mysql only).
 
     Returns {"before", "granted", "killed", "kill_failed", "stragglers"}: of the app sessions listed once
@@ -467,19 +468,19 @@ def open_gate(config: dict, *, wait_seconds: float = KILL_WAIT_SECONDS) -> dict:
     phase = _journal_phase(config)
     _refuse_unless(phase == "writes_possible",
                    f"The gate opens only once the runner has committed writes_possible (journal: {phase or 'none'})")
-    reading = read(config)
+    reading = read(config, deadline=deadline)
     before = reading.gate
     _refuse_unless(before in ("closed", "open"),
                    f"The gate is {before}; it is opened only from closed (close it first)")
     granted = before == "closed"
     if granted:
-        _run_gate(config, grant_statements(config))
-        reading = read(config)
+        _run_gate(config, grant_statements(config), deadline=deadline)
+        reading = read(config, deadline=deadline)
         _refuse_unless(reading.gate == "open", f"The gate reads {reading.gate} after the grant")
     listed = sorted(reading.sessions)
-    failed = _kill(config, listed) if listed else {}
+    failed = _kill(config, listed, deadline=deadline) if listed else {}
     ending = [session for session in listed if session not in failed]
-    stragglers = _wait_gone(config, ending, wait_seconds, "open") if ending else []
+    stragglers = _wait_gone(config, ending, wait_seconds, "open", deadline=deadline) if ending else []
     return {"before": before, "granted": granted,
             "killed": [session for session in ending if session not in stragglers],
             "kill_failed": sorted(failed), "stragglers": stragglers}

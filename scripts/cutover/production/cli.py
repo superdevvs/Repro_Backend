@@ -47,9 +47,10 @@ def arguments(argv):
         action = commands.add_parser(name)
         source = action.add_mutually_exclusive_group(required=name != "freeze")
         source.add_argument("--issued-approval", action="store_true")
-        source.add_argument("--approval", type=Path)
         if name == "promote":
             action.add_argument("--then-reopen", action="store_true")
+        else:
+            source.add_argument("--approval", type=Path)
     check = commands.add_parser("check-evidence")
     check.add_argument("--inputs", type=Path, required=True)
     check.add_argument("--write", action="store_true")
@@ -167,17 +168,26 @@ def dispatch(args, runner, adapter):
             return {"aborted": False, "reason": "controller busy"}
         return {"state": state}
     else:
-        if action == "promote":
-            # C02/C03 supply the production promotion and reopen path in the cutover release.
+        if action == "promote" and adapter.config["mysql"].get("mode") != "cutover":
             raise UnsafeCutover("This drill controller cannot promote MySQL")
+        reopen_mysql = None
+        if action == "promote" and args.then_reopen:
+            reopen_mysql = getattr(adapter, "reopen_mysql", None)
+            if not callable(reopen_mysql):
+                raise UnsafeCutover("This release has no MySQL reopen action; promotion was not started")
         approval = None
-        if action in ("hold", "freeze"):
+        if action in ("hold", "freeze", "promote"):
             path = adapter.paths["issued_approvals"] / (action + ".json") if args.issued_approval else args.approval
             if path is not None:
                 raw = guard.read_protected(path)
                 approval = Approval(**json.loads(raw, object_pairs_hook=guard.unique_fields,
                                                  parse_constant=guard.refuse_non_json_constant))
         state = runner.perform(action, approval, hold_preflight=lambda: hold_preflight(adapter))
+        if reopen_mysql is not None:
+            if state["phase"] != "mysql_authoritative" or state["writes_possible"] is not True or state["pending"]:
+                raise UnsafeCutover("MySQL authority was not committed; admissions stay held")
+            reopen_mysql()
+            state = runner.status()
     return {"state": state, "observation": asdict(adapter.observe())}
 
 

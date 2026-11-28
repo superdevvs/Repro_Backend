@@ -4,6 +4,12 @@ Built and tested locally only. Nothing here is installed on the production
 host. Installing any of it is a production change that needs the owner's
 approval for each action (handoff item W1).
 
+## Cutover development
+
+In `mysql.mode=cutover`, the issued promotion approval moves a verified, read-only target to sealed MySQL authority. The operator can inspect `status` and the gate receipt while ingress is held. The active writer profiles remain pinned to SQLite until the MySQL reopen runs. A gate or publication failure after promotion intent places the journal in `recovery_required`. Drill mode always refuses promotion before recording intent.
+
+`promote --issued-approval --then-reopen` calls reopen in the same operator service only after committed MySQL authority. The combined action checks for the C03 `reopen_mysql` implementation before recording write intent. Until C03 lands, a combined request leaves the journal unchanged. The standalone promotion can demonstrate the sealed transition.
+
 ## Layout on the host
 
 | Repository file | Installed as | Purpose |
@@ -692,7 +698,7 @@ approvals); `gate.py` decides how.
   only; the probe must read open. Partial is refused. A stale session whose
   `KILL` fails, or that is still listed after the wait, does not fail the
   open (it cannot write, and the open runs after `writes_possible`): it is
-  recorded for C02's failure table (review B2-5).
+  recorded in `state/mysql-gate-open.json` with the run ID, target UUID, receipt digest and timestamp.
 - **Results.** `close_gate` returns `{"before", "revoked", "killed"}`,
   `open_gate` `{"before", "granted", "killed", "kill_failed", "stragglers"}`
   (disjoint session ID lists), for the caller's records.

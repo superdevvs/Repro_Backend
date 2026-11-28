@@ -33,8 +33,7 @@ publications and host_authority refuse the fallback. A MySQL probe that finds
 no server listening (exit 3) reads as not writable and without business
 activity only while the journal says no MySQL write is possible (design 1.2).
 
-It never makes MySQL writable: prepare leaves the gate closed, evidence() only reads, and
-seal_mysql (C02) refuses.
+Only cutover mode can open MySQL's write gate, after durable promotion intent and a fresh check of the pinned target.
 Host commands are fixed argument lists from the root-owned host config, each
 run in its own process group, which a timeout or an interrupt kills whole.
 """
@@ -77,7 +76,6 @@ from runner import (  # noqa: E402
     is_sha256,
 )
 
-NOT_SUPPORTED = "This adapter does not open the MySQL gate yet: seal_mysql refuses (C02)"
 CHILD_TAG = "REPRO_CUTOVER_CHILD"
 # The environment of every host command: nothing of root's own (cron, Supervisor, systemd, the operator's shell).
 HOST_ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
@@ -1752,7 +1750,39 @@ class ProductionAdapter:
         return {"version": 1, "manifest": manifest, "bound": bound, "gate": output, "written": write}
 
     def seal_mysql(self, lease: Lease, deadline: int) -> None:
-        raise UnsafeCutover(NOT_SUPPORTED)
+        """Open the pinned MySQL gate under the runner's durable promotion intent."""
+        import gate
+
+        _require(self.config["mysql"]["mode"] == "cutover", "MySQL promotion is refused in drill mode")
+        lease.require_writers_drained()
+        state = self._journal_state()
+        _require(state.get("phase") == "writes_possible" and state.get("writes_possible") is True
+                 and (state.get("pending") or {}).get("action") == "promote",
+                 "MySQL promotion requires a committed write intent")
+        report_raw = self._protected(self.paths["evidence_report"], "evidence report")
+        _require(guard.sha256(report_raw) == state["evidence"]["report_sha256"],
+                 "The prepared promotion report changed")
+        receipt = evidence.parse(report_raw)["receipt_sha256"]
+        self._require_live_target(receipt, deadline)
+        self._profile_contexts("sqlite")
+        observed = self.observe()
+        _require(observed.engine == "mysql" and observed.frozen() and self.identity() == self.pinned,
+                 "The frozen MySQL route or pinned identity changed before opening the gate")
+        lease.require_writers_drained()
+        remaining = self._remaining(deadline, "MySQL promotion reached its deadline")
+        result = gate.open_gate(self.config, deadline=time.monotonic() + remaining)
+        self.journal.write_record("mysql-gate-open.json", {
+            "version": 1, "run_id": self.pinned.run_id, "target_uuid": self.pinned.target_uuid,
+            "receipt_sha256": receipt, "at": int(self.clock()), "gate": result,
+        })
+        probe_deadline = min(deadline, self.clock() + self.config["command_seconds"])
+        reading = self._probe(self.config["commands"]["mysql"], probe_deadline, "MySQL promotion")
+        _require(reading.get("reachable") is True and reading.get("gate") == "open" and reading.get("writable") is True
+                 and reading.get("server_uuid") == self.pinned.target_uuid
+                 and reading.get("database") == self.config["mysql"]["database"] and reading.get("receipt") == receipt
+                 and reading.get("business_activity") is False and reading.get("foreign_activity") is False,
+                 "The open, quiet MySQL target could not be verified after the grant")
+        self._remaining(deadline, "MySQL promotion reached its deadline")
 
     # seal_sqlite (design 3.5): the rollback's undo of any part of prepare, then SQLite unsealed.
 
@@ -1965,7 +1995,7 @@ class ProductionAdapter:
 
         The route must be sealed for `engine` and the live config a parsed cache; the route hash, the
         database identity, release and artifact are measured now, so guard.verify compares measurements
-        with the pins. Only seal_mysql (which this adapter refuses) leads the runner to a MySQL publication.
+        with the pins. The runner publishes MySQL authority after seal_mysql opens the verified gate.
         """
         lease.require_writers_drained()
         observed, mysql, live = self._observed()
@@ -1973,11 +2003,16 @@ class ProductionAdapter:
             raise UnsafeCutover(f"{ENGINE_NAMES.get(engine, 'The')} authority is not sealed for publication")
         measured = self._measured_authority(observed, mysql, live)
         writers = self.processes(self.config["writer_processes"] + self.config["scheduler_processes"])
-        _write_atomic(self.paths["evidence"], {
+        record = {
             "version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
             "journal_sha256": guard.sha256(candidate), "engine": engine, **measured,
             "competing_writer_detected": bool(writers),
-        }, 0o600)
+        }
+        if engine == "mysql" and self.config["mysql"]["mode"] == "cutover":
+            # Verify the measured proof against the prospective journal before either can admit a writer.
+            guard.verify(self.policy_raw, candidate, Journal.encode(record), machine_sha=self._machine_sha(),
+                         boot_id=self.boot_id(), action="queue-worker", expected_engine=engine)
+        _write_atomic(self.paths["evidence"], record, 0o600)
 
     def hold_deploys(self) -> None:
         """Publish the deployment fence under both deploy locks.

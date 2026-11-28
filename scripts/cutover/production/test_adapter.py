@@ -1427,7 +1427,7 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertFalse((self.app / ".env").exists())
         with self.assertRaisesRegex(UnsafeCutover, "No evidence report: prepare did not finish its checks"):
             adapter.evidence()
-        with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, re.escape(production.NOT_SUPPORTED)):
+        with self.drained(journal) as lease, self.assertRaisesRegex(UnsafeCutover, "drill mode"):
             adapter.seal_mysql(lease, time.time() + 60)
         self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
 
