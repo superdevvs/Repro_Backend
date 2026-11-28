@@ -585,9 +585,7 @@ producer paths, before a real freeze. The snippet's `Retry-After` is fixed at
    all writers, step 9). Only the MySQL path changes this: `seal_mysql`
    opens the gate, and MySQL traffic then counts as business activity
    (MySQL adapter lane items 3, 7 and 18). So make the token row and
-   `accounts.sql` on the probed target before `init`, and run no import and
-   change no grant on it after `init` outside the night's frozen window;
-   inside that window only the controller changes grants.
+   `accounts.sql` on the probed target before `init`. During cutover the final frozen copy feeds the reviewed empty-target import. The separate A3 administrator rehearsal can load a verified copy into its isolated, gated target while the primary stays on SQLite. Use its recorded target UUID, maintenance account and private evidence. [A3 procedure](../scripts/cutover/production/INSTALL-W1.md#a3-copy-loading-while-the-primary-remains-sqlite)
 5. The application sets READ COMMITTED and 5-second lock waits per session.
    The server file may keep its own defaults, but the migrator account should
    use a separate connection if layout changes need a longer metadata wait.
@@ -1557,9 +1555,7 @@ undo list no longer needs it.
    (`guard.authority` admits only `planned` and the two terminal phases):
    workers that restart, the scheduler and the wrapped cron lines stop while
    the web keeps writing SQLite. Neither `abort` nor the watchdog rolls back
-   from there (ordering H3). So run no import and change no grant on the
-   probed target outside the night's frozen window, and run import
-   rehearsals in the nightly runner's disposable MySQL.
+   from there (ordering H3). Use the nightly runner’s disposable MySQL for normal rehearsals. The separately scoped A3 copy load uses the isolated target, closed application gate and bound receipt. The production window takes its own final frozen copy before the cutover import.
 
 **Watchdog.** `repro-cutover-watchdog.timer` runs `cli.py tick` every minute
 from boot (`OnCalendar=minutely`). In a held phase it closes admissions again
