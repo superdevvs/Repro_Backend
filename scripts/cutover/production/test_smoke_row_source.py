@@ -63,8 +63,8 @@ class RowSourceTests(unittest.TestCase):
 
     def test_layout_query_is_bound_to_target_account_ordinal_sequence_and_full_images(self):
         header = ["repro_token_check@localhost", UUID, "8.4.13", 1, "FULL", "ROW"]
-        rows = [[name, 1, "id", "bigint", "NO"] for name in source.TABLES]
-        rows += [[name, 2, "value", "longtext", "YES"] for name in source.TABLES]
+        rows = [[name, 1, "id", "bigint", "NO", 1] for name in source.TABLES]
+        rows += [[name, 2, "value", "longtext", "YES", 1] for name in source.TABLES]
         def output(first, columns):
             return SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(row) for row in [first, *columns]))
 
@@ -77,10 +77,11 @@ class RowSourceTests(unittest.TestCase):
         with patch.object(gate, "_client", return_value=output(header, rows)):
             self.assertEqual(names, source.layout(self.config))
         for first, columns in (([*header[:4], "MINIMAL", "ROW"], rows), ([*header[:1], "other", *header[2:]], rows),
-                               (header, [*rows[:-1], [rows[-1][0], 3, "other", "longtext", "YES"]]),
-                               (header, [*rows[:-1], [*rows[-1][:3], "bigint", "YES"]]),
-                               (header, [*rows[:-1], [*rows[-1][:4], "NO"]]),
-                               (header, [[None, 1, "id", "bigint", "NO"]])):
+                               (header, [*rows[:-1], [rows[-1][0], 3, "other", "longtext", "YES", 1]]),
+                               (header, [*rows[:-1], [*rows[-1][:3], "bigint", "YES", 1]]),
+                               (header, [*rows[:-1], [*rows[-1][:4], "NO", 1]]),
+                               (header, [*rows, [rows[-1][0], 3, "virtual_tail", "bigint", "YES", 0]]),
+                               (header, [[None, 1, "id", "bigint", "NO", 1]])):
             with (self.subTest(first=first, columns=columns),
                   patch.object(gate, "_client", return_value=output(first, columns))):
                 with self.assertRaises(source.Unavailable):
@@ -129,10 +130,12 @@ class RowSourceTests(unittest.TestCase):
         ordered.insert(11, users["secondary_roles"])
         imported["users"] = ordered
 
-        def attest(candidate):
+        def attest(candidate, *, extra=None):
             result = [["repro_token_check@localhost", UUID, "8.4.13", 1, "FULL", "ROW"]]
             for table, columns in candidate.items():
-                result += [[table, ordinal, *column] for ordinal, column in enumerate(columns, 1)]
+                result += [[table, ordinal, *column, 1] for ordinal, column in enumerate(columns, 1)]
+            if extra:
+                result.append(extra)
             rows = SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(line) for line in result))
             with patch.object(gate, "_client", return_value=rows):
                 return source.layout(self.config)
@@ -143,6 +146,8 @@ class RowSourceTests(unittest.TestCase):
         for hybrid in (wrong_order, {**imported, "shoots": clean["shoots"]}, {**clean, "users": ordered}):
             with self.assertRaises(source.Unavailable):
                 attest(hybrid)
+        with self.assertRaises(source.Unavailable):
+            attest(imported, extra=["users", 61, "virtual_tail", "bigint", "YES", 0])
 
     @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Protected Linux fixture")
     def test_decoder_is_pinned_bounded_and_cannot_leak_errors(self):

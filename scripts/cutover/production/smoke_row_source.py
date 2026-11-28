@@ -99,10 +99,11 @@ def measured_catalog(config, *, deadline=None):
     tables = ", ".join(probe._literal(name) for name in TABLES)
     sql = ("SELECT JSON_ARRAY(CURRENT_USER(), @@server_uuid, VERSION(), @@GLOBAL.skip_networking,"
            " @@GLOBAL.binlog_row_image, @@GLOBAL.binlog_format); "
-           "SELECT JSON_ARRAY(c.TABLE_NAME, c.ORDINAL_POSITION, c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE) "
+           "SELECT JSON_ARRAY(c.TABLE_NAME, c.ORDINAL_POSITION, c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE,"
+           " CAST(c.GENERATION_EXPRESSION='' AS UNSIGNED)) "
            "FROM information_schema.COLUMNS c JOIN information_schema.TABLES t USING (TABLE_SCHEMA,TABLE_NAME) "
            f"WHERE c.TABLE_SCHEMA = {database} AND c.TABLE_NAME IN ({tables}) "
-           "AND t.ENGINE='InnoDB' AND t.TABLE_TYPE='BASE TABLE' AND c.GENERATION_EXPRESSION='' "
+           "AND t.ENGINE='InnoDB' AND t.TABLE_TYPE='BASE TABLE' "
            "ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION")
     result = gate._client(config, "token_check_defaults", [sql], deadline=deadline)
     require(result.returncode == 0 and len(result.stdout) < 65536)
@@ -112,10 +113,10 @@ def measured_catalog(config, *, deadline=None):
     names = {name: [] for name in TABLES}
     shapes = {name: [] for name in TABLES}
     for line in lines[1:]:
-        table, ordinal, column, mysql_type, nullable = json.loads(line)
+        table, ordinal, column, mysql_type, nullable, ordinary = json.loads(line)
         require(table in names and type(ordinal) is int and ordinal == len(names[table]) + 1
                 and isinstance(column, str) and re.fullmatch(r"[a-z0-9_]+", column)
-                and isinstance(mysql_type, str) and nullable in ("NO", "YES"))
+                and isinstance(mysql_type, str) and nullable in ("NO", "YES") and type(ordinary) is int and ordinary == 1)
         names[table].append(column)
         shapes[table].append((column, mysql_type, nullable))
     encoded = json.dumps(shapes, sort_keys=True, separators=(",", ":")).encode("ascii")
