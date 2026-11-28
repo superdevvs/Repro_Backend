@@ -54,6 +54,15 @@ class OperatorTests(unittest.TestCase):
             self.dispatch("approval-template", "--phase", "promote")
         self.assertFalse(path.exists())
 
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "approvals are root-owned")
+    def test_issued_hold_approval_is_consumed_by_the_operator_entrypoint(self):
+        self.dispatch("approval-template", "--phase", "hold")
+        with patch.object(cli.guard, "read_protected", side_effect=lambda path: path.read_bytes()):
+            # The tempfile fixture lives under /tmp. Production checks the protected ancestor chain too.
+            held = self.dispatch("hold", "--issued-approval")
+        self.assertEqual("holding", held["state"]["phase"])
+        self.adapter._mysql.assert_called_once()
+
     def test_approval_template_promote_refuses_failed_live_preconditions(self):
         self.ready()
         self.adapter.backup_ok = False

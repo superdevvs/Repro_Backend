@@ -165,7 +165,9 @@ def dispatch(args, runner, adapter):
         if action in ("hold", "freeze"):
             path = adapter.paths["issued_approvals"] / (action + ".json") if args.issued_approval else args.approval
             if path is not None:
-                approval = Approval(**guard.read_json(guard.read_protected(path)))
+                raw = guard.read_protected(path)
+                approval = Approval(**json.loads(raw, object_pairs_hook=guard.unique_fields,
+                                                 parse_constant=guard.refuse_non_json_constant))
         state = runner.perform(action, approval, hold_preflight=lambda: hold_preflight(adapter))
     return {"state": state, "observation": asdict(adapter.observe())}
 
