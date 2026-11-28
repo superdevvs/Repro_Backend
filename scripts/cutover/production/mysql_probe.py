@@ -49,6 +49,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -314,10 +315,20 @@ def _protected(path: Path, *, secret: bool = False) -> None:
         guard.require(not stat.S_IMODE(path.lstat().st_mode) & 0o077, f"{path} must be readable by root only")
 
 
-def _listening(path: str) -> bool:
+def timeout_seconds(maximum: float, deadline: float | None) -> float:
+    """Limit each read to its share of a single monotonic deadline."""
+    if deadline is None:
+        return maximum
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("The MySQL gate check reached its deadline")
+    return min(maximum, remaining)
+
+
+def _listening(path: str, deadline: float | None = None) -> bool:
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    probe.settimeout(CONNECT_SECONDS)
     try:
+        probe.settimeout(timeout_seconds(CONNECT_SECONDS, deadline))
         probe.connect(path)
     except OSError as error:
         if error.errno in (errno.ENOENT, errno.ECONNREFUSED):
@@ -363,13 +374,13 @@ class Reading:
     gate: Gate
 
 
-def read(config: dict, mode: str) -> tuple[dict, Gate]:
+def read(config: dict, mode: str, *, deadline: float | None = None) -> tuple[dict, Gate]:
     """Read the server identity and the gate; raise Refusal for exits 3, 4 and 6."""
-    reading = read_gate(config, mode)
+    reading = read_gate(config, mode, deadline=deadline)
     return reading.server, reading.gate
 
 
-def read_gate(config: dict, mode: str) -> Reading:
+def read_gate(config: dict, mode: str, *, deadline: float | None = None) -> Reading:
     """read(), also handing out the classified rows (for gate.py's root SQL; never printed).
 
     A Refusal raised after the classification (unrecognised, partial, or not closed in strict mode)
@@ -383,7 +394,7 @@ def read_gate(config: dict, mode: str) -> Reading:
     missing = [str(path) for path in (client, defaults) if not path.exists()]
     if missing:
         # Before the administrator installs MySQL and the probe account (session A1), nothing listens.
-        if not _listening(mysql["socket"]):
+        if not _listening(mysql["socket"], deadline):
             raise Refusal(EXIT_UNREACHABLE, "The MySQL server is not listening", {"version": VERSION,
                                                                                  "reachable": False})
         problems = [f"The server listens but {path} is missing" for path in missing]
@@ -393,7 +404,7 @@ def read_gate(config: dict, mode: str) -> Reading:
     argv = _client_argv(mysql, raw=True) + [f"{server_statement()}; {state_statement(_accounts(config))}"]
     try:
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                timeout=CLIENT_SECONDS, env=CLIENT_ENVIRONMENT)
+                                timeout=timeout_seconds(CLIENT_SECONDS, deadline), env=CLIENT_ENVIRONMENT)
     except subprocess.TimeoutExpired:
         raise Refusal(EXIT_UNRECOGNISED, "The MySQL server did not answer the probe",
                       {**refused, "problems": ["The server did not answer"]}) from None

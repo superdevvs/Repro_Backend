@@ -272,7 +272,7 @@ def root_sql(config: dict, state: dict) -> str:
 # Readings, always through the probe account.
 
 def _client(config: dict, defaults_key: str, statements: list[str], *,
-            script: bool = False) -> subprocess.CompletedProcess:
+            script: bool = False, deadline: float | None = None) -> subprocess.CompletedProcess:
     """Run statements with the native client as the account in `mysql.<defaults_key>`, flags as the probe's.
 
     Normally with -e: the client stops at the first error. With `script` they go on stdin, one per line,
@@ -296,7 +296,8 @@ def _client(config: dict, defaults_key: str, statements: list[str], *,
         argv += ["-e", "; ".join(statements)]
         feed = {"stdin": subprocess.DEVNULL}
     try:
-        return subprocess.run(argv, **feed, capture_output=True, text=True, timeout=probe.CLIENT_SECONDS,
+        return subprocess.run(argv, **feed, capture_output=True, text=True,
+                              timeout=probe.timeout_seconds(probe.CLIENT_SECONDS, deadline),
                               env=ENVIRONMENT)
     except subprocess.TimeoutExpired:
         raise GateRefused("The MySQL client did not finish; the gate state is unknown until the next reading") from None
@@ -328,10 +329,10 @@ def _present(config: dict, open_privileges) -> dict:
     return present
 
 
-def read(config: dict) -> Reading:
+def read(config: dict, *, deadline: float | None = None) -> Reading:
     """The probe's measured reading; raise GateUnreachable or GateRefused for anything not to act on."""
     try:
-        _, gate = probe.read(config, "measured")
+        _, gate = probe.read(config, "measured", deadline=deadline)
     except probe.Refusal as refusal:
         output = refusal.output or {}
         if refusal.code == probe.EXIT_UNREACHABLE:
@@ -564,14 +565,14 @@ def _login_problem(config: dict, result: subprocess.CompletedProcess) -> str:
     return f"The gate account could not log in ({error})"
 
 
-def gate_account_check(config: dict) -> dict:
+def gate_account_check(config: dict, *, deadline: float | None = None) -> dict:
     """Log in as the gate account, as the procedures do, read-only: {"current_user", "problems"}.
 
     SELECT CURRENT_USER() and SHOW GRANTS (of the current account) need no privilege, change nothing and
     write nothing to the binary log. The login must be GATE_ACCOUNT, with exactly gate_account_grants.
     """
     try:
-        result = _client(config, "gate_defaults", ["SELECT CURRENT_USER()", "SHOW GRANTS"])
+        result = _client(config, "gate_defaults", ["SELECT CURRENT_USER()", "SHOW GRANTS"], deadline=deadline)
     except GateRefused as refusal:
         return {"current_user": None, "problems": [str(refusal)]}
     if result.returncode != 0:
@@ -592,21 +593,21 @@ def _with_account(message: str | None, account: dict) -> str | None:
     return f"{message}\n{failed}" if message else failed
 
 
-def check(config: dict) -> tuple[dict, int, str | None]:
+def check(config: dict, *, deadline: float | None = None) -> tuple[dict, int, str | None]:
     """Read-only lint: (output, exit code, message), the probe's reading plus the gate account's self-check."""
     try:
-        reading = read(config)
+        reading = read(config, deadline=deadline)
     except GateUnreachable as refusal:
         return ({"version": 1, "reachable": False, "gate": None, "root_sql": None, "gate_account": None},
                 EXIT_UNREACHABLE, str(refusal))
     except GateRefused as refusal:
-        output, account = refusal.reading or {}, gate_account_check(config)
+        output, account = refusal.reading or {}, gate_account_check(config, deadline=deadline)
         return ({"version": 1, "reachable": True, "gate": output.get("gate"),
                  "problems": output.get("problems") or [str(refusal).splitlines()[0]],
                  "open_privileges": output.get("open_privileges"), "root_sql": refusal.root_sql,
                  "gate_account": account},
                 EXIT_NOT_OPEN_OR_CLOSED, _with_account(str(refusal), account))
-    account = gate_account_check(config)
+    account = gate_account_check(config, deadline=deadline)
     output = {"version": 1, "reachable": True, "gate": reading.gate, "open_privileges": reading.present,
               "sessions": list(reading.sessions or []), "root_sql": None, "gate_account": account}
     if reading.gate == "partial":

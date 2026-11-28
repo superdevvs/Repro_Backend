@@ -1008,7 +1008,7 @@ class PrepareHost:
         path.write_text(json.dumps({"version": 1, "profiles": profiles}, sort_keys=True), encoding="utf-8")
         path.chmod(0o644)
 
-    def _gate_check(self, config: dict) -> tuple:
+    def _gate_check(self, config: dict, *, deadline: float) -> tuple:
         """gate.check on a scripted host: the closed gate and the gate account as accounts.sql makes it, unless
         `gate(...)` set another answer."""
         output = {"version": 1, "reachable": True, "gate": "closed", "open_privileges": {"repro_app@localhost": []},

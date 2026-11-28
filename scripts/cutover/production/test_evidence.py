@@ -17,6 +17,8 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE)]
@@ -181,6 +183,14 @@ class RecordTests(unittest.TestCase):
             "no profile probe": lambda r: r["checks"].update(profile_probes=[]),
             "the FastCGI probe failed": lambda r: r["checks"]["fastcgi"].update(ok=False),
             "one read-only smoke failed": lambda r: r["checks"]["readonly_smoke"][0].update(ok=False),
+            "a smoke user omitted": lambda r: r["checks"]["readonly_smoke"].pop(),
+            "the same smoke user twice": lambda r: r["checks"]["readonly_smoke"][1].update(user="www-data"),
+            "a smoke failed to decrypt": lambda r: r["checks"]["readonly_smoke"][1].update(encrypted_value_decrypts=False),
+            "a boolean queue depth": lambda r: r["checks"]["readonly_smoke"][0].update(smoke_queue_pending=False),
+            "different marked shoots": lambda r: r["checks"]["readonly_smoke"][0].update(shoot_id=7),
+            "the check account logged an error": lambda r: r["checks"]["token_check"].update(problems=["failed"]),
+            "an open gate": lambda r: r["checks"]["mysql"].update(writable=True),
+            "a numeric result": lambda r: r["results"].update(final_schema=1),
             "the token check failed": lambda r: r["checks"]["token_check"].update(ok=False),
             "the MySQL reading failed": lambda r: r["checks"]["mysql"].update(ok=False),
             "a check missing": lambda r: r["checks"].pop("token_check"),
@@ -308,12 +318,17 @@ class CheckRecordTests(unittest.TestCase):
              "ran in group maverick"),
             ("another test shoot", output(checks={**checks, "shoot_id": 7}), "www-data", "marked test client"),
             ("the shoot unread", output(checks={**checks, "shoot_read": False}), "www-data", "shoot_read"),
+            ("another queue", output(checks={**checks, "smoke_queue": "database:default"}), "www-data", "cutover-smoke"),
+            ("boolean depth", output(checks={**checks, "smoke_queue_pending": False}), "www-data", "jobs wait"),
             ("the engine-only report", output(mode="engine-only"), "www-data", "mode engine-only"),
         ):
             with self.subTest(name), self.assertRaisesRegex(UnsafeCutover, pattern):
                 evidence.readonly_check(text, 0, "maverick", group, smoke, expected)
         # Without -g the group is whatever the user's is, and recorded.
         self.assertEqual("www-data", evidence.readonly_check(output(), 0, "maverick", None, smoke, expected)["group"])
+        with self.assertRaisesRegex(UnsafeCutover, "marked test client"):
+            evidence.readonly_check(output(checks={**checks, "client_id": True}), 0, "maverick", None,
+                                    {**smoke, "client_id": 1}, expected)
 
     def test_token_check_needs_no_problems_and_the_token(self):
         good = {"engine": "mysql", "writer_policy": True, "session": {"isolation": "READ-COMMITTED"},
@@ -380,6 +395,122 @@ class CheckRecordTests(unittest.TestCase):
         ):
             with self.subTest(name), self.assertRaisesRegex(UnsafeCutover, pattern):
                 evidence.mysql_check({**reading, **changed}, gate_result, mysql, RECEIPT)
+
+
+class HostEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.adapter = object.__new__(production.ProductionAdapter)
+        self.adapter.config = example_config()
+        self.adapter.pinned = IDENTITY
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the smoke users are Linux accounts")
+    def test_smoke_command_forms_and_distinct_nonroot_accounts(self):
+        commands = self.adapter.config["commands"]["smoke_readonly"]
+        web, owner = commands
+        with mock.patch("pwd.getpwnam", side_effect=lambda u: SimpleNamespace(pw_uid=33 if u == web[2] else 1000)):
+            self.assertEqual(2, len(self.adapter._smoke_commands()))
+            direct = [*web[:3], "--", production.config_build.PHP, f"{self.adapter.config['app_root']}/artisan",
+                      "cutover:smoke", "--read-only", "--json"]
+            commands[:] = [direct, owner]
+            self.assertEqual(2, len(self.adapter._smoke_commands()))
+            for invalid in ([*direct, "--other"], [*direct[:5], "/other/artisan", *direct[6:]],
+                            [*web[:-2], web[-2] + " && true", web[-1]]):
+                commands[:] = [invalid, owner]
+                with self.subTest(command=invalid), self.assertRaisesRegex(UnsafeCutover, "read-only"):
+                    self.adapter._smoke_commands()
+        for ids in ((33, 33), (0, 1000)):
+            commands[:] = [web, owner]
+            with self.subTest(ids=ids), mock.patch("pwd.getpwnam", side_effect=[SimpleNamespace(pw_uid=i) for i in ids]), \
+                    self.assertRaisesRegex(UnsafeCutover, "distinct non-root"):
+                self.adapter._smoke_commands()
+
+    def test_evidence_binds_the_configured_users_and_test_records(self):
+        report = sample_report()
+        self.adapter._journal_state = lambda: {"started_at": report["switch_at"]}
+        self.adapter.config["mysql"].update(mode="drill", offsite_waiver=False)
+        self.adapter.config["smoke"].update(client_id=4101, shoot_id=9201)
+        for key, value in (("user", "someone-else"), ("shoot_id", 42)):
+            record = report["checks"]["readonly_smoke"][1]
+            with self.subTest(key=key), mock.patch.dict(record, {key: value}), \
+                    self.assertRaisesRegex(UnsafeCutover, "accounts or marked"):
+                self.adapter._require_report_binding(report)
+        self.adapter.config["fpm"]["socket"] = report["checks"]["fastcgi"]["socket"]
+        self.adapter.config["mysql"].update(database=EXPECTED["database"], target_uuid=TARGET_UUID)
+        self.adapter.policy = {"mysql_live_config_sha256": OTHER_PIN}
+        with self.assertRaisesRegex(UnsafeCutover, "route pin"):
+            self.adapter._require_report_binding(report)
+        self.adapter.policy["mysql_live_config_sha256"] = PIN
+        self.adapter._profile_contexts = lambda: sample_checks()["profile_probes"]
+        report["checks"]["profile_probes"].pop()
+        with self.assertRaisesRegex(UnsafeCutover, "wrapper profile"):
+            self.adapter._require_report_binding(report)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the drill imports Linux process bindings")
+    def test_dress_rehearsal_consumes_the_adapter_report(self):
+        from e2e import run_drill as drill
+
+        report = sample_report()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "night").mkdir()
+            (root / "night" / drill.COPY_RECORD).write_text(COPY)
+            report_path, sealed, inputs = root / "report.json", root / "sealed.json", root / "inputs.json"
+            sealed.write_text(json.dumps({"sha256": FROZEN}))
+            inputs.write_text(json.dumps({"inputs": report["inputs"]}))
+            profiles = {name: {k: record[k] for k in ("user", "group", "cwd")}
+                        for record in report["checks"]["profile_probes"] for name in record["profiles"]}
+            (root / "wrappers.json").write_text(json.dumps({"profiles": profiles}))
+            inside = object.__new__(drill.Inside)
+            inside.paths = SimpleNamespace(e2e=root)
+            inside.host = {"mysql": {"mode": "drill", "offsite_waiver": False, "target_uuid": TARGET_UUID,
+                                     "database": "repro_dashboard"}, "web_user": "www-data", "app_owner": "maverick",
+                           "paths": {"evidence_inputs": str(inputs)}}
+            inside.policy = {"identity": {"run_id": IDENTITY.run_id}, "mysql_live_config_sha256": PIN}
+            inside.require_root_private = mock.Mock()
+            inside.coordinate = lambda: BACKUP
+            inside.cli = lambda *args: report
+            with mock.patch.multiple(drill, EVIDENCE_REPORT=report_path, SEALED_HASH=sealed, ETC=root):
+                report_path.write_bytes(raw(report))
+                self.assertIn("2 profile contexts", inside.step_prepare_checks())
+                report["checks"]["readonly_smoke"][1]["user"] = "www-data"
+                report_path.write_bytes(raw(report))
+                with self.assertRaisesRegex(drill.StepFailed, "configured web user"):
+                    inside.step_prepare_checks()
+
+    def test_gate_probe_uses_one_remaining_budget(self):
+        import gate
+
+        self.adapter.clock = lambda: 500
+        with mock.patch.object(gate, "check") as check, mock.patch.object(production.time, "monotonic", return_value=100):
+            self.adapter._gate_check(501)
+            check.assert_called_once_with(self.adapter.config, deadline=101)
+            with self.assertRaisesRegex(UnsafeCutover, "deadline"):
+                self.adapter._gate_check(499)
+            self.assertEqual(1, check.call_count)
+        with mock.patch.object(gate.probe.time, "monotonic", side_effect=[100, 100.75, 101]):
+            self.assertEqual(1, gate.probe.timeout_seconds(30, 101))
+            self.assertEqual(.25, gate.probe.timeout_seconds(30, 101))
+            with self.assertRaisesRegex(TimeoutError, "deadline"):
+                gate.probe.timeout_seconds(30, 101)
+        with mock.patch.object(gate, "read", return_value=gate.Reading("closed", {}, ())) as read, \
+                mock.patch.object(gate, "gate_account_check", return_value={"problems": []}) as account:
+            gate.check(self.adapter.config, deadline=101)
+            read.assert_called_once_with(self.adapter.config, deadline=101)
+            account.assert_called_once_with(self.adapter.config, deadline=101)
+
+    def test_token_cache_cleanup_warns_without_disclosing_exception_contents(self):
+        import io
+
+        with tempfile.TemporaryDirectory() as folder:
+            entry = Path(folder) / (production.TOKEN_CHECK_PREFIX + "fixture")
+            entry.mkdir()
+            with mock.patch.object(production, "TOKEN_CHECK_PARENT", folder), \
+                    mock.patch.object(production.shutil, "rmtree", side_effect=PermissionError(13, "sensitive message")), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as errors:
+                self.adapter._remove_token_folders()
+                self.assertIn("WARNING", errors.getvalue())
+                self.assertIn(str(entry), errors.getvalue())
+                self.assertNotIn("sensitive message", errors.getvalue())
 
 
 class CheckInputsRefusalTests(unittest.TestCase):

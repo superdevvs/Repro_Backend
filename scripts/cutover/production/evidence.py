@@ -135,7 +135,7 @@ def _smoke_report(output: str, code: int, what: str, mode: str) -> dict:
 def _process(report: dict, user: str, what: str) -> dict:
     process = report.get("process")
     _require(isinstance(process, dict), f"{what} reports no process")
-    _require(type(process.get("euid")) is int and process["euid"] != 0,
+    _require(type(process.get("euid")) is int and process["euid"] > 0,
              f"{what} ran as root: application PHP never runs as root")
     _require(process.get("user") == user, f"{what} ran as {str(process.get('user'))[:32]}, not {user}")
     return process
@@ -180,13 +180,14 @@ def readonly_check(output: str, code: int, user: str, group: str | None, smoke: 
     values = _route_values(report, expected, what)
     checks = report.get("checks")
     _require(isinstance(checks, dict), f"{what} printed no checks")
-    _require((checks.get("client_id"), checks.get("shoot_id")) == (smoke["client_id"], smoke["shoot_id"]),
+    _require(all(type(checks.get(key)) is int and checks[key] == smoke[key] for key in ("client_id", "shoot_id")),
              f"{what} read client {str(checks.get('client_id'))[:20]} and shoot {str(checks.get('shoot_id'))[:20]}, "
              f"not the marked test client {smoke['client_id']} and shoot {smoke['shoot_id']} (host.json smoke)")
     for name in SMOKE_READS:
         _require(checks.get(name) is True, f"{what}: {name} is not true")
     pending = checks.get("smoke_queue_pending")
-    _require(pending == 0, f"{what}: {str(pending)[:20]} jobs wait on {str(checks.get('smoke_queue'))[:60]}")
+    _require(checks.get("smoke_queue") == "database:cutover-smoke", f"{what} did not inspect database:cutover-smoke")
+    _require(type(pending) is int and pending == 0, f"{what}: {str(pending)[:20]} jobs wait on database:cutover-smoke")
     return {"user": user, "group": process.get("group"), **values, "client_id": checks["client_id"],
             "shoot_id": checks["shoot_id"], **{name: True for name in SMOKE_READS}, "smoke_queue_pending": 0,
             "smoke_queue_paused": checks.get("smoke_queue_paused") if type(checks.get("smoke_queue_paused")) is bool
@@ -234,9 +235,11 @@ def gate_result(gate: tuple) -> dict:
     output, code, message = gate
     account = output.get("gate_account") if isinstance(output, dict) else None
     _require(code == GATE_OBSERVED, f"gate.check refused (exit {code}): {_cut(message or 'no message')}")
+    _require(isinstance(output, dict), "gate.check returned no reading")
     _require(output.get("gate") == "closed", f"gate.check reads the gate {str(output.get('gate'))[:20]}, not closed")
-    _require(isinstance(account, dict) and account.get("current_user") == GATE_ACCOUNT and account.get("problems") == [],
-             f"The gate account's self-check failed: {_problems((account or {}).get('problems')) or 'no reading'}")
+    _require(isinstance(account, dict), "The gate account's self-check failed: no reading")
+    _require(account.get("current_user") == GATE_ACCOUNT and account.get("problems") == [],
+             f"The gate account's self-check failed: {_problems(account.get('problems')) or 'no reading'}")
     return {"current_user": GATE_ACCOUNT, "problems": []}
 
 
@@ -338,7 +341,18 @@ def _check(report: dict) -> None:
                                                                "contract's")
             _require(record["ok"] is True, f"The evidence report holds a failed {name} check")
             if "route_sha256" in record:
+                _require(all(isinstance(record[key], str) for key in ROUTE_KEYS),
+                         f"The evidence report's {name} route is malformed")
                 routes.add((record["engine"], record["database"], record["server_uuid"], record["route_sha256"]))
+    smokes = checks["readonly_smoke"]
+    _require(len(smokes) == 2 and all(isinstance(s["user"], str) and s["user"] and s["user"] != "root" for s in smokes)
+             and smokes[0]["user"] != smokes[1]["user"], "The report requires two distinct read-only smoke users")
+    for smoke in smokes:
+        _require(all(smoke[name] is True for name in SMOKE_READS)
+                 and type(smoke["smoke_queue_pending"]) is int and smoke["smoke_queue_pending"] == 0,
+                 "The evidence report's read-only smoke did not complete all reads on an empty queue")
+        _require(all(type(smoke[k]) is int and smoke[k] > 0 and smoke[k] == smokes[0][k]
+                     for k in ("client_id", "shoot_id")), "The read-only smokes must agree on the marked records")
     _require(len(routes) == 1, "The evidence report's checks read more than one route or server")
     [(engine, database, server, route)] = routes
     _require(engine == "mysql" and is_sha256(route), "The evidence report's checks did not read the MySQL route")
@@ -346,8 +360,16 @@ def _check(report: dict) -> None:
              "The evidence report's checks read another server than the MySQL probe")
     _require(checks["mysql"]["receipt"] == report["receipt_sha256"],
              "The evidence report's MySQL reading was armed on another receipt")
-    _require(checks["token_check"]["token_acquired"] is True, "The evidence report's token check took no token")
-    _require(isinstance(report["results"], dict) and report["results"] == results(report),
+    mysql, token = checks["mysql"], checks["token_check"]
+    _require(mysql["gate"] == "closed" and all(mysql[k] is False for k in ("writable", "business_activity", "foreign_activity"))
+             and mysql["gate_account"] == {"current_user": GATE_ACCOUNT, "problems": []},
+             "The evidence report has no closed, quiet MySQL gate with a verified gate account")
+    _require(token["token_acquired"] is True and token["writer_policy"] is True and token["problems"] == []
+             and token["engine"] == "mysql" and token["account"] == "repro_token_check@localhost"
+             and token["user"] in [s["user"] for s in smokes],
+             "The evidence report's token check did not verify the writer policy and acquire the token")
+    _require(isinstance(report["results"], dict) and all(type(v) is bool for v in report["results"].values())
+             and report["results"] == results(report),
              "The evidence report's results do not follow from its inputs and checks")
 
 

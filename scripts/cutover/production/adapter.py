@@ -1277,8 +1277,8 @@ class ProductionAdapter:
             "readonly_smoke": [self._readonly_smoke(argv, user, group, expected, run.deadline)
                                for argv, user, group in smokes],
             "token_check": self._token_check(account, run.deadline),
-            "mysql": evidence.mysql_check(self._probe(self.config["commands"]["mysql"], run.deadline), self._gate_check(),
-                                          mysql, receipt_sha256),
+            "mysql": evidence.mysql_check(self._probe(self.config["commands"]["mysql"], run.deadline),
+                                          self._gate_check(run.deadline), mysql, receipt_sha256),
         }
 
     def _prepare_report(self, run: PrepareRun) -> None:
@@ -1391,17 +1391,45 @@ class ProductionAdapter:
         app owner, never root (no runuser, or runuser to root, would run application PHP as root), running
         `cutover:smoke --read-only --json` and nothing that writes; together exactly once as each of the two users
         (design 3.2 step 11). Returns (argv, user, group or None) for each."""
+        import grp
+        import pwd
+
         users = (self.config["web_user"], self.config["app_owner"])
+        try:
+            identities = {pwd.getpwnam(user).pw_uid for user in users}
+        except KeyError:
+            raise UnsafeCutover("Both smoke_readonly accounts must exist") from None
+        _require(len(identities) == 2 and 0 not in identities,
+                 "smoke_readonly requires two distinct non-root users")
+        app = self.config["app_root"]
+        php = config_build.PHP
+        _require(guard.matches(SHELL_PATH, app) and guard.matches(SHELL_PATH, php),
+                 "The read-only smoke requires plain absolute app and PHP paths")
         found = []
         for argv in self.config["commands"]["smoke_readonly"]:
             _require(len(argv) > 3 and argv[0] == config_build.RUNUSER and argv[1] == "-u" and argv[2] in users,
                      f"Each smoke_readonly command must start with {config_build.RUNUSER} -u {users[0]} or -u "
                      f"{users[1]}: application PHP never runs as root")
-            words = " ".join(argv[3:]).split()
-            _require({"cutover:smoke", "--read-only", "--json"} <= set(words)
-                     and not {"--write", "--engine-only"} & set(words),
+            args = argv[3:]
+            group = None
+            if len(args) >= 2 and args[0] == "-g" and _account(args[1]):
+                group, args = args[1], args[2:]
+                try:
+                    group_id = grp.getgrnam(group).gr_gid
+                except KeyError:
+                    raise UnsafeCutover("The read-only smoke group does not exist") from None
+                _require(group_id != 0, "The read-only smoke requires a non-root group")
+            flags = "cutover:smoke --read-only --json"
+            direct = args == ["--", php, f"{app}/artisan", *flags.split()]
+            shell = False
+            if len(args) == 5 and args[:3] == ["--", "/bin/sh", "-c"] and args[4] == "repro-smoke":
+                steps = args[3].split(" && ")
+                shell = (len(steps) == 3 and f"cd {app}" in steps[:2]
+                         and any(re.fullmatch(r"umask 0[0-7]{3}", step) for step in steps[:2])
+                         and steps[2] == f"exec {php} artisan {flags}")
+            _require(direct or shell,
                      "Each smoke_readonly command must run cutover:smoke --read-only --json and nothing that writes")
-            found.append((argv, argv[2], argv[4] if argv[3] == "-g" and len(argv) > 4 else None))
+            found.append((argv, argv[2], group))
         _require(sorted(user for _, user, _ in found) == sorted(users),
                  f"smoke_readonly must run the read-only smoke once as {users[0]} and once as {users[1]}")
         return found
@@ -1481,26 +1509,40 @@ class ProductionAdapter:
             code, output = self._execute(self._token_command("db:writer-policy-check", cache), deadline)
             return evidence.token_check(output, code, name, web)
         finally:
-            shutil.rmtree(folder, ignore_errors=True)
+            self._remove_token_folder(folder)
+
+    @staticmethod
+    def _remove_token_folder(folder: Path) -> None:
+        try:
+            shutil.rmtree(folder)
+        except OSError as error:
+            if isinstance(error, FileNotFoundError) and not folder.exists():
+                return
+            print(f"WARNING: could not remove private token-check folder {folder} (errno {error.errno}); "
+                  "inspect it as administrator", file=sys.stderr)
 
     @staticmethod
     def _remove_token_folders() -> None:
         """Token-check folders an interrupted check left (each may hold the check account's password)."""
         try:
             entries = list(Path(TOKEN_CHECK_PARENT).iterdir())
-        except OSError:
+        except OSError as error:
+            print(f"WARNING: could not inspect token-check folders in {TOKEN_CHECK_PARENT} (errno {error.errno})",
+                  file=sys.stderr)
             return
         for entry in entries:
             if entry.name.startswith(TOKEN_CHECK_PREFIX) and not entry.is_symlink() and entry.is_dir():
-                shutil.rmtree(entry, ignore_errors=True)
+                ProductionAdapter._remove_token_folder(entry)
 
-    def _gate_check(self) -> tuple:
+    def _gate_check(self, deadline: float) -> tuple:
         """gate.check (review B2-1): the gate state as the probe account reads it and the gate account's read-only
         self-check (a login, CURRENT_USER() and SHOW GRANTS). Returns its (output, exit code, message)."""
         import gate
 
+        remaining = min(self.config["command_seconds"], deadline - self.clock())
+        _require(remaining > 0, "The gate check reached its deadline")
         try:
-            return gate.check(self.config)
+            return gate.check(self.config, deadline=time.monotonic() + remaining)
         except (UnsafeCutover, guard.Refused, OSError, ValueError, subprocess.SubprocessError) as error:
             raise UnsafeCutover(f"gate.check failed: {str(error)[:PROBLEM_CHARACTERS]}") from None
 
@@ -1522,6 +1564,7 @@ class ProductionAdapter:
         """One MySQL probe run for prepare or evidence(): its exit-0 JSON object. Nothing listening (exit 3) is retried
         PROBE_ATTEMPTS times in all, then refused; every other exit refuses with the probe's own problems."""
         for attempt in range(1, PROBE_ATTEMPTS + 1):
+            _require(self.clock() < deadline, f"The MySQL {purpose} probe reached its deadline")
             code, output = self._execute(argv, deadline)
             if code != MYSQL_UNREACHABLE:
                 break
@@ -1611,11 +1654,11 @@ class ProductionAdapter:
         _require(raw is not None, "No evidence report: prepare did not finish its checks (steps 11 and 12)")
         found = evidence.record(raw)
         report = evidence.parse(raw)
-        self._require_report_binding(report)
-        self._require_live_target(report["receipt_sha256"])
+        decision_deadline = self._require_report_binding(report)
+        self._require_live_target(report["receipt_sha256"], decision_deadline)
         return found
 
-    def _require_report_binding(self, report: dict) -> None:
+    def _require_report_binding(self, report: dict) -> float:
         """What the report binds, read again (evidence(), design 3.3); refuses, never writes."""
         mysql = self.config["mysql"]
         _require(report["run_id"] == self.pinned.run_id, "The evidence report belongs to another run")
@@ -1624,6 +1667,22 @@ class ProductionAdapter:
         state = self._journal_state()
         started_at = state.get("started_at")
         _require(type(started_at) is int, "The cutover journal has no hold to bind the evidence report to")
+        smokes = report["checks"]["readonly_smoke"]
+        _require({s["user"] for s in smokes} == {self.config["web_user"], self.config["app_owner"]}
+                 and report["checks"]["token_check"]["user"] == self.config["web_user"]
+                 and all(s[key] == self.config["smoke"][key] for s in smokes for key in ("client_id", "shoot_id")),
+                 "The evidence report does not match the configured smoke accounts or marked test records")
+        fpm = report["checks"]["fastcgi"]
+        _require((fpm["socket"], fpm["database"], fpm["server_uuid"], fpm["route_sha256"])
+                 == (self.config["fpm"]["socket"], mysql["database"], mysql["target_uuid"],
+                     self.policy["mysql_live_config_sha256"]),
+                 "The report does not match the configured FPM socket, MySQL target and route pin")
+        fields = ("profiles", "scripts", "user", "group", "cwd", "umask", "env")
+        expected = self._profile_contexts()
+        recorded = report["checks"]["profile_probes"]
+        _require(len(recorded) == len(expected)
+                 and all(all(r[k] == c[k] for k in fields) for r, c in zip(recorded, expected)),
+                 "The report does not cover the current wrapper profile contexts")
         bound = check_inputs(self.config, self.pinned, self.policy, started_at,
                              evidence.manifest(report, self.pinned.run_id))
         _require((bound["snapshot_sha256"], bound["frozen_snapshot_sha256"], bound["backup"])
@@ -1634,13 +1693,14 @@ class ProductionAdapter:
                  "The receipt changed after prepare wrote the evidence report")
         _require(self._freeze_drain(state) == report["fpm_drain"],
                  "The evidence report's FPM drain record is not the freeze's in the journal")
+        return started_at + Runner.DECISION_SECONDS
 
-    def _require_live_target(self, receipt_sha256: str) -> None:
+    def _require_live_target(self, receipt_sha256: str, decision_deadline: float) -> None:
         """evidence()'s live preconditions (design 3.3): the MySQL reading and gate.check, then the live config."""
         mysql = self.config["mysql"]
-        deadline = self.clock() + self.config["command_seconds"]
+        deadline = min(decision_deadline, self.clock() + self.config["command_seconds"])
         reading = self._probe(self.config["commands"]["mysql"], deadline, "evidence()")
-        evidence.mysql_check(reading, self._gate_check(), mysql, receipt_sha256)
+        evidence.mysql_check(reading, self._gate_check(deadline), mysql, receipt_sha256)
         live = self._live_config()
         pin = self.policy["mysql_live_config_sha256"]
         _require(live.engine == "mysql" and live.source == live_config.CACHE and live.live_config_sha256 == pin,
@@ -1660,7 +1720,7 @@ class ProductionAdapter:
         _require(type(started_at) is int, "The cutover journal has no hold to bind the evidence inputs to")
         manifest = night_manifest(night, self.pinned.run_id, self.config["mysql"]["mode"])
         bound = check_inputs(self.config, self.pinned, self.policy, started_at, manifest)
-        output, code, message = self._gate_check()
+        output, code, message = self._gate_check(started_at + Runner.DECISION_SECONDS)
         evidence.gate_result((output, code, message))
         if write:
             _write_atomic(self.paths["evidence_inputs"], manifest, 0o600)

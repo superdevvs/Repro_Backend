@@ -1159,10 +1159,11 @@ A controller killed inside a step (`PrepareHost.kill_inside`) can also leave:
 | In step 8, during the build | As after step 7, plus `.config.php.repro-<32 hex>` (removed by the next build) |
 | In step 11, during the token check | As after step 10, plus `/run/repro-token-check-<random>/config.php`: the check account's private config cache, its password included, owned by the web user in a 0700 folder. The next token check removes every such folder first; a reboot empties `/run` |
 
-From any of these states a new `prepare` finishes the switch
-(`test_prepare_is_safe_to_run_twice_and_resumes_after_a_crash_at_any_step`,
-`test_a_kill_inside_a_step_leaves_a_state_the_next_prepare_finishes`), and
-an `abort` or the watchdog undoes it ("`seal_sqlite`" below).
+The runner records an interrupted `prepare` as pending and refuses a retry
+under that hold. Use the verified pre-write `abort` and reopen SQLite, or
+let the watchdog run that recovery. A later attempt starts with a fresh hold.
+Direct adapter tests repeat individual prepare steps to verify idempotence
+and the states that the rollback must recover.
 
 Not yet here:
 - D14: `cli.py prepare`.
@@ -1203,14 +1204,15 @@ report is written):
    SAPI and PID are recorded, not checked.
 3. **Read-only smoke** (`commands.smoke_readonly`). Each command must begin
    `<runuser> -u <user>` with `web_user` or `app_owner` (`config_build.RUNUSER`,
-   `/usr/sbin/runuser`), run `cutover:smoke --read-only --json` and neither
-   `--write` nor `--engine-only` (words of the argv after the user, so the
-   `/bin/sh -c` form and the direct form both count); together the commands
-   run once as each of the two users. Each report must be mode `read-only`,
+   `/usr/sbin/runuser`). After an optional `-g <group>` and the required
+   `--`, the direct form runs `/usr/bin/php <app_root>/artisan cutover:smoke --read-only --json`.
+   The shell form runs `/bin/sh -c 'cd <app_root> && umask 0022 && exec /usr/bin/php artisan cutover:smoke --read-only --json' repro-smoke`.
+   The `cd` and four-digit octal `umask` steps can appear in either order.
+   Each of the two distinct non-root user IDs runs once. Each report must be mode `read-only`,
    `ok`, exit 0, a process of that user (and of the `-g` group when given),
    the same route values, `client_id` and `shoot_id` equal to `host.json`
    `smoke`, `client_read`, `shoot_read` and `encrypted_value_decrypts` true,
-   `smoke_queue_pending` 0.
+   `smoke_queue` equal to `database:cutover-smoke` and integer `smoke_queue_pending` 0.
 4. **Token check** (design 3.3). The check account comes from
    `mysql.token_check_defaults` (root-only, mode 0600, a `[client]` section
    with `user=repro_token_check` and `password=` of 16 to 256 characters of
@@ -1277,6 +1279,10 @@ environment keys, never their values. Values below are examples.
               "server_uuid": "<target>", "route_sha256": "<MySQL pin>", "sapi": "fpm-fcgi", "pid": 4242,
               "opcache": {"enabled": true, "start_time": 1764970003}, "ok": true},
   "readonly_smoke": [{"user": "www-data", "group": "www-data", "engine": "mysql", "database": "repro_dashboard",
+                      "server_uuid": "<target>", "route_sha256": "<MySQL pin>", "client_id": 4101, "shoot_id": 9201,
+                      "client_read": true, "shoot_read": true, "encrypted_value_decrypts": true,
+                      "smoke_queue_pending": 0, "smoke_queue_paused": false, "ok": true},
+                     {"user": "maverick", "group": "www-data", "engine": "mysql", "database": "repro_dashboard",
                       "server_uuid": "<target>", "route_sha256": "<MySQL pin>", "client_id": 4101, "shoot_id": 9201,
                       "client_read": true, "shoot_read": true, "encrypted_value_decrypts": true,
                       "smoke_queue_pending": 0, "smoke_queue_paused": false, "ok": true}],

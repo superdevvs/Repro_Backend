@@ -24,10 +24,10 @@ controller refuses on the artifact field after no deploy, run
 >   `--phase freeze`, so no "reopen on MySQL" approval can be issued.
 > - The host adapter's `prepare` (D10) switches `.env`, `config.php` and
 >   FPM to MySQL read-only behind the closed gate, but no `cli.py` action
->   runs it, and `evidence` and `seal_mysql` still refuse (`NOT_SUPPORTED`
->   in `scripts/cutover/production/adapter.py`), so nothing opens the
->   gate. Its rollback does not undo a `prepare` yet (D12). `cli.py reopen`
->   reopens SQLite only.
+>   runs it. The adapter checks the prepared evidence against the closed
+>   MySQL gate. Its pre-write rollback restores the SQLite configuration and
+>   verifies the seal before reopening. MySQL promotion still requires the
+>   gate-opening operation and CLI actions described below.
 > - Every writer profile in `scripts/cutover/production/wrappers.example.json`
 >   is pinned to `"engine": "sqlite"`. The guard admits MySQL writers only in
 >   `mysql_authoritative`, which only `promote` reaches.
@@ -1602,9 +1602,9 @@ undo list no longer needs it.
    the release archive. Preserve the original environment file separately.
 9. Data steps as in [Import into the empty target](#import-into-the-empty-target).
    Not a path to MySQL at this candidate: `cli.py` has no `prepare` or
-   `promote` action, the adapter's `evidence` and `seal_mysql` refuse, and
-   its rollback does not undo a `prepare` yet (D12), so a run covers the
-   hold, the freeze and the pre-write rollback only. A SQLite dress
+   `promote` action. The adapter verifies read-only evidence and can undo
+   a prepare before business writes. The CLI run covers the hold, the
+   freeze and the pre-write rollback. A SQLite dress
    rehearsal goes from step 8 to `cli.py abort` and the undo list.
 
    In the SQLite phases (`planned`, `holding`, `frozen`, `ready` and

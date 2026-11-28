@@ -523,9 +523,9 @@ fails it with the key's dotted path. The top level reuses D10's
     ],
     "fastcgi": {"engine": "mysql", "database": "repro_dashboard", "server_uuid": "<target_uuid>",
                 "route_sha256": "<MySQL pin>", "opcache": {"...": "..."}, "ok": true},
-    "readonly_smoke": {"www-data": {"ok": true}, "maverick": {"ok": true}},
-    "token_check": {"problems": [], "token": {"acquired": true}},
-    "probe": {"gate": "closed", "business_activity": false, "foreign_activity": false}
+    "readonly_smoke": [{"user": "www-data", "ok": true}, {"user": "maverick", "ok": true}],
+    "token_check": {"problems": [], "token_acquired": true},
+    "mysql": {"gate": "closed", "writable": false, "business_activity": false, "foreign_activity": false}
   }
 }
 ```
@@ -538,8 +538,8 @@ configured; `snapshot_sha256` = `S_copy` (`night/copy.sha256`),
 true, each wrapper profile in exactly one probe whose `user`, `group` and
 `cwd` are that profile's; the FastCGI probe the same plus an `opcache`
 value; both read-only smokes (`web_user`, `app_owner`) `ok` true; the token
-check `problems` empty and `token.acquired` true; the probe `closed` with no
-business and no foreign activity.
+check reports empty `problems` and `token_acquired` true. The MySQL probe
+reports a closed gate, `writable` false and no business or foreign activity.
 
 ### D14 contract items from the harness
 

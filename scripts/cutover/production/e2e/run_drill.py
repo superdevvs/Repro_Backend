@@ -1634,12 +1634,21 @@ class Inside:
         wrong = sorted(key for key, value in on_mysql.items() if field(f"checks.fastcgi.{key}") != value)
         require(not wrong and field("checks.fastcgi.opcache") is not None,
                 f"the FastCGI probe's {wrong or ['opcache']} are not FPM on MySQL with the pin")
-        for user in (web_user, self.host["app_owner"]):
-            require(field(f"checks.readonly_smoke.{user}.ok") is True, f"the read-only smoke as {user} is not ok")
-        require(field("checks.token_check.problems") == [] and field("checks.token_check.token.acquired") is True,
+        smokes = field("checks.readonly_smoke")
+        require(isinstance(smokes, list) and len(smokes) == 2, "checks.readonly_smoke must contain two records")
+        observed = []
+        for index, record in enumerate(smokes):
+            where = f"checks.readonly_smoke[{index}]"
+            user = report_field(record, "user", where)
+            require(isinstance(user, str) and report_field(record, "ok", where) is True, f"{where} did not pass")
+            observed.append(user)
+        require(sorted(observed) == sorted([web_user, self.host["app_owner"]]),
+                "checks.readonly_smoke does not cover the configured web user and app owner")
+        require(field("checks.token_check.problems") == [] and field("checks.token_check.token_acquired") is True,
                 "the token check has problems or did not acquire the token")
-        quiet = {"gate": "closed", "business_activity": False, "foreign_activity": False}
-        wrong = sorted(key for key, value in quiet.items() if field(f"checks.probe.{key}") != value)
+        quiet = ("writable", "business_activity", "foreign_activity")
+        require(field("checks.mysql.gate") == "closed", "the MySQL probe reports an open or unknown gate")
+        wrong = sorted(key for key in quiet if field(f"checks.mysql.{key}") is not False)
         require(not wrong, f"the MySQL probe's {wrong} are not closed and quiet")
         return (f"{len(probes)} profile contexts ({len(covered)} profiles) and FastCGI on MySQL with the pin; "
                 f"read-only smokes ok as {web_user} and {self.host['app_owner']}; token acquired, no problems; gate "
