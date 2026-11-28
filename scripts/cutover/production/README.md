@@ -8,7 +8,9 @@ approval for each action (handoff item W1).
 
 In `mysql.mode=cutover`, the issued promotion approval moves a verified, read-only target to sealed MySQL authority. The operator can inspect `status` and the gate receipt while ingress is held. The active writer profiles remain pinned to SQLite until the MySQL reopen runs. A gate or publication failure after promotion intent places the journal in `recovery_required`. Drill mode always refuses promotion before recording intent.
 
-`promote --issued-approval --then-reopen` calls reopen in the same operator service only after committed MySQL authority. The combined action checks for the C03 `reopen_mysql` implementation before recording write intent. Until C03 lands, a combined request leaves the journal unchanged. The standalone promotion can demonstrate the sealed transition.
+The combined promotion checks its installed MySQL reopen helpers and both wrapper files before recording write intent. After promotion, the same operator service drains earlier workers, verifies the route and FPM status, checks the app account’s writer token, and runs the marked write smoke. The controller removes the Studio pause files, replays captured messages, resumes queues, verifies worker start times and probes FPM before opening ingress. A second replay and live checks precede activation. The scheduler releases last unless the operator selected `--hold-scheduler`. The deploy fence stays published.
+
+After a failed reopen, inspect the private smoke receipt and worker status. Use `refresh` on the held host, followed by `reopen`. Refresh verifies exclusive MySQL authority and publishes proof for this boot. A completed, verified smoke can be reused. An interrupted smoke keeps its uncertain writes outside any rollback exemption. W2c still needs to demonstrate the approved host service groups, exact worker counts, PHP-FPM pool, marked Laravel records and full replay on the host layout.
 
 ## Layout on the host
 

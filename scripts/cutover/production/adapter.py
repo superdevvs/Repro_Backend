@@ -2086,18 +2086,35 @@ class ProductionAdapter:
             self._run(self.config["commands"]["queue_pause"] + [queue], deadline)
 
     def _install_sqlite_wrappers(self) -> None:
+        import admit
+
         raw = self._protected(self.paths["wrappers_sqlite"], "SQLite wrapper profiles")
+        try:
+            profiles = guard.read_json(raw).get("profiles")
+            _require(isinstance(profiles, dict) and bool(profiles), "The SQLite wrapper file contains no profiles")
+            for name in profiles:
+                _require(admit.load_profile(name, raw)["engine"] == "sqlite", f"The held profile {name} admits MySQL")
+        except (guard.Refused, KeyError, ValueError) as error:
+            raise UnsafeCutover("The held SQLite wrapper inventory is invalid") from error
         _write_raw_atomic(self.paths["wrappers"], raw, 0o644)
 
-    def _close_reopened(self) -> None:
+    def _close_reopened(self, *, engine: str = "sqlite") -> None:
         """Withdraw admissions first and attempt every queue pause and group stop."""
         # A restarted or manually invoked worker can acquire a fresh shared lease
         # from this boot's authority proof even when the ingress and scheduler are held.
         # Revoke it before taking down the running groups. Refresh will remeasure it.
-        for name in ("evidence", "ingress_open", "scheduler_release", "activation"):
-            _remove(self.paths[name])
-        commands = self.config["commands"]
         errors = []
+        for name in ("evidence", "ingress_open", "scheduler_release", "activation"):
+            try:
+                _remove(self.paths[name])
+            except OSError as error:
+                errors.append(str(error))
+        if engine == "mysql":
+            try:
+                self._install_sqlite_wrappers()
+            except (UnsafeCutover, OSError) as error:
+                errors.append(str(error))
+        commands = self.config["commands"]
         for argv in ([commands["queue_pause"] + [q] for q in self.config["queues"]] + commands["stop_workers"]):
             try:
                 self._run(argv)
@@ -2112,17 +2129,18 @@ class ProductionAdapter:
         """Hold a committed authority without changing the journal, gate or database."""
         with self.journal.acquire() as (state, lease):
             engine = guard.authority(self.policy, state or {}, "web-writer")
-            self._close_reopened()
+            self._close_reopened(engine=engine)
             self.journal.drain_writers(lease, self.config["command_seconds"])
-            if engine == "mysql":
-                self._install_sqlite_wrappers()
 
     def _verify_sqlite_authority(self) -> tuple[bytes, bytes]:
+        return self._verify_authority("sqlite")
+
+    def _verify_authority(self, engine: str) -> tuple[bytes, bytes]:
         journal = self.journal.path.read_bytes()
         proof = self._protected(self.paths["evidence"], "authority proof")
         try:
             guard.verify(self.policy_raw, journal, proof, machine_sha=self._machine_sha(),
-                         boot_id=self.boot_id(), action="web-writer", expected_engine="sqlite")
+                         boot_id=self.boot_id(), action="web-writer", expected_engine=engine)
         except guard.Refused as error:
             raise UnsafeCutover(str(error)) from error
         return journal, proof
@@ -2180,22 +2198,47 @@ class ProductionAdapter:
             if latch.get("run_id") == self.pinned.run_id and latch.get("receipt_sha256") == guard.sha256(raw):
                 _remove(activity)
 
-    def _activation_record(self, journal: bytes, proof: bytes) -> dict:
+    def _activation_record(self, journal: bytes, proof: bytes, engine: str = "sqlite") -> dict:
         return {"version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
                 "journal_sha256": guard.sha256(journal), "authority_sha256": guard.sha256(proof),
-                "engine": "sqlite", "application_verified": True, "reconciliation_verified": True}
+                "engine": engine, "application_verified": True, "reconciliation_verified": True}
+
+    def check_mysql_reopen(self) -> None:
+        """Validate the installed components and both profile files before a combined promotion."""
+        try:
+            import mysql_reopen
+            import mysql_reopen_smoke
+            import worker_start
+        except ImportError as error:
+            raise UnsafeCutover("The MySQL reopen helpers are missing from this installation") from error
+        _require(callable(mysql_reopen_smoke.run) and callable(worker_start.verify), "MySQL reopen helpers are incomplete")
+        mysql_reopen.profiles(self)
+
+    def reopen_mysql(self, *, hold_scheduler: bool = False) -> None:
+        import mysql_reopen
+
+        mysql_reopen.reopen(self, hold_scheduler=hold_scheduler)
 
     def release_scheduler(self) -> None:
-        """Release only a fully reopened, still-verified SQLite host, including replay pass two."""
+        """Release only a fully reopened, still-verified host after replay pass two."""
         with self.journal.acquire() as (state, _):
             # A repeat invocation must also leave the scheduler held on a failed check.
             _remove(self.paths["scheduler_release"])
-            journal, proof = self._verify_sqlite_authority()
+            engine = guard.authority(self.policy, state or {}, "web-writer")
+            journal, proof = self._verify_authority(engine)
             activation = guard.read_json(self._protected(self.paths["activation"], "activation receipt"))
-            _require(activation == self._activation_record(journal, proof),
-                     "The SQLite reopen has not completed on this boot")
-            self._sqlite_reopen_checks(state, reopened=True)
-            _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": "sqlite"}, 0o600)
+            _require(activation == self._activation_record(journal, proof, engine),
+                     f"The {ENGINE_NAMES[engine]} reopen has not completed on this boot")
+            if engine == "mysql":
+                import mysql_reopen
+
+                expected, receipt, _ = mysql_reopen.live(self, state, opened=True)
+                _require(self._protected(self.paths["wrappers"], "active profiles") == mysql_reopen.profiles(self)
+                         and guard.read_json(self._protected(self.paths["activated"], "MySQL activation"))
+                         == mysql_reopen.activated(self, expected, receipt), "The MySQL activation or profiles changed")
+            else:
+                self._sqlite_reopen_checks(state, reopened=True)
+            _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": engine}, 0o600)
 
     def reopen(self, *, hold_scheduler: bool = False) -> None:
         """Open verified SQLite admissions and replay captured messages under the controller lock."""

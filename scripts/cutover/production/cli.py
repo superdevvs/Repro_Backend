@@ -176,7 +176,9 @@ def dispatch(args, runner, adapter):
         getattr(adapter, action.replace("-", "_"))()
         state = runner.status()
     elif action == "reopen":
-        adapter.reopen(hold_scheduler=args.hold_scheduler)
+        # Each implementation verifies its own authority again after taking the controller lock.
+        reopen = adapter.reopen_mysql if runner.status()["phase"] == "mysql_authoritative" else adapter.reopen
+        reopen(hold_scheduler=args.hold_scheduler)
         state = runner.status()
     elif action == "abort" and args.if_phase:
         try:
@@ -192,6 +194,9 @@ def dispatch(args, runner, adapter):
             reopen_mysql = getattr(adapter, "reopen_mysql", None)
             if not callable(reopen_mysql):
                 raise UnsafeCutover("This release has no MySQL reopen action; promotion was not started")
+            preflight = getattr(adapter, "check_mysql_reopen", None)
+            if preflight is not None:
+                preflight()
         approval = None
         if action in ("hold", "freeze", "promote"):
             path = adapter.paths["issued_approvals"] / (action + ".json") if args.issued_approval else args.approval
