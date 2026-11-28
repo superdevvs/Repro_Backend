@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit bootstrap="bootstrap.php" colors="false">
+    <testsuites>
+        <testsuite name="C10 application writes as the gated account">
+            <file>OpenGrantWorkflowTest.php</file>
+            <file>../../../../tests/Feature/Crm/CrmReleaseReadinessTest.php</file>
+            <file>../../../../tests/Feature/Crm/CrmQuoteBookingTest.php</file>
+            <file>../../../../tests/Feature/InvoiceControllerTest.php</file>
+            <file>../../../../tests/Feature/PayoutInvoiceReviewWorkflowTest.php</file>
+            <file>../../../../tests/Feature/MobileDevicePreferenceTest.php</file>
+            <file>../../../../tests/Feature/CustomerMediaCurationTest.php</file>
+        </testsuite>
+    </testsuites>
+</phpunit>

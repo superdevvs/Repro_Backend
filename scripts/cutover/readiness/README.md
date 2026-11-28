@@ -315,3 +315,25 @@ the overall decision at `no_go`.
 ```sh
 python -B -m unittest discover -s scripts/cutover/readiness -p test_check.py -v
 ```
+
+### C10 application writes with open grants
+
+Run the synthetic socket fixture locally from Git Bash or Linux:
+
+```sh
+: "${REPRO_DRILL_VENDOR_VOLUME:?Export the vendor volume that matches the candidate composer.lock}"
+REPRO_DRILL_ARCHIVE_REF=HEAD \
+  bash scripts/cutover/production/run-probe-fixture-tests.sh --open-grants
+```
+
+The runner uses a fresh network-disabled MySQL 8.4.13 container, the tracked application
+schema, both pinned container identities and the matching Composer vendor volume. It
+checks the fixture UUID and initial grants before the maintenance account loads the
+schema. The controller opens the write gate on the fixture. The Laravel suite runs as
+`repro_app@localhost` with the writer token enabled. The application checks the actual
+connection, active roles and all effective grants before any workflow tests. It tests
+queue enqueue/reserve/release/ack across commits, CRM inquiry and recruiting replay,
+quote booking, invoices, payouts, device authorization and gallery edits. An attempted
+temporary-table creation must be denied. The controller closes the gate and the runner
+checks that the initial grants are restored. Keep the archive and image IDs, package
+hashes, observed grants and PHPUnit summary with the rehearsal evidence.

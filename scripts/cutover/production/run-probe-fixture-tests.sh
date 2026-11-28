@@ -4,7 +4,7 @@
 # and remove every container and volume it made. Runs where Docker runs (Linux,
 # or Git Bash on Windows), never on a production host.
 #
-#   scripts/cutover/production/run-probe-fixture-tests.sh [--linux-suite]
+#   scripts/cutover/production/run-probe-fixture-tests.sh [--linux-suite|--open-grants]
 #
 # mysql/fixture.sh serve builds each fixture from this checkout's accounts.sql
 # in a disposable MySQL 8.4.13 container: socket-only, a networking variant and
@@ -28,8 +28,8 @@ die() { printf 'run-probe-fixture-tests: %s\n' "$*" >&2; exit 2; }
 mode=probe
 case $# in
     0) ;;
-    1) [ "$1" = --linux-suite ] || die "usage: run-probe-fixture-tests.sh [--linux-suite]"; mode=linux ;;
-    *) die "usage: run-probe-fixture-tests.sh [--linux-suite]" ;;
+    1) case "$1" in --linux-suite) mode=linux ;; --open-grants) mode=open-grants ;; *) die "unknown mode" ;; esac ;;
+    *) die "usage: run-probe-fixture-tests.sh [--linux-suite|--open-grants]" ;;
 esac
 mysql_image=${REPRO_MYSQL_IMAGE:-mysql@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902}
 qa_image=${REPRO_QA_IMAGE:-repro-mysql-rehearsal-qa:20261122}
@@ -46,6 +46,17 @@ source_mount="type=bind,source=$checkout,target=/src,readonly"
 mysql_mount="type=bind,source=$checkout/scripts/cutover/production/mysql,target=/src,readonly"
 archive_ref=${REPRO_DRILL_ARCHIVE_REF:-}
 vendor_volume=${REPRO_DRILL_VENDOR_VOLUME:-}
+variants=(socket networking skip-grant-tables)
+cpus=2
+if [ "$mode" = open-grants ]; then
+    variants=(socket)
+    cpus=0.5
+    archive_ref=${archive_ref:-HEAD}
+    [ -n "$vendor_volume" ] || die "set REPRO_DRILL_VENDOR_VOLUME to the locked candidate vendor volume"
+    mysql_image=$(docker image inspect --format '{{.Id}}' "$mysql_image")
+    qa_image=$(docker image inspect --format '{{.Id}}' "$qa_image")
+    echo "run-probe-fixture-tests: mysql_image_id=$mysql_image qa_image_id=$qa_image vendor=$vendor_volume"
+fi
 vendor_mount=()
 if [ -n "$vendor_volume" ]; then
     docker volume inspect "$vendor_volume" >/dev/null 2>&1 || die "vendor volume is missing"
@@ -56,7 +67,6 @@ if [ -n "$archive_ref" ]; then
     ! docker volume inspect "$prefix-src" >/dev/null 2>&1 || die "volume $prefix-src already exists"
 fi
 
-variants=(socket networking skip-grant-tables)
 for variant in "${variants[@]}" qa; do
     ! docker container inspect "$prefix-$variant" >/dev/null 2>&1 || die "container $prefix-$variant already exists"
     [ "$variant" = qa ] || ! docker volume inspect "$prefix-$variant" >/dev/null 2>&1 \
@@ -75,9 +85,17 @@ trap 'exit 130' INT TERM
 if [ -n "$archive_ref" ]; then
     volumes+=("$prefix-src")
     docker volume create "$prefix-src" >/dev/null
+    archive_mounts=()
+    prepare_archive='tar -xf - -C /snapshot && mkdir -p /snapshot/vendor'
+    if [ "$mode" = open-grants ]; then
+        # Keep the locked source private. The app needs a readable copy inside its disposable checkout.
+        archive_mounts=(--mount "type=volume,source=$vendor_volume,target=/locked-vendor,volume-subpath=vendor,readonly")
+        prepare_archive+=' && cp -a /locked-vendor/. /snapshot/vendor/ && chmod -R a+rX /snapshot/vendor'
+        vendor_mount=()
+    fi
     git -C "$checkout" archive --format=tar "$release" | docker run --rm -i --pull never --network none \
-        --mount "type=volume,source=$prefix-src,target=/snapshot" --entrypoint /bin/sh "$qa_image" \
-        -ec 'tar -xf - -C /snapshot && mkdir -p /snapshot/vendor'
+        "${archive_mounts[@]}" --mount "type=volume,source=$prefix-src,target=/snapshot" \
+        --entrypoint /bin/sh "$qa_image" -ec "$prepare_archive"
     source_mount="type=volume,source=$prefix-src,target=/src,readonly"
     mysql_mount="type=volume,source=$prefix-src,target=/src,volume-subpath=scripts/cutover/production/mysql,readonly"
     echo "run-probe-fixture-tests: testing archive $release"
@@ -90,7 +108,7 @@ for variant in "${variants[@]}"; do
     volumes+=("$name")
     docker volume create "$name" >/dev/null
     containers+=("$name")
-    docker run -d --pull never --name "$name" --network none --cpus 2 --memory 2g \
+    docker run -d --pull never --name "$name" --network none --cpus "$cpus" --memory 2g \
         --mount "type=volume,source=$name,target=/fixture" \
         --mount "$mysql_mount" \
         --tmpfs /var/lib/mysql:rw,exec,size=1500m --tmpfs /tmp:rw,size=256m,mode=1777 \
@@ -111,16 +129,23 @@ echo "run-probe-fixture-tests: fixtures ready: ${variants[*]/#/$prefix-}"
 
 if [ "$mode" = linux ]; then
     tests='/bin/sh /src/scripts/cutover/run-linux-tests.sh'
+elif [ "$mode" = open-grants ]; then
+    tests='python3 -I -S -B /src/scripts/cutover/readiness/run_open_grants.py'
 else
     tests='cd /src && python3 -B -W error::ResourceWarning -m unittest discover -s scripts/cutover/production -p test_mysql_probe.py -v'
 fi
 containers+=("$prefix-qa")
 status=0
-docker run --rm --pull never --name "$prefix-qa" --network none --cpus 2 --memory 2g \
+fixture_mounts=()
+for variant in "${variants[@]}"; do
+    fixture_mounts+=(--mount "type=volume,source=$prefix-$variant,target=/fixture/$variant")
+done
+if [ "$mode" = open-grants ]; then
+    fixture_mounts+=(--tmpfs /src/storage:rw,size=128m,mode=0755 --tmpfs /src/bootstrap/cache:rw,size=32m,mode=0755)
+fi
+docker run --rm --pull never --name "$prefix-qa" --network none --cpus "$cpus" --memory 2g \
     --mount "$source_mount" "${vendor_mount[@]}" \
-    --mount "type=volume,source=$prefix-socket,target=/fixture/socket" \
-    --mount "type=volume,source=$prefix-networking,target=/fixture/networking" \
-    --mount "type=volume,source=$prefix-skip-grant-tables,target=/fixture/skip-grant-tables" \
+    "${fixture_mounts[@]}" \
     --tmpfs /tmp:rw,exec,size=512m,mode=1777 \
     -e REPRO_MYSQL_PROBE_FIXTURE=/fixture/socket \
     -e REPRO_MYSQL_PROBE_FIXTURE_NETWORKING=/fixture/networking \
