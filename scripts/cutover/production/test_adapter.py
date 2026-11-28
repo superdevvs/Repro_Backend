@@ -810,6 +810,18 @@ class ProductionAdapterTests(unittest.TestCase):
         # The fixture's fpm_drain.py prints the report in this file: a drained pool unless a test sets another.
         self.fpm_report = self.root / "etc" / "fpm-report.json"
         self.set_fpm_report(drain_report("drained"))
+        # The same protected profiles the D13 guard compares, each in a real
+        # non-root execution context. Engine and FPM I/O are simulated at the
+        # probe boundary; D11 exercises their real process and socket clients.
+        paths = self.config()["paths"]
+        profiles = json.dumps({"version": 1, "profiles": {"worker": {
+            "action": "queue-worker", "engine": "sqlite", "user": "www-data", "group": "www-data",
+            "argv": [str(self.php), str(self.app / "artisan"), "queue:work"], "env": {},
+            "cwd": str(self.app), "umask": "0022", "timeout_seconds": 60}}})
+        for name in ("wrappers", "wrappers_sqlite"):
+            Path(paths[name]).write_text(profiles)
+        self.engine_probe = self.enterContext(patch.object(production.ProductionAdapter, "_profile_probe"))
+        self.fpm_probe = self.enterContext(patch.object(production.ProductionAdapter, "_fastcgi_probe"))
         self.config_path = self.root / "etc" / "host.json"
         self.config_path.write_text(json.dumps(self.config()), encoding="utf-8")
         (self.root / "etc" / "identity.json").write_text(json.dumps(example_identity(self.config())), encoding="utf-8")
@@ -945,6 +957,7 @@ class ProductionAdapterTests(unittest.TestCase):
                              str(root / "home" / ".repro-frontend-deploy.lock")],
             "deploy_owner": "www-data",
             "queues": QUEUES,
+            "studio_pause_files": [str(root / "studio-paused")],
             "writer_processes": [f"fake-queue-worker-{self.tag}", f"fake-studio-worker-{self.tag}"],
             "long_job_processes": [f"fake-studio-worker-{self.tag}"],
             "scheduler_processes": [f"fake-schedule-run-{self.tag}"],
@@ -965,6 +978,7 @@ class ProductionAdapterTests(unittest.TestCase):
             "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
                              self.record("stop")],
             "start_workers": [self.record("start")],
+            "telnyx_replay": self.record("replay"),
             # Design 5.4: fpm_drain.py, which prints its report, then the FPM stop.
             "drain_fpm": [self.fpm_drain(), self.record("fpm-stop")],
         })
@@ -1132,8 +1146,8 @@ class ProductionAdapterTests(unittest.TestCase):
         before = len(self.commands())
         adapter.reopen()
         self.assertTrue((self.root / "ingress" / "open").exists())
-        self.assertEqual([["resume", queue] for queue in QUEUES] + [["start"]], self.commands()[before:])
-        self.assertFalse((self.root / "etc" / "active").exists())
+        self.assertEqual([["replay"]] + [["resume", queue] for queue in QUEUES] + [["start"], ["replay"]], self.commands()[before:])
+        self.assertTrue((self.root / "etc" / "active").exists())
         activation = (self.root / "run" / "verified-activation.json").read_bytes()
         guard.verify(policy, journal.path.read_bytes(), evidence, **host, action="deploy", expected_engine="sqlite",
                      activation_raw=activation)
@@ -1149,6 +1163,155 @@ class ProductionAdapterTests(unittest.TestCase):
         self.addCleanup(process.stdout.close)
         self.assertEqual("admitted\n", process.stdout.readline())
         return process
+
+    def held_sqlite(self):
+        journal, adapter, runner = self.started()
+        runner.perform("hold", runner.approval_request("hold"))
+        runner.perform("abort")
+        return journal, adapter
+
+    def test_reopen_refuses_mysql_cache_wrong_hash_mysql_wrappers_or_fallback(self):
+        _, adapter = self.held_sqlite()
+        wrappers = adapter.paths["wrappers"]
+        known = wrappers.read_bytes()
+        mysql_profiles = known.replace(b'"sqlite"', b'"mysql"')
+        self.write_env("DB_CONNECTION=sqlite\n")
+        for scenario in ("mysql", "wrong-pin", "fallback", "mysql-wrappers", "both-wrappers-wrong"):
+            with self.subTest(scenario=scenario):
+                self.write_cache(SQLITE_CONFIG)
+                wrappers.write_bytes(known)
+                if scenario == "mysql":
+                    self.write_cache(MYSQL_CONFIG)
+                elif scenario == "wrong-pin":
+                    self.write_cache(SQLITE_CONFIG, queue={"default": "sync"})
+                elif scenario == "fallback":
+                    self.cache.unlink()
+                else:
+                    wrappers.write_bytes(mysql_profiles)
+                    if scenario == "both-wrappers-wrong":
+                        adapter.paths["wrappers_sqlite"].write_bytes(mysql_profiles)
+                before = self.commands()
+                with self.assertRaises(UnsafeCutover):
+                    adapter.reopen()
+                self.assertEqual(before, self.commands())
+                self.assertFalse(adapter.paths["ingress_open"].exists())
+                self.assertFalse(adapter.paths["scheduler_release"].exists())
+        self.engine_probe.assert_not_called()
+
+    def test_staged_reopen_orders_probes_replay_and_scheduler_across_rehold(self):
+        journal, adapter = self.held_sqlite()
+        initial = journal.path.read_bytes()
+        pause = Path(adapter.config["studio_pause_files"][0])
+        pause.touch()
+        ingress, release = (adapter.paths[name] for name in ("ingress_open", "scheduler_release"))
+        replay = adapter.config["commands"]["telnyx_replay"]
+        events = []
+        run = adapter._run
+
+        def record(argv, *args):
+            if argv == replay:
+                self.assertFalse(pause.exists())
+                self.assertFalse(release.exists())
+                events.append(("replay", ingress.exists()))
+            return run(argv, *args)
+
+        def probe(profile, expected, deadline):
+            self.assertFalse(ingress.exists())
+            self.assertEqual(["worker"], profile["profiles"])
+            self.assertEqual("sqlite", expected["engine"])
+            events.append(("profile", ingress.exists()))
+
+        def fastcgi(expected, deadline):
+            self.assertEqual(["start"], self.commands()[-1])
+            self.assertEqual(SQLITE_CONFIG["route_sha256"], expected["route_sha256"])
+            events.append(("fastcgi", ingress.exists()))
+
+        self.engine_probe.side_effect = probe
+        self.fpm_probe.side_effect = fastcgi
+        with patch.object(adapter, "_run", side_effect=record):
+            adapter.reopen(hold_scheduler=True)
+        self.assertEqual([("profile", False), ("replay", False), ("fastcgi", False), ("replay", True)], events)
+        self.assertFalse(release.exists())
+        self.assertTrue(adapter.paths["deploy_marker"].is_file())
+        adapter.release_scheduler()
+        self.assertGreaterEqual(release.stat().st_mtime_ns, ingress.stat().st_mtime_ns)
+        self.write_cache(MYSQL_CONFIG)
+        with self.assertRaises(UnsafeCutover):
+            adapter.release_scheduler()
+        self.assertFalse(release.exists())
+        self.write_cache(SQLITE_CONFIG)
+        before = len(self.commands())
+        adapter.rehold()
+        self.assertEqual([["pause", queue] for queue in QUEUES] + [["stop"]], self.commands()[before:])
+        self.assertTrue(all(not adapter.paths[name].exists() for name in ("ingress_open", "activation", "scheduler_release")))
+        self.assertEqual(initial, journal.path.read_bytes())
+        with self.assertRaises(UnsafeCutover):
+            adapter.release_scheduler()
+        release.touch()
+        before = len(self.commands())
+        with self.guard_paths():
+            adapter.refresh()
+        self.assertEqual([["pause", queue] for queue in QUEUES], self.commands()[before:])
+        self.assertFalse(release.exists())
+
+    def test_fpm_probe_failure_closes_and_stops_workers_before_replay_two(self):
+        _, adapter = self.held_sqlite()
+        self.fpm_probe.side_effect = UnsafeCutover("mismatched FastCGI route")
+        before = len(self.commands())
+        with self.assertRaisesRegex(UnsafeCutover, "FastCGI"):
+            adapter.reopen()
+        commands = self.commands()[before:]
+        self.assertEqual(1, commands.count(["replay"]))
+        self.assertEqual(["stop"], commands[-1])
+        for name in ("ingress_open", "activation", "scheduler_release"):
+            self.assertFalse(adapter.paths[name].exists(), name)
+
+    def test_failed_refresh_withdraws_old_admission_proof_on_the_held_host(self):
+        _, adapter = self.held_sqlite()
+        self.assertTrue(adapter.paths["evidence"].exists())
+        with self.guard_paths(), patch.object(adapter, "_pause_queues", side_effect=UnsafeCutover("could not pause")):
+            with self.assertRaisesRegex(UnsafeCutover, "could not pause"):
+                adapter.refresh()
+        self.assertFalse(adapter.paths["evidence"].exists())
+        with self.assertRaisesRegex(UnsafeCutover, "authority proof"):
+            adapter.reopen()
+
+    def test_receipt_retired_only_after_final_check(self):
+        _, adapter = self.held_sqlite()
+        receipt = adapter.paths["receipt"]
+        raw = json.dumps({"version": 1, "run_id": IDENTITY.run_id}).encode()
+        receipt.write_bytes(raw)
+        activity = adapter.paths["activity"]
+        activity.write_text(json.dumps({"version": 1, "run_id": IDENTITY.run_id, "receipt_sha256": guard.sha256(raw)}))
+        retired = receipt.with_name("mysql-receipt.retired.json")
+        quiet = probe_reading(receipt=guard.sha256(raw))
+        for change in ({"business_activity": True}, {"server_uuid": "other"}, {"receipt": "other"}):
+            with self.subTest(change=change), patch.object(adapter, "_mysql", return_value={**quiet, **change}):
+                with self.assertRaisesRegex(UnsafeCutover, "final MySQL check"):
+                    adapter._retire_mysql_receipt()
+                self.assertEqual(raw, receipt.read_bytes())
+                self.assertTrue(activity.is_file())
+                self.assertFalse(retired.exists())
+        with patch.object(adapter, "_mysql", return_value=quiet):
+            adapter._retire_mysql_receipt()
+        self.assertEqual(raw, retired.read_bytes())
+        self.assertFalse(receipt.exists())
+        self.assertFalse(activity.exists())
+        # Retry the point just after rename and retain an unrelated run's evidence.
+        for owner in (IDENTITY.run_id, "previous-run"):
+            activity.write_text(json.dumps({"version": 1, "run_id": owner, "receipt_sha256": guard.sha256(raw)}))
+            with patch.object(adapter, "_mysql", side_effect=AssertionError("receipt already retired")):
+                adapter._retire_mysql_receipt()
+            self.assertEqual(owner != IDENTITY.run_id, activity.exists())
+
+    def test_skipped_gate_close_must_be_confirmed_reachable_on_pinned_server(self):
+        _, adapter = self.held_sqlite()
+        self.assertTrue(json.loads(adapter.paths["unseal_proof"].read_bytes())["gate_close_skipped"])
+        for change in ({"reachable": False}, {"gate": "unknown"}, {"server_uuid": "wrong"}):
+            with self.subTest(change=change), patch.object(adapter, "_mysql", return_value=probe_reading(**change)):
+                with self.assertRaisesRegex(UnsafeCutover, "skipped gate close"):
+                    adapter.reopen()
+                self.assertFalse(adapter.paths["ingress_open"].exists())
 
     def test_reopen_retry_stops_workers_that_a_failed_reopen_started(self):
         blocker = self.root / "etc" / "second-group-fails"
@@ -1170,16 +1333,16 @@ class ProductionAdapterTests(unittest.TestCase):
         before = len(self.commands())
         adapter.reopen()
         self.assertIsNotNone(worker.poll(), "The retry did not stop the worker the failed reopen started")
-        self.assertEqual([["stop"]] + [["resume", queue] for queue in QUEUES] + [["start"]], self.commands()[before:])
+        self.assertEqual([["stop"], ["replay"]] + [["resume", queue] for queue in QUEUES] + [["start"], ["replay"]], self.commands()[before:])
         self.assertTrue((self.root / "ingress" / "open").exists())
         self.assertTrue((self.root / "run" / "verified-activation.json").exists())
-        self.assertFalse((self.root / "etc" / "active").exists())
+        self.assertTrue((self.root / "etc" / "active").exists())
         self.assertTrue(adapter.observe().sqlite_live())
 
     def mysql_probe_from_file(self, config):
         """The MySQL probe reads its answer from a file, so a test can change the live target."""
         probe = self.root / "etc" / "mysql-probe.json"
-        probe.write_text('{"writable": false, "business_activity": false}', encoding="ascii")
+        probe.write_text(json.dumps(probe_reading()), encoding="ascii")
         config["commands"]["mysql"] = [sys.executable, "-c", "import sys; print(open(sys.argv[1]).read())",
                                        str(probe)]
         return probe
@@ -1218,7 +1381,7 @@ class ProductionAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(UnsafeCutover, "could not be verified after reopening"):
             adapter.reopen()
         self.assertFalse((self.root / "ingress" / "open").exists(), "a failed reopen left ingress open")
-        self.assertEqual([["resume", queue] for queue in QUEUES] + [["start"]]
+        self.assertEqual([["replay"]] + [["resume", queue] for queue in QUEUES] + [["start"], ["replay"]]
                          + [["pause", queue] for queue in QUEUES] + [["stop"]], self.commands()[before:])
         self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
         self.assertFalse((self.root / "run" / "verified-activation.json").exists())
@@ -1309,8 +1472,8 @@ class ProductionAdapterTests(unittest.TestCase):
         before = len(self.commands())
         self.assertEqual(0, self.cli("reopen")[0])
         self.assertTrue((self.root / "ingress" / "open").exists())
-        self.assertEqual([["resume", queue] for queue in QUEUES] + [["start"]], self.commands()[before:])
-        self.assertFalse((self.root / "run" / "verified-activation.json").exists())
+        self.assertEqual([["replay"]] + [["resume", queue] for queue in QUEUES] + [["start"], ["replay"]], self.commands()[before:])
+        self.assertTrue((self.root / "run" / "verified-activation.json").exists())
         policy = (self.root / "etc" / "policy.json").read_bytes()
         host = {"machine_sha": guard.sha256((self.root / "machine-id").read_bytes()),
                 "boot_id": "6c0b8a7e-3a43-4c55-9b7e-0d6f1d2b9c11"}
@@ -1326,7 +1489,7 @@ class ProductionAdapterTests(unittest.TestCase):
         runner.perform("freeze")
         runner.perform("abort")
         adapter.reopen()
-        self.assertFalse((self.root / "etc" / "active").exists())
+        self.assertTrue((self.root / "etc" / "active").exists())
         # A reboot empties /run: no open marker, no authority proof, no activation receipt.
         (self.root / "ingress" / "open").unlink()
         for record in (self.root / "run").iterdir():
@@ -1343,7 +1506,7 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertTrue(deploy_marker.published(self.root / "etc" / "active", IDENTITY.run_id))
         self.assertEqual(0, self.cli("reopen")[0])
         self.assertTrue((self.root / "ingress" / "open").exists())
-        self.assertFalse((self.root / "etc" / "active").exists())
+        self.assertTrue((self.root / "etc" / "active").exists())
         policy = (self.root / "etc" / "policy.json").read_bytes()
         evidence = (self.root / "run" / "verified-engine.json").read_bytes()
         activation = (self.root / "run" / "verified-activation.json").read_bytes()
@@ -1474,8 +1637,8 @@ class ProductionAdapterTests(unittest.TestCase):
         marker = self.root / "etc" / "active"
         if (self.root / "ingress" / "open").exists():
             # The reopen won: the host is live, so refresh must leave it exactly as reopened.
-            self.assertFalse(deploy_marker.published(marker, IDENTITY.run_id),
-                             "refresh fenced deploys again on the reopened host")
+            self.assertTrue(deploy_marker.published(marker, IDENTITY.run_id),
+                            "reopen lifted the deploy fence")
             policy = (self.root / "etc" / "policy.json").read_bytes()
             evidence = (self.root / "run" / "verified-engine.json").read_bytes()
             activation = (self.root / "run" / "verified-activation.json").read_bytes()
@@ -1919,6 +2082,17 @@ class ProductionAdapterTests(unittest.TestCase):
         journal.write({**journal.read(), "phase": "mysql_authoritative", "writes_possible": True,
                        "started_at": int(time.time()), "pending": None,
                        "history": [{"action": "promote", "phase": "mysql_authoritative", "after": asdict(observed)}]})
+        wrappers = adapter.paths["wrappers"]
+        sqlite_profiles = adapter.paths["wrappers_sqlite"].read_bytes()
+        mysql_profiles = sqlite_profiles.replace(b'"sqlite"', b'"mysql"')
+        wrappers.write_bytes(mysql_profiles)
+        adapter.paths["scheduler_release"].touch()
+        before = len(self.commands())
+        adapter.rehold()
+        self.assertEqual([["pause", queue] for queue in QUEUES] + [["stop"]], self.commands()[before:])
+        self.assertEqual(sqlite_profiles, wrappers.read_bytes())
+        self.assertFalse(adapter.paths["scheduler_release"].exists())
+        wrappers.write_bytes(mysql_profiles)
         # The live MySQL cache routes the default cache store elsewhere: its hash is not the MySQL pin.
         self.write_cache(MYSQL_CONFIG, cache={**MYSQL_CONFIG["config"]["cache"], "default": "database"})
         measured = live_config.measure(self.app).live_config_sha256
@@ -1930,6 +2104,7 @@ class ProductionAdapterTests(unittest.TestCase):
             self.assertEqual(1, self.cli("refresh")[0])
         self.assertIn("configuration", errors.getvalue())
         self.assertFalse(evidence.exists(), "refresh left a proof measured from a non-pinned MySQL cache")
+        self.assertEqual(sqlite_profiles, wrappers.read_bytes())
         # The pinned MySQL cache back: refresh measures the pin and the guard admits MySQL writers.
         self.write_cache(MYSQL_CONFIG)
         self.assertEqual(0, self.cli("refresh")[0])

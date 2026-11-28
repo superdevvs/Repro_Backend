@@ -10,7 +10,6 @@ import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
@@ -29,18 +28,15 @@ class Adapter(FixtureAdapter):
 
 @contextmanager
 def fixture_guard(directory):
-    runtime = SimpleNamespace(platform="linux", executable="/usr/bin/python3",
-                              flags=SimpleNamespace(isolated=1, no_site=1))
-    # Only the installation and privilege checks are substituted; admission
-    # still takes the real shared flock and verifies the real records.
+    # The test is not installed at /opt. The real trust, admission and flock
+    # checks still apply to every policy, proof and release marker.
     with (
         patch.multiple(
-            guard, ENTRYPOINT=Path(guard.__file__).absolute(), sys=runtime, STATE=directory,
+            guard, STATE=directory,
             POLICY=directory / "policy.json", EVIDENCE=directory / "fixture-authority.json",
             MACHINE_ID=directory / "machine-id", BOOT_ID=directory / "boot-id",
         ),
-        patch.object(guard, "check_chain"),
-        patch.object(guard, "trusted"),
+        patch.object(guard, "_require_root_installation"),
     ):
         yield
 
@@ -49,14 +45,14 @@ def child_main(directory, profile):
     import admit
 
     directory = Path(directory)
-    with fixture_guard(directory):
+    with fixture_guard(directory), patch.object(admit, "SCHEDULER_RELEASE", directory / "scheduler-released"):
         return admit.run(profile, wrappers=directory / "wrappers.json")
 
 
 @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires Linux root to drop privileges")
 class AdmissionWrapperTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="repro-cutover-admit-")
+        temporary = tempfile.TemporaryDirectory(prefix="repro-cutover-admit-", dir="/var/lib")
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name).resolve()
         self.out = self.directory / "out"
@@ -127,6 +123,34 @@ class AdmissionWrapperTests(unittest.TestCase):
         self.assertEqual(75, wrapper.returncode, errors)
         self.assertIn("holds all admissions", errors)
         self.assertFalse((self.out / "started").exists())
+
+    def test_scheduler_profiles_require_a_trusted_release_marker(self):
+        names = ("scheduler", "auth-prune", "cubicasa-poll")
+        self.profiles(**{name: {"action": "scheduler", "argv": ["/usr/bin/touch", name]} for name in names})
+        release = self.journal.directory / "scheduler-released"
+        for name in names:
+            wrapper = self.start(name)
+            _, errors = wrapper.communicate(timeout=5)
+            self.assertEqual(75, wrapper.returncode, errors)
+            self.assertFalse((self.out / name).exists())
+        release.touch(mode=0o600)
+        release.chmod(0o666)
+        wrapper = self.start(names[0])
+        _, errors = wrapper.communicate(timeout=5)
+        self.assertEqual(75, wrapper.returncode, errors)
+        release.unlink()
+        release.symlink_to(self.journal.path)
+        wrapper = self.start(names[0])
+        _, errors = wrapper.communicate(timeout=5)
+        self.assertEqual(75, wrapper.returncode, errors)
+        self.assertFalse((self.out / names[0]).exists())
+        release.unlink()
+        release.touch(mode=0o600)
+        for name in names:
+            wrapper = self.start(name)
+            _, errors = wrapper.communicate(timeout=5)
+            self.assertEqual(0, wrapper.returncode, errors)
+            self.assertTrue((self.out / name).exists())
 
     def test_detached_children_keep_the_lease_after_the_command_exits(self):
         detached = {

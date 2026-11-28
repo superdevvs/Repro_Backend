@@ -33,6 +33,7 @@ except ImportError:  # Installed layout: /opt/repro-cutover-fence/guard.py
     import guard
 
 WRAPPERS = Path("/etc/repro-cutover-fence/wrappers.json")
+SCHEDULER_RELEASE = Path("/run/repro-cutover-fence/scheduler-released")
 REFUSED = 75
 CONFIGURATION = 78
 TIMED_OUT = 124
@@ -106,6 +107,11 @@ def run(name: str, *, wrappers: Path = WRAPPERS) -> int:
     with ExitStack() as stack:
         try:
             lease = stack.enter_context(guard.admitted(profile["action"], profile["engine"]))
+            if profile["action"] == "scheduler":
+                # Checked under the shared writer lease. A concurrent hold drains
+                # this invocation along with the scheduler children it starts.
+                with guard.open_protected(SCHEDULER_RELEASE):
+                    pass
         except guard.Refused as error:
             print(f"Cutover admission held: {error}", file=sys.stderr)
             return REFUSED

@@ -107,15 +107,16 @@ def _route_values(report: dict, expected: dict, what: str) -> dict:
     _require(engine == expected["engine"], f"{what} reports engine {str(engine)[:20]}, not {expected['engine']}")
     _require(report.get("database") == expected["database"],
              f"{what} reports database {str(report.get('database'))[:80]}, not {expected['database']}")
-    _require(report.get("server_uuid") == expected["server_uuid"],
+    _require("server_uuid" in report and report["server_uuid"] == expected["server_uuid"],
              f"{what} reports server {str(report.get('server_uuid'))[:40]}, not the target {expected['server_uuid']}")
     values = report.get("route_values")
     try:
         route = live_config.route_sha256(values) if isinstance(values, dict) else None
     except (TypeError, ValueError, RecursionError):
         route = None
+    engine_name = "MySQL" if engine == "mysql" else "SQLite"
     _require(route == expected["route_sha256"],
-             f"{what} reports another route hash ({str(route)[:12]}) than the MySQL pin ({expected['route_sha256'][:12]})")
+             f"{what} reports another route hash ({str(route)[:12]}) than the {engine_name} pin ({expected['route_sha256'][:12]})")
     return {"engine": engine, "database": report["database"], "server_uuid": report["server_uuid"],
             "route_sha256": route}
 

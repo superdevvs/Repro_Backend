@@ -25,7 +25,7 @@ Every effect is idempotent and re-observable, as the runner requires:
   config's route hash, the identity probe's release, artifact and source, and
   for MySQL the server UUID the probe read (design 3.4);
 - reopen verifies that proof through the guard, then resumes queues, starts
-  workers, recreates the open marker and lifts the deployment fence.
+  workers and replays captured texts around the open marker. Deploys stay fenced.
 
 observe() takes the engine from the live config (live_config.measure, design
 1.3), accepting its .env fallback so that a rollback can run; both
@@ -966,6 +966,7 @@ class ProductionAdapter:
     def close_admissions(self, lease: Lease, deadline: int) -> None:
         lease.require_current()
         _remove(self.paths["ingress_open"])
+        _remove(self.paths["scheduler_release"])
         deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,
                               max(0.0, deadline - self.clock()), owner=self.owner)
         for queue in self.config["queues"]:
@@ -1304,7 +1305,7 @@ class ProductionAdapter:
         except (guard.Refused, OSError) as error:
             raise UnsafeCutover(f"The {label} ({path}) cannot be read: {error}") from None
 
-    def _profile_contexts(self) -> list[dict]:
+    def _profile_contexts(self, engine: str | None = None) -> list[dict]:
         """The distinct contexts of the live wrapper profiles (paths.wrappers, design 3.8), in the order of their first
         profile's name: what admit.py gives a profile's writer (user, group and its supplementary groups, cwd, umask,
         environment) and the php and artisan it runs. A profile that does not run `<php> <app_root>/artisan` is a
@@ -1329,6 +1330,8 @@ class ProductionAdapter:
         for name in names:
             try:
                 profile = admit.load_profile(name, raw)
+                if engine is not None:
+                    _require(profile["engine"] == engine, f"The wrapper profile {name} must admit {engine}")
                 account = pwd.getpwnam(profile["user"])
                 group = grp.getgrnam(profile["group"]).gr_gid
             except (guard.Refused, KeyError, ValueError, RecursionError) as error:
@@ -1959,7 +1962,7 @@ class ProductionAdapter:
 
         The guard holds deploys for a planned cutover, but Deploy-App checks only
         the marker file and never calls the guard. So the marker is what holds
-        them, from `init` until reopening a completed rollback lifts it.
+        them, from `init` until the run is retired.
         """
         deploy_marker.publish(self.paths["deploy_marker"], self.locks, self.pinned.run_id,
                               self.config["command_seconds"], owner=self.owner)
@@ -1987,12 +1990,6 @@ class ProductionAdapter:
     def refresh(self) -> None:
         """Publish current-boot authority evidence for a committed planned or terminal journal.
 
-        The host is measured with the deploy fence published. A planned journal
-        keeps deploys held throughout. Reopening a completed SQLite rollback
-        lifted the fence, so after a later reboot it is published again before
-        the measurement; reopen lifts it once activation is verified.
-        Publishing the fence only ever holds deploys.
-
         The guard revokes the current proof before it measures the host. On a
         live host that would hold the scheduler and every restarted worker, so
         refresh refuses while the ingress open marker exists. The check and the
@@ -2003,9 +2000,19 @@ class ProductionAdapter:
         def held_host() -> None:
             self._refuse_open_ingress()
             state = self.journal.read()
-            if (state is not None and state.get("phase") in ("planned", "sqlite_authoritative")
-                    and state.get("pending") is None):
+            engine = guard.authority(self.policy, state or {}, "web-writer")
+            try:
                 self.hold_deploys()
+                _remove(self.paths["scheduler_release"])
+                self._pause_queues(self.clock() + self.config["command_seconds"])
+                if engine == "mysql":
+                    self._install_sqlite_wrappers()
+            except BaseException:
+                # The guard has both locks but does not invalidate evidence until
+                # this precondition returns. An incomplete hold cannot reuse it.
+                _remove(self.paths["evidence"])
+                _remove(self.paths["activation"])
+                raise
 
         self._refuse_open_ingress()
         # The guard checks the evidence directory's chain before it publishes into it.
@@ -2014,79 +2021,156 @@ class ProductionAdapter:
 
     def _refuse_open_ingress(self) -> None:
         if self.paths["ingress_open"].exists() or self.paths["ingress_open"].is_symlink():
-            raise UnsafeCutover("Ingress is open. Refresh measures a held host only, for example after a reboot")
+            raise UnsafeCutover("Ingress is open. This operation requires a held host")
 
-    def _close_reopened(self) -> None:
-        """Undo a reopen whose live check failed: ingress first, then the queues and workers.
-
-        The deploy fence is still published and no activation receipt exists,
-        so deploys stay held as well.
-        """
-        _remove(self.paths["ingress_open"])
-        deadline = self.clock() + self.config["command_seconds"]
+    def _pause_queues(self, deadline: float) -> None:
         for queue in self.config["queues"]:
             self._run(self.config["commands"]["queue_pause"] + [queue], deadline)
-        for argv in self.config["commands"]["stop_workers"]:
-            self._run(argv, deadline)
 
-    def reopen(self) -> None:
-        """Reopen SQLite writers in order once the guard accepts the committed SQLite authority.
+    def _install_sqlite_wrappers(self) -> None:
+        raw = self._protected(self.paths["wrappers_sqlite"], "SQLite wrapper profiles")
+        _write_raw_atomic(self.paths["wrappers"], raw, 0o644)
 
-        After an abort this follows sqlite_authoritative. After a reboot in the
-        planned phase it follows a refresh of the authority evidence.
+    def _close_reopened(self) -> None:
+        """Withdraw admissions first and attempt every queue pause and group stop."""
+        for name in ("ingress_open", "scheduler_release", "activation"):
+            _remove(self.paths[name])
+        commands = self.config["commands"]
+        errors = []
+        for argv in ([commands["queue_pause"] + [q] for q in self.config["queues"]] + commands["stop_workers"]):
+            try:
+                self._run(argv)
+            except (UnsafeCutover, OSError) as error:
+                errors.append(str(error))
+        self._wait_absent(self.config["writer_processes"] + self.config["scheduler_processes"],
+                          self.clock() + self.config["command_seconds"], "Writers are still running after rehold")
+        if errors:
+            raise UnsafeCutover("Could not hold every writer: " + "; ".join(errors))
 
-        A reopen that failed or crashed after starting a worker group leaves
-        wrappers that keep their shared writer lease for their whole life. A
-        retry stops those groups first, so the writer lock can drain, and
-        starts them again below. Stopping workers only ever holds writers.
-        """
+    def rehold(self) -> None:
+        """Hold a committed authority without changing the journal, gate or database."""
         with self.journal.acquire() as (state, lease):
+            engine = guard.authority(self.policy, state or {}, "web-writer")
+            self._close_reopened()
+            self.journal.drain_writers(lease, self.config["command_seconds"])
+            if engine == "mysql":
+                self._install_sqlite_wrappers()
+
+    def _verify_sqlite_authority(self) -> tuple[bytes, bytes]:
+        journal = self.journal.path.read_bytes()
+        proof = self._protected(self.paths["evidence"], "authority proof")
+        try:
+            guard.verify(self.policy_raw, journal, proof, machine_sha=self._machine_sha(),
+                         boot_id=self.boot_id(), action="web-writer", expected_engine="sqlite")
+        except guard.Refused as error:
+            raise UnsafeCutover(str(error)) from error
+        return journal, proof
+
+    def _sqlite_reopen_checks(self, state: dict, *, reopened: bool = False) -> dict:
+        observed, mysql, live = self._observed()
+        if reopened:
+            _require(observed.sqlite_live(), "SQLite admissions could not be verified after reopening")
+        _require(observed.engine == "sqlite" and observed.sqlite_writable and not observed.mysql_writable
+                 and not observed.mysql_business_activity, "SQLite is no longer the only writable engine; writers stay held")
+        _require(observed.deployment_fenced, "The deploy fence is missing")
+        pin = self._sqlite_pin()
+        _require(live.source == live_config.CACHE and live.live_config_sha256 == pin,
+                 "The live route is not the pinned SQLite config cache")
+        _require(self._protected(self.paths["wrappers"], "installed wrappers")
+                 == self._protected(self.paths["wrappers_sqlite"], "SQLite wrapper profiles"),
+                 "The installed wrappers do not match the SQLite wrapper profiles")
+        if state["phase"] == "sqlite_authoritative":
+            proof = guard.read_json(self._protected(self.paths["unseal_proof"], "SQLite unseal proof"))
+            _require(proof.keys() == UNSEAL_PROOF_KEYS and proof["run_id"] == self.pinned.run_id
+                     and proof["database"] == str(self.database) and type(proof["gate_close_skipped"]) is bool
+                     and all(proof.get(k) == v for k, v in self._hold_binding().items()),
+                     "The SQLite unseal proof does not belong to this run and hold")
+            if proof["gate_close_skipped"]:
+                _require(mysql.get("reachable") is True and mysql.get("gate") == "closed"
+                         and mysql.get("server_uuid") == self.config["mysql"]["target_uuid"],
+                         "The skipped gate close needs a reachable, closed MySQL target")
+        return {"engine": "sqlite", "database": str(self.database), "server_uuid": None, "route_sha256": pin}
+
+    def _retire_mysql_receipt(self) -> None:
+        receipt = self.paths["receipt"]
+        retired = receipt.with_name("mysql-receipt.retired.json")
+        armed = receipt.exists() or receipt.is_symlink()
+        if not armed and not (retired.exists() or retired.is_symlink()):
+            return
+        raw = self._protected(receipt if armed else retired, "MySQL receipt")
+        record = guard.read_json(raw)
+        if record.get("run_id") != self.pinned.run_id:
+            return
+        if armed:
+            # The last scan is against the still-armed receipt on the intended server.
+            reading = self._mysql()
+            _require(reading.get("reachable") is True and reading.get("gate") == "closed"
+                     and reading.get("server_uuid") == self.pinned.target_uuid
+                     and reading.get("receipt") == guard.sha256(raw)
+                     and not reading["business_activity"] and not reading["writable"],
+                     "The final MySQL check does not confirm a closed, quiet target with this receipt")
+            os.replace(receipt, retired)
+            _sync_directory(receipt.parent)
+        # A killed reopen can leave the old latch after the rename. It no longer
+        # participates in the probe, which binds it to the active receipt.
+        activity = self.paths["activity"]
+        if activity.exists() or activity.is_symlink():
+            latch = guard.read_json(self._protected(activity, "MySQL activity latch"))
+            if latch.get("run_id") == self.pinned.run_id and latch.get("receipt_sha256") == guard.sha256(raw):
+                _remove(activity)
+
+    def _activation_record(self, journal: bytes, proof: bytes) -> dict:
+        return {"version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
+                "journal_sha256": guard.sha256(journal), "authority_sha256": guard.sha256(proof),
+                "engine": "sqlite", "application_verified": True, "reconciliation_verified": True}
+
+    def release_scheduler(self) -> None:
+        """Release only a fully reopened, still-verified SQLite host, including replay pass two."""
+        with self.journal.acquire() as (state, _):
+            journal, proof = self._verify_sqlite_authority()
+            # A repeat invocation must also leave the scheduler held on a failed check.
+            _remove(self.paths["scheduler_release"])
+            activation = guard.read_json(self._protected(self.paths["activation"], "activation receipt"))
+            _require(activation == self._activation_record(journal, proof),
+                     "The SQLite reopen has not completed on this boot")
+            self._sqlite_reopen_checks(state, reopened=True)
+            _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": "sqlite"}, 0o600)
+
+    def reopen(self, *, hold_scheduler: bool = False) -> None:
+        """Open verified SQLite admissions and replay captured messages under the controller lock."""
+        with self.journal.acquire() as (state, lease):
+            journal, proof = self._verify_sqlite_authority()
+            self._refuse_open_ingress()
+            _remove(self.paths["scheduler_release"])
+            _remove(self.paths["activation"])
+            deadline = self.clock() + self.config["command_seconds"]
             if self.processes(self.config["writer_processes"]):
-                deadline = self.clock() + self.config["command_seconds"]
                 for argv in self.config["commands"]["stop_workers"]:
                     self._run(argv, deadline)
                 self._wait_absent(self.config["writer_processes"], deadline,
                                   "Workers started by an earlier reopen are still running")
             self.journal.drain_writers(lease, self.config["command_seconds"])
-            journal_raw = self.journal.path.read_bytes()
-            evidence_raw = self.paths["evidence"].read_bytes()
-            try:
-                guard.verify(self.policy_raw, journal_raw, evidence_raw, machine_sha=self._machine_sha(),
-                             boot_id=self.boot_id(), action="web-writer", expected_engine="sqlite")
-            except guard.Refused as error:
-                raise UnsafeCutover(str(error)) from error
-            phase = None if state is None else state["phase"]
-            if phase not in ("planned", "sqlite_authoritative"):
-                raise UnsafeCutover("Reopening requires a planned journal or a completed SQLite authority transition")
-            # The proof was measured earlier; the guard does not look at the host again.
-            # Check the live route before any writer is let in.
-            current = self.observe()
-            if (current.engine != "sqlite" or not current.sqlite_writable or current.mysql_writable
-                    or current.mysql_business_activity):
-                raise UnsafeCutover("SQLite is no longer the only writable engine; writers stay held")
-            # Invalidate an earlier receipt before any change, then let wrapped writers in.
-            _remove(self.paths["activation"])
+            expected = self._sqlite_reopen_checks(state)
+            for context in self._profile_contexts("sqlite"):
+                self._profile_probe(context, expected, deadline)
+            self._retire_mysql_receipt()
+            for path in self.config["studio_pause_files"]:
+                _remove(Path(path))
             self.journal.release_writers(lease)
-            for queue in self.config["queues"]:
-                self._run(self.config["commands"]["queue_resume"] + [queue])
-            for argv in self.config["commands"]["start_workers"]:
-                self._run(argv)
-            _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
+            commands = self.config["commands"]
             try:
-                live = self.observe().sqlite_live()
-            except UnsafeCutover:
-                live = False
-            if not live:
+                self._run(commands["telnyx_replay"], deadline)
+                for queue in self.config["queues"]:
+                    self._run(commands["queue_resume"] + [queue], deadline)
+                for argv in commands["start_workers"]:
+                    self._run(argv, deadline)
+                self._fastcgi_probe(expected, deadline)
+                _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
+                self._run(commands["telnyx_replay"], deadline)
+                self._sqlite_reopen_checks(state, reopened=True)
+                _write_atomic(self.paths["activation"], self._activation_record(journal, proof), 0o600)
+                if not hold_scheduler:
+                    _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": "sqlite"}, 0o600)
+            except BaseException:
                 self._close_reopened()
-                raise UnsafeCutover("SQLite admissions could not be verified after reopening; "
-                                    "ingress, queues and workers are held again")
-            if phase == "planned":
-                # Deploys stay held for the planned cutover; there is no activation receipt.
-                return
-            _write_atomic(self.paths["activation"], {
-                "version": 1, "boot_id": self.boot_id(), "policy_sha256": guard.sha256(self.policy_raw),
-                "journal_sha256": guard.sha256(journal_raw), "authority_sha256": guard.sha256(evidence_raw),
-                "engine": "sqlite", "application_verified": True, "reconciliation_verified": True,
-            }, 0o600)
-            deploy_marker.withdraw(self.paths["deploy_marker"], self.locks, self.pinned.run_id,
-                                   self.config["command_seconds"], owner=self.owner)
+                raise
