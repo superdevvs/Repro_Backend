@@ -962,6 +962,12 @@ class ProductionAdapter:
             raise UnsafeCutover("A host command from an earlier controller is still running")
 
     def preflight_sha256(self) -> str:
+        state = self.journal.read()
+        if state and state.get("phase") == "planned" and "recovered_from" in state:
+            # An adopted external hold could otherwise advance to a new freeze
+            # and lose the old coordinate before the recovered database ever served.
+            import wayback_policy
+            wayback_policy.first_reopen(self, state, require_completed=True)
         return digest({"config": self.config, "identity": asdict(self.identity()), "policy": self.policy})
 
     def boot_id(self) -> str:
@@ -2065,6 +2071,9 @@ class ProductionAdapter:
                 self._pause_queues(self.clock() + self.config["command_seconds"])
                 if engine == "mysql":
                     self._install_sqlite_wrappers()
+                if state.get("phase") == "planned" and "recovered_from" in state:
+                    import wayback_policy
+                    wayback_policy.first_reopen(self, state)
             except BaseException:
                 # The guard has both locks but does not invalidate evidence until
                 # this precondition returns. An incomplete hold cannot reuse it.
@@ -2283,6 +2292,14 @@ class ProductionAdapter:
                               "Workers started by an earlier reopen are still running")
         self.journal.drain_writers(lease, self.config["command_seconds"])
         expected = self._sqlite_reopen_checks(state)
+        recovery = None
+        if state.get("phase") == "planned" and "recovered_from" in state:
+            import wayback_policy
+            try:
+                recovery = wayback_policy.first_reopen(self, state)
+            except BaseException:
+                _remove(self.paths["evidence"])
+                raise
         for context in self._profile_contexts("sqlite"):
             self._profile_probe(context, expected, deadline)
         self._retire_mysql_receipt()
@@ -2297,12 +2314,19 @@ class ProductionAdapter:
             for argv in commands["start_workers"]:
                 self._run(argv, deadline)
             self._fastcgi_probe(expected, deadline)
+            if recovery is not None:
+                wayback_policy.first_reopen(self, state)
             _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
             self._run(commands["telnyx_replay"], deadline)
             self._sqlite_reopen_checks(state, reopened=True)
+            if recovery is not None:
+                wayback_policy.first_reopen(self, state)
             _write_atomic(self.paths["activation"], self._activation_record(journal, proof), 0o600)
             if not hold_scheduler:
                 _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": "sqlite"}, 0o600)
+            if recovery is not None:
+                path, binding = recovery
+                _write_atomic(path, binding, 0o600)
         except BaseException:
             self._close_reopened()
             raise

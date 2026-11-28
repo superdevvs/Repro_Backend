@@ -6,6 +6,7 @@ from pathlib import Path
 import adapter as host
 import identity_probe
 import sqlite_seal
+import wayback
 from adapter import guard
 from runner import UnsafeCutover, is_sha256
 
@@ -61,6 +62,8 @@ def check_installation(adapter, archive, run_id):
     guard.require(sqlite_seal.file_sha256(adapter.database) == installed["installed_sha256"],
                   "The restored SQLite file changed after independent verification")
     require_clean_sidecars(adapter.database)
+    wayback.require_same_close(adapter, closed, run_id)
+    return closed
 
 
 def require_clean_sidecars(database):
@@ -82,7 +85,7 @@ def held_preflight(adapter, lease):
                   "The restored SQLite host must be fenced with all writers stopped")
     archive, previous = archive_for(adapter)
     before = file_stamp(adapter.database)
-    check_installation(adapter, archive, previous)
+    closed = check_installation(adapter, archive, previous)
     reading, target = adapter._mysql(), adapter.config["mysql"]
     guard.require(reading.get("reachable") is True and reading.get("gate") == "closed"
                   and reading.get("writable") is False and reading.get("business_activity") is False
@@ -96,6 +99,8 @@ def held_preflight(adapter, lease):
     guard.require(adapter.observe().sealed("sqlite"), "Restored-host fence changed while starting FPM")
     require_clean_sidecars(adapter.database)
     guard.require(file_stamp(adapter.database) == before, "The restored SQLite file changed during the application check")
+    wayback.require_same_close(adapter, closed, previous)
+    return closed
 
 
 def file_stamp(database):
@@ -103,9 +108,34 @@ def file_stamp(database):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def first_reopen(adapter, state, *, require_completed=False):
+    """Keep the old coordinate binding until SQLite's first successful public activation."""
+    if state.get("phase") != "planned" or "recovered_from" not in state:
+        return None
+    origin = state["recovered_from"]
+    guard.require(isinstance(origin, dict) and guard.matches(host.RUN_ID, origin.get("run_id"))
+                  and origin["run_id"] != adapter.pinned.run_id, "Invalid recovery origin in the planned journal")
+    released = adapter.journal.directory / "restored-sqlite-live.json"
+    binding = {"version": 1, "run_id": adapter.pinned.run_id, "recovered_from": origin}
+    try:
+        completed = guard.read_protected(released)
+    except FileNotFoundError:
+        guard.require(not require_completed, "Complete the first verified SQLite reopen before starting another cutover run")
+        wayback.require_same_close(adapter, origin, origin["run_id"])
+        return released, binding
+    guard.require(guard.read_json(completed) == binding, "The first SQLite activation belongs to a different recovery")
+    return None
+
+
 def initialize_held(runner, adapter):
     """Consume the recovery handoff only after the planned journal is durable."""
     marker = adapter.journal.directory / "next-run.json"
+
+    def consume():
+        origin = adapter.journal.read()["recovered_from"]
+        wayback.require_same_close(adapter, origin, origin["run_id"])
+        host._remove(marker)
+
     with adapter.journal.acquire() as (state, lease):
         if state is not None:
             guard.require(state == runner.status() and state["phase"] == "planned" and not state["history"]
@@ -113,8 +143,12 @@ def initialize_held(runner, adapter):
                           "Cannot resume held initialization after the new run advanced")
             runner._verify_identity()
             adapter.require_quiescent()
-            held_preflight(adapter, lease)
-            host._remove(marker)
+            origin = held_preflight(adapter, lease)
+            if "recovered_from" not in state:
+                state["recovered_from"] = origin
+                adapter.journal.write(state)
+            guard.require(state["recovered_from"] == origin, "Planned journal and archived recovery coordinate differ")
+            consume()
             return state
-    return runner.initialize(fence_deploys=adapter.hold_deploys, after_commit=lambda: host._remove(marker),
+    return runner.initialize(fence_deploys=adapter.hold_deploys, after_commit=consume,
                              held_preflight=lambda lease: held_preflight(adapter, lease))

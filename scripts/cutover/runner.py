@@ -438,7 +438,7 @@ class Runner:
 
     def initialize(self, fence_deploys: Callable[[], None] | None = None,
                    after_commit: Callable[[], None] | None = None,
-                   held_preflight: Callable[[Lease], None] | None = None) -> dict:
+                   held_preflight: Callable[[Lease], dict] | None = None) -> dict:
         """Commit a planned run.
 
         fence_deploys runs under the controller lock before the journal is
@@ -453,7 +453,7 @@ class Runner:
             self.adapter.require_quiescent()
             preflight = self.adapter.preflight_sha256()
             if held_preflight is not None:
-                held_preflight(lease)
+                recovered_from = held_preflight(lease)
                 route_verified = self.adapter.observe().sealed("sqlite")
             else:
                 route_verified = self.adapter.observe().sqlite_live()
@@ -475,6 +475,8 @@ class Runner:
                 "pending": None,
                 "history": [],
             }
+            if held_preflight is not None:
+                state["recovered_from"] = recovered_from
             self.journal.write(state)
             if after_commit is not None:
                 after_commit()

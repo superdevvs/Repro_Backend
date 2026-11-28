@@ -212,6 +212,8 @@ class RetirementTests(unittest.TestCase):
         self.journal.write(self.state)
         close = {"version": 1, "run_id": self.run, "server_uuid": IDENTITY.target_uuid, "gate": "closed",
                  "coordinate": {"file": "binlog.000003", "position": 4, "gtid_executed": ""}}
+        import wayback
+        current = self.enterContext(patch.object(wayback, "closed_coordinate", return_value=close))
         self.journal.write_record("way-back.json", close)
         closed = SimpleNamespace(admissions_open=False, workers_stopped=True, deployment_fenced=True)
         reading = {"reachable": True, "gate": "closed", "writable": False, "gated_sessions": 0,
@@ -229,6 +231,12 @@ class RetirementTests(unittest.TestCase):
         with self.assertRaisesRegex(guard.Refused, "installation receipt"):
             retire.retire(self.host, p, i)
         self.host.identity.return_value.source_sha256 = installed["source_sha256"]
+        advanced = {**close, "coordinate": {**close["coordinate"], "position": 20}}
+        current.return_value = advanced
+        with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+            retire.retire(self.host, p, i)
+        self.assertFalse((self.journal.directory / retire.PENDING).exists())
+        current.return_value = close
         pointer = self.journal.directory / retire.NEXT_RUN
         original_write = retire.host._write_atomic
         def crash(path, obj, mode):
@@ -240,6 +248,15 @@ class RetirementTests(unittest.TestCase):
         with self.assertRaises(UnsafeCutover), self.journal.acquire():
             self.fail("init proceeded before retirement completed")
         original = pointer.read_bytes()
+        # A restarted process reads the newly installed policy and identity. The
+        # previous journal is gone, so only its verified archive binds the retry.
+        self.host.pinned = replace(IDENTITY, run_id="next-run")
+        current.return_value = {**advanced, "run_id": "next-run"}
+        with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+            retire.retire(self.host)
+        self.assertTrue((self.journal.directory / retire.PENDING).exists())
+        self.assertEqual(original, pointer.read_bytes())
+        current.return_value = {**close, "run_id": "next-run"}
         answer = retire.retire(self.host)
         self.assertEqual(original, pointer.read_bytes())
         self.assertEqual({"version": 1, "run_id": "next-run", "previous_run_id": self.run,
@@ -249,6 +266,13 @@ class RetirementTests(unittest.TestCase):
         self.assertEqual(installed, json.loads((Path(answer["archive"]) / "wayback-installed.json").read_bytes()))
         self.assertEqual(4, len(list((self.host.paths["keep"] / self.run).iterdir())))
         self.assertFalse(self.host.paths["retired"].exists())
+
+    def test_restored_run_cannot_retire_to_another_policy_before_its_first_public_reopen(self):
+        self.journal.write({**self.state, "recovered_from": {"version": 1, "run_id": "previous-run"}})
+        policy, identity = self.pair()
+        with self.assertRaisesRegex(guard.Refused, "first verified SQLite reopen"):
+            retire.retire(self.host, policy, identity)
+        self.assertFalse((self.journal.directory / retire.PENDING).exists())
 
     def test_boot_unit_conditions(self):
         unit = (HERE / "systemd/repro-cutover-retired-ingress.service").read_text()

@@ -179,6 +179,9 @@ def _activated(adapter, state):
 
 
 def _engine(adapter, state, pair):
+    if state.get("phase") == "planned" and "recovered_from" in state:
+        import wayback_policy
+        wayback_policy.first_reopen(adapter, state, require_completed=True)
     if state["phase"] == "recovery_required":
         guard.require(pair is not None and state.get("pending") is None and state.get("writes_possible") is True,
                       "Recovery retirement requires a reviewed next policy and a completed way-back close")
@@ -211,6 +214,8 @@ def _engine(adapter, state, pair):
                       and live.engine == "sqlite" and live.source == host.live_config.CACHE
                       and live.live_config_sha256 == adapter.policy["sqlite_live_config_sha256"],
                       "Way-back retirement requires the verified SQLite route, stopped writers and a closed MySQL gate")
+        import wayback
+        wayback.require_same_close(adapter, closed, state["identity"]["run_id"])
         return "recovery"
     engine = guard.authority(adapter.policy, state, "queue-worker")
     if engine == "mysql":
@@ -329,6 +334,16 @@ def retire(adapter, next_policy=None, next_identity=None):
         if state is not None:
             guard.require(guard.sha256(guard.read_protected(journal.path)) == work["state_sha256"],
                           "The journal changed during retirement")
+        if engine == "recovery":
+            # On retry the old policy, journal and live close record may already be gone.
+            # The verified archive is durable before any of those are replaced or removed.
+            import wayback
+            origin = archive if work["archived"] else journal.directory
+            closed_raw = guard.read_protected(origin / wayback.CLOSED)
+            restored = _record(guard.read_protected(origin / wayback.INSTALLED))
+            guard.require(restored.get("close_sha256") == guard.sha256(closed_raw), "Recovery closure no longer matches the installation")
+            confirmed_close = _record(closed_raw)
+            wayback.require_same_close(adapter, confirmed_close, run)
         if not work["archived"]:
             guard.require(state is not None, "The journal disappeared before archival")
             _private_dir(paths["archive"])
@@ -380,6 +395,7 @@ def retire(adapter, next_policy=None, next_identity=None):
                 _move_frozen(adapter.database, run, expected)
         if handoff is not None:
             host._write_atomic(journal.directory / NEXT_RUN, handoff, 0o600)
+            wayback.require_same_close(adapter, confirmed_close, run)
         host._remove(marker)
         if pair is None:
             host.deploy_marker.withdraw(paths["deploy_marker"], adapter.locks, run,

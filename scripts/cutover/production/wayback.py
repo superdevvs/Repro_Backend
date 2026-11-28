@@ -77,6 +77,13 @@ def closed_coordinate(adapter):
             "gate": "closed", "coordinate": coordinate}
 
 
+def require_same_close(adapter, record, previous_run):
+    """Compare the previous run's pinned MySQL position even after installing the next policy."""
+    live = closed_coordinate(adapter)
+    need(record.get("run_id") == previous_run and record == {**live, "run_id": previous_run},
+         "The MySQL coordinate changed since the verified SQLite recovery; keep writers held")
+
+
 def close(adapter):
     with adapter.journal.acquire() as (state, lease):
         recovery_state(adapter, state)

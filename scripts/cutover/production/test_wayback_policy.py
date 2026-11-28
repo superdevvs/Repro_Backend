@@ -47,6 +47,8 @@ class HeldInitializationTests(unittest.TestCase):
                                                                 "gtid_executed":""}}
         self.close_file = self.archive / "way-back.json"
         self.close_file.write_bytes(Journal.encode(self.closed))
+        self.live_close = self.enterContext(patch.object(recovery.wayback, "closed_coordinate",
+                                                       return_value={**self.closed, "run_id": self.pinned.run_id}))
         self.installed = {"version":1, "run_id":"previous-run", "database":str(adapter.database),
                           "server_uuid":self.pinned.target_uuid, "writers_held":True, "method":"verified-export",
                           "installed_sha256":guard.sha256(adapter.database.read_bytes()), "review_sha256":"1"*64,
@@ -163,6 +165,38 @@ class HeldInitializationTests(unittest.TestCase):
         with self.assertRaisesRegex(UnsafeCutover, "deploy"):
             self.init()
         self.assertHeld()
+
+    def test_same_server_coordinate_drift_blocks_init_and_incomplete_first_reopen(self):
+        accurate = self.live_close.return_value
+        advanced = {**accurate, "coordinate": {**accurate["coordinate"], "position": 400}}
+        self.live_close.side_effect = [accurate, advanced]
+        with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+            self.init()
+        self.assertHeld()
+        self.live_close.side_effect = None
+        state = self.init()
+        self.assertEqual(self.closed, state["recovered_from"])
+        self.live_close.return_value = advanced
+        with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+            recovery.first_reopen(self.adapter, state)
+        self.live_close.return_value = accurate
+        path, binding = recovery.first_reopen(self.adapter, state)
+        self.journal.write_record(path.name, binding)
+        self.live_close.return_value = advanced
+        self.assertIsNone(recovery.first_reopen(self.adapter, state))
+
+    def test_drift_while_installing_deploy_fence_keeps_the_handoff_after_journal_commit(self):
+        accurate = self.live_close.return_value
+        advanced = {**accurate, "coordinate": {**accurate["coordinate"], "gtid_executed": self.pinned.target_uuid + ":1"}}
+        self.adapter.hold_deploys.side_effect = lambda: setattr(self.live_close, "return_value", advanced)
+        with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+            self.init()
+        self.assertEqual("planned", self.journal.read()["phase"])
+        self.assertTrue(self.pointer.exists())
+        with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+            self.init()
+        self.assertTrue(self.pointer.exists())
+        self.assertFalse(self.adapter.paths["ingress_open"].exists())
 
     def test_resume_after_commit_requires_matching_private_handoff_and_no_history(self):
         with patch.object(recovery.host, "_remove", side_effect=OSError("simulated crash")):

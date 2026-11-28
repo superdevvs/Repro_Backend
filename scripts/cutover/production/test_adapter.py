@@ -1309,6 +1309,47 @@ class ProductionAdapterTests(unittest.TestCase):
                 self.assertFalse(adapter.paths["scheduler_release"].exists())
         self.engine_probe.assert_not_called()
 
+    def test_recovered_sqlite_refuses_coordinate_drift_before_public_ingress(self):
+        import wayback
+
+        journal, adapter, _ = self.started()
+        close = {"version": 1, "run_id": "previous-run", "server_uuid": TARGET_UUID, "gate": "closed",
+                 "coordinate": {"file": "binlog.000001", "position": 1234, "gtid_executed": ""}}
+        state = journal.read()
+        journal.write({**state, "recovered_from": close})
+        adapter.rehold()
+        accurate = {**close, "run_id": IDENTITY.run_id}
+        advanced = {**accurate, "coordinate": {**accurate["coordinate"], "position": 1240}}
+        with self.guard_paths(), patch.object(wayback, "closed_coordinate", return_value=advanced) as live:
+            with self.assertRaisesRegex(guard.Refused, "first verified SQLite reopen"):
+                adapter.preflight_sha256()
+            with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+                adapter.refresh()
+            self.assertFalse(adapter.paths["evidence"].exists())
+            live.return_value = accurate
+            adapter.refresh()
+            # The gate remains closed and names the right UUID. Advance only its position
+            # after the new SQLite workers start, immediately before public opening.
+            self.fpm_probe.side_effect = lambda *args: setattr(live, "return_value", advanced)
+            before = len(self.commands())
+            with self.assertRaisesRegex(UnsafeCutover, "coordinate changed"):
+                adapter.reopen()
+            self.assertEqual(1, self.commands()[before:].count(["replay"]))
+            for name in ("ingress_open", "activation", "scheduler_release", "evidence"):
+                self.assertFalse(adapter.paths[name].exists(), name)
+            completed = journal.directory / "restored-sqlite-live.json"
+            self.assertFalse(completed.exists())
+            self.fpm_probe.side_effect = None
+            live.return_value = accurate
+            adapter.refresh()
+            adapter.reopen(hold_scheduler=True)
+            self.assertTrue(adapter.paths["ingress_open"].exists())
+            self.assertFalse(adapter.paths["scheduler_release"].exists())
+            self.assertEqual(close, guard.read_json(guard.read_protected(completed))["recovered_from"])
+            live.side_effect = AssertionError("The previous MySQL coordinate is no longer the authority")
+            adapter.rehold()
+            adapter.refresh()
+
     def test_staged_reopen_orders_probes_replay_and_scheduler_across_rehold(self):
         journal, adapter = self.held_sqlite()
         initial = journal.path.read_bytes()

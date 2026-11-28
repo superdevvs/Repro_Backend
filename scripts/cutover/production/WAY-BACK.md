@@ -11,6 +11,8 @@ The owner approves each operation. Run the installed controller as root on the a
 
 The root-private owner JSON has the following fields. `database` is the MySQL schema here. In the resulting installed receipt, `database` is the absolute SQLite file path.
 
+Keep the old MySQL server at the recorded binary-log file, position and GTID set through the first public SQLite reopening. Retirement checks the position again on an interrupted handoff using the previous run's archive. Held initialization carries that verified position into the new planned journal. Refresh and first reopen require it through replay and activation. A changed position leaves admissions held for reconciliation. After a successful first reopening the controller writes `restored-sqlite-live.json` in the new journal directory.
+
 ```json
 {
   "version": 1,
