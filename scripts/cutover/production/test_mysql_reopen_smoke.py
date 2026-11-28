@@ -18,6 +18,8 @@ import mysql_reopen_smoke as smoke
 from runner import UnsafeCutover
 
 UUID = "ab12cd34-0000-4000-8000-123456789012"
+BOOT = "db12cd34-0000-4000-8000-123456789012"
+NEXT_BOOT = "db12cd34-0000-4000-8000-123456789013"
 SHA = "f" * 64
 START = 1795824000
 RUN = "reopen-fixture"
@@ -34,7 +36,7 @@ class WindowTests(unittest.TestCase):
         private = tempfile.TemporaryDirectory(dir="/var/lib")
         self.addCleanup(private.cleanup)
         self.root = Path(private.name)
-        self.paths = {key: self.root / key for key in ("wrappers", "wrappers_mysql", "smoke_window", "policy")}
+        self.paths = {key: self.root / key for key in ("wrappers", "wrappers_mysql", "smoke_window", "policy", "journal", "authority")}
         self.config = {
             "paths": self.paths, "mysql": {"target_uuid": UUID, "database": "sample", "smoke_tables": sorted(smoke.TABLES)},
             "smoke": {"client_id": 1, "shoot_id": 9}, "web_user": "www-data", "app_root": str(self.root),
@@ -42,8 +44,12 @@ class WindowTests(unittest.TestCase):
         }
         pinned = live_config.route_sha256(ROUTE_VALUES)
         self.expected = {"engine": "mysql", "server_uuid": UUID, "database": "sample", "route_sha256": pinned}
-        policy = {"version": 1, "identity": {"run_id": RUN}, "mysql_live_config_sha256": pinned}
+        self.boot = BOOT
+        self.identity = {"run_id": RUN, "release_sha": "e" * 40, "artifact_sha256": "a" * 64, "source_sha256": "b" * 64,
+                         "config_sha256": "c" * 64, "target_uuid": UUID}
+        policy = {"version": 1, "identity": self.identity, "machine_id_sha256": "3" * 64, "mysql_live_config_sha256": pinned}
         self.paths["policy"].write_text(json.dumps(policy))
+        self.publish_proof()
         profile = {"engine": "mysql", "action": "queue-worker", "user": "www-data", "group": "www-data",
                    "cwd": str(self.root), "umask": "0022", "env": {}, "timeout_seconds": 300,
                    "argv": ["/usr/bin/php", str(self.root / "artisan"), "cutover:smoke", "--write", "--json"]}
@@ -63,7 +69,34 @@ class WindowTests(unittest.TestCase):
                        "smoke_tables": sorted(smoke.TABLES)},
         }
         self.adapter = SimpleNamespace(config=self.config, paths=self.paths, pinned=SimpleNamespace(run_id=RUN),
-                                       clock=lambda: START, _execute=Mock(side_effect=self.execute))
+                                       clock=lambda: START, _execute=Mock(side_effect=self.execute),
+                                       _verify_authority=self.verify_authority)
+
+    def publish_proof(self, generation=1):
+        observed = {"engine": "mysql", "admissions_open": False, "workers_stopped": True, "deployment_fenced": True,
+                    "mysql_business_activity": False, "sqlite_writable": False, "mysql_writable": True}
+        journal = {"version": 1, "phase": "mysql_authoritative", "pending": None, "identity": self.identity,
+                   "generation": generation, "writes_possible": True, "started_at": START,
+                   "history": [{"action": "promote", "phase": "mysql_authoritative", "after": observed}]}
+        self.paths["journal"].write_text(json.dumps(journal))
+        proof = {"version": 1, "boot_id": self.boot, "engine": "mysql", "database_identity": UUID,
+                 "live_config_sha256": self.expected["route_sha256"], "competing_writer_detected": False,
+                 "policy_sha256": guard.sha256(self.paths["policy"].read_bytes()),
+                 "journal_sha256": guard.sha256(self.paths["journal"].read_bytes()),
+                 "release_sha": self.identity["release_sha"], "artifact_sha256": self.identity["artifact_sha256"]}
+        self.paths["authority"].write_text(json.dumps(proof))
+
+    def verify_authority(self, engine):
+        policy, journal, proof = (guard.read_protected(self.paths[key]) for key in ("policy", "journal", "authority"))
+        try:
+            guard.verify(policy, journal, proof, machine_sha="3" * 64, boot_id=self.boot,
+                         action="web-writer", expected_engine=engine)
+        except guard.Refused as error:
+            raise UnsafeCutover(str(error)) from error
+        return journal, proof
+
+    def fresh_marker(self):
+        self.report["checks"]["value"] = "cutover smoke fedcba9876543210 2026-11-28T00:00:00Z"
 
     def execute(self, argv, deadline):
         self.assertEqual(self.config["commands"]["smoke_write"], argv)
@@ -82,7 +115,7 @@ class WindowTests(unittest.TestCase):
     def audited(self):
         return mysql_probe.load_window(self.config, RUN, SimpleNamespace(sha256=SHA))
 
-    def test_verified_smoke_is_reused_after_reboot_and_recognized_by_the_independent_audit(self):
+    def test_verified_smoke_is_reused_on_same_boot_and_same_authority_and_recognized_by_the_audit(self):
         original = self.attempt(gtid(10), gtid(14))
         self.assertFalse(original["reused"])
         self.assertEqual(0o600, self.paths["smoke_window"].stat().st_mode & 0o777)
@@ -91,9 +124,94 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(again["reused"])
         self.assertEqual(original["report"], again["report"])
         self.assertEqual((1, 1), (len(self.record()["attempts"]), self.record()["reuses"]))
+        self.assertEqual(1, self.record()["attempts"][0]["reuses"])
+        self.assertEqual(BOOT, original["boot_id"])
+        self.assertEqual(guard.sha256(self.paths["authority"].read_bytes()), original["authority_sha256"])
         self.assertEqual(1, self.adapter._execute.call_count)
         with self.assertRaisesRegex(UnsafeCutover, "last write-smoke GTIDs"):
             self.attempt(gtid(11))
+
+    def test_reboot_refuses_stale_proof_then_requires_a_new_smoke_and_holds_short_rollback(self):
+        self.attempt(gtid(10), gtid(14))
+        old_record = self.record()
+        self.boot = NEXT_BOOT
+        with self.assertRaisesRegex(UnsafeCutover, "does not match this boot"):
+            self.attempt(gtid(20))
+        self.assertEqual(1, self.adapter._execute.call_count)
+        self.assertEqual(old_record, self.record())
+
+        self.publish_proof()
+        self.fresh_marker()
+        fresh = self.attempt(gtid(20), gtid(24))
+        self.assertFalse(fresh["reused"])
+        self.assertEqual(NEXT_BOOT, fresh["boot_id"])
+        self.assertNotEqual(old_record["attempts"][0]["authority_sha256"], fresh["authority_sha256"])
+        self.assertEqual(old_record["attempts"][0], self.record()["attempts"][0])
+        self.assertTrue(self.attempt(gtid(30))["reused"])
+        self.assertEqual(2, self.adapter._execute.call_count)
+        self.assertEqual([0, 1], [a["reuses"] for a in self.record()["attempts"]])
+        with self.assertRaisesRegex(guard.Refused, "Multiple verified.*full reverse export"):
+            self.audited()
+
+    def test_same_boot_changed_proof_runs_fresh_and_does_not_credit_a_repeated_marker(self):
+        previous = self.attempt(gtid(10), gtid(14))
+        self.publish_proof(generation=2)
+        with self.assertRaisesRegex(UnsafeCutover, "repeated an earlier application marker"):
+            self.attempt(gtid(20), gtid(24))
+        self.assertIsNone(self.record()["attempts"][-1]["report"])
+        self.assertEqual(previous["gtid_after"], self.audited()[2]["gtid_after"])
+        self.fresh_marker()
+        fresh = self.attempt(gtid(30), gtid(34))
+        self.assertFalse(fresh["reused"])
+        self.assertEqual(previous["boot_id"], fresh["boot_id"])
+        self.assertNotEqual(previous["authority_sha256"], fresh["authority_sha256"])
+        self.assertEqual(3, self.adapter._execute.call_count)
+        with self.assertRaisesRegex(guard.Refused, "Multiple verified"):
+            self.audited()
+
+    def test_authority_change_while_reading_start_gtids_prevents_cached_reuse_and_execution(self):
+        self.attempt(gtid(10), gtid(14))
+        saved = self.record()
+
+        def changed():
+            self.publish_proof(generation=2)
+            return gtid(20)
+
+        with self.assertRaisesRegex(UnsafeCutover, "authority changed while reading"):
+            smoke.run(self.adapter, self.expected, SHA, START + 60, changed)
+        self.assertEqual(saved, self.record())
+        self.assertEqual(1, self.adapter._execute.call_count)
+
+    def test_changed_authority_while_command_ran_leaves_attempt_unverified(self):
+        def success_and_new_proof(*args):
+            result = self.execute(*args)
+            self.publish_proof(generation=2)
+            return result
+        self.adapter._execute.side_effect = success_and_new_proof
+        with self.assertRaisesRegex(UnsafeCutover, "authority changed during"):
+            self.attempt(gtid(10), gtid(14))
+        unknown = self.record()["attempts"][0]
+        self.assertEqual(gtid(14), unknown["gtid_after"])
+        self.assertIsNone(unknown["report"])
+        self.assertIsNone(self.audited())
+        self.adapter._execute.side_effect = self.execute
+        self.assertFalse(self.attempt(gtid(15), gtid(19))["reused"])
+        self.assertEqual(gtid(15), self.audited()[2]["gtid_before"])
+
+    def test_latest_failed_attempt_prevents_reuse_even_if_old_authority_returns(self):
+        old = self.attempt(gtid(10), gtid(14))
+        self.publish_proof(generation=2)
+        self.adapter._execute.side_effect = lambda *args: (1, json.dumps(self.report))
+        with self.assertRaisesRegex(UnsafeCutover, "exited 1"):
+            self.attempt(gtid(16), gtid(20))
+        self.publish_proof(generation=1)
+        self.fresh_marker()
+        self.adapter._execute.side_effect = self.execute
+        result = self.attempt(gtid(22), gtid(26))
+        self.assertEqual(result["authority_sha256"], old["authority_sha256"])
+        self.assertFalse(result["reused"])
+        self.assertEqual(3, len(self.record()["attempts"]))
+        self.assertEqual(3, self.adapter._execute.call_count)
 
     def test_audit_refuses_empty_binlog_for_a_successful_smoke(self):
         self.attempt(gtid(10), gtid(14))
@@ -158,6 +276,11 @@ class WindowTests(unittest.TestCase):
                        lambda r: r["binding"]["target"].update(route_sha256="0" * 64),
                        lambda r: r["binding"]["fixtures"].update(shoot_id=99),
                        lambda r: r["attempts"].append(r["attempts"][0].copy()),
+                       lambda r: r["attempts"][0].pop("boot_id"),
+                       lambda r: r["attempts"][0].pop("authority_sha256"),
+                       lambda r: r["attempts"][0].update(boot_id="stale"),
+                       lambda r: r["attempts"][0].update(authority_sha256=""),
+                       lambda r: r["attempts"][0].update(reuses=1),
                        lambda r: r["attempts"][0].update(gtid_before=gtid(15))):
             with self.subTest(change=change):
                 modified = copy.deepcopy(saved)

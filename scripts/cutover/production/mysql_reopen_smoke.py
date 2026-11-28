@@ -96,18 +96,24 @@ def verify_report(report, bound, profile, app_root, started_at, finished_at):
     require(started_at <= stamp.timestamp() <= finished_at, "The smoke edit was not generated during this attempt")
 
 
-def verified_window(record, bound, profile, app_root):
-    """Validate the entire history. An interrupted or failed attempt never supplies an audit window."""
+def verified_attempts(record, bound, profile, app_root):
+    """Validate every attempt, including incomplete writes, without widening any GTID interval."""
     require(type(record.get("version")) is int and record["version"] == VERSION and record.get("binding") == bound,
             "Write-smoke evidence does not belong to this run, receipt, target, route, fixtures and wrapper")
     attempts = record.get("attempts")
     require(isinstance(attempts, list) and attempts and type(record.get("reuses")) is int and record["reuses"] >= 0,
             "Malformed write-smoke attempt history")
     previous = None
-    verified = None
+    verified = []
+    markers = set()
+    reuses = 0
     for attempt in attempts:
-        require(isinstance(attempt, dict) and attempt.keys() == {"gtid_before", "gtid_after", "started_at", "finished_at", "report"}
-                and verified is None, "Malformed or ambiguous write-smoke attempt")
+        require(isinstance(attempt, dict) and attempt.keys() == {
+            "boot_id", "authority_sha256", "gtid_before", "gtid_after", "started_at", "finished_at", "report", "reuses"
+        }, "Malformed write-smoke attempt or missing boot and authority binding")
+        require(host.guard.valid_uuid(attempt["boot_id"]) and host.guard.matches(r"[0-9a-f]{64}", attempt["authority_sha256"])
+                and type(attempt["reuses"]) is int and attempt["reuses"] >= 0, "Malformed write-smoke authority or reuse count")
+        reuses += attempt["reuses"]
         started, finished = attempt["started_at"], attempt["finished_at"]
         require(type(started) is int and (finished is None or (type(finished) is int and finished >= started)),
                 "Malformed write-smoke timestamps")
@@ -121,9 +127,26 @@ def verified_window(record, bound, profile, app_root):
         if attempt["report"] is not None:
             require(after is not None and not after.issubset(before), "The write smoke has no committed GTIDs")
             verify_report(attempt["report"], bound, profile, app_root, started, finished)
-            verified = attempt
-    require(not record["reuses"] or verified is not None, "An incomplete write smoke cannot have been reused")
+            marker = attempt["report"]["checks"]["value"]
+            require(marker not in markers, "A write-smoke attempt repeated an earlier application marker")
+            markers.add(marker)
+            verified.append(attempt)
+        else:
+            require(attempt["reuses"] == 0, "An incomplete write smoke cannot have been reused")
+    require(record["reuses"] == reuses, "Write-smoke reuse counts disagree")
     return verified
+
+
+def verified_window(record, bound, profile, app_root):
+    """The rollback classifier currently proves exactly one completed smoke interval."""
+    windows = verified_attempts(record, bound, profile, app_root)
+    require(len(windows) <= 1, "Multiple verified write-smoke windows require a full reverse export")
+    return windows[0] if windows else None
+
+
+def current_authority(adapter):
+    _, proof = adapter._verify_authority("mysql")
+    return host.guard.read_json(proof)["boot_id"], host.guard.sha256(proof)
 
 
 def read(path):
@@ -152,21 +175,25 @@ def run(adapter, expected, receipt_sha256, deadline, read_gtid):
     bound = binding(config, expected, adapter.pinned.run_id, receipt_sha256, profile)
     path = adapter.paths["smoke_window"]
     record = read(path)
-    previous = None if record is None else verified_window(record, bound, profile, config["app_root"])
+    verified = [] if record is None else verified_attempts(record, bound, profile, config["app_root"])
+    authority = current_authority(adapter)
     start = read_gtid()
     current = gtid_set(start)
+    require(current_authority(adapter) == authority, "The MySQL authority changed while reading the starting GTID set")
     if record is None:
         record = {"version": VERSION, "binding": bound, "attempts": [], "reuses": 0}
     else:
         last = record["attempts"][-1]
         require(gtid_set(last["gtid_after"] if last["gtid_after"] is not None else last["gtid_before"]).issubset(current),
                 "The target no longer contains the last write-smoke GTIDs")
-    if previous is not None:
-        record["reuses"] += 1
-        _save(path, record)
-        return {**previous, "reused": True}
+        if last["report"] is not None and (last["boot_id"], last["authority_sha256"]) == authority:
+            last["reuses"] += 1
+            record["reuses"] += 1
+            _save(path, record)
+            return {**last, "reused": True}
 
-    attempt = {"gtid_before": start, "gtid_after": None, "started_at": int(adapter.clock()), "finished_at": None,
+    attempt = {"boot_id": authority[0], "authority_sha256": authority[1], "reuses": 0,
+               "gtid_before": start, "gtid_after": None, "started_at": int(adapter.clock()), "finished_at": None,
                "report": None}
     record["attempts"].append(attempt)
     _save(path, record)  # A crash or an unreported application write can never erase this intent.
@@ -182,6 +209,9 @@ def run(adapter, expected, receipt_sha256, deadline, read_gtid):
     report = evidence.last_json_line(output)
     verify_report(report, bound, profile, config["app_root"], attempt["started_at"], attempt["finished_at"])
     require(not after.issubset(current), "The write smoke has no committed GTIDs")
+    require(all(item["report"]["checks"]["value"] != report["checks"]["value"] for item in verified),
+            "A fresh write-smoke attempt repeated an earlier application marker")
+    require(current_authority(adapter) == authority, "The MySQL authority changed during the write smoke")
     attempt["report"] = report
     _save(path, record)
     return {**attempt, "reused": False}

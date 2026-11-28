@@ -598,9 +598,13 @@ runbook text.
 scans from `armed_from` even after activation, and lists every app-schema
 transaction with its classification, counts, boundary, smoke window and event count.
 A version 2 smoke record binds the run and receipt to the target, pinned route, fixture IDs and installed wrapper.
-Each attempt persists its starting GTID set before the application runs. An interrupted or failed attempt stays
-in the record. A verified attempt stores the ending GTID set and the application's validated report. A later
-reopen records reuse of that result after confirming the server still has its GTIDs.
+Each attempt records its boot ID, verified authority-proof SHA-256 and starting GTID set before the application
+runs. Interrupted and failed attempts stay in the record. A successful attempt records its ending GTID set and
+the application's validated report after rechecking the same authority. A retry may reuse the latest successful
+attempt on the same boot and authority only if the target still has its GTIDs. A new boot, changed proof or latest
+failed attempt requires a fresh marked edit and job. The short rollback audit currently supports one verified
+window. Multiple verified windows or an older version 2 record without boot binding require the full reverse
+export and independent verification.
 
 The audit credits the verified attempt only when its GTID difference contains the expected application writes
 in order. The fixture update touches `users`, `shoots` and `aryeo_changes` in one transaction. The database
