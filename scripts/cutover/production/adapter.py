@@ -2033,7 +2033,10 @@ class ProductionAdapter:
 
     def _close_reopened(self) -> None:
         """Withdraw admissions first and attempt every queue pause and group stop."""
-        for name in ("ingress_open", "scheduler_release", "activation"):
+        # A restarted or manually invoked worker can acquire a fresh shared lease
+        # from this boot's authority proof even when the ingress and scheduler are held.
+        # Revoke it before taking down the running groups. Refresh will remeasure it.
+        for name in ("evidence", "ingress_open", "scheduler_release", "activation"):
             _remove(self.paths[name])
         commands = self.config["commands"]
         errors = []
@@ -2127,9 +2130,9 @@ class ProductionAdapter:
     def release_scheduler(self) -> None:
         """Release only a fully reopened, still-verified SQLite host, including replay pass two."""
         with self.journal.acquire() as (state, _):
-            journal, proof = self._verify_sqlite_authority()
             # A repeat invocation must also leave the scheduler held on a failed check.
             _remove(self.paths["scheduler_release"])
+            journal, proof = self._verify_sqlite_authority()
             activation = guard.read_json(self._protected(self.paths["activation"], "activation receipt"))
             _require(activation == self._activation_record(journal, proof),
                      "The SQLite reopen has not completed on this boot")

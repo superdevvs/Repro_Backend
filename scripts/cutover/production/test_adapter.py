@@ -1245,6 +1245,8 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertEqual([["pause", queue] for queue in QUEUES] + [["stop"]], self.commands()[before:])
         self.assertTrue(all(not adapter.paths[name].exists() for name in ("ingress_open", "activation", "scheduler_release")))
         self.assertEqual(initial, journal.path.read_bytes())
+        with self.guard_paths(), self.assertRaises(FileNotFoundError):
+            guard.check("queue-worker", "sqlite")
         with self.assertRaises(UnsafeCutover):
             adapter.release_scheduler()
         release.touch()
@@ -1263,8 +1265,18 @@ class ProductionAdapterTests(unittest.TestCase):
         commands = self.commands()[before:]
         self.assertEqual(1, commands.count(["replay"]))
         self.assertEqual(["stop"], commands[-1])
+        with self.guard_paths(), self.assertRaises(FileNotFoundError):
+            guard.check("queue-worker", "sqlite")
         for name in ("ingress_open", "activation", "scheduler_release"):
             self.assertFalse(adapter.paths[name].exists(), name)
+
+    def test_failed_scheduler_release_withdraws_old_marker_before_authority_check(self):
+        _, adapter = self.held_sqlite()
+        adapter.paths["scheduler_release"].touch()
+        adapter.paths["evidence"].unlink()
+        with self.assertRaisesRegex(UnsafeCutover, "authority proof"):
+            adapter.release_scheduler()
+        self.assertFalse(adapter.paths["scheduler_release"].exists())
 
     def test_failed_refresh_withdraws_old_admission_proof_on_the_held_host(self):
         _, adapter = self.held_sqlite()
@@ -1330,10 +1342,13 @@ class ProductionAdapterTests(unittest.TestCase):
         self.assertFalse((self.root / "ingress" / "open").exists())
         blocker.unlink()
 
+        adapter.rehold()
+        self.assertIsNotNone(worker.poll(), "Rehold did not stop the worker the failed reopen started")
+        with self.guard_paths():
+            adapter.refresh()
         before = len(self.commands())
         adapter.reopen()
-        self.assertIsNotNone(worker.poll(), "The retry did not stop the worker the failed reopen started")
-        self.assertEqual([["stop"], ["replay"]] + [["resume", queue] for queue in QUEUES] + [["start"], ["replay"]], self.commands()[before:])
+        self.assertEqual([["replay"]] + [["resume", queue] for queue in QUEUES] + [["start"], ["replay"]], self.commands()[before:])
         self.assertTrue((self.root / "ingress" / "open").exists())
         self.assertTrue((self.root / "run" / "verified-activation.json").exists())
         self.assertTrue((self.root / "etc" / "active").exists())

@@ -1711,23 +1711,21 @@ guard, then `cli.py reopen`. There is no automatic reopen at boot (owner
 decision). `refresh` refuses while the open marker exists, because the guard
 revokes the current proof before it measures the host. `refresh` publishes
 the deploy fence before it measures and counts deploys as fenced only when
-that marker exists. In `planned`, deploys stay held (the policy pins the
-release) and reopen writes no activation receipt. After a reopened
-rollback, `reopen` lifts the fence once activation is verified. `refresh` measures the live
-configuration's route hash, and the guard compares it with the policy's pin (see "Observation and
-authority" above).
+that marker exists. The deployment fence stays in place until retirement. The guard compares the measured
+configuration route hash with the policy pin.
 
-**Live check on `reopen`.** The authority proof was measured earlier, and
-the guard does not look at the host again. `reopen` therefore observes the
-host before it lets any writer in and refuses unless SQLite is the only
-writable engine. If the check after opening fails, it removes the open
-marker, pauses the queues and stops the workers again; the deploy fence
-and the missing activation receipt keep deploys held.
+**SQLite reopening.** The controller checks the pinned cache and wrapper profiles,
+performs the first replay, starts the workers and checks the FastCGI route. It then
+opens ingress, performs the second replay and records activation. The scheduler
+release comes last. With `--hold-scheduler`, the operator issues `release-scheduler`
+after reconciliation.
 
-**Retrying `reopen`.** If a reopen fails after it started a worker group,
-those wrappers keep their shared writer lease. Run `cli.py reopen` again: it
-stops any running worker group first (`stop_workers`), waits for the writer
-lock, then resumes the queues and starts the workers in order.
+**Interrupted or failed reopening.** Use `rehold` to revoke writer authority,
+hold ingress and the scheduler, pause queues, stop workers, and drain the writer
+lease. Verify the intended SQLite route, then run `refresh` and `reopen`. A caught
+failure during replay or activation already starts the hold. The same sequence
+also recovers a process killed after it opened ingress. A completed `refresh` is
+required before wrapped writers can start again.
 
 **Watchdog run time.** A deadline tick runs the whole rollback, so the
 service allows 25 minutes (`TimeoutStartSec`). While a tick runs, an
