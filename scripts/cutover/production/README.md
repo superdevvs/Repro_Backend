@@ -1689,7 +1689,12 @@ Every option must be written in `host.json`; none is filled in.
 | `adopt_external_hold` | `false` | Admissions closed outside the journal are refused, not adopted |
 | `require_long_job_predrain` | `true` | Long-job workers must be stopped before the hold (the 9:20 pm step) |
 | `max_drain_seconds` | `600` | Longest wait for admitted writers after the hold |
-| `unattended_reopen` | `false` | After an unattended rollback, reopen SQLite in the same unit (design 4.4; owner decision 7) |
+| `unattended_reopen` | `false` | When enabled before hold approval, a watchdog or matching expiry timer that completes prewrite rollback immediately runs the verified SQLite reopen under the same controller lock. The scheduler stays held for reconciliation and explicit release. |
+
+A manual abort leaves admissions held, including when the watchdog finishes an interrupted manual abort.
+A stale timer or later tick cannot open a completed rollback. If an automatic reopen check fails,
+the controller withdraws admission proof and keeps queues and ingress held. After correcting
+the failed check, use the guarded refresh and SQLite reopen procedures below.
 
 ## Commands
 
@@ -1736,8 +1741,8 @@ failure during replay or activation already starts the hold. The same sequence
 also recovers a process killed after it opened ingress. A completed `refresh` is
 required before wrapped writers can start again.
 
-**Watchdog run time.** A deadline tick runs the whole rollback, so the
-service allows 25 minutes (`TimeoutStartSec`). While a tick runs, an
+**Watchdog run time.** A deadline tick runs the rollback and any approved
+automatic SQLite reopen. The service allows 30 minutes (`TimeoutStartSec`). While a tick runs, an
 operator command is refused with "Another host operator holds the cutover
 lock"; check `systemctl status repro-cutover-watchdog.service` and retry.
 

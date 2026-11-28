@@ -110,6 +110,18 @@ class CutoverTest(unittest.TestCase):
     def new_runner(self, **options):
         return Runner(self.journal, self.identity, self.adapter, lambda: self.now, **options)
 
+    def test_watchdog_never_reopens_an_inconsistent_postwrite_phase(self):
+        runner = self.new_runner(after_unattended_rollback=lambda *args: self.fail("unexpected reopen"))
+        held = self.hold(runner)
+        self.now += Runner.DECISION_SECONDS
+        for phase in ("mysql_authoritative", "recovery_required"):
+            with self.subTest(phase=phase):
+                self.journal.write({**held, "phase": phase, "writes_possible": False})
+                with self.assertRaisesRegex(UnsafeCutover, "separately verified recovery"):
+                    runner.perform("tick")
+                self.assertTrue(self.journal.read()["writes_possible"])
+                self.assertEqual("recovery_required", self.journal.read()["phase"])
+
     def hold(self, runner=None):
         runner = runner or self.runner
         return runner.perform("hold", runner.approval_request("hold"))

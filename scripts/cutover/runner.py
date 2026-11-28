@@ -408,7 +408,8 @@ class Runner:
     def __init__(self, journal: Journal, identity: Identity, adapter: Adapter, clock: Callable[[], float] = time.time,
                  *, max_drain_seconds: float | None = None, controller_wait_seconds: float | None = None,
                  separate_freeze_approval: bool = False, adopt_external_hold: bool = False,
-                 require_long_job_predrain: bool = True):
+                 require_long_job_predrain: bool = True,
+                 after_unattended_rollback: Callable[[dict, Lease], None] | None = None):
         """Owner choices are explicit options; the defaults are the conservative plan defaults.
 
         separate_freeze_approval: False means the approved hold ("start freeze")
@@ -417,6 +418,8 @@ class Runner:
         are refused loudly instead of being adopted into the outage clock.
         require_long_job_predrain: True means long-job queues must already be
         paused and drained (the 9:20 pm step) before the hold starts the clock.
+        after_unattended_rollback runs under the rollback lease, with SQLite
+        authority committed, only for a watchdog or challenge-bound timer.
         """
         self.journal = journal
         self.identity = identity
@@ -429,6 +432,7 @@ class Runner:
         self.separate_freeze_approval = separate_freeze_approval
         self.adopt_external_hold = adopt_external_hold
         self.require_long_job_predrain = require_long_job_predrain
+        self.after_unattended_rollback = after_unattended_rollback
 
     def initialize(self, fence_deploys: Callable[[], None] | None = None) -> dict:
         """Commit a planned run.
@@ -634,13 +638,16 @@ class Runner:
         state["phase"] = "recovery_required"
         self.journal.write(state)
 
-    def _rollback(self, state: dict, lease: Lease, before: Observation, now: int) -> None:
+    def _rollback(self, state: dict, lease: Lease, before: Observation, now: int, *, unattended: bool) -> None:
         if state["writes_possible"] or before.mysql_writable or before.mysql_business_activity:
             self._record_recovery(state)
             raise UnsafeCutover("MySQL writes may exist. Use separately verified recovery")
         if state["pending"] is not None:
+            if state["pending"]["action"] == "abort":
+                # A watchdog finishing an interrupted manual (or older unlabelled) abort keeps it held.
+                unattended = unattended and state["pending"].get("unattended") is True
             state["history"].append({**state["pending"], "phase": "interrupted"})
-        self._intent(state, "abort", before, now)
+        self._intent(state, "abort", before, now, unattended=unattended)
         # Even a late watchdog must attempt recovery with a bounded fresh budget.
         rollback_deadline = max(state["started_at"] + self.WINDOW_SECONDS, now + self.ROLLBACK_SECONDS)
         # From any held phase: keep admissions closed, stop workers and wait for
@@ -651,6 +658,9 @@ class Runner:
         self._hold_scheduler(state, lease, rollback_deadline)
         self.adapter.seal_sqlite(lease, rollback_deadline)
         self._publish_authority(state, lease, "sqlite", rollback_deadline)
+        if unattended and self.after_unattended_rollback is not None:
+            # Still under the same controller lock, after the SQLite journal and its proof are durable.
+            self.after_unattended_rollback(state, lease)
 
     def perform(self, action: str, approval: Approval | None = None, *,
                 abort_if: tuple[str, str] | None = None, hold_preflight: Callable[[], None] | None = None) -> dict:
@@ -671,6 +681,9 @@ class Runner:
             clock_reversed = now < state["last_observed_at"]
             phase = state["phase"]
 
+            if phase in {"mysql_authoritative", "recovery_required"} and state["writes_possible"] is not True:
+                self._record_recovery(state)
+                raise UnsafeCutover("Post-write authority has an inconsistent journal. Use separately verified recovery")
             if (phase == "mysql_authoritative" and state["writes_possible"] is True
                     and state["pending"] is None
                     and (before.sealed("mysql") or before.mysql_live() or before.mysql_held())):
@@ -702,7 +715,8 @@ class Runner:
             if started is not None and (
                 clock_reversed or now >= started + self.DECISION_SECONDS or action == "abort"
             ):
-                self._rollback(state, lease, before, state["last_observed_at"])
+                unattended = phase in self.HELD_PHASES and (action == "tick" or abort_if is not None)
+                self._rollback(state, lease, before, state["last_observed_at"], unattended=unattended)
                 return state
             if action == "tick":
                 if started is None:

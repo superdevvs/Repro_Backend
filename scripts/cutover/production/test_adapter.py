@@ -1170,6 +1170,117 @@ class ProductionAdapterTests(unittest.TestCase):
         runner.perform("abort")
         return journal, adapter
 
+    def held_for_unattended_rollback(self, enabled=True):
+        config = self.config()
+        config["options"]["unattended_reopen"] = enabled
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.started()
+        held = runner.perform("hold", runner.approval_request("hold"))
+        return journal, adapter, runner, held
+
+    def test_unattended_rollback_reopens_with_option(self):
+        journal, adapter, runner, held = self.held_for_unattended_rollback()
+        runner.clock = lambda: held["started_at"] + Runner.DECISION_SECONDS
+        verify = adapter._verify_sqlite_authority
+
+        def check_lease_and_commit():
+            self.assertEqual("sqlite_authoritative", journal.read()["phase"])
+            with self.assertRaisesRegex(UnsafeCutover, "Another host operator"):
+                with journal.acquire():
+                    self.fail("another operator acquired the rollback controller lock")
+            return verify()
+
+        with patch.object(adapter, "_verify_sqlite_authority", side_effect=check_lease_and_commit):
+            result = cli.dispatch(cli.arguments(["tick"]), runner, adapter)
+        self.assertEqual("sqlite_authoritative", result["state"]["phase"])
+        self.assertTrue(adapter.observe().sqlite_live())
+        self.assertEqual(2, self.commands().count(["replay"]))
+        self.assertTrue(adapter.paths["activation"].exists())
+        self.assertFalse(adapter.paths["scheduler_release"].exists())
+        self.assertEqual(result["state"], journal.read())
+
+    def test_only_matching_timer_reopens_once_even_after_rehold(self):
+        journal, adapter, runner, held = self.held_for_unattended_rollback()
+
+        def timer(challenge):
+            return cli.dispatch(cli.arguments(["abort", "--if-phase", "holding", "--if-challenge", challenge]),
+                                runner, adapter)["state"]
+
+        runner.clock = lambda: held["started_at"] + Runner.DECISION_SECONDS
+        self.assertEqual(held, timer("0" * 32))
+        self.assertEqual("sqlite_authoritative", timer(held["challenge"])["phase"])
+        self.assertTrue(adapter.observe().sqlite_live())
+        self.assertFalse(adapter.paths["scheduler_release"].exists())
+        adapter.rehold()
+        terminal = journal.path.read_bytes()
+        commands = self.commands()
+        timer(held["challenge"])
+        runner.perform("tick")
+        self.assertEqual((terminal, commands), (journal.path.read_bytes(), self.commands()))
+        self.assertFalse(adapter.paths["ingress_open"].exists())
+
+    def test_no_reopen_without_option(self):
+        _, adapter, runner, held = self.held_for_unattended_rollback(False)
+        runner.clock = lambda: held["started_at"] + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", runner.perform("tick")["phase"])
+        self.assertFalse(adapter.paths["ingress_open"].exists())
+        self.engine_probe.assert_not_called()
+
+    def test_no_reopen_after_manual_abort_even_at_deadline(self):
+        _, adapter, runner, held = self.held_for_unattended_rollback()
+        runner.clock = lambda: held["started_at"] + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", runner.perform("abort")["phase"])
+        runner.perform("tick")
+        self.assertFalse(adapter.paths["ingress_open"].exists())
+        self.engine_probe.assert_not_called()
+
+    def test_watchdog_completes_interrupted_manual_abort_without_reopening(self):
+        journal, adapter, runner, held = self.held_for_unattended_rollback()
+        with patch.object(adapter, "seal_sqlite", side_effect=UnsafeCutover("interrupted manual abort")):
+            with self.assertRaisesRegex(UnsafeCutover, "interrupted manual"):
+                runner.perform("abort")
+        self.assertFalse(journal.read()["pending"]["unattended"])
+        runner.clock = lambda: held["started_at"] + Runner.DECISION_SECONDS
+        self.assertEqual("sqlite_authoritative", runner.perform("tick")["phase"])
+        self.assertFalse(adapter.paths["ingress_open"].exists())
+        self.engine_probe.assert_not_called()
+
+    def test_failed_reopen_check_keeps_site_closed(self):
+        journal, adapter, runner, held = self.held_for_unattended_rollback()
+        self.engine_probe.side_effect = UnsafeCutover("profile refused")
+        with self.assertRaisesRegex(UnsafeCutover, "profile refused"):
+            runner.perform("abort", abort_if=("holding", held["challenge"]))
+        self.assertEqual("sqlite_authoritative", journal.read()["phase"])
+        self.assertEqual(["stop"], self.commands()[-1])
+        for name in ("evidence", "activation", "ingress_open", "scheduler_release"):
+            self.assertFalse(adapter.paths[name].exists(), name)
+        runner.perform("tick")
+        self.engine_probe.assert_called_once()
+
+    def test_failed_automatic_fastcgi_check_after_worker_start_revokes_admission(self):
+        _, adapter, runner, held = self.held_for_unattended_rollback()
+        self.fpm_probe.side_effect = UnsafeCutover("FastCGI refused")
+        with self.assertRaisesRegex(UnsafeCutover, "FastCGI refused"):
+            runner.perform("abort", abort_if=("holding", held["challenge"]))
+        commands = self.commands()
+        self.assertIn(["start"], commands)
+        self.assertEqual([["pause", q] for q in QUEUES] + [["stop"]], commands[commands.index(["start"]) + 1:])
+        self.assertEqual(1, commands.count(["replay"]))
+        for name in ("evidence", "activation", "ingress_open", "scheduler_release"):
+            self.assertFalse(adapter.paths[name].exists(), name)
+
+    def test_option_enabled_after_hold_was_approved_refuses_automatic_reopen(self):
+        _, _, _, held = self.held_for_unattended_rollback(False)
+        config = self.config()
+        config["options"]["unattended_reopen"] = True
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        journal, adapter, runner = self.host()
+        with self.assertRaisesRegex(UnsafeCutover, "changed since hold approval"):
+            runner.perform("abort", abort_if=("holding", held["challenge"]))
+        self.assertEqual("sqlite_authoritative", journal.read()["phase"])
+        for name in ("evidence", "activation", "ingress_open", "scheduler_release"):
+            self.assertFalse(adapter.paths[name].exists(), name)
+
     def test_reopen_refuses_mysql_cache_wrong_hash_mysql_wrappers_or_fallback(self):
         _, adapter = self.held_sqlite()
         wrappers = adapter.paths["wrappers"]
@@ -2632,10 +2743,10 @@ class UnitFileTests(unittest.TestCase):
     def test_watchdog_service_outlasts_the_controller_wait_and_a_full_rollback(self):
         # A deadline tick runs the whole rollback (close, drain, unseal, publish). systemd must not
         # kill it inside the runner's own bounds: the controller-lock wait, the longest rollback
-        # budget the runner grants, and one more maximal host command after that budget.
+        # budget the runner grants, an optional SQLite reopen and a final maximal host command.
         service = self.entries(self.HERE / "systemd" / "repro-cutover-watchdog.service")
         budget = max(Runner.WINDOW_SECONDS - Runner.DECISION_SECONDS, Runner.ROLLBACK_SECONDS)
-        required = Runner.CONTROLLER_WAIT_SECONDS + budget + production.MAX_COMMAND_SECONDS
+        required = Runner.CONTROLLER_WAIT_SECONDS + budget + 2 * production.MAX_COMMAND_SECONDS
         self.assertEqual(1, len(service["TimeoutStartSec"]))
         self.assertGreaterEqual(self.seconds(service["TimeoutStartSec"][0]), required)
 

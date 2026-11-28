@@ -520,6 +520,7 @@ def runner_for(config: dict, journal: Journal, adapter: "ProductionAdapter", clo
         separate_freeze_approval=options["separate_freeze_approval"],
         adopt_external_hold=options["adopt_external_hold"],
         require_long_job_predrain=options["require_long_job_predrain"],
+        after_unattended_rollback=adapter.reopen_after_rollback if options["unattended_reopen"] else None,
     )
 
 
@@ -2199,38 +2200,58 @@ class ProductionAdapter:
     def reopen(self, *, hold_scheduler: bool = False) -> None:
         """Open verified SQLite admissions and replay captured messages under the controller lock."""
         with self.journal.acquire() as (state, lease):
-            journal, proof = self._verify_sqlite_authority()
-            self._refuse_open_ingress()
-            _remove(self.paths["scheduler_release"])
-            _remove(self.paths["activation"])
-            deadline = self.clock() + self.config["command_seconds"]
-            if self.processes(self.config["writer_processes"]):
-                for argv in self.config["commands"]["stop_workers"]:
-                    self._run(argv, deadline)
-                self._wait_absent(self.config["writer_processes"], deadline,
-                                  "Workers started by an earlier reopen are still running")
-            self.journal.drain_writers(lease, self.config["command_seconds"])
-            expected = self._sqlite_reopen_checks(state)
-            for context in self._profile_contexts("sqlite"):
-                self._profile_probe(context, expected, deadline)
-            self._retire_mysql_receipt()
-            for path in self.config["studio_pause_files"]:
-                _remove(Path(path))
-            self.journal.release_writers(lease)
-            commands = self.config["commands"]
-            try:
-                self._run(commands["telnyx_replay"], deadline)
-                for queue in self.config["queues"]:
-                    self._run(commands["queue_resume"] + [queue], deadline)
-                for argv in commands["start_workers"]:
-                    self._run(argv, deadline)
-                self._fastcgi_probe(expected, deadline)
-                _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
-                self._run(commands["telnyx_replay"], deadline)
-                self._sqlite_reopen_checks(state, reopened=True)
-                _write_atomic(self.paths["activation"], self._activation_record(journal, proof), 0o600)
-                if not hold_scheduler:
-                    _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": "sqlite"}, 0o600)
-            except BaseException:
+            self._reopen_sqlite_locked(state, lease, hold_scheduler=hold_scheduler)
+
+    def reopen_after_rollback(self, state: dict, lease: Lease) -> None:
+        """Continue only the just-committed prewrite rollback, holding scheduler release for an operator."""
+        lease.require_writers_drained()
+        try:
+            _require(state["phase"] == "sqlite_authoritative" and state["writes_possible"] is False
+                     and state["pending"] is None and self.journal.read() == state,
+                     "Unattended reopen requires the completed SQLite rollback under its original lease")
+            _require(self.preflight_sha256() == state["preflight_sha256"],
+                     "The host configuration or unattended reopen option changed since hold approval")
+            self._reopen_sqlite_locked(state, lease, hold_scheduler=True)
+        except BaseException:
+            if lease.writers is not None:
+                # Early checks failed before writer admission. Revoke the newly published proof so even
+                # a restarted worker cannot be admitted when the rollback's exclusive lease is released.
                 self._close_reopened()
-                raise
+            raise
+
+    def _reopen_sqlite_locked(self, state: dict, lease: Lease, *, hold_scheduler: bool) -> None:
+        journal, proof = self._verify_sqlite_authority()
+        self._refuse_open_ingress()
+        _remove(self.paths["scheduler_release"])
+        _remove(self.paths["activation"])
+        deadline = self.clock() + self.config["command_seconds"]
+        if self.processes(self.config["writer_processes"]):
+            for argv in self.config["commands"]["stop_workers"]:
+                self._run(argv, deadline)
+            self._wait_absent(self.config["writer_processes"], deadline,
+                              "Workers started by an earlier reopen are still running")
+        self.journal.drain_writers(lease, self.config["command_seconds"])
+        expected = self._sqlite_reopen_checks(state)
+        for context in self._profile_contexts("sqlite"):
+            self._profile_probe(context, expected, deadline)
+        self._retire_mysql_receipt()
+        for path in self.config["studio_pause_files"]:
+            _remove(Path(path))
+        self.journal.release_writers(lease)
+        commands = self.config["commands"]
+        try:
+            self._run(commands["telnyx_replay"], deadline)
+            for queue in self.config["queues"]:
+                self._run(commands["queue_resume"] + [queue], deadline)
+            for argv in commands["start_workers"]:
+                self._run(argv, deadline)
+            self._fastcgi_probe(expected, deadline)
+            _write_atomic(self.paths["ingress_open"], {"version": 1, "engine": "sqlite"}, 0o644)
+            self._run(commands["telnyx_replay"], deadline)
+            self._sqlite_reopen_checks(state, reopened=True)
+            _write_atomic(self.paths["activation"], self._activation_record(journal, proof), 0o600)
+            if not hold_scheduler:
+                _write_atomic(self.paths["scheduler_release"], {"version": 1, "engine": "sqlite"}, 0o600)
+        except BaseException:
+            self._close_reopened()
+            raise
