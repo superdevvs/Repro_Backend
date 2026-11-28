@@ -30,6 +30,8 @@ def archive_for(adapter):
 
     path = adapter.journal.directory / "next-run.json"
     marker = guard.read_json(guard.read_protected(path))
+    guard.require(guard.read_protected(adapter.paths["policy"]) == adapter.policy_raw,
+                  "Installed recovery policy changed before initialization")
     guard.require(marker.keys() == {"version", "run_id", "previous_run_id", "archive", "policy_sha256"}
                   and marker["run_id"] == adapter.pinned.run_id
                   and marker["previous_run_id"] != marker["run_id"]
@@ -79,6 +81,7 @@ def held_preflight(adapter, lease):
     guard.require(adapter.observe().sealed("sqlite") and not adapter.processes(adapter.config["scheduler_processes"]),
                   "The restored SQLite host must be fenced with all writers stopped")
     archive, previous = archive_for(adapter)
+    before = file_stamp(adapter.database)
     check_installation(adapter, archive, previous)
     reading, target = adapter._mysql(), adapter.config["mysql"]
     guard.require(reading.get("reachable") is True and reading.get("gate") == "closed"
@@ -92,6 +95,12 @@ def held_preflight(adapter, lease):
     adapter._fastcgi_probe(expected, deadline)
     guard.require(adapter.observe().sealed("sqlite"), "Restored-host fence changed while starting FPM")
     require_clean_sidecars(adapter.database)
+    guard.require(file_stamp(adapter.database) == before, "The restored SQLite file changed during the application check")
+
+
+def file_stamp(database):
+    info = database.lstat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def initialize_held(runner, adapter):

@@ -32,6 +32,7 @@ class HeldInitializationTests(unittest.TestCase):
         config = adapter.config = example_config()
         config["mysql"]["target_uuid"] = self.pinned.target_uuid
         adapter.paths = {key: root / key for key in config["paths"]}
+        adapter.paths["policy"].write_bytes(adapter.policy_raw)
         adapter.config["paths"] = {key: str(path) for key, path in adapter.paths.items()}
         self.archive = adapter.paths["archive"] / "previous-run-20261127T012300Z"
         self.archive.mkdir(parents=True, mode=0o700)
@@ -136,6 +137,22 @@ class HeldInitializationTests(unittest.TestCase):
             self.init()
         self.assertHeld()
 
+    def test_policy_change_or_sqlite_file_replacement_during_probe_refuses(self):
+        self.adapter.paths["policy"].write_bytes(b"changed")
+        with self.assertRaisesRegex(guard.Refused, "policy changed"):
+            self.init()
+        self.adapter.paths["policy"].write_bytes(self.adapter.policy_raw)
+
+        def replace_file(*args):
+            replacement = self.adapter.database.with_suffix(".other")
+            replacement.write_bytes(self.adapter.database.read_bytes())
+            replacement.replace(self.adapter.database)
+
+        self.adapter._fastcgi_probe.side_effect = replace_file
+        with self.assertRaisesRegex(guard.Refused, "file changed"):
+            self.init()
+        self.assertHeld()
+
     def test_failed_fpm_or_deploy_check_retains_recovery_pointer(self):
         self.adapter._fastcgi_probe.side_effect = UnsafeCutover("failed probe")
         with self.assertRaisesRegex(UnsafeCutover, "failed probe"):
@@ -182,4 +199,4 @@ class HeldInitializationTests(unittest.TestCase):
             with self.assertRaisesRegex(guard.Refused, "new run"):
                 recovery.draft(self.adapter.config, old["run_id"], stage)
         self.assertEqual(Journal.encode(old), self.adapter.paths["identity_config"].read_bytes())
-        self.assertFalse(self.adapter.paths["policy"].exists())
+        self.assertEqual(self.adapter.policy_raw, self.adapter.paths["policy"].read_bytes())
