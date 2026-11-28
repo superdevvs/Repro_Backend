@@ -21,11 +21,6 @@ entry=e2e/run_drill.py
 if [[ ${1:-} == --w2c ]]; then
     entry=sandbox/w2c.py
     shift
-    if [[ $# -eq 0 ]]; then
-        # Each recovery path gets its own empty MySQL datadir, grants, and fresh server UUID.
-        /bin/bash "$0" --w2c --case short
-        exec /bin/bash "$0" --w2c --case export
-    fi
 fi
 
 die() { printf 'run-drill: %s\n' "$*" >&2; exit 2; }
@@ -58,6 +53,15 @@ if [[ $entry == sandbox/w2c.py ]]; then
 fi
 if [ -n "$archive_ref" ]; then
     release=$(git -C "$checkout" rev-parse --verify --end-of-options "${archive_ref}^{commit}") || die "invalid archive commit"
+fi
+if [[ $entry == sandbox/w2c.py && $# -eq 0 ]]; then
+    # Both disposable targets exercise the same archive and images, even if HEAD or a tag moves.
+    export REPRO_DRILL_ARCHIVE_REF="$release" REPRO_QA_IMAGE="$qa_image" REPRO_MYSQL_IMAGE="$mysql_image"
+    export REPRO_DRILL_VENDOR_VOLUME="$vendor_volume"
+    /bin/bash "$0" --w2c --case short
+    /bin/bash "$0" --w2c --case export
+    printf 'run-drill: both W2c recovery cases passed for %s\n' "$release"
+    exit 0
 fi
 for name in "$prefix-mysql" "$prefix-srv" ${archive_ref:+"$prefix-src"}; do
     ! docker volume inspect "$name" >/dev/null 2>&1 || die "volume $name already exists"
