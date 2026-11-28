@@ -97,6 +97,11 @@ class Observation:
     def mysql_live(self) -> bool:
         return self.engine == "mysql" and self.admissions_open and self.mysql_writable and not self.sqlite_writable
 
+    def mysql_held(self) -> bool:
+        """MySQL remains the only writable engine with admissions closed outside the journal."""
+        return (self.engine == "mysql" and not self.admissions_open
+                and self.mysql_writable and not self.sqlite_writable)
+
     def held(self) -> bool:
         """New admissions and deploys are closed on SQLite. Old writers may still be draining."""
         return (
@@ -667,7 +672,8 @@ class Runner:
             phase = state["phase"]
 
             if (phase == "mysql_authoritative" and state["writes_possible"] is True
-                    and state["pending"] is None and (before.sealed("mysql") or before.mysql_live())):
+                    and state["pending"] is None
+                    and (before.sealed("mysql") or before.mysql_live() or before.mysql_held())):
                 if action == "tick":
                     return state
                 raise UnsafeCutover("MySQL writes may exist. Use separately verified recovery")

@@ -224,6 +224,54 @@ class CutoverTest(unittest.TestCase):
             self.runner.perform("abort")
         self.assertEqual(0, self.adapter.sqlite_restores)
 
+    def test_reboot_after_mysql_reopen_keeps_mysql_authority_for_the_watchdog(self):
+        self.ready()
+        committed = self.runner.perform("promote", self.runner.approval_request("promote"))
+        self.adapter.reopen()
+        self.reboot(admissions_open=False, workers_stopped=True, mysql_business_activity=True)
+        proof = self.journal.directory / "fixture-authority.json"
+        previous_boot_proof = proof.read_bytes()
+        for _ in range(2):
+            self.now += 60
+            self.assertEqual(committed, self.new_runner().perform("tick"))
+        with self.assertRaisesRegex(UnsafeCutover, "writes may exist"):
+            self.new_runner().perform("abort")
+        self.assertEqual(committed, self.journal.read())
+        self.assertFalse(self.adapter.observe().admissions_open)
+        self.assertEqual(previous_boot_proof, proof.read_bytes())
+        with self.assertRaisesRegex(guard.Refused, "this boot"):
+            guard.verify(self.journal.encode(self.adapter.policy()), self.journal.path.read_bytes(),
+                         proof.read_bytes(), machine_sha=self.adapter.MACHINE_SHA256,
+                         boot_id=self.adapter.BOOT_ID, action="queue-worker", expected_engine="mysql")
+        self.assertEqual(0, self.adapter.sqlite_restores)
+
+    def test_failed_mysql_reopen_after_smoke_keeps_mysql_authority(self):
+        self.ready()
+        committed = self.runner.perform("promote", self.runner.approval_request("promote"))
+        # The write smoke ran on this boot. Reopen failed while workers were still draining.
+        observation = replace(self.adapter.observe(), workers_stopped=False, mysql_business_activity=True)
+        self.journal.write_record("fixture.json", asdict(observation))
+        proof = self.journal.directory / "fixture-authority.json"
+        proof.unlink()
+        self.assertEqual(committed, self.new_runner().perform("tick"))
+        self.assertEqual(committed, self.journal.read())
+        self.assertEqual(observation, self.adapter.observe())
+        self.assertFalse(proof.exists())
+        self.assertEqual(0, self.adapter.sqlite_restores)
+
+    def test_reverted_engine_closed_gate_or_writable_sqlite_still_escalate(self):
+        self.ready()
+        committed = self.runner.perform("promote", self.runner.approval_request("promote"))
+        held = replace(self.adapter.observe(), mysql_business_activity=True)
+        for change in ({"engine": "sqlite"}, {"mysql_writable": False}, {"sqlite_writable": True}):
+            with self.subTest(change=change):
+                self.journal.write(committed)
+                self.journal.write_record("fixture.json", asdict(replace(held, **change)))
+                with self.assertRaisesRegex(UnsafeCutover, "writes may exist"):
+                    self.new_runner().perform("tick")
+                self.assertEqual("recovery_required", self.journal.read()["phase"])
+                self.assertEqual(0, self.adapter.sqlite_restores)
+
     def test_standby_rejects_wrong_artifact_or_target(self):
         approval = self.runner.approval_request("hold")
         for override in [{"artifact_sha256": "a" * 64},
