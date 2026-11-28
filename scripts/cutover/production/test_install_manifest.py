@@ -21,7 +21,8 @@ class InstallManifestTest(unittest.TestCase):
         expected = {p.name for p in ROOT.glob("*.py") if not p.name.startswith("test_")}
         # The historical writer inventory predates the smoke and replay profiles.
         expected.update(p.name for p in ROOT.glob("*.example.json") if p.name != "wrappers.example.json")
-        expected.update({"../fence/guard.py", "../runner.py"})
+        expected.update({"../fence/guard.py", "../runner.py", "../../mysql/verify-fields.php"})
+        self.assertIn(("../../mysql/verify-fields.php", "/opt/repro-cutover-fence/production/verify-fields.php", "0644"), cutover)
         for folder in ("capture", "sbin", "sudoers", "systemd", "tmpfiles.d", "supervisor", "nginx", "php-fpm"):
             expected.update(p.relative_to(ROOT).as_posix() for p in (ROOT / folder).rglob("*") if p.is_file())
         self.assertEqual(expected, listed)

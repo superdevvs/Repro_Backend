@@ -12,6 +12,8 @@ Build one archive at the selected cutover commit. Verify the release SHA, applic
 | `mysql_reopen_smoke.py` | `/opt/repro-cutover-fence/production/mysql_reopen_smoke.py` | 0644 |
 | `retire.py` | `/opt/repro-cutover-fence/production/retire.py` | 0644 |
 | `wayback_policy.py` | `/opt/repro-cutover-fence/production/wayback_policy.py` | 0644 |
+| `wayback.py` | `/opt/repro-cutover-fence/production/wayback.py` | 0644 |
+| `../../mysql/verify-fields.php` | `/opt/repro-cutover-fence/production/verify-fields.php` | 0644 |
 | `worker_start.py` | `/opt/repro-cutover-fence/production/worker_start.py` | 0644 |
 | `systemd/repro-cutover-retired-ingress.service` | `/etc/systemd/system/repro-cutover-retired-ingress.service` | 0644 |
 
@@ -49,6 +51,8 @@ Calculate P4 using the measured sustained upload rate and both actual compressed
 Commit the scheduler release and finish any interrupted MySQL reopen before retiring into normal service. Record who reconciled the final producer and provider ledger. Rehearse service interruption after ingress opens, when real writes may already have occurred.
 
 ## Recovery decision
+
+Use the [active-run recovery commands and protected input contracts](WAY-BACK.md) for the approved recovery path.
 
 - **Before MySQL can accept a business write**, verify the frozen SQLite checksum, route and configuration, reopen in stages, reconcile the ledger and release the scheduler last. The optional unattended SQLite reopen requires pre-hold owner authorization. Its default is off.
 - **After any possible MySQL business write**, close ingress and all writer authority, drain writers, close the gate, record the exact log coordinates and reconcile external effects with the owner. The normal path exports into a new SQLite file, verifies it independently, and checks a staged application read on that file. Pin the template and exceptions for `export-sqlite.py --writers-stopped`. The reviewed messaging overlay uses `--reviewed-reverse-layout` only with `verify-fields.php`. Record both file identity and SHA-256.
