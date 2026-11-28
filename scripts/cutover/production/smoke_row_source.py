@@ -14,6 +14,8 @@ from adapter import guard
 
 # Oracle mysqlbinlog 8.4.13 Linux x86_64, verified by the isolated native PITR rehearsal.
 DECODER_SHA256 = "1087ee9d26ea42f396a1a7f302eb2cc549b2e05c32c62f8125f9d1b40bc08048"
+OPENSSL_SHA256 = {"libssl.so.3": "78ae74e4cc70d4e19478065ee00c5b1864cf8528c725eb6230ce0e6ec0d9feb5",
+                  "libcrypto.so.3": "a087e2cafe703f8417ded60f57949dfde4b0ec99a112a9b421a3ca44c7cea514"}
 MAX_BINLOG_BYTES = 128 * 1024
 MAX_DECODED_BYTES = 2 * 1024 * 1024
 TABLES = ("aryeo_changes", "jobs", "shoots", "users")
@@ -97,18 +99,29 @@ def layout(config):
     return names
 
 
+def check_digest(path, expected):
+    probe._protected(path)
+    digest = hashlib.sha256()
+    with path.open("rb") as executable:
+        for block in iter(lambda: executable.read(1024 * 1024), b""):
+            digest.update(block)
+    require(digest.hexdigest() == expected)
+
+
 def decode(config, name, start, stop):
     import resource
 
     mysql = config["mysql"]
     path = Path(mysql["client"]).with_name("mysqlbinlog")
-    probe._protected(path)
+    check_digest(path, DECODER_SHA256)
+    private = path.parent.parent / "lib/private"
+    guard.check_chain(private, directory=True)
+    # Exclude replacement OS libraries and glibc hardware-capability subdirectories
+    # that the loader would otherwise prefer over the two reviewed portable objects.
+    require({entry.name for entry in private.iterdir()} == OPENSSL_SHA256.keys())
+    for lib, digest in OPENSSL_SHA256.items():
+        check_digest(private / lib, digest)
     probe._protected(Path(mysql["probe_defaults"]), secret=True)
-    digest = hashlib.sha256()
-    with path.open("rb") as executable:
-        for block in iter(lambda: executable.read(1024 * 1024), b""):
-            digest.update(block)
-    require(digest.hexdigest() == DECODER_SHA256)
     argv = [str(path), f"--defaults-file={mysql['probe_defaults']}", "--no-login-paths",
             "--read-from-remote-server", "--protocol=SOCKET", f"--socket={mysql['socket']}",
             "--verify-binlog-checksum", "--base64-output=DECODE-ROWS", "--verbose", "--verbose",

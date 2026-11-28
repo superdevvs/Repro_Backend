@@ -69,7 +69,13 @@ class RowSourceTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Protected Linux fixture")
     def test_decoder_is_pinned_bounded_and_cannot_leak_errors(self):
         with tempfile.TemporaryDirectory(dir="/var/lib") as folder:
-            path = Path(folder) / "mysqlbinlog"
+            path = Path(folder) / "bin/mysqlbinlog"
+            path.parent.mkdir()
+            private = Path(folder) / "lib/private"
+            private.mkdir(parents=True)
+            libraries = {key: hashlib.sha256(key.encode()).hexdigest() for key in source.OPENSSL_SHA256}
+            for key in libraries:
+                (private / key).write_bytes(key.encode())
             defaults = Path(folder) / "probe.cnf"
             defaults.write_text("[client]\n")
             defaults.chmod(0o600)
@@ -80,9 +86,18 @@ class RowSourceTests(unittest.TestCase):
                 path.chmod(0o755)
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 with (self.subTest(command=command), patch.object(source, "DECODER_SHA256", digest),
+                      patch.object(source, "OPENSSL_SHA256", libraries),
                       patch.object(source, "MAX_DECODED_BYTES", 2048)):
                     if success:
                         self.assertEqual(b"decoded privately\n", source.decode(self.config, NAME, 10, 50))
+                        shadow = private / "libc.so.6"
+                        shadow.symlink_to("missing")
+                        with self.assertRaises(source.Unavailable):
+                            source.decode(self.config, NAME, 10, 50)
+                        shadow.unlink()
+                        with patch.dict(libraries, {"libssl.so.3": "b" * 64}):
+                            with self.assertRaises(source.Unavailable):
+                                source.decode(self.config, NAME, 10, 50)
                     else:
                         with self.assertRaisesRegex(source.Unavailable, "^The native smoke row scope could not be verified$"):
                             source.decode(self.config, NAME, 10, 50)
