@@ -7,6 +7,7 @@ result is evidence about the local controller, never an off-site or host receipt
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 import stat
@@ -34,6 +35,10 @@ def record(path, value):
 
 def now():
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def coordinate_hash(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")).hexdigest()
 
 
 class Outer(drill.Outer):
@@ -262,7 +267,8 @@ class Inside(drill.Inside):
             require(close == drill.read_json(path) and close["run_id"] == self.policy["identity"]["run_id"]
                     and close["server_uuid"] == self.host["mysql"]["target_uuid"] and close["gate"] == "closed",
                     "Missing closed coordinate for reverse export")
-            return {"close_sha256": drill.sha256_file(path), "counts": None, "short_path_eligible": False,
+            return {"close_sha256": drill.sha256_file(path), "coordinate": close["coordinate"],
+                    "counts": None, "short_path_eligible": False,
                     "result": "multiple authenticated smoke windows require reverse export"}
         require(audit["short_path_eligible"] is eligible
                 and (audit["counts"]["business"] == 0 if eligible else audit["counts"]["business"] >= 1)
@@ -356,13 +362,27 @@ class Inside(drill.Inside):
         self.require_open("new SQLite run")
         require(self.live_config()["engine"] == "sqlite" and drill.read_json(drill.INGRESS_OPEN)["engine"] == "sqlite",
                 "New run did not admit SQLite")
+        if marker is not None:
+            source = r"""require getcwd().'/vendor/autoload.php';
+$app = require getcwd().'/bootstrap/app.php';
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+$db = $app->make('db')->connection();
+echo json_encode(['driver' => $db->getDriverName(), 'database' => $db->getDatabaseName(),
+                  'value' => $db->table('cache')->where('key', $argv[1])->value('value')], JSON_THROW_ON_ERROR);"""
+            measured = drill.run(["/usr/bin/php", "-r", source, marker], cwd=self.app, env=drill.CLEAN_ENV,
+                                 user=drill.WEB_USER, group=drill.APP_GROUP, timeout=60)
+            require(json.loads(measured.stdout) == {"driver": "sqlite", "database": str(self.paths.sqlite), "value": "w2c"},
+                    "Reopened Laravel web identity could not read the recovered MySQL write from the pinned SQLite file")
         verification = drill.read_json(night / "plan/result.json")
         record(self.paths.e2e / "w2c-result.json",
-               {"result": "local-recovery-verified", "case": self.args.case, "method": method,
+               {"version": 1, "result": "local-recovery-verified", "case": self.args.case, "method": method,
                 "release": self.policy["identity"]["release_sha"], "closed_counts": audit["counts"],
+                "original_run_id": self.policy["identity"]["run_id"], "server_uuid": mysql["target_uuid"],
+                "close_sha256": audit["close_sha256"], "closed_coordinate_sha256": coordinate_hash(audit["coordinate"]),
                 "source_tables": verification["tables"], "frozen_sha256": drill.sha256_file(frozen),
                 "installed_sha256": digest, "source_inode_preserved": eligible,
-                "business_write_preserved": marker is not None, "backup_transport": "disconnected-readback-fixture"})
+                "business_write_preserved": marker is not None, "post_reopen_business_read": marker is not None,
+                "backup_transport": "disconnected-readback-fixture"})
 
     def execute(self):
         require(self.host["mysql"]["mode"] == "cutover" and self.host["mysql"]["offsite_waiver"] is False
