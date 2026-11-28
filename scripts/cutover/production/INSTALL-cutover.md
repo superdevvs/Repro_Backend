@@ -15,6 +15,7 @@ Build one archive at the selected cutover commit. Verify the release SHA, applic
 | `smoke_rows.py` | `/opt/repro-cutover-fence/production/smoke_rows.py` | 0644 |
 | `wayback_policy.py` | `/opt/repro-cutover-fence/production/wayback_policy.py` | 0644 |
 | `wayback.py` | `/opt/repro-cutover-fence/production/wayback.py` | 0644 |
+| `wayback_mount.py` | `/opt/repro-cutover-fence/production/wayback_mount.py` | 0644 |
 | `../../mysql/verify-fields.php` | `/opt/repro-cutover-fence/production/verify-fields.php` | 0644 |
 | `worker_start.py` | `/opt/repro-cutover-fence/production/worker_start.py` | 0644 |
 | `systemd/repro-cutover-retired-ingress.service` | `/etc/systemd/system/repro-cutover-retired-ingress.service` | 0644 |
@@ -58,7 +59,7 @@ The active-run recovery commands depend on the journal. Before retiring a MySQL 
 
 ## Recovery decision
 
-Use the [active-run recovery commands and protected input contracts](WAY-BACK.md) for the approved recovery path.
+Use the [active-run recovery commands and protected input contracts](WAY-BACK.md) for the approved recovery path. A standalone online backup uses DELETE journaling. Measure the selected Laravel SQLite journal mode, apply the reviewed `--sqlite-journal-mode` during reverse export and hash the closed, checkpointed artifact. Check the application against that exact file with private WAL and shared-memory companions before replacing the frozen file.
 
 - **Before MySQL can accept a business write**, verify the frozen SQLite checksum, route and configuration, reopen in stages, reconcile the ledger and release the scheduler last. The optional unattended SQLite reopen requires pre-hold owner authorization. Its default is off.
 - **After any possible MySQL business write**, close ingress and all writer authority, drain writers, close the gate, record the exact log coordinates and reconcile external effects with the owner. The normal path exports into a new SQLite file, verifies it independently, and checks a staged application read on that file. Pin the template and exceptions for `export-sqlite.py --writers-stopped`. The reviewed messaging overlay uses `--reviewed-reverse-layout` only with `verify-fields.php`. Record both file identity and SHA-256.
