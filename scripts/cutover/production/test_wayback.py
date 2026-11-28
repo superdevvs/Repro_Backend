@@ -23,6 +23,7 @@ REVOKED = ("evidence", "activation", "scheduler_release", "ingress_open")
 POINT = {"file": "binlog.000001", "position": 400, "gtid_executed": SERVER + ":1-9"}
 
 
+@unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "Requires the root-owned Linux rollback fixture")
 class WayBackTest(unittest.TestCase):
     def setUp(self):
         root = tempfile.TemporaryDirectory(dir="/var/lib", prefix="repro-wayback-")
