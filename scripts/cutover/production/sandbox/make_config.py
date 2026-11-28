@@ -163,6 +163,7 @@ def _commands(args, app: Path, root: Path) -> dict:
         "smoke_write": [PYTHON, "-I", "-S", f"{INSTALLED}/admit.py", "cutover-smoke"],
         "telnyx_replay": [PYTHON, "-I", "-S", f"{INSTALLED}/admit.py", "telnyx-replay"],
         "timer": [script("timer")],
+        "timer_stop": [script("timer-stop")],
     }
 
 

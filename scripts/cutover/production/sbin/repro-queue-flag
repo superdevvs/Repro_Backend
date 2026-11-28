@@ -24,6 +24,7 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 INSTALLED = Path("/usr/local/sbin/repro-queue-flag")
@@ -33,6 +34,7 @@ _here = Path(__file__).resolve()
 sys.path.insert(0, str(FENCE if _here == INSTALLED else _here.parents[1]))
 import adapter  # noqa: E402
 from adapter import guard  # noqa: E402
+from runner import Journal, UnsafeCutover  # noqa: E402
 
 CONFIG = Path("/etc/repro-cutover-fence/host.json")
 VERBS = ("pause", "resume")
@@ -77,11 +79,19 @@ def main(argv: list[str], *, config: Path = CONFIG) -> int:
         # identity.json gets the same root-only check; load_config refuses unsafe queue commands.
         host = adapter.load_config(guard.read_protected(config), read=guard.read_protected)
         guard.require(queue in host["queues"], f"{queue!r} is not a queue in the host config")
-    except (guard.Refused, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        lock = Journal(Path(host["paths"]["state"])).acquire() if verb == "resume" else nullcontext((None, None))
+        with lock as (state, _):
+            if state is not None:
+                guard.require(state.get("version") == 1 and state.get("phase") in
+                              ("planned", "sqlite_authoritative", "mysql_authoritative")
+                              and "pending" in state and state["pending"] is None
+                              and state.get("writes_possible") is (state["phase"] == "mysql_authoritative"),
+                              "Queue resume refused while the cutover is held")
+            code, output, error = run(host["commands"][f"queue_{verb}"] + [queue], host["command_seconds"])
+    except (UnsafeCutover, guard.Refused, OSError, ValueError, TypeError, KeyError, RecursionError) as error:
         print(f"repro-queue-flag refused: {error}", file=sys.stderr)
         return REFUSED
     seconds = host["command_seconds"]
-    code, output, error = run(host["commands"][f"queue_{verb}"] + [queue], seconds)
     sys.stdout.write(output)
     sys.stderr.write(error)
     if code is None:

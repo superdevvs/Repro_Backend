@@ -20,6 +20,10 @@ class UnsafeCutover(RuntimeError):
     """A cutover precondition could not be established."""
 
 
+class ControllerBusy(UnsafeCutover):
+    """Another controller owns the journal lock."""
+
+
 def digest(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -285,7 +289,7 @@ class Journal:
     def acquire(self, wait_seconds: float = 0):
         with (self.directory / CONTROLLER_LOCK).open("a+b") as stream:
             if not _wait_lock(stream, wait_seconds):
-                raise UnsafeCutover("Another host operator holds the cutover lock")
+                raise ControllerBusy("Another host operator holds the cutover lock")
             # The guard opens the writer lock read-only and never creates it.
             (self.directory / WRITER_LOCK).open("a+b").close()
             lease = None
@@ -640,12 +644,18 @@ class Runner:
         self.adapter.seal_sqlite(lease, rollback_deadline)
         self._publish_authority(state, lease, "sqlite", rollback_deadline)
 
-    def perform(self, action: str, approval: Approval | None = None) -> dict:
+    def perform(self, action: str, approval: Approval | None = None, *,
+                abort_if: tuple[str, str] | None = None, hold_preflight: Callable[[], None] | None = None) -> dict:
         if action not in self.ACTIONS:
             raise ValueError("Unknown cutover action")
+        if abort_if is not None and action != "abort":
+            raise ValueError("Conditional execution is available only for abort")
         wait = self.controller_wait_seconds if action == "tick" else 0
         with self.journal.acquire(wait) as (_, lease):
             state = self.status()
+            # A stale timer must not touch the current run, even if its watchdog deadline has elapsed.
+            if abort_if is not None and (state["phase"], state["challenge"]) != abort_if:
+                return state
             self._verify_identity()
             self.adapter.require_quiescent()
             before = self.adapter.observe()
@@ -706,6 +716,8 @@ class Runner:
                 raise UnsafeCutover("Host clock moved backwards")
 
             if action == "hold":
+                if hold_preflight is not None:
+                    hold_preflight()
                 self._hold(state, lease, before, approval, now)
             elif action == "freeze":
                 self._freeze(state, lease, before, approval, now)

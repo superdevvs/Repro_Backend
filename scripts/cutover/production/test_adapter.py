@@ -959,7 +959,7 @@ class ProductionAdapterTests(unittest.TestCase):
             "config_build": config_build_command(self.app),
             # The probe reads the identity config the host config names (python -c ignores the extra arguments).
             "identity": identity_probe + ["--config", config["paths"]["identity_config"]],
-            "mysql": [sys.executable, "-c", "print('{\"writable\": false, \"business_activity\": false}')"],
+            "mysql": [sys.executable, "-c", f"print({json.dumps(probe_reading())!r})"],
             "queue_pause": self.record_queue("pause"), "queue_resume": self.record_queue("resume"),
             # '[f]ake' never matches this shell's own command line.
             "stop_workers": [["/bin/sh", "-c", f"/usr/bin/pkill -f '[f]ake-queue-worker-{self.tag}' || true"],
@@ -1265,7 +1265,7 @@ class ProductionAdapterTests(unittest.TestCase):
     def marker_paths(self):
         # The nginx hold and Deploy-App read fixed marker paths; point them at this fixture.
         paths = self.config()["paths"]
-        return patch.multiple(cli, INGRESS_OPEN=Path(paths["ingress_open"]), DEPLOY_MARKER=Path(paths["deploy_marker"]))
+        return patch.dict(cli.FIXED_PATHS, {key: Path(paths[key]) for key in cli.FIXED_PATHS})
 
     def cli(self, *argv):
         output = io.StringIO()
@@ -1279,10 +1279,10 @@ class ProductionAdapterTests(unittest.TestCase):
         approval.write_text(json.dumps(runner.approval_request("hold").__dict__), encoding="utf-8")
         approval.chmod(0o600)
         # A host config that names another file would close nothing nginx or Deploy-App reads.
-        for constant in ("INGRESS_OPEN", "DEPLOY_MARKER"):
+        for constant in ("ingress_open", "deploy_marker", "scheduler_release", "wrappers", "retired"):
             with self.subTest(constant=constant):
                 errors = io.StringIO()
-                with self.guard_paths(), self.marker_paths(), patch.object(cli, constant, self.root / "elsewhere"), \
+                with self.guard_paths(), self.marker_paths(), patch.dict(cli.FIXED_PATHS, {constant: self.root / "elsewhere"}), \
                         redirect_stdout(io.StringIO()), patch("sys.stderr", errors):
                     code = cli.main(["--config", str(self.config_path), "hold", "--approval", str(approval)])
                 self.assertEqual("planned", journal.read()["phase"])
@@ -2479,9 +2479,9 @@ class UnitFileTests(unittest.TestCase):
 
     def test_cli_marker_paths_are_the_ones_nginx_and_deploys_read(self):
         hold = (self.HERE / "nginx" / "repro-cutover-hold.conf").read_text(encoding="ascii")
-        self.assertIn(f"if (-f {cli.INGRESS_OPEN.as_posix()})", hold)
+        self.assertIn(f"if (-f {cli.FIXED_PATHS['ingress_open'].as_posix()})", hold)
         deploy = (self.HERE.parents[1] / "deploy" / "Deploy-App.ps1").read_text(encoding="utf-8")
-        self.assertEqual(2, deploy.count(f"[ -e {cli.DEPLOY_MARKER.as_posix()} ]"))
+        self.assertEqual(2, deploy.count(f"[ -e {cli.FIXED_PATHS['deploy_marker'].as_posix()} ]"))
 
     def test_supervisor_restarts_a_worker_that_exits_normally(self):
         # Every deploy runs queue:restart, and --max-time ends a worker each hour: queue:work then

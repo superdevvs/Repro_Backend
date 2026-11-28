@@ -188,6 +188,7 @@ class HelperFixture(unittest.TestCase):
 
     def write_config(self, config, identity=None):
         config["paths"]["identity_config"] = str(self.identity_path)
+        config["paths"]["state"] = str(self.root / "state")
         config["commands"]["identity"] = config["commands"]["identity"][:-1] + [str(self.identity_path)]
         for path, value in ((self.config_path, config),
                             (self.identity_path, example_identity(config) if identity is None else identity)):
@@ -233,6 +234,25 @@ class QueueFlagHelperTests(HelperFixture):
         php.start()
         self.addCleanup(php.stop)
         self.config = self.write_config(self.recording_config())
+
+    def test_resume_refused_throughout_a_controller_action_but_pause_remains_available(self):
+        journal = self.helper.Journal(self.root / "state")
+        queue = self.config["queues"][0]
+        with journal.acquire():
+            self.assertEqual(1, self.run_helper("resume", queue)[0])
+            self.assertEqual(0, self.run_helper("pause", queue)[0])
+        self.assertEqual(0, self.run_helper("resume", queue)[0])
+        self.assertEqual(["queue:pause", "queue:resume"], [row[0] for row in self.commands()])
+
+    def test_resume_refuses_held_and_interrupted_states(self):
+        journal = self.helper.Journal(self.root / "state")
+        queue = self.config["queues"][0]
+        state = {"version": 1, "generation": 1, "phase": "planned", "pending": None, "writes_possible": False}
+        for changes in ({"phase": "holding"}, {"phase": "ready"}, {"pending": {"action": "hold"}},
+                        {"phase": "recovery_required"}, {"phase": "sqlite_authoritative", "writes_possible": True}):
+            journal.write({**state, **changes})
+            self.assertEqual(1, self.run_helper("resume", queue)[0], changes)
+        self.assertEqual([], self.commands())
 
     def php_settings(self, **settings):
         """What the fixture php does on its next runs; it always records what ran in the command log."""

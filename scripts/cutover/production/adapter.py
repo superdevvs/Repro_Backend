@@ -362,6 +362,24 @@ def load_identity_config(raw: bytes) -> dict:
     return identity
 
 
+def switch_secrets(config: dict) -> dict:
+    """Each switch secret (DB_PASSWORD) from its root-only file of one `KEY=value` line; never printed."""
+    found = {}
+    for key, name in config["mysql"]["switch_secrets"].items():
+        path = Path(name)
+        try:
+            raw = guard.read_protected(path)
+            private = not stat.S_IMODE(path.lstat().st_mode) & 0o077
+        except FileNotFoundError:
+            raise UnsafeCutover(f"The secret file {path} for {key} is missing") from None
+        except (guard.Refused, OSError) as error:
+            raise UnsafeCutover(f"The secret file {path} for {key} is not root's: {error}") from None
+        _require(private, f"The secret file {path} must be readable by root only")
+        match = re.fullmatch(rf"{key}=({SECRET_VALUE})\n?", raw.decode("ascii", "replace"))
+        _require(match is not None, f"{path} must hold one line {key}=<16 to 256 characters of A-Z a-z 0-9 . _ ~ + / = ->")
+        found[key] = match.group(1)
+    return found
+
 def _check_mysql(mysql) -> None:
     guard.require(isinstance(mysql, dict) and mysql.keys() == MYSQL_KEYS,
                   "Host config mysql keys are incomplete or unknown")
@@ -414,7 +432,8 @@ def load_config(raw: bytes, *, read: Callable[[Path], bytes]) -> dict:
     guard.require(isinstance(paths, dict) and paths.keys() == PATHS
                   and all(isinstance(value, str) and Path(value).is_absolute() for value in paths.values()),
                   "Host config paths are incomplete")
-    guard.require(isinstance(commands, dict) and commands.keys() == COMMANDS
+    guard.require(isinstance(commands, dict) and commands.keys() in (COMMANDS, COMMANDS | {"timer_stop"})
+                  and ("timer_stop" not in commands or _argv(commands["timer_stop"]))
                   and all(_argv(commands[name]) for name in SINGLE_COMMANDS)
                   and all(isinstance(commands[name], list) and all(map(_argv, commands[name]))
                           for name in COMMAND_LISTS)
@@ -1183,7 +1202,7 @@ class ProductionAdapter:
     def _prepare_mysql_env(self, run: PrepareRun) -> None:
         """Step 6: the MySQL .env in memory, the switch keys set and every other line byte for byte; its
         config_sha256, with the denylist the identity probe reads, must equal the current file's."""
-        assignments = {**self.config["mysql"]["switch"], **self._switch_secrets()}
+        assignments = {**self.config["mysql"]["switch"], **switch_secrets(self.config)}
         try:
             run.switched = envfile.assign(run.env, assignments)
         except envfile.Refused as error:
@@ -1574,24 +1593,6 @@ class ProductionAdapter:
                  and (record["switch_at"] is None or type(record["switch_at"]) is int),
                  "The switch record is malformed")
         return record
-
-    def _switch_secrets(self) -> dict:
-        """Each switch secret (DB_PASSWORD) from its root-only file of one `KEY=value` line; never printed."""
-        found = {}
-        for key, name in self.config["mysql"]["switch_secrets"].items():
-            path = Path(name)
-            try:
-                raw = guard.read_protected(path)
-                private = not stat.S_IMODE(path.lstat().st_mode) & 0o077
-            except FileNotFoundError:
-                raise UnsafeCutover(f"The secret file {path} for {key} is missing") from None
-            except (guard.Refused, OSError) as error:
-                raise UnsafeCutover(f"The secret file {path} for {key} is not root's: {error}") from None
-            _require(private, f"The secret file {path} must be readable by root only")
-            match = re.fullmatch(rf"{key}=({SECRET_VALUE})\n?", raw.decode("ascii", "replace"))
-            _require(match is not None, f"{path} must hold one line {key}=<16 to 256 characters of A-Z a-z 0-9 . _ ~ + / = ->")
-            found[key] = match.group(1)
-        return found
 
     def evidence(self) -> Evidence:
         """The target evidence of prepare's report (design 3.3), called by the runner after prepare and again in

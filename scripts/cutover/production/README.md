@@ -854,6 +854,26 @@ Not yet here (later slices):
   `pin-config` creates the root 0711 staging folder under
   `/run/repro-cutover-fence` and passes it to `stage`.
 
+## Drill operator entry points
+
+Run `cli.py pin-config` as root before creating policy.json. It reproduces the live SQLite cache in
+a private staging directory, stages the MySQL cache, and prints the two policy hashes. Use
+`gate-check` to inspect the configured server. A separately authorized `gate-normalise` closes
+a partial gate only before writes are possible and with no pending transition.
+
+The installed `repro-cutover-run` wrapper runs each operator action in a transient systemd service.
+It prints the unit name before the action starts. Follow that unit with `journalctl -fu UNIT.service`
+after reconnecting. Install the dedicated operator sudoers file only for the approved host window.
+The service names and accepted arguments are explicit in the wrapper and sudoers file.
+
+Issue a phase approval with `approval-template --phase hold`, then run `hold --issued-approval`.
+The hold validates the target identity and closed gate under the controller lock.
+Run `check-evidence --inputs DIR --write` while frozen and use `status --evidence` after prepare.
+Issuing a promote approval rechecks the prepared evidence and arms a challenge-bound expiry timer.
+A separate `arm-deadline --minutes N --phase frozen` uses the earlier of N minutes and the run's
+decision deadline. A stale timer leaves the new phase alone. This drill build refuses promotion.
+Queue resumes take the same controller lock and require a stable pre-hold or authority phase.
+
 ## Observation and authority (design 1.2, 1.3, 3.2, 3.4)
 
 `observe()` runs the MySQL probe and the live config module on every call.
