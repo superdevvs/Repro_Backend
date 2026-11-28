@@ -50,6 +50,8 @@ Calculate P4 using the measured sustained upload rate and both actual compressed
 
 Commit the scheduler release and finish any interrupted MySQL reopen before retiring into normal service. Record who reconciled the final producer and provider ledger. Rehearse service interruption after ingress opens, when real writes may already have occurred.
 
+The active-run recovery commands depend on the journal. Before retiring a MySQL run during the agreed rollback period, demonstrate recovery from the retired archive and kept inputs on a disposable host. Until that procedure has its own receipt, keep the active journal and deployment fence in place. Schedule retirement separately with the owner.
+
 ## Recovery decision
 
 Use the [active-run recovery commands and protected input contracts](WAY-BACK.md) for the approved recovery path.
